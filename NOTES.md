@@ -195,6 +195,16 @@ who wants the last few percent. This also empirically closes the
 lo(4) question: 16K genuinely is nearly as good as TSO for
 same-machine traffic.**
 
+Benchmarking note (2026-08-15): an apparent directional throughput
+asymmetry turned out to be an iperf3 `--bidir` artifact (both
+directions share one client process; its CPU saturation throttles
+unevenly) — use two separate unidirectional runs or two independent
+client/server pairs. For the record, the driver's one real per-side
+asymmetry is `sc_defqid` (flowid-less traffic serializes onto a
+different pinned worker per side); a software flow-hash fallback that
+would erase it is sketched in the flow-steering design discussion and
+remains unimplemented for lack of a demonstrated need.
+
 #### Postmortem: iperf3 panic (2026-08-14)
 
 First load of the module survived ping but panicked under iperf3
@@ -499,11 +509,22 @@ ipfw3 import); `bpfwrite()` entering the net epoch (`bpf.c`, epoch
 entry directly before its `if_output` call); epair's a-side-only
 destroy semantics; `lo(4)`'s treatment of bpf-injected packets.
 
-Known open items:
+Link state (implemented 2026-08-15): both sides report a synthetic
+carrier via `pair_set_state()` — `LINK_STATE_UP` coupled with
+`IFF_DRV_RUNNING` at attach, `LINK_STATE_DOWN` as the first teardown
+step (epair's `epair_set_state()` ordering), with `IFCAP_LINKSTATE`
+advertised (lo(4) precedent) and force-enabled. The peer-reflecting
+variant (carrier mirrors the other side's admin state — the truer p2p
+semantic) is deferred: `SIOCSIFFLAGS` runs outside the network epoch,
+so touching `sc_peer` there would reopen the closed teardown race; if
+ever wanted, it needs an epoch section (or equivalent) around the
+peer access plus a cross-vnet `if_link_state_change()`. Note:
+`ifconfig` may not print a `status:` line for a mediumless interface;
+the functional consumers (routing daemons, devd, route-socket
+listeners) receive the state regardless — VM test should verify with
+`ifconfig -v` / `route -n monitor` during create/destroy.
 
-- Link state is never set (`if_link_state_change()`): interfaces stay
-  at `LINK_STATE_UNKNOWN`; should follow epair's pattern (UP after
-  attach, DOWN before detach).
+Known open items:
 - Runtime verification pending (needs root): smoke test, destroy/unload
   paths with live pairs and jailed `b` sides, transit checksum test via
   tcpdump on a real egress, iperf3 comparison against epair.

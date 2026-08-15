@@ -98,6 +98,14 @@ kldunload if_pair
 
 ## Stage 5 — only after 1-4 are green
 
+- sendfile / unmapped-mbuf passage: serve a large file across the
+  pair (e.g. `jexec dummy2 python3 -m http.server` + fetch from
+  dummy1, or nginx+sendfile). Exercises M_EXTPG mbuf chains through
+  pair_output/pair_input — our version-nibble mtod() read relies on
+  TCP keeping headers in a mapped mbuf; verify with a multi-GB
+  transfer, and compare throughput vs plain iperf3 (sendfile skips
+  the sender-side copy, the dominant remaining cost).
+
 - Transit checksum test (needs a second interface): jail -> host ->
   egress; `tcpdump -v -n -i <egress>` must show valid checksums.
 - `-txcsum` toggles on one/both sides + re-run iperf3.

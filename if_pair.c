@@ -492,6 +492,8 @@ pair_ioctl(if_t ifp, u_long cmd, caddr_t data)
 		int reqcap = ifr->ifr_reqcap & if_getcapabilities(ifp);
 		uint64_t hwassist = 0;
 
+		/* Link state reporting cannot be turned off. */
+		reqcap |= IFCAP_LINKSTATE;
 		if (reqcap & IFCAP_TXCSUM)
 			hwassist |= PAIR_CSUM_FEATURES;
 		if (reqcap & IFCAP_TXCSUM_IPV6)
@@ -555,11 +557,36 @@ pair_alloc_side(int unit, enum pair_side side)
 	if_setbaudrate(ifp, IF_Gbps(10));
 	if_setoutputfn(ifp, pair_output);
 	if_setioctlfn(ifp, pair_ioctl);
-	if_setcapabilities(ifp, IFCAP_HWCSUM | IFCAP_HWCSUM_IPV6);
-	if_setcapenable(ifp, IFCAP_HWCSUM | IFCAP_HWCSUM_IPV6);
+	if_setcapabilities(ifp,
+	    IFCAP_HWCSUM | IFCAP_HWCSUM_IPV6 | IFCAP_LINKSTATE);
+	if_setcapenable(ifp,
+	    IFCAP_HWCSUM | IFCAP_HWCSUM_IPV6 | IFCAP_LINKSTATE);
 	if_sethwassist(ifp, PAIR_CSUM_FEATURES | PAIR_CSUM_FEATURES6);
 
 	return (sc);
+}
+
+/*
+ * Both sides report a synthetic carrier: LINK_STATE_UP while attached
+ * and running, LINK_STATE_DOWN as the first step of teardown (link
+ * down before IFF_DRV_RUNNING clears; the reverse order on the way
+ * up), following epair(4)'s epair_set_state().  A peer-reflecting
+ * carrier (mirror the other side's administrative state, the truer
+ * point-to-point semantic) was considered and deferred: SIOCSIFFLAGS
+ * runs outside the network epoch, so dereferencing sc_peer there
+ * would reopen the teardown race that pair_output()'s epoch
+ * discipline closes.
+ */
+static void
+pair_set_state(if_t ifp, bool running)
+{
+	if (running) {
+		if_setdrvflagbits(ifp, IFF_DRV_RUNNING, 0);
+		if_link_state_change(ifp, LINK_STATE_UP);
+	} else {
+		if_link_state_change(ifp, LINK_STATE_DOWN);
+		if_setdrvflagbits(ifp, 0, IFF_DRV_RUNNING);
+	}
 }
 
 /*
@@ -577,7 +604,7 @@ pair_attach_side(struct pair_softc *sc)
 
 	if_attach(ifp);
 	bpfattach(ifp, DLT_NULL, sizeof(uint32_t));
-	if_setdrvflagbits(ifp, IFF_DRV_RUNNING, 0);
+	pair_set_state(ifp, true);
 }
 
 /*
@@ -732,8 +759,8 @@ pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags __unused)
 	 * (sleepable, no mutexes held - both hold on every path into
 	 * the cloner's destroy method).
 	 */
-	if_setdrvflagbits(sca->sc_ifp, 0, IFF_DRV_RUNNING);
-	if_setdrvflagbits(scb->sc_ifp, 0, IFF_DRV_RUNNING);
+	pair_set_state(sca->sc_ifp, false);
+	pair_set_state(scb->sc_ifp, false);
 	NET_EPOCH_WAIT();
 
 	pair_drain_queues(scb);
