@@ -5,14 +5,18 @@
  *
  * if_pair(4) - a pair of point-to-point layer-3 interfaces.
  *
- * Like if_epair(4), creating a "pair" yields two interfaces (pairNa and
- * pairNb) whose transmit paths are cross-connected, and either side can be
- * moved into a vnet jail.  Unlike epair there is no Ethernet emulation:
- * the interfaces are IFF_POINTOPOINT, carry bare IPv4/IPv6 packets, and a
- * transmitted mbuf is handed straight to the peer's protocol input via
- * netisr.  No link-layer headers, no ARP/NDP neighbor discovery, no
- * bridge/vlan machinery - just two ends of a wire for routed traffic
- * between vnets (or between the host and a vnet).
+ * Like if_epair(4), creating a "pair" yields two interfaces (pairNa
+ * and pairNb) whose transmit paths are cross-connected, either side
+ * can be moved into a vnet jail, and destroying either side destroys
+ * both.  Unlike epair there is no Ethernet emulation: the interfaces
+ * are IFF_POINTOPOINT and carry bare IPv4/IPv6 packets - no
+ * link-layer headers, no ARP/NDP neighbor discovery, no bridge/vlan
+ * machinery.  A transmitted mbuf is flow-hashed onto one of the peer
+ * side's receive queues and delivered into the peer's protocol input,
+ * in the peer's vnet, by the matching thread of a CPU-pinned worker
+ * pool shared by all pairs; TCP/UDP checksums are elided for traffic
+ * that never leaves the machine.  Just two ends of a wire for routed
+ * traffic between vnets (or between the host and a vnet).
  */
 
 #include "opt_inet.h"
@@ -356,11 +360,11 @@ pair_task_deferred(void *arg, int pending __unused)
 }
 
 /*
- * Software flow hash for packets that carry no flowid — which on
+ * Software flow hash for packets that carry no flowid - which on
  * non-RSS kernels is every packet of a purely pair-local connection:
- * no NIC ever stamps one, so inp_flowid never gets learned (observed
- * live: 8 iperf3 streams all riding the static fallback, serialized
- * on one worker).  Hashes source/destination address, IP protocol
+ * no NIC ever stamps one, so inp_flowid never gets learned, and
+ * without this hash every such flow would serialize onto its side's
+ * single fallback worker.  Hashes source/destination address, IP protocol
  * and, when safely readable, the TCP/UDP port pair, via
  * jenkins_hash32() with a random per-boot seed; same tuple -> same
  * hash preserves per-flow ordering.  Fragments hash without ports so
@@ -368,7 +372,20 @@ pair_task_deferred(void *arg, int pending __unused)
  * would otherwise part ways with the rest), as hardware RSS does.
  * IPv6 extension-header chains are not walked: anything but plain
  * TCP/UDP after the fixed header hashes on addresses and next-header
- * alone.  Headers are read with m_copydata(), which handles split
+ * alone (O(1) regardless of chain length; an attacker stacking
+ * extension headers gets constant-time treatment).
+ *
+ * Ordering boundary: the guarantee is same-hash-input -> same worker.
+ * A flow that changes its own header shape mid-stream - some packets
+ * fragmented and some not, or some wearing IPv6 extension headers and
+ * some not - hashes as two classes (with and without ports) that may
+ * land on different workers, so ordering holds within each class but
+ * not between them.  Hardware RSS makes the same trade for the same
+ * reasons; TCP essentially never mixes header shapes mid-flow, and a
+ * receiver treats the rare cross-class reordering like any network
+ * reordering.
+ *
+ * Headers are read with m_copydata(), which handles split
  * and unmapped (M_EXTPG) chains, so this adds no contiguity or
  * mappedness assumptions.  Returns false for unhashable packets
  * (too short, unknown family); the caller then uses the side's
@@ -477,8 +494,7 @@ pair_select_queue(struct pair_softc *sc, struct mbuf *m, uint32_t af)
  * mutex silently recurses, and the nested ACK processing mutates the
  * connection (sbdrop(), snd_una) underneath the suspended outer
  * tcp_output(), whose stale send-buffer snapshot later walks off the
- * end of the mbuf chain and panics.  Observed in practice as a page
- * fault in tcp_default_output() under iperf3.  This is why lo(4)
+ * end of the mbuf chain and panics.  This is why lo(4)
  * always uses netisr_queue() (if_loop.c: "mbuf is free'd on
  * failure") and why epair(4) decouples transmit from receive with
  * its own queues.  Deferral also bounds kernel stack usage for
@@ -672,9 +688,8 @@ pair_alloc_side(int unit, enum pair_side side)
 	 * if_dname must remain the bare cloner name ("pair"):
 	 * if_clone_destroy() resolves the owning cloner via
 	 * ifc_find_cloner_in_vnet(ifp->if_dname, ...), so a full
-	 * "pairNa" there makes every destroy fail with EINVAL (found
-	 * in VM testing).  Only if_xname carries the full name, as
-	 * epair(4) does.
+	 * "pairNa" there makes every destroy fail with EINVAL.  Only
+	 * if_xname carries the full per-side name, as epair(4) does.
 	 */
 	if_initname(ifp, pairname, IF_DUNIT_NONE);
 	snprintf(name, sizeof(name), "%s%d%c", pairname, unit,
@@ -845,8 +860,8 @@ pair_clone_create(struct if_clone *ifc, char *name, size_t len,
 	 * The framework links only the returned ifp ('a') into the
 	 * cloner list and the "pair" interface group; the 'b' side must
 	 * be linked explicitly, as epair(4) does, or destroying by its
-	 * name fails with ENXIO (found in VM testing) and pf/ipfw
-	 * group rules ("on pair") miss it.
+	 * name fails with ENXIO and pf/ipfw group rules ("on pair")
+	 * miss it.
 	 */
 	if_clone_addif(ifc, scb->sc_ifp);
 
