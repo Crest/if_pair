@@ -213,6 +213,17 @@ different pinned worker per side); a software flow-hash fallback that
 would erase it is sketched in the flow-steering design discussion and
 remains unimplemented for lack of a demonstrated need.
 
+Pool observability capture (2026-08-15, VM, `top -SHPaziocpu` during
+`iperf3 -P 8`): pinning and worker visibility confirmed
+(`pair_task_N` threads of proc 0, bound to their CPUs). Finding: only
+TWO workers active for 8 flows — pair-local connections never acquire
+an `inp_flowid` on non-RSS systems (no NIC ever stamps one), so ALL
+traffic takes the per-side `sc_defqid` static fallback. The
+client-side worker saturates at ~100% (ACK delivery drives the
+senders' tcp_output() in that worker, serializing all flows' transmit
+processing) while five CPUs idle — the demonstrated need for the
+previously parked software flow-hash steering fallback.
+
 #### Postmortem: iperf3 panic (2026-08-14)
 
 First load of the module survived ping but panicked under iperf3
