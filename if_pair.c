@@ -22,6 +22,7 @@
 #include <sys/systm.h>
 #include <sys/cpuset.h>
 #include <sys/epoch.h>
+#include <sys/hash.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
@@ -41,6 +42,10 @@
 #include <net/if_types.h>
 #include <net/netisr.h>
 #include <net/vnet.h>
+
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/ip6.h>
 
 #define	PAIR_NAME	"pair"
 #define	PAIR_MTU_DFLT	16384	/* lo(4)'s LOMTU; see commit af78195e0024 */
@@ -141,6 +146,9 @@ static struct {
 /* Atomic: creates in different vnets are not mutually serialized. */
 static u_int pair_next_defq;
 
+/* Random per-boot seed so flow-to-worker mapping is not guessable. */
+static uint32_t pair_hash_seed;
+
 VNET_DEFINE_STATIC(struct if_clone *, pair_cloner);
 #define	V_pair_cloner	VNET(pair_cloner)
 
@@ -167,6 +175,8 @@ pair_pool_init(const void *unused __unused)
 	 * The workers themselves are still pinned via cpuset; they
 	 * simply wait until their CPU comes online.
 	 */
+	pair_hash_seed = arc4random();
+
 	i = 0;
 	CPU_FOREACH(cpu) {
 		cpuset_t mask;
@@ -346,22 +356,107 @@ pair_task_deferred(void *arg, int pending __unused)
 }
 
 /*
+ * Software flow hash for packets that carry no flowid — which on
+ * non-RSS kernels is every packet of a purely pair-local connection:
+ * no NIC ever stamps one, so inp_flowid never gets learned (observed
+ * live: 8 iperf3 streams all riding the static fallback, serialized
+ * on one worker).  Hashes source/destination address, IP protocol
+ * and, when safely readable, the TCP/UDP port pair, via
+ * jenkins_hash32() with a random per-boot seed; same tuple -> same
+ * hash preserves per-flow ordering.  Fragments hash without ports so
+ * all fragments of a datagram land on one queue (the first fragment
+ * would otherwise part ways with the rest), as hardware RSS does.
+ * IPv6 extension-header chains are not walked: anything but plain
+ * TCP/UDP after the fixed header hashes on addresses and next-header
+ * alone.  Headers are read with m_copydata(), which handles split
+ * and unmapped (M_EXTPG) chains, so this adds no contiguity or
+ * mappedness assumptions.  Returns false for unhashable packets
+ * (too short, unknown family); the caller then uses the side's
+ * static default queue.
+ */
+static bool
+pair_hash_mbuf(struct mbuf *m, uint32_t af, uint32_t *hashp)
+{
+	uint32_t key[10];
+	uint16_t ports[2];
+	int nwords, poff;
+	uint8_t proto;
+	bool have_ports;
+
+	switch (af) {
+#ifdef INET
+	case AF_INET: {
+		struct ip ip;
+
+		if (m->m_pkthdr.len < (int)sizeof(ip))
+			return (false);
+		m_copydata(m, 0, sizeof(ip), (caddr_t)&ip);
+		poff = ip.ip_hl << 2;
+		if (poff < (int)sizeof(ip))
+			return (false);
+		key[0] = ip.ip_src.s_addr;
+		key[1] = ip.ip_dst.s_addr;
+		proto = ip.ip_p;
+		key[2] = proto;
+		nwords = 3;
+		have_ports = (ip.ip_off & htons(IP_MF | IP_OFFMASK)) == 0;
+		break;
+	}
+#endif
+#ifdef INET6
+	case AF_INET6: {
+		struct ip6_hdr ip6;
+
+		if (m->m_pkthdr.len < (int)sizeof(ip6))
+			return (false);
+		m_copydata(m, 0, sizeof(ip6), (caddr_t)&ip6);
+		memcpy(&key[0], &ip6.ip6_src, sizeof(ip6.ip6_src));
+		memcpy(&key[4], &ip6.ip6_dst, sizeof(ip6.ip6_dst));
+		proto = ip6.ip6_nxt;
+		key[8] = proto;
+		nwords = 9;
+		poff = sizeof(ip6);
+		have_ports = true;
+		break;
+	}
+#endif
+	default:
+		return (false);
+	}
+
+	if (have_ports && (proto == IPPROTO_TCP || proto == IPPROTO_UDP) &&
+	    m->m_pkthdr.len >= poff + (int)sizeof(ports)) {
+		m_copydata(m, poff, sizeof(ports), (caddr_t)ports);
+		key[nwords++] = (uint32_t)ports[0] << 16 | ports[1];
+	}
+
+	*hashp = jenkins_hash32(key, nwords, pair_hash_seed);
+	return (true);
+}
+
+/*
  * Pick the receiving side's queue.  Steer by the mbuf's flow id when
- * it carries one (locally originated TCP/UDP does: ip_output() stamps
- * inp_flowid, commit d4b5cae49bff documents the ordering policy this
- * feeds) so each flow stays on one worker; fall back to the side's
- * static assignment otherwise.  Finer-grained than epair on non-RSS
- * kernels, which funnels everything through a single queue.
+ * it carries one (commit d4b5cae49bff documents the ordering policy
+ * this feeds); otherwise compute one (see pair_hash_mbuf()) and write
+ * it back as M_HASHTYPE_OPAQUE_HASH ("has hash properties", mbuf(9))
+ * so the peer's stack and any further hop inherit it.  Only truly
+ * unhashable packets take the side's static default queue.  Same
+ * flow -> same worker always, preserving per-flow ordering.
  */
 static struct pair_queue *
-pair_select_queue(struct pair_softc *sc, struct mbuf *m)
+pair_select_queue(struct pair_softc *sc, struct mbuf *m, uint32_t af)
 {
-	uint32_t qid;
+	uint32_t hash, qid;
 
-	if (M_HASHTYPE_GET(m) != M_HASHTYPE_NONE)
+	if (M_HASHTYPE_GET(m) != M_HASHTYPE_NONE) {
 		qid = m->m_pkthdr.flowid % pair_tasks.pt_count;
-	else
+	} else if (pair_hash_mbuf(m, af, &hash)) {
+		m->m_pkthdr.flowid = hash;
+		M_HASHTYPE_SET(m, M_HASHTYPE_OPAQUE_HASH);
+		qid = hash % pair_tasks.pt_count;
+	} else {
 		qid = sc->sc_defqid;
+	}
 	return (&sc->sc_queues[qid]);
 }
 
@@ -473,7 +568,7 @@ pair_output(if_t ifp, struct mbuf *m, const struct sockaddr *dst,
 	/* Save before the queue owns the mbuf. */
 	len = m->m_pkthdr.len;
 
-	q = pair_select_queue(sc->sc_peer, m);
+	q = pair_select_queue(sc->sc_peer, m, af);
 	mtx_lock(&q->pq_mtx);
 	/* Wake and enqueue in one lock hold; see struct pair_queue. */
 	if (q->pq_state == PAIR_QUEUE_IDLE) {
