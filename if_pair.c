@@ -87,6 +87,16 @@ enum pair_side {
  * it.  Modeled on epair(4)'s struct epair_queue, including the
  * IDLE/WAKING/RUNNING state machine that avoids redundant task
  * enqueues.
+ *
+ * State machine invariant (lost-wakeup freedom): pq_state != IDLE
+ * implies pq_task is pending or running, so every enqueued packet is
+ * followed by a worker flush.  The invariant is maintained jointly by
+ * producer and worker, and both halves must happen under pq_mtx: the
+ * producer transitions IDLE->WAKING and enqueues the task in the same
+ * lock hold as its mbufq_enqueue(), and the worker re-checks queue
+ * emptiness under the lock before declaring IDLE.  Enqueueing the
+ * mbuf before the state check, or re-checking emptiness outside the
+ * lock, would silently strand packets on an idle queue.
  */
 #define	PAIR_QLIMIT	4096	/* epair's RXRSIZE */
 
@@ -121,10 +131,14 @@ struct pair_softc {
  * it unconditionally.
  */
 static struct {
-	int			 pt_count;
+	int			 pt_count;	/* >= 1: CPU_FOREACH yields at
+						   least the BSP; queue sizing
+						   and the steering modulo
+						   rely on it */
 	struct taskqueue	*pt_tq[MAXCPU];
 } pair_tasks;
 
+/* Atomic: creates in different vnets are not mutually serialized. */
 static u_int pair_next_defq;
 
 VNET_DEFINE_STATIC(struct if_clone *, pair_cloner);
@@ -314,6 +328,7 @@ pair_task_deferred(void *arg, int pending __unused)
 		m = n;
 	}
 
+	/* Emptiness re-check under the lock; see struct pair_queue. */
 	mtx_lock(&q->pq_mtx);
 	if (!mbufq_empty(&q->pq_q)) {
 		resched = true;
@@ -460,6 +475,7 @@ pair_output(if_t ifp, struct mbuf *m, const struct sockaddr *dst,
 
 	q = pair_select_queue(sc->sc_peer, m);
 	mtx_lock(&q->pq_mtx);
+	/* Wake and enqueue in one lock hold; see struct pair_queue. */
 	if (q->pq_state == PAIR_QUEUE_IDLE) {
 		q->pq_state = PAIR_QUEUE_WAKING;
 		taskqueue_enqueue(pair_tasks.pt_tq[q->pq_id], &q->pq_task);
@@ -611,9 +627,10 @@ pair_set_state(if_t ifp, bool running)
  * Publish one side.  if_attach() (see ifnet(9)) makes the interface
  * reachable by name and index, so the softc - in particular sc_peer,
  * which pair_output() dereferences without a NULL check - must be
- * fully initialized before this is called.  sc_peer is thereby write-once-before-publish and
- * immutable until pair_clone_destroy() has quiesced both sides, which
- * is what makes the lockless read in pair_output() safe.
+ * fully initialized before this is called.  sc_peer is thereby
+ * write-once-before-publish and immutable until pair_clone_destroy()
+ * has quiesced both sides, which is what makes the lockless read in
+ * pair_output() safe.
  */
 static void
 pair_attach_side(struct pair_softc *sc)
@@ -756,6 +773,16 @@ pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags __unused)
 	 * epair(4).  The partner is unlinked from the cloner list via a
 	 * nested if_clone_destroyif(), which re-enters here with the
 	 * softc already cleared: nothing left to do then.
+	 *
+	 * Serialization invariant: concurrent destroys of the two sides
+	 * are assumed serialized by our callers.  SIOCIFDESTROY and
+	 * vnet teardown both hold ifnet_detach_sxlock exclusively; the
+	 * module-unload path (if_clone_detach()) has not been verified
+	 * to take it, so a kldunload racing an ifconfig destroy is a
+	 * theoretical double teardown - an exposure shared with
+	 * epair(4), whose destroy makes the same assumption.  The
+	 * panic() below on nested-destroy failure is "cannot happen"
+	 * only under this assumption.
 	 */
 	sc = if_getsoftc(ifp);
 	if (sc == NULL)
