@@ -1,0 +1,124 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.Dd August 14, 2026
+.Dt IF_PAIR 4
+.Os
+.Sh NAME
+.Nm if_pair
+.Nd pair of cross-connected point-to-point layer-3 interfaces
+.Sh SYNOPSIS
+To load the driver as a module at boot time, place the following line in
+.Xr loader.conf 5 :
+.Bd -literal -offset indent
+if_pair_load="YES"
+.Ed
+.Sh DESCRIPTION
+The
+.Nm
+driver provides pairs of point-to-point interfaces that are
+cross-connected: a packet transmitted on one interface is received by
+its peer.
+Like
+.Xr epair 4 ,
+one side of a pair can be moved into a
+.Xr VNET 9
+jail to connect it to the host or to another jail.
+Unlike
+.Xr epair 4 ,
+no Ethernet layer is emulated: the interfaces are
+.Dv IFF_POINTOPOINT
+and carry bare IPv4 and IPv6 packets, so there are no link-layer
+headers, no ARP or NDP neighbor resolution and none of the associated
+overhead.
+Traffic between the two sides is handed directly to the peer's protocol
+input path.
+.Pp
+As a consequence of this queueless design,
+.Xr altq 4
+is intentionally not supported:
+.Nm
+has no transmit queue for
+.Xr altq 4
+to manage, trading queue-based shaping support for lower latency and
+lock-free operation on the transmit path.
+Traffic between the two sides of a pair can instead be shaped with
+.Xr dummynet 4 ,
+which operates independently of driver transmit queues.
+.Pp
+Pairs are created with
+.Xr ifconfig 8 :
+.Bd -literal -offset indent
+ifconfig pair create
+.Ed
+.Pp
+This creates the two interfaces
+.Dq Li pair0a
+and
+.Dq Li pair0b .
+Destroying the
+.Dq a
+side destroys both halves of the pair; the
+.Dq b
+side cannot be destroyed on its own.
+.Pp
+Addresses are configured as on any point-to-point interface,
+for example:
+.Bd -literal -offset indent
+ifconfig pair0a inet 192.0.2.1/31
+ifconfig pair0b vnet myjail
+jexec myjail ifconfig pair0b inet 192.0.2.0/31
+.Ed
+.Pp
+The default MTU is 16384.
+.Sh MTU CONFIGURATION
+The large default MTU reduces per-packet overhead for traffic between
+the two ends of a pair, which never leaves the machine.
+Values between 72 and 65535 are accepted; both sides of a pair should
+be configured to the same MTU.
+.Pp
+Traffic routed onward through a link with a smaller MTU, such as a
+physical Ethernet interface, is subject to the usual mechanisms:
+TCP connections are sized by the MSS exchange, packets exceeding the
+egress link are fragmented or rejected with an ICMP error as required
+of routers by RFC 1812 (sections 4.2.2.7 and 5.2.7.1), and path MTU
+discovery between a jail and the host is dependable: both ends of a
+pair share one machine, so any middlebox interfering with the ICMP
+messages it relies on was put there by the local administrator, who
+will find its operator unusually easy to reach.
+.Pp
+To bound the packet size of forwarded traffic while retaining the
+large MTU between the two ends of a pair, set an MTU on the routes
+that lead beyond the host instead of on the interface, using the
+.Fl mtu
+route modifier documented in
+.Xr route 8 .
+For example, a jail whose default route crosses a
+.Nm
+interface can clamp all forwarded traffic to 1500 bytes:
+.Bd -literal -offset indent
+route change default -mtu 1500
+route change -inet6 default -mtu 1500
+.Ed
+.Pp
+Traffic to directly connected destinations, including the other end of
+the pair, continues to use the interface MTU.
+Alternatively, lowering the interface MTU on both sides bounds all
+traffic, including that between the two ends of the pair.
+.Sh SEE ALSO
+.Xr altq 4 ,
+.Xr dummynet 4 ,
+.Xr epair 4 ,
+.Xr lo 4 ,
+.Xr ifconfig 8 ,
+.Xr jail 8 ,
+.Xr route 8 ,
+.Xr VNET 9
+.Rs
+.%A F. Baker
+.%T Requirements for IP Version 4 Routers
+.%R RFC 1812
+.%D June 1995
+.Re
+.Sh AUTHORS
+.An -nosplit
+This driver and manual page were written by
+.An Jan Bramkamp Aq Mt crest+freebsd@rlwinm.de .

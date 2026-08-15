@@ -1,0 +1,11 @@
+# bsd.kmod.mk build products
+*.o
+*.ko
+*.ko.debug
+*.ko.full
+.depend*
+export_syms
+machine
+x86
+i386
+opt_*.h

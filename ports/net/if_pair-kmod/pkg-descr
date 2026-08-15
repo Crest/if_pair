@@ -1,0 +1,12 @@
+if_pair provides pairs of cross-connected point-to-point layer-3
+interfaces (pairNa/pairNb) for IPv4 and IPv6 connectivity between vnet
+jails, or between the jail host and vnet jails.
+
+Unlike epair(4), no Ethernet layer is emulated: there are no MAC
+addresses, no ARP/NDP neighbor discovery and no link-layer headers.  A
+packet transmitted on one side is handed directly to the peer's
+protocol input path in the peer's vnet, with TCP/UDP checksum
+computation elided for traffic that never leaves the machine.
+
+Load with: kldload if_pair
+Create with: ifconfig pair create
