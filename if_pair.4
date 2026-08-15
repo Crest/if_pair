@@ -1,5 +1,5 @@
 .\" SPDX-License-Identifier: BSD-2-Clause
-.Dd August 14, 2026
+.Dd August 15, 2026
 .Dt IF_PAIR 4
 .Os
 .Sh NAME
@@ -10,6 +10,11 @@ To load the driver as a module at boot time, place the following line in
 .Xr loader.conf 5 :
 .Bd -literal -offset indent
 if_pair_load="YES"
+.Ed
+.Pp
+Alternatively, to load the driver at runtime:
+.Bd -literal -offset indent
+kldload if_pair
 .Ed
 .Sh DESCRIPTION
 The
@@ -29,17 +34,21 @@ no Ethernet layer is emulated: the interfaces are
 and carry bare IPv4 and IPv6 packets, so there are no link-layer
 headers, no ARP or NDP neighbor resolution and none of the associated
 overhead.
-Traffic between the two sides is handed directly to the peer's protocol
-input path.
+Traffic between the two sides is delivered into the peer's protocol
+input path by a pool of kernel worker threads, one pinned to each CPU
+and shared by all pairs.
+Packets are distributed over the workers by a flow hash covering the
+source and destination address, the IP protocol and, where applicable,
+the TCP or UDP ports, so concurrent flows spread across CPUs while
+packets of any one flow are delivered in order.
 .Pp
-As a consequence of this queueless design,
 .Xr altq 4
-is intentionally not supported:
+is not supported:
 .Nm
-has no transmit queue for
+delivers through its internal per-CPU queues and has no interface
+transmit queue for
 .Xr altq 4
-to manage, trading queue-based shaping support for lower latency and
-lock-free operation on the transmit path.
+to manage.
 Traffic between the two sides of a pair can instead be shaped with
 .Xr dummynet 4 ,
 which operates independently of driver transmit queues.
@@ -65,6 +74,24 @@ jexec myjail ifconfig pair0b inet 192.0.2.0/31
 .Ed
 .Pp
 The default MTU is 16384.
+.Pp
+Both sides of a pair are members of the interface group
+.Dq Li pair ,
+so packet filter rules can match all pairs at once, for example
+.Dq Li on pair
+in
+.Xr pf.conf 5 .
+.Pp
+The interfaces report link state: up while the pair exists and is
+running, down as the first step of its destruction.
+.Pp
+Transmit checksum offloading
+.Pq Cm txcsum , txcsum6
+is enabled by default: TCP and UDP checksums of traffic that stays
+within the machine are never computed at all, and for traffic
+forwarded onward they are computed once at the true egress.
+The offloads can be disabled per side with
+.Xr ifconfig 8 .
 .Sh MTU CONFIGURATION
 The large default MTU reduces per-packet overhead for traffic between
 the two ends of a pair, which never leaves the machine.
@@ -99,12 +126,84 @@ Traffic to directly connected destinations, including the other end of
 the pair, continues to use the interface MTU.
 Alternatively, lowering the interface MTU on both sides bounds all
 traffic, including that between the two ends of the pair.
+.Sh EXAMPLES
+Connect a new vnet jail to the host and give it a default route
+through the pair:
+.Bd -literal -offset indent
+kldload if_pair
+ifconfig pair create
+jail -c name=demo vnet persist
+ifconfig pair0b vnet demo
+ifconfig pair0a inet 192.0.2.1/31
+jexec demo ifconfig pair0b inet 192.0.2.0/31
+jexec demo route add default 192.0.2.1
+.Ed
+.Pp
+Verify connectivity in both directions:
+.Bd -literal -offset indent
+ping -c 3 192.0.2.0
+jexec demo ping -c 3 192.0.2.1
+.Ed
+.Pp
+For the jail to reach beyond the host, enable forwarding
+.Pq Va net.inet.ip.forwarding
+and add address translation or routes for the jail's addresses on the
+host as appropriate.
+Tear everything down again:
+.Bd -literal -offset indent
+ifconfig pair0a destroy
+jail -r demo
+.Ed
+.Sh DIAGNOSTICS
+Interface counters, shown by
+.Xr netstat 1
+with the
+.Fl id
+flags, have the following driver-specific meanings:
+.Bl -tag -width "Oqdrops"
+.It Ierrs
+Received packets that were not parseable as IPv4 or IPv6, for example
+malformed packets injected through
+.Xr bpf 4 .
+.It Oerrs
+Packets dropped on transmit because the other side of the pair was
+down.
+.It Oqdrops
+Packets dropped because the receiving side's queue was full, i.e. the
+peer's worker could not keep up with the offered load.
+.El
+.Pp
+.Xr tcpdump 1
+works on both sides of a pair and shows bare IP packets.
+It will report TCP and UDP checksums as incorrect whenever transmit
+checksum offloading is enabled; this is the normal appearance of
+offloaded checksums and not an error.
+.Pp
+The delivery workers are visible as kernel threads named
+.Dq Li pair_task_ Ns Ar N
+in
+.Xr top 1 .
+A single flow is served by a single worker by design; one busy worker
+next to idle CPUs is the expected picture for a single high-volume
+connection.
+.Pp
+If traffic forwarded from a pair undergoes address or port rewriting
+on the host and is emitted with invalid checksums, the cause is
+typically the in-kernel NAT incompatibility described in the
+.Sx BUGS
+section.
 .Sh SEE ALSO
+.Xr netstat 1 ,
+.Xr tcpdump 1 ,
+.Xr top 1 ,
 .Xr altq 4 ,
+.Xr bpf 4 ,
 .Xr dummynet 4 ,
 .Xr epair 4 ,
 .Xr lo 4 ,
+.Xr pf.conf 5 ,
 .Xr ifconfig 8 ,
+.Xr ipfw 8 ,
 .Xr jail 8 ,
 .Xr route 8 ,
 .Xr VNET 9
@@ -114,7 +213,40 @@ traffic, including that between the two ends of the pair.
 .%R RFC 1812
 .%D June 1995
 .Re
+.Sh HISTORY
+The
+.Nm
+driver first appeared as an out-of-tree module for
+.Fx 15.0 .
 .Sh AUTHORS
 .An -nosplit
 This driver and manual page were written by
 .An Jan Bramkamp Aq Mt crest+freebsd@rlwinm.de .
+.Sh BUGS
+The in-kernel NAT facilities based on
+.Xr libalias 3 ,
+that is the
+.Cm nat
+action of
+.Xr ipfw 8
+and
+.Xr ng_nat 4 ,
+do not repair delayed transmit checksums on packets received from
+another interface: their repair logic assumes that a packet with a
+pending checksum was generated locally.
+Traffic forwarded from an
+.Nm
+interface with transmit checksum offloading enabled is therefore
+emitted with invalid TCP and UDP checksums after passing through such
+NAT.
+.Xr epair 4
+is affected in the same way.
+.Xr natd 8
+operating on a
+.Xr divert 4
+socket is not affected: diverted packets have their checksums
+completed before they reach the socket.
+As a workaround, disable transmit checksum offloading on the pair:
+.Bd -literal -offset indent
+ifconfig pair0a -txcsum -txcsum6
+.Ed
