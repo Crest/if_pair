@@ -20,6 +20,7 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/cpuset.h>
 #include <sys/epoch.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
@@ -27,6 +28,7 @@
 #include <sys/mbuf.h>
 #include <sys/module.h>
 #include <sys/mutex.h>
+#include <sys/queue.h>
 #include <sys/smp.h>
 #include <sys/socket.h>
 #include <sys/sockio.h>
