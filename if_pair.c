@@ -310,9 +310,18 @@ pair_alloc_side(int unit, enum pair_side side)
 	sc->sc_ifp = ifp;
 	if_setsoftc(ifp, sc);
 
+	/*
+	 * if_dname must remain the bare cloner name ("pair"):
+	 * if_clone_destroy() resolves the owning cloner via
+	 * ifc_find_cloner_in_vnet(ifp->if_dname, ...), so a full
+	 * "pairNa" there makes every destroy fail with EINVAL (found
+	 * in VM testing).  Only if_xname carries the full name, as
+	 * epair(4) does.
+	 */
+	if_initname(ifp, pairname, IF_DUNIT_NONE);
 	snprintf(name, sizeof(name), "%s%d%c", pairname, unit,
 	    side == PAIR_SIDE_A ? 'a' : 'b');
-	if_initname(ifp, name, IF_DUNIT_NONE);
+	if_setname(ifp, name);
 
 	if_setflags(ifp, IFF_POINTOPOINT | IFF_MULTICAST);
 	if_setmtu(ifp, PAIR_MTU_DFLT);
@@ -345,12 +354,12 @@ pair_attach_side(struct pair_softc *sc)
 }
 
 /*
- * Detach and free one side.  The caller must already have quiesced the
- * pair (both sides !IFF_DRV_RUNNING, followed by a NET_EPOCH_WAIT()):
- * from that point on no transmit path can reach either softc.
+ * Detach one side.  The caller must already have quiesced the pair
+ * (both sides !IFF_DRV_RUNNING, followed by a NET_EPOCH_WAIT()): from
+ * that point on no transmit path can reach either softc.
  */
 static void
-pair_free_side(struct pair_softc *sc)
+pair_detach_side(struct pair_softc *sc)
 {
 	if_t ifp = sc->sc_ifp;
 
@@ -361,8 +370,12 @@ pair_free_side(struct pair_softc *sc)
 	bpfdetach(ifp);
 	if_detach(ifp);
 	CURVNET_RESTORE();
+}
 
-	if_free(ifp);
+static void
+pair_free_side(struct pair_softc *sc)
+{
+	if_free(sc->sc_ifp);
 	free(sc, M_PAIR);
 }
 
@@ -406,6 +419,15 @@ pair_clone_create(struct if_clone *ifc, char *name, size_t len,
 	pair_attach_side(sca);
 	pair_attach_side(scb);
 
+	/*
+	 * The framework links only the returned ifp ('a') into the
+	 * cloner list and the "pair" interface group; the 'b' side must
+	 * be linked explicitly, as epair(4) does, or destroying by its
+	 * name fails with ENXIO (found in VM testing) and pf/ipfw
+	 * group rules ("on pair") miss it.
+	 */
+	if_clone_addif(ifc, scb->sc_ifp);
+
 	/* Report the 'a' side back as the created interface. */
 	snprintf(name, len, "%s%da", pairname, unit);
 	*ifpp = sca->sc_ifp;
@@ -414,24 +436,24 @@ pair_clone_create(struct if_clone *ifc, char *name, size_t len,
 }
 
 static int
-pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags)
+pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags __unused)
 {
-	struct pair_softc *sc, *sca, *scb;
-	int unit;
-
-	sc = if_getsoftc(ifp);
+	struct pair_softc *sc, *sca, *scb, *other;
+	int error, unit;
 
 	/*
-	 * As with epair(4), only the 'a' side may be destroyed directly;
-	 * both sides go away together.  IFC_F_FORCE covers vnet teardown,
-	 * where the kernel may destroy whichever side lives in the dying
-	 * vnet.
+	 * Destroying either side destroys both, as with modern
+	 * epair(4).  The partner is unlinked from the cloner list via a
+	 * nested if_clone_destroyif(), which re-enters here with the
+	 * softc already cleared: nothing left to do then.
 	 */
-	if (sc->sc_side == PAIR_SIDE_B && (flags & IFC_F_FORCE) == 0)
-		return (EINVAL);
+	sc = if_getsoftc(ifp);
+	if (sc == NULL)
+		return (0);
 
 	sca = (sc->sc_side == PAIR_SIDE_A) ? sc : sc->sc_peer;
 	scb = sca->sc_peer;
+	other = (sc == sca) ? scb : sca;
 	unit = sca->sc_unit;
 
 	/*
@@ -448,6 +470,19 @@ pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags)
 	if_setdrvflagbits(sca->sc_ifp, 0, IFF_DRV_RUNNING);
 	if_setdrvflagbits(scb->sc_ifp, 0, IFF_DRV_RUNNING);
 	NET_EPOCH_WAIT();
+
+	pair_detach_side(scb);
+	pair_detach_side(sca);
+
+	/*
+	 * Unlink the partner from the cloner list; its nested
+	 * destroy_f call sees the cleared softc and does nothing.
+	 */
+	if_setsoftc(other->sc_ifp, NULL);
+	error = if_clone_destroyif(ifc, other->sc_ifp);
+	if (error != 0)
+		panic("%s: nested if_clone_destroyif() failed: %d",
+		    __func__, error);
 
 	pair_free_side(scb);
 	pair_free_side(sca);

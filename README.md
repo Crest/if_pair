@@ -110,7 +110,7 @@ packets with no Ethernet clutter:
 tcpdump -n -i pair0a
 ```
 
-Cleanup is one command — destroying the `a` side removes both ends:
+Cleanup is one command — destroying either side removes both ends:
 
 ```sh
 ifconfig pair0a destroy

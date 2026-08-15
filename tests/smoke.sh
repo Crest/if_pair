@@ -47,11 +47,16 @@ jexec ${JAIL_A} ping -c 3 -t 5 192.0.2.0 || fail=1
 echo "--- IPv6 ping"
 jexec ${JAIL_A} ping -6 -c 3 -t 5 2001:db8:: || fail=1
 
-# Destroying the 'b' side directly must be refused.
-echo "--- destroy of b side must fail"
-if jexec ${JAIL_B} ifconfig "${side_b}" destroy 2>/dev/null; then
-	echo "ERROR: destroying ${side_b} unexpectedly succeeded" >&2
+# Destroying either side removes both halves; exercise the 'b' path.
+echo "--- destroy via b side must remove both halves"
+if ! jexec ${JAIL_B} ifconfig "${side_b}" destroy; then
+	echo "ERROR: destroying ${side_b} failed" >&2
 	fail=1
+elif jexec ${JAIL_A} ifconfig "${side_a}" >/dev/null 2>&1; then
+	echo "ERROR: ${side_a} still exists after destroying ${side_b}" >&2
+	fail=1
+else
+	PAIR=""	# pair is gone; nothing for the cleanup trap to destroy
 fi
 
 if [ ${fail} -eq 0 ]; then

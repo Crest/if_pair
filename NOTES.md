@@ -156,6 +156,48 @@ into the peer's stack for performance, misreading `lo(4)`'s
 always-queue behavior as legacy rather than load-bearing. Fixed by
 unconditionally queueing (this section describes the corrected
 design).
+
+#### Runtime test log
+
+- 2026-08-14, NAS: ping OK; iperf3 panicked (see postmortem above).
+- 2026-08-15, VM: always-queue design survives iperf3 with 1-30
+  parallel connections. Found: `ifconfig pair0a destroy` returned
+  `EINVAL` — `if_clone_destroy()` resolves the owning cloner via
+  `ifp->if_dname` (`ifc_find_cloner_in_vnet()`), and we had set
+  `if_dname` to the full "pairNa". Fixed by keeping `if_dname` =
+  "pair" and putting the full name only in `if_xname`
+  (`if_setname()`), as epair does (`if_epair.c:625-626`).
+- 2026-08-15, VM (continued): destroy via `pair0b` failed with ENXIO —
+  only the create-returned `a` ifp is linked into the cloner list (and
+  the `pair` interface group!) by the framework; the `b` side needs an
+  explicit `if_clone_addif()`, as epair does (`epair_clone_add()`).
+  Fixed, and adopted modern epair's either-side destroy semantics
+  (nested `if_clone_destroyif()` for the partner with a cleared-softc
+  recursion guard) — the man page's old claim that b-side refusal
+  matched epair was stale lore. Bonus fix: `b` sides are now actually
+  in interface group `pair`, so `on pair` firewall rules see them.
+  Retest: destroy confirmed working from either side.
+- 2026-08-15, VM: destroy-under-load PASSED — pair side destroyed
+  inside the iperf3 server jail while `iperf3 -c ... -P 4` ran from
+  the peer jail; no panic. First live exercise of the quiesce
+  protocol (both-sides-down + `NET_EPOCH_WAIT()`) against in-flight
+  bidirectional transmitters, and of netisr's `m_rcvif_restore()`
+  drop path for packets queued at destroy time.
+- 2026-08-15, VM: `kldunload if_pair` during `iperf3 -P 4` at
+  ~100 Gb/s between the jails PASSED — module-unload teardown
+  (`VNET_SYSUNINIT` → `if_clone_detach` walking a list holding both
+  siblings per pair, nested-destroy recursion guard) destroyed both
+  interfaces cleanly under load; iperf3 fell to zero, both sides
+  vanished from the jails. The ~100 Gb/s figure (VM on a laptop,
+  16384 MTU, hot caches) is an observation, not a benchmark, but
+  shows the always-queue datapath is not a bottleneck at these
+  rates.
+- 2026-08-15, VM: interface moved OUT of a jail back to the host
+  (manual `if_vmove` — the same path `vnet_if_return` takes on jail
+  death), IPv4 config reapplied (addresses are stripped on any vnet
+  move; standard behavior), then host-to-jail iperf3 PASSED — first
+  host↔jail traffic validation, and confirms a pair migrates between
+  vnets with no driver-side fixup needed.
 - **Checksum elision**: the interfaces advertise TX/RX checksum offload
   for TCP/UDP over IPv4 and IPv6 (toggleable via `ifconfig ...
   [-]txcsum`) — the exact same `if_hwassist` set as `epair(4)`.
@@ -196,8 +238,11 @@ design).
   software verification.
 - **pf**: needs no special driver support (verified against
   `sys/netpfil/pf` in 15.0). pf attaches to interfaces generically via
-  pfil/pfi hooks; cloned pairs automatically join interface group
-  `pair` for `on pair` rules. pf's NAT/rewrite helpers detect pending
+  pfil/pfi hooks; both sides of a pair are in interface group `pair`
+  for `on pair` rules (the `a` side automatically via the cloner
+  framework, the `b` side via our explicit `if_clone_addif()` — until
+  the 2026-08-15 fix the `b` side was in no group and `on pair` rules
+  silently missed it). pf's NAT/rewrite helpers detect pending
   checksums (`CSUM_DELAY_DATA*`) and adapt instead of corrupting them,
   and `pf_route`/`pf_route6` (route-to) perform the same
   hwassist-aware checksum completion as `ip_output()`, including SCTP.
