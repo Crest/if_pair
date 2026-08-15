@@ -10,9 +10,9 @@ To load it at boot, add to /boot/loader.conf:
   if_pair_load="YES"
 
 Create a pair with `ifconfig pair create`; see if_pair(4) for details,
-including the MTU CONFIGURATION section.  Developer notes — including
+including the MTU CONFIGURATION section.  Developer notes - including
 a checksum-offload interaction with in-kernel NAT (ipfw nat/ng_nat)
-and its workaround — are in NOTES.md installed with the package
+and its workaround - are in NOTES.md installed with the package
 documentation (share/doc/if_pair).
 EOM
 }

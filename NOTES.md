@@ -1,4 +1,4 @@
-# if_pair — developer notes
+# if_pair - developer notes
 
 This file is the **developer documentation** for if_pair: design
 rationale, the verified claims about kernel behavior the driver
@@ -15,7 +15,7 @@ connecting vnet jails to each other or to the jail host.
 
 `epair(4)` emulates a full Ethernet link: each side has a MAC address,
 frames get Ethernet headers, and address resolution runs ARP (IPv4) or
-NDP (IPv6). For the common case — routed IP traffic between two vnets —
+NDP (IPv6). For the common case - routed IP traffic between two vnets -
 all of that is overhead and complexity with no benefit.
 
 `if_pair` instead creates two `IFF_POINTOPOINT` interfaces (`pairNa` and
@@ -33,14 +33,13 @@ all of that is overhead and complexity with no benefit.
 ```sh
 kldload ./if_pair.ko
 ifconfig pair create                     # -> pair0a + pair0b
-ifconfig pair0a inet 192.0.2.1/31
+ifconfig pair0a inet 192.0.2.1/32 192.0.2.2
 ifconfig pair0b vnet myjail
-jexec myjail ifconfig pair0b inet 192.0.2.0/31
+jexec myjail ifconfig pair0b inet 192.0.2.2/32 192.0.2.1
 ```
 
-Destroying `pair0a` destroys both halves. The `b` side cannot be
-destroyed directly (matching `epair(4)` semantics); vnet teardown may
-destroy either side via `IFC_F_FORCE`.
+Destroying either side destroys both halves, as with modern
+`epair(4)`.
 
 ## Building
 
@@ -76,19 +75,22 @@ Port builds (`ports/net/if_pair-kmod`) stage everything in their own
 
 ## Layout
 
-- `README.md` — user-facing introduction and quick start.
-- `Makefile` — standard `bsd.kmod.mk` out-of-tree module build.
-- `if_pair.c` — the driver.
-- `if_pair.4` — man page (`man ./if_pair.4` to preview).
-- `tests/smoke.sh` — root-only smoke test using two vnet jails
+- `README.md` - user-facing introduction and quick start.
+- `Makefile` - standard `bsd.kmod.mk` out-of-tree module build.
+- `if_pair.c` - the driver.
+- `if_pair.4` - man page (`man ./if_pair.4` to preview).
+- `tests/smoke.sh` - root-only smoke test using two vnet jails
   (IPv4 + IPv6 ping across the pair).
-- `LICENSE` — BSD-2-Clause.
-- `ports/net/if_pair-kmod/` — FreeBSD port skeleton (see Roadmap).
+- `example-jail.conf` - working jail.conf(5) reference for a pair
+  between two vnet jails; the authoritative example of the
+  point-to-point addressing syntax (local/32 + peer destination).
+- `LICENSE` - BSD-2-Clause.
+- `ports/net/if_pair-kmod/` - FreeBSD port skeleton (see Roadmap).
 
 ## Roadmap
 
 1. **FreeBSD port** (`net/if_pair-kmod`): the skeleton in `ports/` is
-   ready except for distribution — it needs a public repository or
+   ready except for distribution - it needs a public repository or
    release tarball (`USE_GITHUB`/`MASTER_SITES` + `make makesum`), a
    `WWW` line, and a `poudriere testport` run. Style: `portlint -AC`.
 2. **Eventually, maybe, base system inclusion**: the driver is written
@@ -98,30 +100,30 @@ Port builds (`ports/net/if_pair-kmod`) stage everything in their own
    convert `tests/` to ATF (`tests/sys/net/` conventions, like
    `if_epair` tests), and resolve the two upstream interactions
    documented below (libalias NAT repair gate; `divert_packet()` and
-   `CSUM_IP`) — ideally by landing those fixes independently, since
+   `CSUM_IP`) - ideally by landing those fixes independently, since
    they affect `epair(4)` today.
 
 ## Design notes / status
 
 The driver uses the modern opaque-`ifnet` accessor API (`if_t`,
 `if_get*`/`if_set*`) and the `ifc_attach_cloner()` cloner interface, both
-required/current on FreeBSD 14+ — modeled on `epair(4)` and `gif(4)`.
+required/current on FreeBSD 14+ - modeled on `epair(4)` and `gif(4)`.
 
 ### Performance / delivery design
 
 Every transmitted packet is enqueued onto the receiving side's
-`mbufq` (one per pool worker, guarded by a per-queue mutex — the
-driver's only locks) and delivered by a pinned worker — **never
+`mbufq` (one per pool worker, guarded by a per-queue mutex - the
+driver's only locks) and delivered by a pinned worker - **never
 inline**, regardless of `net.isr.dispatch`. The workers hand packets
 to `netisr_dispatch()`, which with the default direct policy runs the
 input path right there in the worker; netisr's own queues and threads
 are involved only if the admin selects deferred dispatch. (netisr
 itself, despite its per-CPU workstream architecture, ships as a
-single *unpinned* thread — `net.isr.maxthreads=1`,
-`net.isr.bindthreads=0` — which is why the driver brings its own
+single *unpinned* thread - `net.isr.maxthreads=1`,
+`net.isr.bindthreads=0` - which is why the driver brings its own
 pool rather than leaning on it.)
 
-- **Why queueing is mandatory, not a choice** (learned the hard way —
+- **Why queueing is mandatory, not a choice** (learned the hard way -
   see the postmortem below): inline dispatch runs the peer's entire
   input path nested inside the sender's call chain. For TCP between
   two local sockets that chain loops back: the sender's
@@ -131,7 +133,7 @@ pool rather than leaning on it.)
   non-recursive mutex"; on production kernels the ownership KASSERT
   is compiled out, the mutex silently recurses, and the nested ACK
   processing mutates the connection under the suspended outer
-  `tcp_output()`, corrupting its send-buffer snapshot — a delayed
+  `tcp_output()`, corrupting its send-buffer snapshot - a delayed
   crash. This is why `lo(4)` has always used `netisr_queue()`
   (`if_loop.c`: "mbuf is free'd on failure") and part of why
   `epair(4)` decouples transmit from receive with its own queues
@@ -144,20 +146,20 @@ pool rather than leaning on it.)
   (`PAIR_QLIMIT` 4096, epair's `RXRSIZE`), with epair's
   IDLE/WAKING/RUNNING state machine and its flush-once-per-run
   anti-starvation guard. Steering: by mbuf `flowid` when present
-  (locally originated TCP/UDP carries one — `ip_output()` stamps
+  (locally originated TCP/UDP carries one - `ip_output()` stamps
   `inp_flowid`), falling back to a per-side round-robin static
   assignment. Three deliberate improvements over epair: (1) epair has
-  the per-CPU pinned pool **only on RSS kernels** — on GENERIC it runs
+  the per-CPU pinned pool **only on RSS kernels** - on GENERIC it runs
   a single unpinned worker (a fact discovered late; earlier versions
   of these notes wrongly credited GENERIC epair with per-CPU
   spreading); we pin unconditionally. (2) per-flow steering on
   GENERIC, where epair collapses to one queue. (3) pool lifecycle in
-  `SYSINIT/SYSUNINIT(SI_SUB_TASKQ)` instead of `MOD_UNLOAD` —
+  `SYSINIT/SYSUNINIT(SI_SUB_TASKQ)` instead of `MOD_UNLOAD` -
   `kern_linker.c` fires module events *before* file SYSUNINITs, so
   epair frees its pool while its cloner (and any live pairs) still
   exist; our ordering keeps the pool alive until after cloner
   teardown. Also unlike epair: no `sched_bind()` of the loading
-  thread for NUMA locality — with the module preloaded from
+  thread for NUMA locality - with the module preloaded from
   loader.conf, SYSINITs run before `SI_SUB_SMP` releases the APs and
   binding to an offline CPU hangs the boot. `net.isr` tuning is now
   irrelevant to if_pair (netisr is only involved if the admin sets
@@ -179,7 +181,7 @@ on input, `virtio_net_tx_offload()` passing TSO frames whole);
 `if_vxlan.c` for `if_hw_tsomax` arithmetic. Archaeology: lo(4) never
 attempted TSO (`git log -S TSO -- if_loop.c` is empty; its perf work
 ended with `3cb73e3d8bda`, the 2009 checksum-avoidance commit,
-+37%/+74% measured) — absence of attempts, not a known dead end; the
++37%/+74% measured) - absence of attempts, not a known dead end; the
 technique's only in-tree outing (tap, for bhyve) shipped and works.
 Open homework before implementing: behavior of a forwarded
 `CSUM_TSO` frame reaching a non-TSO egress, and the LRO/checksum-flag
@@ -188,13 +190,13 @@ measurement first: `mtu 65535` on both sides approximates
 deliver-whole TSO for pair-local TCP; benchmark against 16384 before
 building anything. Working hypothesis (and the likely reason lo(4)
 never needed TSO): 16K already amortizes per-traversal costs ~11x,
-and the remaining loopback-style cost is per-byte — the two socket
-copies — which no segment size touches; loopback could also always
+and the remaining loopback-style cost is per-byte - the two socket
+copies - which no segment size touches; loopback could also always
 raise its MTU freely (no transit, so none of TSO's scoping advantage
 applies there).
 
 **MEASURED 2026-08-15 (VM): 64K MTU 89.5 Gbit/s vs 16K MTU
-86.2 Gbit/s — +3.8% for 4x fewer traversals. Hypothesis confirmed;
+86.2 Gbit/s - +3.8% for 4x fewer traversals. Hypothesis confirmed;
 per-byte costs dominate beyond 16K. TSO/LRO emulation is PARKED: its
 ceiling for pair-local TCP is this ~4%, which does not justify the
 forwarded-CSUM_TSO verification burden and new code. The 16384
@@ -206,7 +208,7 @@ same-machine traffic.**
 Benchmarking note (2026-08-15): an apparent directional throughput
 asymmetry turned out to be an iperf3 `--bidir` artifact (both
 directions share one client process; its CPU saturation throttles
-unevenly) — use two separate unidirectional runs or two independent
+unevenly) - use two separate unidirectional runs or two independent
 client/server pairs. For the record, the driver's one real per-side
 asymmetry is `sc_defqid` (flowid-less traffic serializes onto a
 different pinned worker per side); a software flow-hash fallback that
@@ -216,13 +218,99 @@ remains unimplemented for lack of a demonstrated need.
 Pool observability capture (2026-08-15, VM, `top -SHPaziocpu` during
 `iperf3 -P 8`): pinning and worker visibility confirmed
 (`pair_task_N` threads of proc 0, bound to their CPUs). Finding: only
-TWO workers active for 8 flows — pair-local connections never acquire
+TWO workers active for 8 flows - pair-local connections never acquire
 an `inp_flowid` on non-RSS systems (no NIC ever stamps one), so ALL
 traffic takes the per-side `sc_defqid` static fallback. The
 client-side worker saturates at ~100% (ACK delivery drives the
 senders' tcp_output() in that worker, serializing all flows' transmit
-processing) while five CPUs idle — the demonstrated need for the
+processing) while five CPUs idle - the demonstrated need for the
 previously parked software flow-hash steering fallback.
+**Implemented same day**: `pair_hash_mbuf()` - jenkins_hash32 over
+src/dst address, IP protocol and (when safely readable) TCP/UDP
+ports, random per-boot seed, for both address families; fragments
+hash without ports (all fragments of a datagram stay on one queue);
+IPv6 extension chains are not walked (L3-only hash then); headers
+read via `m_copydata()` (no contiguity/mappedness assumptions -
+handles M_EXTPG); result written back as `M_HASHTYPE_OPAQUE_HASH` so
+the peer stack and further hops inherit it; unhashable packets take
+the static default queue. Retest criterion: the same `-P 8` run
+should light up (up to) 8 `pair_task_N` threads in `top -SHPaziocpu`
+and lift the single-worker throughput ceiling.
+
+**Retested 2026-08-15 - flow hashing works:**
+
+- `-P 8`: **128 Gbit/s** (up from ~86), six distinct workers active at
+  28-48% (8 flows over 8 buckets: E[distinct] = 8(1-(7/8)^8) ~ 5.2 -
+  birthday math, observed 6), all 8 CPUs ~100% system, zero idle: the
+  VM is now machine-saturated, not worker-serialized.
+- Single flow: 60 Gbit/s typical, occasional ~42. Capture shows the
+  bottleneck is the *server iperf3 thread* at 100% (soreceive copyout
+  - the per-byte cost that owns this workload), with the sole active
+  worker at only 54%: the driver is not the limiter.
+- **Emergent finding - direction convergence**: only ONE worker
+  serves both directions of a connection. The hash writeback is
+  learned by the receiving TCP (`inp_flowid` from our
+  `M_HASHTYPE_OPAQUE_HASH`), so its ACKs return carrying the SAME
+  flowid; both directions then map to the same queue index = same
+  pinned worker. Not designed, but desirable: one worker per
+  connection (better many-connection capacity, whole-connection cache
+  locality), at the cost of the old static split's accidental
+  two-worker direction pipelining for a single flow.
+- The occasional 42 Gbit/s: **confirmed by capture**
+  (top-slow-single.txt): the iperf3 server thread (64%) and
+  `pair_task_0` (36%) sharing CPU 0 at 98% combined while five CPUs
+  idle - and 0.64 x 60 Gbit/s ~ the observed 42. Mechanism: *wakeup
+  affinity*, not random placement - the worker wakes the receiver
+  out of sbwait, ULE places the wakee near its waker (the worker's
+  pinned CPU), the short copyout burst ends in sleep before idle
+  stealing can migrate it, and the next wakeup re-plants it. The
+  regime is *metastable*, not permanent: idle stealing never gets a
+  window, but ULE's periodic load balancer eventually does - observed
+  recovery mid-run after tens of seconds, 42 -> ~62 Gbit/s, once the
+  userland thread was migrated off the worker's CPU. Short runs
+  therefore look bimodal; long runs show phases. Inherent
+  to pinned-kernel-waker vs floating-userland-wakee; disappears with
+  multiple flows (see -P 8: machine-saturated) or `cpuset(1)` on the
+  application. No driver-side fix is appropriate: choosing workers
+  by userland thread location is RFS territory the kernel does not
+  offer, and single-flow throughput remains copy-bound either way.
+
+#### Future work: NUMA-aware flow steering (designed 2026-08-15, not implemented)
+
+Goal: make it highly unlikely that a new flow's worker lives in a
+different NUMA domain than its sender. Design (small, ordering-safe,
+ready to build when a multi-domain if_pair host exists to measure on):
+
+1. At pool init, build per-domain worker tables from
+   `pcpu_find(cpu)->pc_domain` (`pcpu.h`): `pt_domain_qids[dom][]`.
+2. In `pair_hash_mbuf()` - the only moment steering is decided, on a
+   flow's first packet - read the transmitting CPU's domain
+   (`PCPU_GET(domain)`; also where the sender's socket-buffer pages
+   were first-touched) and pick a worker within it:
+   `qid = pt_domain_qids[dom][hash % count[dom]]`.
+3. Encode the choice into the written-back flowid so stickiness lives
+   in the flow, not in curcpu: `flowid = hash - (hash % pt_count) +
+   qid` - residue selects the worker through the existing modulo
+   path, high bits keep jenkins entropy for downstream consumers.
+
+Properties: per-flow ordering absolute (sender migration degrades
+locality, never order); the flowid-reflection loop keeps BOTH
+directions of a connection on that one in-domain worker, and wakeup
+affinity then tends to pull the receiving application into the same
+domain; single-domain machines degenerate to current behavior; empty
+domains fall back to the global modulo. Companion change: allocate
+each `pair_queue` with `malloc_domainset(9)` /
+`DOMAINSET_PREF(domain_of(qid))` so every worker's hot mutex+mbufq
+live in its own domain - this also discharges the NUMA debt from
+dropping epair's `sched_bind()` allocation trick at pool init
+(boot-preload safety).
+
+Bounded honestly: benefits only multi-domain hardware (the test VM is
+single-domain - unmeasurable there); the worker touches headers,
+queue structures and socket-buffer bookkeeping, while the dominant
+per-byte copyout runs in the application's thread, whose placement
+the scheduler owns. Parked per project discipline: no optimization
+without a demonstrated need and a machine to measure it on.
 
 #### Postmortem: iperf3 panic (2026-08-14)
 
@@ -242,30 +330,30 @@ design).
 - 2026-08-14, NAS: ping OK; iperf3 panicked (see postmortem above).
 - 2026-08-15, VM: always-queue design survives iperf3 with 1-30
   parallel connections. Found: `ifconfig pair0a destroy` returned
-  `EINVAL` — `if_clone_destroy()` resolves the owning cloner via
+  `EINVAL` - `if_clone_destroy()` resolves the owning cloner via
   `ifp->if_dname` (`ifc_find_cloner_in_vnet()`), and we had set
   `if_dname` to the full "pairNa". Fixed by keeping `if_dname` =
   "pair" and putting the full name only in `if_xname`
   (`if_setname()`), as epair does (`if_epair.c:625-626`).
-- 2026-08-15, VM (continued): destroy via `pair0b` failed with ENXIO —
+- 2026-08-15, VM (continued): destroy via `pair0b` failed with ENXIO -
   only the create-returned `a` ifp is linked into the cloner list (and
   the `pair` interface group!) by the framework; the `b` side needs an
   explicit `if_clone_addif()`, as epair does (`epair_clone_add()`).
   Fixed, and adopted modern epair's either-side destroy semantics
   (nested `if_clone_destroyif()` for the partner with a cleared-softc
-  recursion guard) — the man page's old claim that b-side refusal
+  recursion guard) - the man page's old claim that b-side refusal
   matched epair was stale lore. Bonus fix: `b` sides are now actually
   in interface group `pair`, so `on pair` firewall rules see them.
   Retest: destroy confirmed working from either side.
-- 2026-08-15, VM: destroy-under-load PASSED — pair side destroyed
+- 2026-08-15, VM: destroy-under-load PASSED - pair side destroyed
   inside the iperf3 server jail while `iperf3 -c ... -P 4` ran from
   the peer jail; no panic. First live exercise of the quiesce
   protocol (both-sides-down + `NET_EPOCH_WAIT()`) against in-flight
   bidirectional transmitters, and of netisr's `m_rcvif_restore()`
   drop path for packets queued at destroy time.
 - 2026-08-15, VM: `kldunload if_pair` during `iperf3 -P 4` at
-  ~100 Gb/s between the jails PASSED — module-unload teardown
-  (`VNET_SYSUNINIT` → `if_clone_detach` walking a list holding both
+  ~100 Gb/s between the jails PASSED - module-unload teardown
+  (`VNET_SYSUNINIT` -> `if_clone_detach` walking a list holding both
   siblings per pair, nested-destroy recursion guard) destroyed both
   interfaces cleanly under load; iperf3 fell to zero, both sides
   vanished from the jails. The ~100 Gb/s figure (VM on a laptop,
@@ -273,21 +361,21 @@ design).
   shows the always-queue datapath is not a bottleneck at these
   rates.
 - 2026-08-15: pinned per-CPU worker pool implemented (see performance
-  section). NOT yet runtime-tested — the full VM battery (smoke,
+  section). NOT yet runtime-tested - the full VM battery (smoke,
   iperf3 reproducer, destroy-under-load, kldunload-under-load, churn)
   must be re-run before this design is trusted; the always-queue
   netisr design was the last one validated. Workers are visible as
   `pair_task_N` in `top -SH`; multi-stream iperf3 should now spread
   across them.
 - 2026-08-15, VM: interface moved OUT of a jail back to the host
-  (manual `if_vmove` — the same path `vnet_if_return` takes on jail
+  (manual `if_vmove` - the same path `vnet_if_return` takes on jail
   death), IPv4 config reapplied (addresses are stripped on any vnet
-  move; standard behavior), then host-to-jail iperf3 PASSED — first
-  host↔jail traffic validation, and confirms a pair migrates between
+  move; standard behavior), then host-to-jail iperf3 PASSED - first
+  host<->jail traffic validation, and confirms a pair migrates between
   vnets with no driver-side fixup needed.
 - **Checksum elision**: the interfaces advertise TX/RX checksum offload
   for TCP/UDP over IPv4 and IPv6 (toggleable via `ifconfig ...
-  [-]txcsum`) — the exact same `if_hwassist` set as `epair(4)`.
+  [-]txcsum`) - the exact same `if_hwassist` set as `epair(4)`.
   Checksums the sending stack requests from "hardware" are never
   computed for traffic terminating in the peer vnet. epair(4)
   documents this same-host contract ("the checksum is unnecessary and
@@ -309,14 +397,14 @@ design).
   `in_delayed_cksum()`), so packets never leave the machine with
   invalid checksums, and elision composes across chained pairs: the
   checksum is computed exactly once, at the real edge, or never.
-  Never set `CSUM_DATA_VALID | CSUM_PSEUDO_HDR` here — the input paths
+  Never set `CSUM_DATA_VALID | CSUM_PSEUDO_HDR` here - the input paths
   then read `csum_data` as the hardware-computed checksum value, but it
   holds the checksum field offset. Two offloads are deliberately NOT
   advertised: SCTP CRC (completion hooks exist only in kernels built
   with SCTP support, which an out-of-tree module cannot assume) and
   the IPv4 header checksum, `CSUM_IP` (`divert_packet()` completes
   pending L4 checksums before a packet reaches a divert(4) socket, but
-  not `ip_sum` — an elided header sum would reach natd(8) as garbage
+  not `ip_sum` - an elided header sum would reach natd(8) as garbage
   and be dropped on inbound reinjection; divert(4) documents exactly
   this contract: "Packets written as incoming and having incorrect
   checksums will be dropped"). Since `CSUM_IP` is never
@@ -327,7 +415,7 @@ design).
   `sys/netpfil/pf` in 15.0). pf attaches to interfaces generically via
   pfil/pfi hooks; both sides of a pair are in interface group `pair`
   for `on pair` rules (the `a` side automatically via the cloner
-  framework, the `b` side via our explicit `if_clone_addif()` — until
+  framework, the `b` side via our explicit `if_clone_addif()` - until
   the 2026-08-15 fix the `b` side was in no group and `on pair` rules
   silently missed it). pf's NAT/rewrite helpers detect pending
   checksums (`CSUM_DELAY_DATA*`) and adapt instead of corrupting them,
@@ -336,19 +424,19 @@ design).
   `pair_output()` releases `CSUM_SND_TAG` send tags (as epair does)
   since `snd_tag` shares union space with `rcvif` in the pkthdr.
 - **ipfw** (all kernel modules audited against 15.0 sources):
-  - *Compatible — verified*: plain filtering, dynamic rules and table
-    lookups (never read checksum bytes); `fwd`; **dummynet** — every
+  - *Compatible - verified*: plain filtering, dynamic rules and table
+    lookups (never read checksum bytes); `fwd`; **dummynet** - every
     reinjection case in `dummynet_send()` re-enters
     `ip_output(IP_FORWARDING)`/`ip6_output()` (checksum completion) or
-    netisr→input (request bits honored); the `PROTO_LAYER2`/`PROTO_IFB`
+    netisr->input (request bits honored); the `PROTO_LAYER2`/`PROTO_IFB`
     cases are unreachable for non-Ethernet interfaces; the QoS
     classifiers (ipfw opcodes, `fq_codel`/`fq_pie` flow hashing) and
     AQM modules (codel/pie) only *read* header fields, never bytes that
     could be pending; **divert/natd and `tee`** for L4
     (`divert_packet()` completes TCP/UDP/SCTP for both families before
     userland, on the `m_dup`'d copy too since `m_dup` copies pkthdr
-    flags; `CSUM_IP` dropped from our hwassist for this — see above);
-    **pmod/tcpmod** (MSS clamping) — explicitly offload-aware: skips
+    flags; `CSUM_IP` dropped from our hwassist for this - see above);
+    **pmod/tcpmod** (MSS clamping) - explicitly offload-aware: skips
     its differential fixup when the checksum is pending, which is
     correct since the pseudo-header partial doesn't cover option
     bytes; **ng_ipfw** (reinjects via `ip_input()`/
@@ -361,12 +449,12 @@ design).
     valid bytes).
   - *Known upstream bug, not fixable in the driver*: libalias-based
     in-kernel NAT (`ipfw nat` and `ng_nat`) corrupts pending delayed
-    checksums on traffic forwarded from a pair (or an epair — stock
+    checksums on traffic forwarded from a pair (or an epair - stock
     FreeBSD has the same exposure). natd(8) via divert is *not*
     affected (divert completes checksums first). Workaround:
     `ifconfig pairNb -txcsum` on pairs whose forwarded traffic passes
     through `ipfw nat` or `ng_nat`. Full analysis below.
-- **MTU**: the default is 16384, matching `lo(4)` — with no Ethernet
+- **MTU**: the default is 16384, matching `lo(4)` - with no Ethernet
   framing constraint, a large MTU is the cheapest way to boost bulk TCP
   throughput between vnets (fewer stack traversals per byte, similar in
   effect to TSO on loopback), and 16384 stays clear of 16-bit IP
@@ -376,7 +464,7 @@ design).
   ordinary TCP is unaffected (MSS exchange caps segments) and in-host
   PMTUD handles the rest; to bound forwarded traffic without giving up
   the large pair-local MTU, set the MTU on the route instead of the
-  interface (`route change default -mtu 1500` in the jail) — see the
+  interface (`route change default -mtu 1500` in the jail) - see the
   man page's MTU CONFIGURATION section.
 
 ### Known upstream bug: libalias in-kernel NAT vs. delayed checksums
@@ -395,23 +483,23 @@ set, and `csum_data` holds the field offset. The completion function,
 current content* (the partial stands in for the pseudo-header) and
 stores the complemented result. The field's invariant while pending:
 it must hold the pseudo-header partial consistent with the addresses
-currently in the IP header — and it is *not* a wire-format checksum.
+currently in the IP header - and it is *not* a wire-format checksum.
 
 **What libalias does to it.** libalias rewrites addresses/ports in the
 raw bytes and patches checksum fields with the RFC 1624 differential
 update `HC' = ~(~HC + ~m + m')`, which is only valid for complemented,
 complete checksums. Applied to the non-complemented partial `P` (using
-`~x ≡ −x` in one's-complement arithmetic):
+`~x == -x` in one's-complement arithmetic):
 
 ```
-result = ~(~P + ~m + m') = P + m − m'
-needed = P − m + m'      (partial must track the address change)
-error  = 2(m − m')       (correction applied with inverted sign)
+result = ~(~P + ~m + m') = P + m - m'
+needed = P - m + m'      (partial must track the address change)
+error  = 2(m - m')       (correction applied with inverted sign)
 ```
 
 Port rewrites corrupt it a second, independent way: port bytes lie
 *inside* the region `in_delayed_cksum()` will sum, so a pending packet
-needs *no* fixup for them at all — libalias applies one anyway. The
+needs *no* fixup for them at all - libalias applies one anyway. The
 packet then proceeds with request bits still set, the egress completion
 folds the corrupted partial into the final checksum, and the packet
 leaves the machine invalid by a deterministic constant. Symptom:
@@ -435,13 +523,13 @@ if (mcl->m_pkthdr.rcvif == NULL &&
 
 **The invalid assumptions:**
 
-1. *libalias*: checksum fields hold complete, wire-format checksums —
+1. *libalias*: checksum fields hold complete, wire-format checksums -
    inherited from its userland natd(8) origin, where every packet had
    crossed or was about to cross a wire. (Its own TODO: "make libalias
    mbuf aware".)
 2. *`ip_fw_nat`*: a pending checksum implies a locally-originated
    packet mid-`ip_output()` (`rcvif == NULL`); equivalently, *received*
-   packets always carry complete checksums. Historically airtight —
+   packets always carry complete checksums. Historically airtight -
    every `if_output` led to a wire. epair-with-txcsum and if_pair
    exist to violate exactly this: their `if_output` is an *input*
    source, producing packets with `rcvif` set and checksums pending.
@@ -451,13 +539,13 @@ if (mcl->m_pkthdr.rcvif == NULL &&
    edited payload (`TH_RES1` mark). That case is handled fully
    offload-aware (`ng_nat.c` rebuilds the pseudo-header and keeps
    `CSUM_TCP` packets pending), but plain address/port rewrites get no
-   repair and not even the `rcvif == NULL` pre-pass — which also bites
+   repair and not even the `rcvif == NULL` pre-pass - which also bites
    locally-originated pending packets reaching `ng_nat` below
    `ip_output()`'s completion point (e.g. via `ng_ether` on a txcsum
    NIC); hence the long-standing folklore "disable checksum offload
    when using netgraph NAT".
 
-Incidentally, libalias also differentially patches `ip_sum` — which
+Incidentally, libalias also differentially patches `ip_sum` - which
 would have been a third instance of the same corruption had if_pair
 kept `CSUM_IP` in its hwassist. With it dropped, the header sum
 crossing a pair is genuine wire-format bytes and that fixup is valid.
@@ -466,7 +554,7 @@ crossing a pair is genuine wire-format bytes and that fixup is valid.
 packet will later meet libalias, and preemptive completion would
 forfeit elision for all traffic. Upstream, both fixes are small:
 widen the `ip_fw_nat` gate to `csum_flags & (CSUM_DELAY_DATA |
-CSUM_DELAY_DATA_IPV6)` (drop the `rcvif == NULL` conjunct — the
+CSUM_DELAY_DATA_IPV6)` (drop the `rcvif == NULL` conjunct - the
 repair rebuilds from final addresses, so origin is irrelevant), and
 add the same pre-pass to `ng_nat`. Until then: `-txcsum` on affected
 pairs. Testable prediction for the lab box: forwarded epair traffic
@@ -478,7 +566,7 @@ The module builds clean under `-Werror` on FreeBSD 15.0-RELEASE amd64.
 Teardown is epoch-synchronized per the epoch(9) contract (wait-then-
 free is its documented reclamation pattern; the no-mutexes-across-wait
 rule holds on every destroy path): `pair_output()` asserts it runs
-within the network epoch (true for all entry paths — verified in the
+within the network epoch (true for all entry paths - verified in the
 15.0 sources for the IP stack, netisr workers (via their
 `INTR_TYPE_NET` swi, commit `511d1afb6bfe`), and `bpfwrite()`,
 which epoch(9) itself does not specify) and checks
@@ -507,7 +595,7 @@ where a commit was an MFC, the original commit to -CURRENT is cited):
 | Claim | Commit | Author, date |
 |---|---|---|
 | TCP/UDP input paths accept pending checksum-request bits; forwarding paths complete them | `bcb298fa9e23` "sctp, tcp, udp: improve deferred computation of checksums" | Timo Völker, 2025-08-01 |
-| SCTP delayed-CRC completion in the forwarding paths | `bcb298fa9e23` (same) | — |
+| SCTP delayed-CRC completion in the forwarding paths | `bcb298fa9e23` (same) | - |
 | `divert_packet()` completes delayed L4 checksums | `f0cada84b1e2` | Andre Oppermann, 2004-08-03 |
 | netisr serializes/revalidates `rcvif` across its queues | `6871de9363e5` (MFC'd as `51f798e761b1`) | Gleb Smirnoff, 2022-01-26 |
 | netisr workers run in the net epoch (`INTR_TYPE_NET` swi) | `511d1afb6bfe` | Gleb Smirnoff, 2020-01-23 |
@@ -522,7 +610,7 @@ where a commit was an MFC, the original commit to -CURRENT is cited):
 | `pf_route()` checksum completion | `2bbe8ffc9d0e` (2004 pf import), `078468ede4ef` (CSUM_IP cleanup) | Max Laier / Gleb Smirnoff |
 
 Remaining source-only claims, with no commit-message backing (blame
-lands on code moves, imports, or unrelated churn — or the claim is a
+lands on code moves, imports, or unrelated churn - or the claim is a
 negative one no commit can attest): `ip_input()` having no request-bit
 shortcut; the `ip_fw_nat.c` `rcvif == NULL` gate and libalias's
 offload-unawareness (rationale exists only in the code comments
@@ -532,18 +620,18 @@ entry directly before its `if_output` call); epair's a-side-only
 destroy semantics; `lo(4)`'s treatment of bpf-injected packets.
 
 Link state (implemented 2026-08-15): both sides report a synthetic
-carrier via `pair_set_state()` — `LINK_STATE_UP` coupled with
+carrier via `pair_set_state()` - `LINK_STATE_UP` coupled with
 `IFF_DRV_RUNNING` at attach, `LINK_STATE_DOWN` as the first teardown
 step (epair's `epair_set_state()` ordering), with `IFCAP_LINKSTATE`
 advertised (lo(4) precedent) and force-enabled. The peer-reflecting
-variant (carrier mirrors the other side's admin state — the truer p2p
+variant (carrier mirrors the other side's admin state - the truer p2p
 semantic) is deferred: `SIOCSIFFLAGS` runs outside the network epoch,
 so touching `sc_peer` there would reopen the closed teardown race; if
 ever wanted, it needs an epoch section (or equivalent) around the
 peer access plus a cross-vnet `if_link_state_change()`. Note:
 `ifconfig` may not print a `status:` line for a mediumless interface;
 the functional consumers (routing daemons, devd, route-socket
-listeners) receive the state regardless — VM test should verify with
+listeners) receive the state regardless - VM test should verify with
 `ifconfig -v` / `route -n monitor` during create/destroy.
 
 Known open items:

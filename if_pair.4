@@ -65,12 +65,18 @@ and
 .Dq Li pair0b .
 Destroying either side destroys both halves of the pair.
 .Pp
-Addresses are configured as on any point-to-point interface,
-for example:
+Addresses are configured as on any point-to-point interface: each
+side is given its own address and the address of its peer as the
+destination.
+No shared prefix is needed; a
+.Li /32
+.Pq or Li /128
+host mask is fine.
+For example:
 .Bd -literal -offset indent
-ifconfig pair0a inet 192.0.2.1/31
+ifconfig pair0a inet 192.0.2.1/32 192.0.2.2
 ifconfig pair0b vnet myjail
-jexec myjail ifconfig pair0b inet 192.0.2.0/31
+jexec myjail ifconfig pair0b inet 192.0.2.2/32 192.0.2.1
 .Ed
 .Pp
 The default MTU is 16384.
@@ -134,14 +140,14 @@ kldload if_pair
 ifconfig pair create
 jail -c name=demo vnet persist
 ifconfig pair0b vnet demo
-ifconfig pair0a inet 192.0.2.1/31
-jexec demo ifconfig pair0b inet 192.0.2.0/31
+ifconfig pair0a inet 192.0.2.1/32 192.0.2.2
+jexec demo ifconfig pair0b inet 192.0.2.2/32 192.0.2.1
 jexec demo route add default 192.0.2.1
 .Ed
 .Pp
 Verify connectivity in both directions:
 .Bd -literal -offset indent
-ping -c 3 192.0.2.0
+ping -c 3 192.0.2.2
 jexec demo ping -c 3 192.0.2.1
 .Ed
 .Pp

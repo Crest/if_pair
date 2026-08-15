@@ -1,7 +1,7 @@
 # if_pair
 
 A FreeBSD kernel module that gives you a simple point-to-point IP link
-between a vnet jail and its host, or between two vnet jails — like
+between a vnet jail and its host, or between two vnet jails - like
 `epair(4)`, but without pretending to be an Ethernet cable.
 
 > **Status**: early development. It builds cleanly on FreeBSD 15.0,
@@ -12,11 +12,11 @@ between a vnet jail and its host, or between two vnet jails — like
 The usual way to network a vnet jail is **bridged**: create an
 `epair(4)`, put one end in the jail, and add the other to an
 `if_bridge(4)` alongside the host's real NIC. The jail then behaves
-like one more machine on your LAN — it can use DHCP, and LAN
+like one more machine on your LAN - it can use DHCP, and LAN
 neighbors can talk to it directly. The price is paid on every packet:
 it gets dressed up as an Ethernet frame, address resolution (ARP or
 IPv6 neighbor discovery) has to run, and the frame crosses the bridge
-— all to move data between two interfaces inside the same kernel.
+- all to move data between two interfaces inside the same kernel.
 
 `if_pair` is the faster alternative, and the deal is simple: **you
 let the host do what a router does**. Jails no longer sit on your
@@ -26,7 +26,7 @@ network. Because such a link only ever carries IP between two known
 endpoints, if_pair can strip away everything else:
 
 - No Ethernet headers, no MAC addresses, no ARP or neighbor
-  discovery — an address on each end and a route are the whole story.
+  discovery - an address on each end and a route are the whole story.
 - Checksums for traffic between the two ends are skipped entirely
   (the packets never leave the machine, so nothing can corrupt them).
 - A big default MTU (16384), because there is no Ethernet on the
@@ -39,16 +39,16 @@ piece:
 
 | Bridged (epair + if_bridge) | Routed (if_pair) |
 |---|---|
-| Jail has an address on the LAN | Jail has an address on a tiny *transfer network* — a `/31` (IPv4) and `/127` (IPv6) per jail |
+| Jail has an address on the LAN | Jail has its own point-to-point address pair with the host - two host addresses (`/32`, `/128`), no subnet needed |
 | Jail gets its address from LAN DHCP | Static addresses on the pair; the jail's default route points at the host |
 | LAN neighbors reach the jail via the bridge | The host forwards: `sysctl net.inet.ip.forwarding=1`, plus **either** NAT on the host (private jail addresses) **or** a route for the jail's addresses via the host, added on your upstream router |
-| Broadcast and discovery protocols (DHCP, mDNS, SSDP) reach the jail | They don't cross a router — that's inherent to routing, not a quirk of if_pair |
+| Broadcast and discovery protocols (DHCP, mDNS, SSDP) reach the jail | They don't cross a router - that's inherent to routing, not a quirk of if_pair |
 
 **Stay bridged** when you can't take that deal: the jail must appear
 as a first-class citizen of the Ethernet segment, get its address
 from an external DHCP server, be found by discovery protocols, or
 speak anything that is not IP. Routed and bridged jails also coexist
-fine on one host — use each where it fits.
+fine on one host - use each where it fits.
 
 ## Quick start
 
@@ -70,26 +70,27 @@ jail -c name=demo vnet persist
 ifconfig pair0b vnet demo            # move the b side into the jail
 ```
 
-Address both ends (a /31 is the classic point-to-point choice —
-two addresses, nothing wasted):
+Address both ends. On a point-to-point interface each side gets its
+own address plus the peer's address as the destination - no shared
+prefix needed, a host mask (`/32`) is fine:
 
 ```sh
-ifconfig pair0a inet 192.0.2.1/31
-jexec demo ifconfig pair0b inet 192.0.2.0/31 up
+ifconfig pair0a inet 192.0.2.1/32 192.0.2.2
+jexec demo ifconfig pair0b inet 192.0.2.2/32 192.0.2.1 up
 ```
 
-That's it — no MACs, no ARP, nothing else to configure:
+That's it - no MACs, no ARP, nothing else to configure:
 
 ```sh
-ping -c 3 192.0.2.0                  # host -> jail
+ping -c 3 192.0.2.2                  # host -> jail
 jexec demo ping -c 3 192.0.2.1       # jail -> host
 ```
 
 IPv6 works the same way:
 
 ```sh
-ifconfig pair0a inet6 2001:db8::1/127
-jexec demo ifconfig pair0b inet6 2001:db8::/127
+ifconfig pair0a inet6 2001:db8::1/128 2001:db8::2
+jexec demo ifconfig pair0b inet6 2001:db8::2/128 2001:db8::1
 jexec demo ping -6 -c 3 2001:db8::1
 ```
 
@@ -103,14 +104,14 @@ sysctl net.inet.ip.forwarding=1
 # ...plus your usual pf or ipfw NAT rule on the host's uplink.
 ```
 
-Watch it work — `tcpdump` runs on either end, and shows clean IP
+Watch it work - `tcpdump` runs on either end, and shows clean IP
 packets with no Ethernet clutter:
 
 ```sh
 tcpdump -n -i pair0a
 ```
 
-Cleanup is one command — destroying either side removes both ends:
+Cleanup is one command - destroying either side removes both ends:
 
 ```sh
 ifconfig pair0a destroy
@@ -119,11 +120,11 @@ jail -r demo
 
 ## Where to go from here
 
-- **if_pair(4)** — the manual page (`man ./if_pair.4` before
+- **if_pair(4)** - the manual page (`man ./if_pair.4` before
   installing): all interface behavior, and an MTU CONFIGURATION
   section worth reading if your jail's traffic continues out through
   a normal 1500-byte network link.
-- **NOTES.md** — the developer documentation: how it works inside,
+- **NOTES.md** - the developer documentation: how it works inside,
   design decisions, and one known interaction between checksum
   offloading and in-kernel NAT (`ipfw nat`/`ng_nat`) with its
   one-line workaround. natd(8) and pf NAT are unaffected.

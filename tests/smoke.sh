@@ -36,16 +36,16 @@ jail -c name=${JAIL_B} vnet persist
 ifconfig "${side_a}" vnet ${JAIL_A}
 ifconfig "${side_b}" vnet ${JAIL_B}
 
-jexec ${JAIL_A} ifconfig "${side_a}" inet 192.0.2.1/31 up
-jexec ${JAIL_B} ifconfig "${side_b}" inet 192.0.2.0/31 up
-jexec ${JAIL_A} ifconfig "${side_a}" inet6 2001:db8::1/127
-jexec ${JAIL_B} ifconfig "${side_b}" inet6 2001:db8::/127
+jexec ${JAIL_A} ifconfig "${side_a}" inet 192.0.2.1/32 192.0.2.2 up
+jexec ${JAIL_B} ifconfig "${side_b}" inet 192.0.2.2/32 192.0.2.1 up
+jexec ${JAIL_A} ifconfig "${side_a}" inet6 2001:db8::1/128 2001:db8::2
+jexec ${JAIL_B} ifconfig "${side_b}" inet6 2001:db8::2/128 2001:db8::1
 
 fail=0
 echo "--- IPv4 ping"
-jexec ${JAIL_A} ping -c 3 -t 5 192.0.2.0 || fail=1
+jexec ${JAIL_A} ping -c 3 -t 5 192.0.2.2 || fail=1
 echo "--- IPv6 ping"
-jexec ${JAIL_A} ping -6 -c 3 -t 5 2001:db8:: || fail=1
+jexec ${JAIL_A} ping -6 -c 3 -t 5 2001:db8::2 || fail=1
 
 # Destroying either side removes both halves; exercise the 'b' path.
 echo "--- destroy via b side must remove both halves"
