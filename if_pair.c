@@ -238,7 +238,18 @@ pair_input(if_t ifp, struct mbuf *m)
 
 	M_ASSERTPKTHDR(m);
 
-	if (__predict_false(m->m_len < 1))
+	/*
+	 * The version-nibble read below is a one-byte mtod(): fine for
+	 * contiguity once m_len >= 1 (bytes 0..m_len-1 of an mbuf are
+	 * contiguous by definition), but only for MAPPED mbufs - for
+	 * M_EXTPG mbufs m_data is not a valid pointer.  Every known
+	 * producer builds the IP header in a mapped leading mbuf and
+	 * chains unmapped pages as payload only (sendfile, kTLS), so
+	 * the M_EXTPG half of the guard enforces an invariant rather
+	 * than handling an expected case.  m_pullup() would be no
+	 * remedy for an unmapped head: it KASSERTs on M_EXTPG.
+	 */
+	if (__predict_false((m->m_flags & M_EXTPG) != 0 || m->m_len < 1))
 		goto bad;
 	switch (*mtod(m, const uint8_t *) >> 4) {
 #ifdef INET
@@ -255,6 +266,11 @@ pair_input(if_t ifp, struct mbuf *m)
 #endif
 	default:
 	bad:
+		/*
+		 * Counted as input errors on the receiving side: the
+		 * Ierrs column of "netstat -id" (or "netstat -I pairNa -d"
+		 * for one interface).
+		 */
 		if_inc_counter(ifp, IFCOUNTER_IERRORS, 1);
 		m_freem(m);
 		return;
