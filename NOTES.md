@@ -129,20 +129,71 @@ inline**, regardless of `net.isr.dispatch`:
   `epair(4)` decouples transmit from receive with its own queues
   (not only `ether_input()` context requirements, as an earlier
   version of these notes claimed).
-- **Parallelism** therefore comes from the netisr layer: with
-  multiple netisr threads (`net.isr.maxthreads`, default 1), packets
-  distribute by `flowid` under `NETISR_POLICY_FLOW` (netisr(9);
-  verified in source: `NETISR_IP`/`NETISR_IPV6` register FLOW policy
-  on non-`RSS` kernels, which includes all GENERIC configs; `RSS`
-  kernels key on the RSS hash). Benchmarks should be run with
-  `net.isr.maxthreads` tuned; single-thread netisr is the default
-  bottleneck. A future alternative is epair-style per-CPU delivery
-  queues in the driver.
+- **Parallelism comes from a driver-private pinned worker pool**
+  (implemented 2026-08-15): one taskqueue with one CPU-pinned thread
+  per CPU (`pair_task_N`), created at `SI_SUB_TASKQ` and shared by all
+  pairs. Each side owns one `mbufq` receive queue per worker
+  (`PAIR_QLIMIT` 4096, epair's `RXRSIZE`), with epair's
+  IDLE/WAKING/RUNNING state machine and its flush-once-per-run
+  anti-starvation guard. Steering: by mbuf `flowid` when present
+  (locally originated TCP/UDP carries one — `ip_output()` stamps
+  `inp_flowid`), falling back to a per-side round-robin static
+  assignment. Three deliberate improvements over epair: (1) epair has
+  the per-CPU pinned pool **only on RSS kernels** — on GENERIC it runs
+  a single unpinned worker (a fact discovered late; earlier versions
+  of these notes wrongly credited GENERIC epair with per-CPU
+  spreading); we pin unconditionally. (2) per-flow steering on
+  GENERIC, where epair collapses to one queue. (3) pool lifecycle in
+  `SYSINIT/SYSUNINIT(SI_SUB_TASKQ)` instead of `MOD_UNLOAD` —
+  `kern_linker.c` fires module events *before* file SYSUNINITs, so
+  epair frees its pool while its cloner (and any live pairs) still
+  exist; our ordering keeps the pool alive until after cloner
+  teardown. Also unlike epair: no `sched_bind()` of the loading
+  thread for NUMA locality — with the module preloaded from
+  loader.conf, SYSINITs run before `SI_SUB_SMP` releases the APs and
+  binding to an offline CPU hangs the boot. `net.isr` tuning is now
+  irrelevant to if_pair (netisr is only involved if the admin sets
+  deferred dispatch, in which case its rcvif serialization covers our
+  packets).
 - **No stack-depth guard needed**: since nothing is ever processed
   inline, chained pairs and routing loops cannot grow the kernel
   stack; each hop is a fresh netisr pass. (An earlier design
   direct-dispatched with a `GET_STACK_USAGE()` guard; queueing
   subsumes it.)
+
+#### Future work: TSO/LRO emulation (researched 2026-08-15, not implemented)
+
+Deliver-whole TSO (advertise `IFCAP_TSO`, hand the peer the unsplit
+frame) + `tcp_lro(9)` aggregation could cut stack traversals ~4x for
+bulk TCP. In-tree precedent: `if_tuntap.c`'s virtio-net-header
+support (embedded `struct lro_ctrl`, `tcp_lro_rx`/`tcp_lro_flush_all`
+on input, `virtio_net_tx_offload()` passing TSO frames whole);
+`if_vxlan.c` for `if_hw_tsomax` arithmetic. Archaeology: lo(4) never
+attempted TSO (`git log -S TSO -- if_loop.c` is empty; its perf work
+ended with `3cb73e3d8bda`, the 2009 checksum-avoidance commit,
++37%/+74% measured) — absence of attempts, not a known dead end; the
+technique's only in-tree outing (tap, for bhyve) shipped and works.
+Open homework before implementing: behavior of a forwarded
+`CSUM_TSO` frame reaching a non-TSO egress, and the LRO/checksum-flag
+interplay with our keep-request-bits contract. Cheap ceiling
+measurement first: `mtu 65535` on both sides approximates
+deliver-whole TSO for pair-local TCP; benchmark against 16384 before
+building anything. Working hypothesis (and the likely reason lo(4)
+never needed TSO): 16K already amortizes per-traversal costs ~11x,
+and the remaining loopback-style cost is per-byte — the two socket
+copies — which no segment size touches; loopback could also always
+raise its MTU freely (no transit, so none of TSO's scoping advantage
+applies there).
+
+**MEASURED 2026-08-15 (VM): 64K MTU 89.5 Gbit/s vs 16K MTU
+86.2 Gbit/s — +3.8% for 4x fewer traversals. Hypothesis confirmed;
+per-byte costs dominate beyond 16K. TSO/LRO emulation is PARKED: its
+ceiling for pair-local TCP is this ~4%, which does not justify the
+forwarded-CSUM_TSO verification burden and new code. The 16384
+default stands, empirically; `mtu 65535` remains available to anyone
+who wants the last few percent. This also empirically closes the
+lo(4) question: 16K genuinely is nearly as good as TSO for
+same-machine traffic.**
 
 #### Postmortem: iperf3 panic (2026-08-14)
 
@@ -192,6 +243,13 @@ design).
   16384 MTU, hot caches) is an observation, not a benchmark, but
   shows the always-queue datapath is not a bottleneck at these
   rates.
+- 2026-08-15: pinned per-CPU worker pool implemented (see performance
+  section). NOT yet runtime-tested — the full VM battery (smoke,
+  iperf3 reproducer, destroy-under-load, kldunload-under-load, churn)
+  must be re-run before this design is trusted; the always-queue
+  netisr design was the last one validated. Workers are visible as
+  `pair_task_N` in `top -SH`; multi-stream iperf3 should now spread
+  across them.
 - 2026-08-15, VM: interface moved OUT of a jail back to the host
   (manual `if_vmove` — the same path `vnet_if_return` takes on jail
   death), IPv4 config reapplied (addresses are stripped on any vnet
