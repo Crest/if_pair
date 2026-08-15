@@ -22,9 +22,9 @@ all of that is overhead and complexity with no benefit.
 `pairNb`) whose transmit paths are cross-connected at layer 3:
 
 - No Ethernet headers, no MAC addresses, no ARP/NDP.
-- A packet transmitted on one side is tagged with its address family and
-  handed straight to the peer's IPv4/IPv6 input path via `netisr`, in the
-  peer's vnet.
+- A packet transmitted on one side is enqueued for the peer and
+  delivered into the peer's IPv4/IPv6 input path, in the peer's vnet,
+  by a CPU-pinned pool worker.
 - BPF is attached with `DLT_NULL` (4-byte AF pseudo-header), so `tcpdump`
   works on both sides, as with `lo(4)`.
 
@@ -109,9 +109,17 @@ required/current on FreeBSD 14+ — modeled on `epair(4)` and `gif(4)`.
 
 ### Performance / delivery design
 
-The driver itself has **no queues and no locks**; every transmitted
-packet is handed to netisr with `netisr_queue()` — **never dispatched
-inline**, regardless of `net.isr.dispatch`:
+Every transmitted packet is enqueued onto the receiving side's
+`mbufq` (one per pool worker, guarded by a per-queue mutex — the
+driver's only locks) and delivered by a pinned worker — **never
+inline**, regardless of `net.isr.dispatch`. The workers hand packets
+to `netisr_dispatch()`, which with the default direct policy runs the
+input path right there in the worker; netisr's own queues and threads
+are involved only if the admin selects deferred dispatch. (netisr
+itself, despite its per-CPU workstream architecture, ships as a
+single *unpinned* thread — `net.isr.maxthreads=1`,
+`net.isr.bindthreads=0` — which is why the driver brings its own
+pool rather than leaning on it.)
 
 - **Why queueing is mandatory, not a choice** (learned the hard way —
   see the postmortem below): inline dispatch runs the peer's entire
@@ -155,11 +163,11 @@ inline**, regardless of `net.isr.dispatch`:
   irrelevant to if_pair (netisr is only involved if the admin sets
   deferred dispatch, in which case its rcvif serialization covers our
   packets).
-- **No stack-depth guard needed**: since nothing is ever processed
+- **No stack-depth guard needed**: since transmit never delivers
   inline, chained pairs and routing loops cannot grow the kernel
-  stack; each hop is a fresh netisr pass. (An earlier design
-  direct-dispatched with a `GET_STACK_USAGE()` guard; queueing
-  subsumes it.)
+  stack; each hop is a fresh pass of the next queue's worker task.
+  (An earlier design direct-dispatched with a `GET_STACK_USAGE()`
+  guard; deferral subsumes it.)
 
 #### Future work: TSO/LRO emulation (researched 2026-08-15, not implemented)
 
@@ -465,13 +473,16 @@ within the network epoch (true for all entry paths — verified in the
 which epoch(9) itself does not specify) and checks
 its own `IFF_DRV_RUNNING` before dereferencing `sc_peer`;
 `pair_clone_destroy()` clears `IFF_DRV_RUNNING` on both sides and then
-`NET_EPOCH_WAIT()`s before detaching or freeing either side, so no
-transmit can hold a peer reference once teardown proceeds. Packets
-sitting in the netisr queues (which now carry every pair packet) are
-safe too:
-netisr serializes `rcvif` to an index+generation pair on enqueue
-(`m_rcvif_serialize()`) and revalidates on dequeue, dropping packets
-whose interface has been destroyed. `NET_EPOCH_ASSERT()` is
+`NET_EPOCH_WAIT()`s before anything else, so no transmit can hold a
+peer reference once teardown proceeds. Packets sitting in the
+driver's own pool queues (which carry every pair packet, holding raw
+`rcvif` pointers) are handled by ordering, not by weak references:
+`pair_drain_queues()` drains each worker task and flushes the queues
+*before* either side is detached or freed, so a queued pointer never
+outlives its interface. Packets a worker has already pushed onward
+into netisr (only under the deferred dispatch policy) are covered by
+netisr's own `rcvif` serialization (`m_rcvif_serialize()`
+index+generation, revalidated at dequeue). `NET_EPOCH_ASSERT()` is
 `INVARIANTS`-only, so on release kernels the assertions document
 rather than enforce.
 
