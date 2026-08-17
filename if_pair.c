@@ -174,13 +174,14 @@ SX_SYSINIT_FLAGS(pair_sx, &pair_sx, "if_pair control", SX_RECURSE);
 
 /*
  * Set under pair_sx by MOD_QUIESCE/MOD_UNLOAD; checked under pair_sx
- * by pair_clone_create().  Once set, no new pair can be created, so
- * the cloner detach loop during unload terminates finally: every pair
- * either existed before the flip (and is destroyed by the loop) or
- * was refused.  Plain accesses suffice precisely because every access
- * holds pair_sx (lock acquire/release provide the ordering, see
- * atomic(9)); an unlocked reader must never be added without
- * converting this to acq/rel atomics.
+ * by pair_clone_create() and by pair_clone_destroy()'s wait-retry.
+ * Once set, no new pair can be created, so the cloner detach loop
+ * during unload terminates finally: every pair either existed before
+ * the flip (and is destroyed by the loop) or was refused.  Plain
+ * accesses suffice precisely because every access holds pair_sx
+ * (lock acquire/release provide the ordering, see atomic(9)); an
+ * unlocked reader must never be added without converting this to
+ * acq/rel atomics.
  */
 static bool pair_unloading;
 
@@ -906,15 +907,16 @@ pair_clone_create(struct if_clone *ifc, char *name, size_t len,
 	 * Known framework-level window (shared with epair): 'a' is
 	 * linked by our caller only after this function returns and
 	 * pair_sx is released, while 'b' is destroyable from here on.
-	 * A destroy via 'b' racing that gap tears down both sides and
-	 * the caller then links the torn-down 'a' - a stale cloner-list
-	 * entry and "pair" group member that dangle once the
-	 * epoch-deferred if_free() lands and that nothing removes;
-	 * later walks (SIOCGIFGMEMB, pf group processing, the unload
-	 * detach loop) touch freed memory (full chain in NOTES.md).
-	 * Closing the gap needs the cloning framework to link the
-	 * returned ifp before create_f's caller drops its own
-	 * serialization.
+	 * pair_clone_destroy()'s wait-retry defuses a destroy via 'b'
+	 * racing that gap: instead of freeing the not-yet-linked 'a'
+	 * (which would let the caller's pending if_clone_addif()
+	 * publish a torn-down ifnet - a stale cloner-list entry and
+	 * "pair" group member; full chain in NOTES.md), the destroyer
+	 * waits for the link to land and then destroys it.  Remaining
+	 * exposure - unload interleavings and the netlink creator
+	 * tail (modify_nl and the reply cookie run after the addif) -
+	 * needs the cloning framework to serialize create-plus-link
+	 * against destroy, as its destroy entry points already are.
 	 */
 	if_clone_addif(ifc, scb->sc_ifp);
 
@@ -930,8 +932,7 @@ static int
 pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags __unused)
 {
 	struct pair_softc *sc, *sca, *scb, *other;
-	int error __diagused;
-	int unit;
+	int error, unit;
 
 	/*
 	 * Destroying either side destroys both, as with modern
@@ -995,12 +996,36 @@ pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags __unused)
 	/*
 	 * Unlink the partner from the cloner list; the nested
 	 * destroy_f call sees the cleared softc and does nothing.
-	 * ENXIO means a concurrent destroyer entered via the partner
-	 * side and its framework caller already unlinked it - benign,
-	 * since that destroyer's destroy_f is guaranteed to no-op on
-	 * the cleared softc.
+	 * ENXIO means the partner is not in the cloner list, which
+	 * has exactly two causes, told apart by pair_unloading (read
+	 * under the held pair_sx):
+	 *
+	 * Clear: the create-return window.  The framework links the
+	 * returned 'a' side only after pair_clone_create()'s caller
+	 * regains control, and every other explanation is excluded
+	 * (ioctl and netlink destroyers are serialized by their
+	 * callers' ifnet_detach_sxlock, a vnet's cloner detach loop
+	 * cannot overlap a syscall running in that vnet, and the
+	 * unload detach loop cannot start before pair_unloading is
+	 * set).  The pending if_clone_addif() needs no lock held
+	 * here, so waiting converges: retry until the link lands,
+	 * then destroy it.  Freeing the unlinked side instead would
+	 * let the pending addif publish a torn-down ifnet - a stale
+	 * cloner-list entry and "pair" group member (see NOTES.md).
+	 *
+	 * Set: an unload interleaving.  A concurrent destroyer that
+	 * entered via the partner may be parked on pair_sx with the
+	 * partner already unlinked by its caller; it will no-op on
+	 * the cleared softc, so waiting for a re-link that never
+	 * comes would sleep forever holding the lock the destroyer
+	 * needs.  Tolerate and free - the residual unload-vs-create
+	 * window documented in NOTES.md.
 	 */
-	error = if_clone_destroyif(ifc, other->sc_ifp);
+	while ((error = if_clone_destroyif(ifc, other->sc_ifp)) == ENXIO) {
+		if (pair_unloading)
+			break;
+		pause("pairln", 1);
+	}
 	KASSERT(error == 0 || error == ENXIO,
 	    ("%s: nested if_clone_destroyif() failed: %d",
 	    __func__, error));

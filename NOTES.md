@@ -739,10 +739,24 @@ our 2nd iface failed"), so there the race is a root-triggerable
 panic with a two-line reproducer (loop `ifconfig epair create`
 against `ifconfig epairNb destroy`).  Every other in-tree cloner is
 single-ifnet, where the window degenerates to a spurious ENXIO on a
-visible interface - no corruption path.  No in-driver fix exists
-(the gap lies between create_f's return and its caller's next
-statement); the framework fix is described after the audit
-summary. (3) Non-issue on
+visible interface - no corruption path.  Mitigated in-driver
+(2026-08-17) by the destroy-side wait-retry: when the nested
+`if_clone_destroyif()` of the partner returns ENXIO with
+`pair_unloading` clear, that proves the create window (ioctl and
+netlink destroyers are serialized by their callers'
+`ifnet_detach_sxlock`, a vnet's cloner detach loop cannot overlap a
+syscall running in that vnet, and the unload detach loop cannot
+start before the flag is set), so the destroyer sleeps and retries
+until the creator's deferred addif lands - an unlinked side is
+never freed outside unload interleavings.  The invariant: never
+free an interface whose unlink failed.  Residual exposure after the
+mitigation: unload-vs-create (the `pair_unloading` branch keeps the
+old tolerate-and-free, since a concurrent destroyer parked on
+pair_sx may have unlinked the partner for good and waiting would
+deadlock) and the netlink creator tail (`modify_nl` and the reply
+cookie run after the addif, with nothing observable to wait on).
+The complete fix stays in the framework and is described after the
+audit summary. (3) Non-issue on
 reflection: packets queued across an if_vmove of a side may deliver
 with pre-move FIB or vnet context, but this is observably equivalent
 to the move having happened slightly earlier or later - and strictly
@@ -761,10 +775,17 @@ Upstream fix for the create-return window (audit finding 2): every
 destroy entry point already takes `ifnet_detach_sxlock` exclusively
 (`SIOCIFDESTROY` in net/if.c; RTM_DELLINK in netlink/route/iface.c),
 but no create entry point does - that asymmetry is the bug.  Minimal
-patch: take `ifnet_detach_sxlock` inside `if_clone_createif_nl()`
-around the create_f -> if_clone_addif -> modify_nl sequence, making
-create-plus-link atomic against every destroy, for all cloners at
-once, with no KPI change; the lock order matches the one destroys
+patch: take `ifnet_detach_sxlock` at the create entry points
+(`SIOCIFCREATE`/`SIOCIFCREATE2` in net/if.c; `create_link()` in
+netlink/route/iface.c), mirroring exactly where the destroy side
+takes it.  Entry-point placement matters: it spans the whole creator
+tail - create_f, `if_clone_addif()`, `modify_nl`
+(`_nl_modify_ifp_generic()` dereferences the new ifp heavily,
+including an indirect call through its if_ioctl), and netlink's
+`nl_store_ifp_cookie()`, which lies outside `if_clone_createif_nl()`
+and would escape a lock taken there.  This makes create-plus-link
+atomic against every destroy, for all cloners at once, with no KPI
+change; the lock order matches the one destroys
 already impose (callers' `ifnet_detach_sxlock` -> driver sx), and the
 cost falls only on human-paced create.  Alternative shape: an
 `IFC_F_SELFLINK`-style cloner flag declaring that create_f links the

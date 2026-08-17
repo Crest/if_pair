@@ -96,6 +96,37 @@ for i in $(seq 0 49); do ifconfig pair${i}a destroy; done
 kldunload if_pair
 ```
 
+Create/destroy race stress - targets the create-return window and is
+the regression test for the destroy-side wait-retry (before that
+mitigation, this recipe was the way to plant the stale
+cloner-list/group corruption; on epair(4) the same recipe panics):
+
+```sh
+kldload ./if_pair.ko
+# job 1: churn unit 0 as fast as possible (each destroy frees the
+# unit, so the wildcard create keeps producing pair0a/pair0b)
+while :; do
+    ifconfig pair create >/dev/null 2>&1
+    ifconfig pair0a destroy 2>/dev/null
+done &
+# job 2: hammer the b side, aiming for the gap between create's
+# return and the framework linking pair0a
+while :; do ifconfig pair0b destroy 2>/dev/null; done &
+sleep 60; kill %1 %2; wait
+ifconfig pair0a destroy 2>/dev/null   # reap a possible survivor
+```
+
+Expected: no panic, and afterwards `ifconfig -g pair` lists only
+interfaces that actually exist - ghost members are the old
+corruption's signature.  Follow with `kldunload if_pair` and the
+four-line verification below.  An INVARIANTS kernel is especially
+valuable here: UMA trashing turns the old corruption into a
+deterministic panic at first touch, so a survived run carries real
+weight.  The window is microseconds wide, so a clean run mostly
+proves the retry plumbing (parked destroyers, ENXIO retries, pause
+wakeups) under contention rather than exhaustively hitting the race
+- that is expected; run it longer than 60s when in doubt.
+
 After any `kldunload`, verify nothing of the module remains (run
 `vmstat -m | grep if_pair` BEFORE the unload to see live allocations;
 after it, the malloc type is unregistered and grep finds nothing):
