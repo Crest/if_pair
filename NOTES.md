@@ -98,10 +98,12 @@ Port builds (`ports/net/if_pair-kmod`) stage everything in their own
    man page, `SPDX-License-Identifier: BSD-2-Clause`). Known items for
    that step: move the man page install into the base build glue,
    convert `tests/` to ATF (`tests/sys/net/` conventions, like
-   `if_epair` tests), and resolve the two upstream interactions
+   `if_epair` tests), and resolve the three upstream interactions
    documented below (libalias NAT repair gate; `divert_packet()` and
-   `CSUM_IP`) - ideally by landing those fixes independently, since
-   they affect `epair(4)` today.
+   `CSUM_IP`; the cloner create-return window, which is a
+   root-triggerable panic in `epair(4)` today - see the locking
+   audit) - ideally by landing those fixes independently, since all
+   three affect `epair(4)` today.
 
 ## Design notes / status
 
@@ -687,23 +689,60 @@ is self-sufficient without it.
 Forced unload (`kldunload -f`): an extreme measure, not normal
 operation - the supported path is destroying pairs (or letting the
 unload's cloner detach do it) and a plain `kldunload`.  The driver
-nevertheless stays safe under force: the linker skips `MOD_QUIESCE`
-when forced, so the creation barrier is flipped in `MOD_UNLOAD` as
-well (which runs even under `-f`, before the SYSUNINITs), and the
-convergent destroy protocol needs no caller cooperation.  Forced
-unload is deliberately not part of the routine VM test battery.
+nevertheless stays safe under force.  What `-f` actually changes on
+15.0 (kern_linker.c `linker_file_unload()`): `MOD_QUIESCE` still
+fires - only its veto is ignored - while `MOD_UNLOAD`'s veto is
+honored even when forced, so forced unload is not irresistible; a
+module can refuse it there.  if_pair does not use that veto
+(returning an error would strand the module quiesced but loaded,
+and epair(4) does not either).  The creation barrier is flipped in
+`MOD_UNLOAD` as well as `MOD_QUIESCE` (the former runs even under
+`-f`, before the SYSUNINITs): older linkers skipped the quiesce
+loop entirely when forced, and the double flip keeps the barrier
+independent of linker behavior.  The convergent destroy protocol
+needs no caller cooperation.  Forced unload is deliberately not
+part of the routine VM test battery.
 
-Locking audit (2026-08-17) findings: (1) FIXED - `kldunload -f`
-skips MOD_QUIESCE, so the unloading barrier is now flipped in BOTH
-MOD_QUIESCE and MOD_UNLOAD (the latter runs even when forced, still
-before the SYSUNINITs). (2) Documented, framework-shaped,
-epair-shared: the create-return window - the framework links the
-returned 'a' side only after create_f returns and pair_sx is
-released, while 'b' is destroyable from inside create; a destroy via
-'b' in that gap leads to the caller linking an already-destroyed 'a'
-(memory-safe via deferred ifnet freeing, converged by the detach
-loop's NULL-softc tolerance, but if_addgroup() runs on a destroyed
-ifnet; proper fix belongs in the cloning framework). (3) Non-issue on
+Locking audit (2026-08-17) findings: (1) FIXED - the unloading
+barrier is flipped in BOTH MOD_QUIESCE and MOD_UNLOAD.  (On 15.0 a
+forced unload fires MOD_QUIESCE and merely ignores its veto, but
+older linkers skipped the quiesce loop under force; MOD_UNLOAD runs
+even when forced, still before the SYSUNINITs, so the double flip
+keeps the barrier independent of linker behavior.) (2) Documented,
+framework-shaped,
+epair-shared: the create-return window - the framework
+(`if_clone_createif_nl()`) links the returned 'a' side only after
+create_f returns and pair_sx is released, while 'b' is destroyable
+from inside create.  A destroy via 'b' that wins that gap
+nested-destroys the not-yet-linked 'a' (the tolerated ENXIO), frees
+both sides, and the caller then links the torn-down 'a' anyway.
+Consequences of the stale link: the addif writes (a list insert
+through the linkage embedded in the ifnet, plus `if_addgroup()`)
+usually land in dying-but-still-allocated memory only because the
+final free is epoch-deferred (`NET_EPOCH_CALL` in `if_free()`);
+nothing takes a reference, so the ifnet is freed shortly after and
+two control-plane structures dangle permanently - the cloner list
+(walked *through* the freed ifnet's embedded linkage) and the "pair"
+group member list (re-added after `if_detach()`'s group purge, so no
+cleanup path ever removes it).  Any later walk - `ifconfig -g pair`
+(SIOCGIFGMEMB), pf group processing, the unload-time cloner detach
+loop - traverses freed memory; the detach loop's NULL-softc
+tolerance converges the entry only while the freed memory sits
+unreused, and UMA trashing on INVARIANTS kernels makes the first
+touch a deterministic panic.  The data plane never sees the stale
+entry (`if_free()` clears the ifindex slot early).  epair(4) shares
+the window exactly - it is the only other multi-ifnet cloner in base
+and self-links its 'b' via `if_clone_addif()` too - with a harsher
+outcome: its convergent destroy panic()s when the nested
+`if_clone_destroyif()` of the unlinked side returns ENXIO ("... for
+our 2nd iface failed"), so there the race is a root-triggerable
+panic with a two-line reproducer (loop `ifconfig epair create`
+against `ifconfig epairNb destroy`).  Every other in-tree cloner is
+single-ifnet, where the window degenerates to a spurious ENXIO on a
+visible interface - no corruption path.  No in-driver fix exists
+(the gap lies between create_f's return and its caller's next
+statement); the framework fix is described after the audit
+summary. (3) Non-issue on
 reflection: packets queued across an if_vmove of a side may deliver
 with pre-move FIB or vnet context, but this is observably equivalent
 to the move having happened slightly earlier or later - and strictly
@@ -717,6 +756,21 @@ fields, the quiesce/claim protocol, one-way lock orders (pq_mtx ->
 taskqueue lock; pair_sx -> {epoch wait, pq_mtx, taskqueue}; callers'
 ifnet_detach_sxlock -> pair_sx, never reversed), single-consumer
 queue draining, and per-CPU counters.
+
+Upstream fix for the create-return window (audit finding 2): every
+destroy entry point already takes `ifnet_detach_sxlock` exclusively
+(`SIOCIFDESTROY` in net/if.c; RTM_DELLINK in netlink/route/iface.c),
+but no create entry point does - that asymmetry is the bug.  Minimal
+patch: take `ifnet_detach_sxlock` inside `if_clone_createif_nl()`
+around the create_f -> if_clone_addif -> modify_nl sequence, making
+create-plus-link atomic against every destroy, for all cloners at
+once, with no KPI change; the lock order matches the one destroys
+already impose (callers' `ifnet_detach_sxlock` -> driver sx), and the
+cost falls only on human-paced create.  Alternative shape: an
+`IFC_F_SELFLINK`-style cloner flag declaring that create_f links the
+returned ifp itself, letting a multi-ifnet cloner publish both sides
+under its own serialization.  Either form is submission-worthy on its
+own: it fixes the epair(4) panic above without reference to if_pair.
 
 Known open items:
 - Runtime verification pending (needs root): smoke test, destroy/unload

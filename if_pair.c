@@ -907,11 +907,13 @@ pair_clone_create(struct if_clone *ifc, char *name, size_t len,
 	 * linked by our caller only after this function returns and
 	 * pair_sx is released, while 'b' is destroyable from here on.
 	 * A destroy via 'b' racing that gap tears down both sides and
-	 * the caller then links the already-destroyed 'a'.  Deferred
-	 * ifnet freeing keeps it memory-safe and the cloner detach
-	 * loop's NULL-softc tolerance converges the stale entry, but
-	 * closing the gap properly needs the cloning framework to link
-	 * the returned ifp before create_f's caller drops its own
+	 * the caller then links the torn-down 'a' - a stale cloner-list
+	 * entry and "pair" group member that dangle once the
+	 * epoch-deferred if_free() lands and that nothing removes;
+	 * later walks (SIOCGIFGMEMB, pf group processing, the unload
+	 * detach loop) touch freed memory (full chain in NOTES.md).
+	 * Closing the gap needs the cloning framework to link the
+	 * returned ifp before create_f's caller drops its own
 	 * serialization.
 	 */
 	if_clone_addif(ifc, scb->sc_ifp);
@@ -1045,12 +1047,16 @@ pair_modevent(module_t mod, int type, void *data)
 		 * completed before it (so the cloner detach loop that
 		 * runs after MOD_UNLOAD will find and destroy the
 		 * pair) or observes the flag and fails.  The flip
-		 * happens in BOTH events because "kldunload -f" skips
-		 * MOD_QUIESCE; MOD_UNLOAD still runs before the
-		 * SYSUNINITs, so the barrier holds for forced unloads
-		 * too.  Existing pairs are destroyed on unload, as
-		 * with epair(4); per-vnet detach is driven by the
-		 * VNET_SYSUNINITs.
+		 * happens in BOTH events for robustness: on 15.0 a
+		 * forced unload ("kldunload -f") still fires
+		 * MOD_QUIESCE and only ignores its veto, but older
+		 * linkers skipped the quiesce loop entirely when
+		 * forced; flipping again in MOD_UNLOAD - which runs
+		 * before the SYSUNINITs, and whose veto the linker
+		 * honors even when forced - keeps the barrier
+		 * independent of linker behavior.  Existing pairs are
+		 * destroyed on unload, as with epair(4); per-vnet
+		 * detach is driven by the VNET_SYSUNINITs.
 		 */
 		sx_xlock(&pair_sx);
 		pair_unloading = true;
