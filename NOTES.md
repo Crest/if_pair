@@ -98,12 +98,13 @@ Port builds (`ports/net/if_pair-kmod`) stage everything in their own
    man page, `SPDX-License-Identifier: BSD-2-Clause`). Known items for
    that step: move the man page install into the base build glue,
    convert `tests/` to ATF (`tests/sys/net/` conventions, like
-   `if_epair` tests), and resolve the three upstream interactions
+   `if_epair` tests), and resolve the four upstream interactions
    documented below (libalias NAT repair gate; `divert_packet()` and
    `CSUM_IP`; the cloner create-return window, which is a
-   root-triggerable panic in `epair(4)` today - see the locking
+   root-triggerable panic in `epair(4)` today; the vnet teardown
+   lock order, an unload-vs-jail-removal deadlock - see the locking
    audit) - ideally by landing those fixes independently, since all
-   three affect `epair(4)` today.
+   four affect `epair(4)` today.
 
 ## Design notes / status
 
@@ -402,6 +403,27 @@ design).
   move; standard behavior), then host-to-jail iperf3 PASSED - first
   host<->jail traffic validation, and confirms a pair migrates between
   vnets with no driver-side fixup needed.
+- 2026-08-17, VM (arm64), GENERIC: full shell test suite
+  (tests/t_*.sh, 14 tests - creation properties, either-side
+  destroy, unit/name corner cases, MTU bounds, host<->jail IPv4 and
+  IPv6, jail<->jail, vmove group restoration, up/down gating,
+  txcsum toggles, destroy under flood load, 30-pair churn,
+  create-vs-destroy race stress, unload with live and jailed pairs
+  including the four-line verification) PASSED.  First runtime
+  validation of the pair_sx convergent destroy, the unload barrier,
+  and the wait-retry.
+- 2026-08-17, VM (arm64), GENERIC-DEBUG (WITNESS+INVARIANTS): suite
+  PASSED with zero WITNESS output naming an if_pair lock - the
+  first machine check of the audited lock orders, including
+  pause() while holding pair_sx plus the caller's
+  ifnet_detach_sxlock in the wait-retry, and the recursive pair_sx
+  claim.  The run surfaced the base vnet teardown LOR (audit
+  finding 4), fixed by the MOD_UNLOAD registry sweep; a fresh-boot
+  debug rerun with the sweep produced no LOR at all, confirming
+  if_pair no longer records the reversing order.  Debug-kernel
+  throughput collapses under parallel load by design (WITNESS's
+  global lock serializes every lock operation) - not performance
+  data.
 - **Checksum elision**: the interfaces advertise TX/RX checksum offload
   for TCP/UDP over IPv4 and IPv6 (toggleable via `ifconfig ...
   [-]txcsum`) - the exact same `if_hwassist` set as `epair(4)`.
@@ -764,12 +786,44 @@ hybrid cases (old FIB, new vnet) can only affect packets that the
 move's own address purge has already orphaned.  The standard workflow
 (assign the interface to its long-term vnet before configuring
 addresses or bringing it up, as example-jail.conf does) never has
-traffic in flight during a move at all.  Same pattern as epair. All other protocols verified: the
+traffic in flight during a move at all.  Same pattern as epair.
+All other protocols verified: the
 pq_mtx state machine (lost-wakeup-free), write-once-before-publish
 fields, the quiesce/claim protocol, one-way lock orders (pq_mtx ->
 taskqueue lock; pair_sx -> {epoch wait, pq_mtx, taskqueue}; callers'
 ifnet_detach_sxlock -> pair_sx, never reversed), single-consumer
 queue draining, and per-CPU counters.
+
+Debug-kernel validation (2026-08-17, arm64 VM, WITNESS+INVARIANTS,
+full test suite): no WITNESS output names any if_pair lock - the
+pq_mtx state machine, the recursive pair_sx convergent destroy, and
+the wait-retry's pause() while holding pair_sx plus the caller's
+ifnet_detach_sxlock all ran silent.  (The other console lines were
+benign test artifacts: the nd6 below-1280 MTU warning from the
+minimum-MTU test, and ICMP response rate limiting from the flood
+test.)  One lock order reversal surfaced, base-framework-shaped
+with no if_pair frame in either chain - finding (4): jail removal
+(vnet_destroy()) takes ifnet_detach_sxlock exclusively and then
+vnet_sysinit_sxlock (running the dying vnet's sysuninits under it),
+while module unload with live cloned interfaces takes the two in
+the reverse order: vnet_deregister_sysuninit() holds
+vnet_sysinit_sxlock while running the per-vnet cloner detach loops,
+whose nested if_detach() calls acquire ifnet_detach_sxlock.  A
+kldunload with live pairs racing a jail -r can therefore deadlock.
+epair(4) has the identical AB/BA (kldunload if_epair with live
+epairs).  FIXED in if_pair (2026-08-17): a driver-global pair
+registry (one entry per pair, 'a' side, under pair_sx) lets
+MOD_UNLOAD - which runs before the SYSUNINITs and holds neither
+vnet lock - sweep all remaining pairs itself, taking
+ifnet_detach_sxlock before pair_sx exactly as every ioctl destroyer
+does; the per-vnet detach loops then find empty cloner lists and
+the bad ordering is never taken.  Residue: a pair sitting in the
+create-return window at sweep time is skipped (nested ENXIO) and
+still reaped by the detach loop, so the bad order remains reachable
+only inside the already-documented unload-vs-create residue.  Jail
+death itself was never a problem: vnet_destroy() runs the dying
+vnet's own detach loop while already holding ifnet_detach_sxlock
+(recursive acquisition, consistent order).
 
 Upstream fix for the create-return window (audit finding 2): every
 destroy entry point already takes `ifnet_detach_sxlock` exclusively
@@ -793,9 +847,22 @@ returned ifp itself, letting a multi-ifnet cloner publish both sides
 under its own serialization.  Either form is submission-worthy on its
 own: it fixes the epair(4) panic above without reference to if_pair.
 
+Upstream fix for the vnet teardown lock order (audit finding 4):
+vnet_deregister_sysuninit() should acquire ifnet_detach_sxlock
+before vnet_sysinit_sxlock, matching vnet_destroy()'s order, so
+module unloads that destroy live cloned interfaces from their
+VNET_SYSUNINITs stop deadlocking against jail removal.  This fixes
+`kldunload if_epair` racing `jail -r` today; if_pair no longer
+depends on it after the MOD_UNLOAD sweep, but remains a beneficiary
+(the unload-vs-create residue path can still reach the old
+ordering).
+
 Known open items:
-- Runtime verification pending (needs root): smoke test, destroy/unload
-  paths with live pairs and jailed `b` sides, transit checksum test via
-  tcpdump on a real egress, iperf3 comparison against epair.
+- Remaining runtime verification: transit checksum test via tcpdump
+  on a real egress (needs a second interface), sendfile/M_EXTPG
+  passage, and an iperf3 comparison against epair on real hardware.
+  Everything else from the old list (smoke, destroy/unload with live
+  and jailed sides, churn, race stress) is covered by tests/ and
+  passed 2026-08-17 on both GENERIC and GENERIC-DEBUG; see the
+  runtime test log.
 - MTU is not synchronized between the two sides (documented: set both).
-- The man page is not installed by the Makefile.
