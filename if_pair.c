@@ -128,11 +128,23 @@ struct pair_queue {
 struct pair_softc {
 	if_t			 sc_ifp;
 	struct pair_softc	*sc_peer;
+	struct if_clone		*sc_ifc;	/* creating vnet's cloner */
 	enum pair_side		 sc_side;
 	int			 sc_unit;
 	int			 sc_defqid;	/* steering fallback */
 	struct pair_queue	*sc_queues;	/* pair_tasks.pt_count of them */
+	LIST_ENTRY(pair_softc)	 sc_list;	/* pair registry; 'a' side
+						   only, under pair_sx */
 };
+
+/*
+ * Registry of all live pairs across every vnet, one entry per pair
+ * ('a' side), protected by pair_sx.  Sole consumer is the MOD_UNLOAD
+ * sweep, which destroys every pair before the linker runs the
+ * SYSUNINITs; see pair_sweep() for why the per-vnet cloner detach
+ * loops must not be left to do it.
+ */
+static LIST_HEAD(, pair_softc) pair_list = LIST_HEAD_INITIALIZER(pair_list);
 
 /*
  * The worker pool: one taskqueue with one CPU-pinned thread per CPU,
@@ -892,10 +904,13 @@ pair_clone_create(struct if_clone *ifc, char *name, size_t len,
 	scb = pair_alloc_side(unit, PAIR_SIDE_B);
 	sca->sc_peer = scb;
 	scb->sc_peer = sca;
+	sca->sc_ifc = ifc;
+	scb->sc_ifc = ifc;
 
 	/* Only publish once both softcs are complete, peer links included. */
 	pair_attach_side(sca);
 	pair_attach_side(scb);
+	LIST_INSERT_HEAD(&pair_list, sca, sc_list);
 
 	/*
 	 * The framework links only the returned ifp ('a') into the
@@ -986,6 +1001,7 @@ pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags __unused)
 	 */
 	if_setsoftc(sca->sc_ifp, NULL);
 	if_setsoftc(scb->sc_ifp, NULL);
+	LIST_REMOVE(sca, sc_list);
 
 	pair_drain_queues(scb);
 	pair_drain_queues(sca);
@@ -1060,6 +1076,44 @@ vnet_pair_uninit(const void *unused __unused)
 VNET_SYSUNINIT(vnet_pair_uninit, SI_SUB_INIT_IF, SI_ORDER_ANY,
     vnet_pair_uninit, NULL);
 
+/*
+ * Destroy every remaining pair, from MOD_UNLOAD, before the linker
+ * runs the SYSUNINITs.  Leaving them to the per-vnet cloner detach
+ * loops would take locks in a deadlock-prone order: those loops run
+ * with vnet_sysinit_sxlock held (vnet_deregister_sysuninit()), and
+ * the if_detach() calls nested in pair_clone_destroy() then acquire
+ * ifnet_detach_sxlock - while jail removal (vnet_destroy()) takes
+ * the same two locks in the opposite order, a real AB/BA deadlock
+ * that WITNESS reports as a lock order reversal.  epair(4), which
+ * destroys from its VNET_SYSUNINIT, has the identical one.
+ * Sweeping here runs under neither vnet lock and takes
+ * ifnet_detach_sxlock first - the order every ioctl destroyer
+ * already imposes - so the later detach loops find empty cloner
+ * lists and never take ifnet_detach_sxlock under
+ * vnet_sysinit_sxlock.
+ *
+ * ENXIO means a pair sits in the create-return window (its 'a' side
+ * not yet linked by the framework); it is skipped and reaped by the
+ * detach loop once the pending addif lands - the documented
+ * unload-vs-create residue.
+ */
+static void
+pair_sweep(void)
+{
+	struct pair_softc *sc, *tsc;
+	int error __diagused;
+
+	sx_xlock(&ifnet_detach_sxlock);
+	sx_xlock(&pair_sx);
+	LIST_FOREACH_SAFE(sc, &pair_list, sc_list, tsc) {
+		error = if_clone_destroyif(sc->sc_ifc, sc->sc_ifp);
+		KASSERT(error == 0 || error == ENXIO,
+		    ("%s: sweep destroy failed: %d", __func__, error));
+	}
+	sx_xunlock(&pair_sx);
+	sx_xunlock(&ifnet_detach_sxlock);
+}
+
 static int
 pair_modevent(module_t mod, int type, void *data)
 {
@@ -1080,12 +1134,17 @@ pair_modevent(module_t mod, int type, void *data)
 		 * before the SYSUNINITs, and whose veto the linker
 		 * honors even when forced - keeps the barrier
 		 * independent of linker behavior.  Existing pairs are
-		 * destroyed on unload, as with epair(4); per-vnet
-		 * detach is driven by the VNET_SYSUNINITs.
+		 * destroyed by pair_sweep() below, before the
+		 * SYSUNINITs run; the per-vnet detach loops then find
+		 * empty lists (see pair_sweep() for the lock-order
+		 * reason epair(4)'s SYSUNINIT-time destruction is
+		 * deliberately not copied).
 		 */
 		sx_xlock(&pair_sx);
 		pair_unloading = true;
 		sx_xunlock(&pair_sx);
+		if (type == MOD_UNLOAD)
+			pair_sweep();
 		return (0);
 	case MOD_LOAD:
 		return (0);
