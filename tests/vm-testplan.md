@@ -135,7 +135,9 @@ after it, the malloc type is unregistered and grep finds nothing):
 dmesg | tail -n 20 | grep -i leaked   # kernel warns "memory type if_pair
                                       # leaked memory" if any M_PAIR
                                       # allocation was not freed
-procstat -ta | grep pair_task         # no worker threads left
+procstat -ta | grep '[[:space:]]pair_task_'  # no worker threads left
+                                      # (a bare "pair_task" would also
+                                      # match epair's epair_task thread)
 ifconfig -g pair                      # no members; group gone
 vmstat -m | grep if_pair              # no output: type unregistered
 ```
