@@ -165,6 +165,33 @@ pool rather than leaning on it.)
   irrelevant to if_pair (netisr is only involved if the admin sets
   deferred dispatch, in which case its rcvif serialization covers our
   packets).
+- **gtaskqueue(9) evaluated and declined** (2026-08-15): FreeBSD's
+  per-CPU task groups (`TASKQGROUP_DEFINE`; the shared
+  `qgroup_softirq` runs epoch callbacks and linuxkpi tasklets, and
+  `if_wg` uses a private group for its crypto) are the same
+  primitive class as our pool - so the pool is a choice among
+  existing options, not a workaround for a missing API. Switching
+  would gain nothing (identical structure, task wakeups already
+  amortized per burst) and cost three things: taskqgroup threads are
+  hardcoded to `PI_SOFT` (`subr_gtaskqueue.c` `taskqgroup_cpu_create`)
+  vs our `PI_NET` (= `PI_INTR`, one class higher - correct for
+  threads that run the peer's protocol input), there is no
+  `NET_GROUPTASK` so the epoch wrap becomes hand-maintained, and the
+  boot-preload lifecycle analysis would need redoing. Sharing
+  `qgroup_softirq` is rejected outright: line-rate packet work must
+  not be able to starve the stack's epoch reclamation callbacks.
+  Priority landscape of the pinned workers (audited 2026-08-15):
+  above `PI_NET` sits only the `PI_REALTIME` class (clock/AV
+  ithreads, `intr_priority()` in `kern_intr.c`) plus raw interrupt
+  filters - short-duration by construction; equal-priority NIC
+  ithreads and netisr share round-robin (deliberate parity - the
+  workers run a peer's protocol input); userland, including rtprio,
+  can never preempt them (the realtime user band is below the ithread
+  band). The inversion matters more: a worker saturating its CPU
+  starves that CPU's `PI_SOFT` residents - softclock (TCP timers'
+  callouts) and `qgroup_softirq` (epoch callbacks) - exactly as any
+  saturated NIC ithread always has; measured worker load (28-54%
+  at benchmark saturation) leaves ample gaps in practice.
 - **No stack-depth guard needed**: since transmit never delivers
   inline, chained pairs and routing loops cannot grow the kernel
   stack; each hop is a fresh pass of the next queue's worker task.
@@ -633,6 +660,29 @@ peer access plus a cross-vnet `if_link_state_change()`. Note:
 the functional consumers (routing daemons, devd, route-socket
 listeners) receive the state regardless - VM test should verify with
 `ifconfig -v` / `route -n monitor` during create/destroy.
+
+Unload safety (implemented 2026-08-17, resolving review blocker B2):
+all control-plane operations - create, destroy, and the module unload
+gate - serialize under one recursive sx (`pair_sx`), which the packet
+path never touches (the user-set rate hierarchy: line-rate packet
+work unaffected; human-paced create/destroy pay one lock; unload a
+few times per uptime). Destroy is now convergent under any
+interleaving of ioctl, vnet teardown and kldunload: the first
+destroyer through `pair_sx` with a live softc owns the teardown and
+clears both softcs (after the quiesce - clearing earlier would race
+producers between their RUNNING check and if_getsoftc()); everyone
+else no-ops on NULL; the nested partner unlink tolerates ENXIO
+(concurrent destroyer's framework caller already unlinked that side);
+the old panic() is gone (KASSERT only). `MOD_QUIESCE` flips
+`pair_unloading` under the same sx, making the flag a barrier that
+closes the create-vs-unload orphan window: any create either
+completed before the flip (visible to the detach loop) or refuses
+with ENXIO. Lock order is one-way (callers may hold
+`ifnet_detach_sxlock` before `pair_sx`; we never take the reverse).
+Worst-case control-op latency: one destroy's epoch wait + queue
+drains, tens of ms. The upstream fix (if_clone_detach() taking
+ifnet_detach_sxlock, fixing epair too) remains desirable; this scheme
+is self-sufficient without it.
 
 Known open items:
 - Runtime verification pending (needs root): smoke test, destroy/unload

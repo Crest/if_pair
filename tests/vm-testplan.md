@@ -96,6 +96,21 @@ for i in $(seq 0 49); do ifconfig pair${i}a destroy; done
 kldunload if_pair
 ```
 
+After any `kldunload`, verify nothing of the module remains (run
+`vmstat -m | grep if_pair` BEFORE the unload to see live allocations;
+after it, the malloc type is unregistered and grep finds nothing):
+
+```sh
+dmesg | tail -n 20 | grep -i leaked   # kernel warns "memory type if_pair
+                                      # leaked memory" if any M_PAIR
+                                      # allocation was not freed
+procstat -ta | grep pair_task         # no worker threads left
+ifconfig -g pair                      # no members; group gone
+vmstat -m | grep if_pair              # no output: type unregistered
+```
+
+All four must come back empty/silent.
+
 ## Stage 5 - only after 1-4 are green
 
 - sendfile / unmapped-mbuf passage: serve a large file across the

@@ -37,6 +37,7 @@
 #include <sys/smp.h>
 #include <sys/socket.h>
 #include <sys/sockio.h>
+#include <sys/sx.h>
 #include <sys/taskqueue.h>
 
 #include <net/bpf.h>
@@ -152,6 +153,33 @@ static u_int pair_next_defq;
 
 /* Random per-boot seed so flow-to-worker mapping is not guessable. */
 static uint32_t pair_hash_seed;
+
+/*
+ * Control-plane lock, serializing pair creation, destruction and the
+ * module unload gate below.  These operations run at human pace;
+ * packet processing runs at line rate and MUST never touch this lock
+ * - it is confined to the cloner callbacks and the module event
+ * handler.  Recursive because destruction unlinks the partner side
+ * through a nested if_clone_destroyif() that re-enters
+ * pair_clone_destroy().  Worst-case hold time is one destruction
+ * (epoch wait plus queue drains), well under a second.
+ *
+ * Lock order: SIOCIFDESTROY and vnet teardown take ifnet_detach_sxlock
+ * before reaching us; module unload takes only this lock.  We never
+ * acquire ifnet_detach_sxlock ourselves, so the ordering is one-way
+ * and cannot deadlock.
+ */
+static struct sx pair_sx;
+SX_SYSINIT_FLAGS(pair_sx, &pair_sx, "if_pair control", SX_RECURSE);
+
+/*
+ * Set under pair_sx by MOD_QUIESCE; checked under pair_sx by
+ * pair_clone_create().  Once set, no new pair can be created, so the
+ * cloner detach loop during unload terminates finally: every pair
+ * either existed before the flip (and is destroyed by the loop) or
+ * was refused.
+ */
+static bool pair_unloading;
 
 VNET_DEFINE_STATIC(struct if_clone *, pair_cloner);
 #define	V_pair_cloner	VNET(pair_cloner)
@@ -839,13 +867,22 @@ pair_clone_create(struct if_clone *ifc, char *name, size_t len,
 	struct pair_softc *sca, *scb;
 	int error, unit;
 
+	sx_xlock(&pair_sx);
+	if (pair_unloading) {
+		sx_xunlock(&pair_sx);
+		return (ENXIO);
+	}
 	error = ifc_name2unit(name, &unit);
-	if (error != 0)
+	if (error != 0) {
+		sx_xunlock(&pair_sx);
 		return (error);
+	}
 	/* A name without a unit yields -1: ifc_alloc_unit() picks one. */
 	error = ifc_alloc_unit(ifc, &unit);
-	if (error != 0)
+	if (error != 0) {
+		sx_xunlock(&pair_sx);
 		return (error);
+	}
 
 	sca = pair_alloc_side(unit, PAIR_SIDE_A);
 	scb = pair_alloc_side(unit, PAIR_SIDE_B);
@@ -869,6 +906,7 @@ pair_clone_create(struct if_clone *ifc, char *name, size_t len,
 	snprintf(name, len, "%s%da", pairname, unit);
 	*ifpp = sca->sc_ifp;
 
+	sx_xunlock(&pair_sx);
 	return (0);
 }
 
@@ -876,27 +914,31 @@ static int
 pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags __unused)
 {
 	struct pair_softc *sc, *sca, *scb, *other;
-	int error, unit;
+	int error __diagused;
+	int unit;
 
 	/*
 	 * Destroying either side destroys both, as with modern
-	 * epair(4).  The partner is unlinked from the cloner list via a
-	 * nested if_clone_destroyif(), which re-enters here with the
-	 * softc already cleared: nothing left to do then.
-	 *
-	 * Serialization invariant: concurrent destroys of the two sides
-	 * are assumed serialized by our callers.  SIOCIFDESTROY and
-	 * vnet teardown both hold ifnet_detach_sxlock exclusively; the
-	 * module-unload path (if_clone_detach()) has not been verified
-	 * to take it, so a kldunload racing an ifconfig destroy is a
-	 * theoretical double teardown - an exposure shared with
-	 * epair(4), whose destroy makes the same assumption.  The
-	 * panic() below on nested-destroy failure is "cannot happen"
-	 * only under this assumption.
+	 * epair(4).  Whoever acquires pair_sx first with a live softc
+	 * owns the whole teardown and clears BOTH softcs as its claim.
+	 * Everyone else finding a NULL softc - the nested
+	 * if_clone_destroyif() below for the partner (pair_sx is
+	 * recursive), or a concurrent destroyer that entered via the
+	 * other side (its framework caller has already unlinked that
+	 * side, which is why the nested unlink tolerates ENXIO) - has
+	 * nothing left to do.  Concurrent callers stay memory-safe
+	 * because if_clone_destroy() holds an ifnet reference and ifnet
+	 * destruction is refcount- and epoch-deferred.  This makes
+	 * destruction safe under any interleaving of ioctl, vnet
+	 * teardown and module unload, without any caller-side
+	 * serialization assumptions.
 	 */
+	sx_xlock(&pair_sx);
 	sc = if_getsoftc(ifp);
-	if (sc == NULL)
+	if (sc == NULL) {
+		sx_xunlock(&pair_sx);
 		return (0);
+	}
 
 	sca = (sc->sc_side == PAIR_SIDE_A) ? sc : sc->sc_peer;
 	scb = sca->sc_peer;
@@ -918,6 +960,16 @@ pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags __unused)
 	pair_set_state(scb->sc_ifp, false);
 	NET_EPOCH_WAIT();
 
+	/*
+	 * Claim the teardown.  Clearing the softcs must happen after
+	 * the quiesce above: until the epoch wait returns, a producer
+	 * that passed its IFF_DRV_RUNNING check may still be short of
+	 * its if_getsoftc().  It must happen before pair_sx is
+	 * released, so any later destroy_f entry sees NULL.
+	 */
+	if_setsoftc(sca->sc_ifp, NULL);
+	if_setsoftc(scb->sc_ifp, NULL);
+
 	pair_drain_queues(scb);
 	pair_drain_queues(sca);
 
@@ -925,19 +977,23 @@ pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags __unused)
 	pair_detach_side(sca);
 
 	/*
-	 * Unlink the partner from the cloner list; its nested
+	 * Unlink the partner from the cloner list; the nested
 	 * destroy_f call sees the cleared softc and does nothing.
+	 * ENXIO means a concurrent destroyer entered via the partner
+	 * side and its framework caller already unlinked it - benign,
+	 * since that destroyer's destroy_f is guaranteed to no-op on
+	 * the cleared softc.
 	 */
-	if_setsoftc(other->sc_ifp, NULL);
 	error = if_clone_destroyif(ifc, other->sc_ifp);
-	if (error != 0)
-		panic("%s: nested if_clone_destroyif() failed: %d",
-		    __func__, error);
+	KASSERT(error == 0 || error == ENXIO,
+	    ("%s: nested if_clone_destroyif() failed: %d",
+	    __func__, error));
 
 	pair_free_side(scb);
 	pair_free_side(sca);
 	ifc_free_unit(ifc, unit);
 
+	sx_xunlock(&pair_sx);
 	return (0);
 }
 
@@ -967,6 +1023,19 @@ static int
 pair_modevent(module_t mod, int type, void *data)
 {
 	switch (type) {
+	case MOD_QUIESCE:
+		/*
+		 * Refuse all further pair creation.  Taking pair_sx
+		 * makes the flag flip a barrier: any create either
+		 * completed before it (so the cloner detach loop that
+		 * runs after MOD_UNLOAD will find and destroy the
+		 * pair) or observes the flag and fails.  Existing
+		 * pairs are destroyed on unload, as with epair(4).
+		 */
+		sx_xlock(&pair_sx);
+		pair_unloading = true;
+		sx_xunlock(&pair_sx);
+		return (0);
 	case MOD_LOAD:
 	case MOD_UNLOAD:
 		/* Per-vnet attach/detach is driven by the VNET_SYSINITs. */
