@@ -173,11 +173,14 @@ static struct sx pair_sx;
 SX_SYSINIT_FLAGS(pair_sx, &pair_sx, "if_pair control", SX_RECURSE);
 
 /*
- * Set under pair_sx by MOD_QUIESCE; checked under pair_sx by
- * pair_clone_create().  Once set, no new pair can be created, so the
- * cloner detach loop during unload terminates finally: every pair
+ * Set under pair_sx by MOD_QUIESCE/MOD_UNLOAD; checked under pair_sx
+ * by pair_clone_create().  Once set, no new pair can be created, so
+ * the cloner detach loop during unload terminates finally: every pair
  * either existed before the flip (and is destroyed by the loop) or
- * was refused.
+ * was refused.  Plain accesses suffice precisely because every access
+ * holds pair_sx (lock acquire/release provide the ordering, see
+ * atomic(9)); an unlocked reader must never be added without
+ * converting this to acq/rel atomics.
  */
 static bool pair_unloading;
 
@@ -899,6 +902,17 @@ pair_clone_create(struct if_clone *ifc, char *name, size_t len,
 	 * be linked explicitly, as epair(4) does, or destroying by its
 	 * name fails with ENXIO and pf/ipfw group rules ("on pair")
 	 * miss it.
+	 *
+	 * Known framework-level window (shared with epair): 'a' is
+	 * linked by our caller only after this function returns and
+	 * pair_sx is released, while 'b' is destroyable from here on.
+	 * A destroy via 'b' racing that gap tears down both sides and
+	 * the caller then links the already-destroyed 'a'.  Deferred
+	 * ifnet freeing keeps it memory-safe and the cloner detach
+	 * loop's NULL-softc tolerance converges the stale entry, but
+	 * closing the gap properly needs the cloning framework to link
+	 * the returned ifp before create_f's caller drops its own
+	 * serialization.
 	 */
 	if_clone_addif(ifc, scb->sc_ifp);
 
@@ -1024,21 +1038,25 @@ pair_modevent(module_t mod, int type, void *data)
 {
 	switch (type) {
 	case MOD_QUIESCE:
+	case MOD_UNLOAD:
 		/*
 		 * Refuse all further pair creation.  Taking pair_sx
 		 * makes the flag flip a barrier: any create either
 		 * completed before it (so the cloner detach loop that
 		 * runs after MOD_UNLOAD will find and destroy the
-		 * pair) or observes the flag and fails.  Existing
-		 * pairs are destroyed on unload, as with epair(4).
+		 * pair) or observes the flag and fails.  The flip
+		 * happens in BOTH events because "kldunload -f" skips
+		 * MOD_QUIESCE; MOD_UNLOAD still runs before the
+		 * SYSUNINITs, so the barrier holds for forced unloads
+		 * too.  Existing pairs are destroyed on unload, as
+		 * with epair(4); per-vnet detach is driven by the
+		 * VNET_SYSUNINITs.
 		 */
 		sx_xlock(&pair_sx);
 		pair_unloading = true;
 		sx_xunlock(&pair_sx);
 		return (0);
 	case MOD_LOAD:
-	case MOD_UNLOAD:
-		/* Per-vnet attach/detach is driven by the VNET_SYSINITs. */
 		return (0);
 	default:
 		return (EOPNOTSUPP);

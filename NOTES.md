@@ -684,6 +684,40 @@ drains, tens of ms. The upstream fix (if_clone_detach() taking
 ifnet_detach_sxlock, fixing epair too) remains desirable; this scheme
 is self-sufficient without it.
 
+Forced unload (`kldunload -f`): an extreme measure, not normal
+operation - the supported path is destroying pairs (or letting the
+unload's cloner detach do it) and a plain `kldunload`.  The driver
+nevertheless stays safe under force: the linker skips `MOD_QUIESCE`
+when forced, so the creation barrier is flipped in `MOD_UNLOAD` as
+well (which runs even under `-f`, before the SYSUNINITs), and the
+convergent destroy protocol needs no caller cooperation.  Forced
+unload is deliberately not part of the routine VM test battery.
+
+Locking audit (2026-08-17) findings: (1) FIXED - `kldunload -f`
+skips MOD_QUIESCE, so the unloading barrier is now flipped in BOTH
+MOD_QUIESCE and MOD_UNLOAD (the latter runs even when forced, still
+before the SYSUNINITs). (2) Documented, framework-shaped,
+epair-shared: the create-return window - the framework links the
+returned 'a' side only after create_f returns and pair_sx is
+released, while 'b' is destroyable from inside create; a destroy via
+'b' in that gap leads to the caller linking an already-destroyed 'a'
+(memory-safe via deferred ifnet freeing, converged by the detach
+loop's NULL-softc tolerance, but if_addgroup() runs on a destroyed
+ifnet; proper fix belongs in the cloning framework). (3) Non-issue on
+reflection: packets queued across an if_vmove of a side may deliver
+with pre-move FIB or vnet context, but this is observably equivalent
+to the move having happened slightly earlier or later - and strictly
+hybrid cases (old FIB, new vnet) can only affect packets that the
+move's own address purge has already orphaned.  The standard workflow
+(assign the interface to its long-term vnet before configuring
+addresses or bringing it up, as example-jail.conf does) never has
+traffic in flight during a move at all.  Same pattern as epair. All other protocols verified: the
+pq_mtx state machine (lost-wakeup-free), write-once-before-publish
+fields, the quiesce/claim protocol, one-way lock orders (pq_mtx ->
+taskqueue lock; pair_sx -> {epoch wait, pq_mtx, taskqueue}; callers'
+ifnet_detach_sxlock -> pair_sx, never reversed), single-consumer
+queue draining, and per-CPU counters.
+
 Known open items:
 - Runtime verification pending (needs root): smoke test, destroy/unload
   paths with live pairs and jailed `b` sides, transit checksum test via
