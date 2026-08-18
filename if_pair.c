@@ -163,7 +163,7 @@ static struct {
 /* Atomic: creates in different vnets are not mutually serialized. */
 static u_int pair_next_defq;
 
-/* Random per-boot seed so flow-to-worker mapping is not guessable. */
+/* Random per-load seed so flow-to-worker mapping is not guessable. */
 static uint32_t pair_hash_seed;
 
 /*
@@ -176,10 +176,11 @@ static uint32_t pair_hash_seed;
  * pair_clone_destroy().  Worst-case hold time is one destruction
  * (epoch wait plus queue drains), well under a second.
  *
- * Lock order: SIOCIFDESTROY and vnet teardown take ifnet_detach_sxlock
- * before reaching us; module unload takes only this lock.  We never
- * acquire ifnet_detach_sxlock ourselves, so the ordering is one-way
- * and cannot deadlock.
+ * Lock order: ioctl/netlink destroys and vnet teardown take
+ * ifnet_detach_sxlock before reaching us, and the MOD_UNLOAD sweep
+ * (pair_sweep()) takes it itself before this lock - always the same
+ * ifnet_detach_sxlock -> pair_sx order, never the reverse, so the
+ * ordering cannot deadlock.
  */
 static struct sx pair_sx;
 SX_SYSINIT_FLAGS(pair_sx, &pair_sx, "if_pair control", SX_RECURSE);
@@ -187,9 +188,11 @@ SX_SYSINIT_FLAGS(pair_sx, &pair_sx, "if_pair control", SX_RECURSE);
 /*
  * Set under pair_sx by MOD_QUIESCE/MOD_UNLOAD; checked under pair_sx
  * by pair_clone_create() and by pair_clone_destroy()'s wait-retry.
- * Once set, no new pair can be created, so the cloner detach loop
- * during unload terminates finally: every pair either existed before
- * the flip (and is destroyed by the loop) or was refused.  Plain
+ * Once set, no new pair can be created, so unload-time destruction
+ * terminates finally: every pair either existed before the flip (and
+ * is destroyed by the MOD_UNLOAD sweep - or by the cloner detach
+ * loop, for a pair caught in the create-return window) or was
+ * refused.  Plain
  * accesses suffice precisely because every access holds pair_sx
  * (lock acquire/release provide the ordering, see atomic(9)); an
  * unlocked reader must never be added without converting this to
@@ -206,8 +209,9 @@ VNET_DEFINE_STATIC(struct if_clone *, pair_cloner);
  * MOD_UNLOAD before it runs the file's SYSUNINITs, and file SYSUNINITs
  * run in reverse subsystem order, so this ordering guarantees the pool
  * exists before the first cloner attach (SI_SUB_PSEUDO) and outlives
- * the last pair destroyed by cloner detach.  (epair frees its pool
- * from MOD_UNLOAD, before its own cloner teardown runs.)
+ * every pair destruction - the MOD_UNLOAD sweep and the cloner
+ * detach loops both run before this SYSUNINIT.  (epair frees its
+ * pool from MOD_UNLOAD, before its own cloner teardown runs.)
  */
 static void
 pair_pool_init(const void *unused __unused)
@@ -410,7 +414,7 @@ pair_task_deferred(void *arg, int pending __unused)
  * without this hash every such flow would serialize onto its side's
  * single fallback worker.  Hashes source/destination address, IP protocol
  * and, when safely readable, the TCP/UDP port pair, via
- * jenkins_hash32() with a random per-boot seed; same tuple -> same
+ * jenkins_hash32() with a random per-load seed; same tuple -> same
  * hash preserves per-flow ordering.  Fragments hash without ports so
  * all fragments of a datagram land on one queue (the first fragment
  * would otherwise part ways with the rest), as hardware RSS does.
@@ -1020,10 +1024,11 @@ pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags __unused)
 	 * returned 'a' side only after pair_clone_create()'s caller
 	 * regains control, and every other explanation is excluded
 	 * (ioctl and netlink destroyers are serialized by their
-	 * callers' ifnet_detach_sxlock, a vnet's cloner detach loop
-	 * cannot overlap a syscall running in that vnet, and the
-	 * unload detach loop cannot start before pair_unloading is
-	 * set).  The pending if_clone_addif() needs no lock held
+	 * callers' ifnet_detach_sxlock, vnet teardown holds that same
+	 * lock across its detach loop, and the unload-time destroyers
+	 * - the sweep and the cloner detach loops - cannot start
+	 * before pair_unloading is set).  The pending
+	 * if_clone_addif() needs no lock held
 	 * here, so waiting converges: retry until the link lands,
 	 * then destroy it.  Freeing the unlinked side instead would
 	 * let the pending addif publish a torn-down ifnet - a stale
@@ -1123,9 +1128,9 @@ pair_modevent(module_t mod, int type, void *data)
 		/*
 		 * Refuse all further pair creation.  Taking pair_sx
 		 * makes the flag flip a barrier: any create either
-		 * completed before it (so the cloner detach loop that
-		 * runs after MOD_UNLOAD will find and destroy the
-		 * pair) or observes the flag and fails.  The flip
+		 * completed before it (so the pair is in the registry
+		 * and pair_sweep() below destroys it) or observes the
+		 * flag and fails.  The flip
 		 * happens in BOTH events for robustness: on 15.0 a
 		 * forced unload ("kldunload -f") still fires
 		 * MOD_QUIESCE and only ignores its veto, but older
