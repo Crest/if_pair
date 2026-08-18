@@ -79,11 +79,19 @@ Port builds (`ports/net/if_pair-kmod`) stage everything in their own
 - `Makefile` - standard `bsd.kmod.mk` out-of-tree module build.
 - `if_pair.c` - the driver.
 - `if_pair.4` - man page (`man ./if_pair.4` to preview).
-- `tests/smoke.sh` - root-only smoke test using two vnet jails
-  (IPv4 + IPv6 ping across the pair).
+- `tests/` - root-only shell test suite: `lib.sh` (shared helpers),
+  fourteen `t_*.sh` cases (expected use and corner cases; failures
+  leave state in place for debugging), `run_all.sh`, `cleanup.sh`
+  (post-failure sweep), `vm-testplan.md` (the manual battery), and
+  the older `smoke.sh`.
 - `example-jail.conf` - working jail.conf(5) reference for a pair
   between two vnet jails; the authoritative example of the
   point-to-point addressing syntax (local/32 + peer destination).
+- `samples/` - captured evidence referenced by these notes: the
+  original iperf3 panic backtrace (`crash.txt`), the
+  top(1) captures behind the flow-hashing and scheduler analyses
+  (`top-*.txt`), and the GENERIC-DEBUG run's filtered syslog with
+  the vnet-teardown LOR (`syslog-after-test.txt`).
 - `LICENSE` - BSD-2-Clause.
 - `ports/net/if_pair-kmod/` - FreeBSD port skeleton (see Roadmap).
 
@@ -98,13 +106,14 @@ Port builds (`ports/net/if_pair-kmod`) stage everything in their own
    man page, `SPDX-License-Identifier: BSD-2-Clause`). Known items for
    that step: move the man page install into the base build glue,
    convert `tests/` to ATF (`tests/sys/net/` conventions, like
-   `if_epair` tests), and resolve the four upstream interactions
-   documented below (libalias NAT repair gate; `divert_packet()` and
-   `CSUM_IP`; the cloner create-return window, which is a
-   root-triggerable panic in `epair(4)` today; the vnet teardown
-   lock order, an unload-vs-jail-removal deadlock - see the locking
-   audit) - ideally by landing those fixes independently, since all
-   four affect `epair(4)` today.
+   `if_epair` tests), and resolve the upstream interactions
+   documented below: four affecting `epair(4)` today (libalias NAT
+   repair gate; `divert_packet()` and `CSUM_IP`; the cloner
+   create-return window, a root-triggerable panic in `epair(4)`;
+   the vnet teardown lock order, an unload-vs-jail-removal
+   deadlock - see the locking audit) plus the routed-TSO
+   tryforward gap that transit offload would need - ideally by
+   landing those fixes independently.
 
 ## Design notes / status
 
@@ -235,6 +244,77 @@ who wants the last few percent. This also empirically closes the
 lo(4) question: 16K genuinely is nearly as good as TSO for
 same-machine traffic.**
 
+#### Future work: transit offload for jail<->world traffic (2026-08-18)
+
+The 2026-08-15 verdict above covers pair-LOCAL traffic only, where
+the 16K MTU already batches ~11x.  Transit traffic (jail <-> world,
+routed by the host through a 1500-MTU NIC) gets no batching at all:
+the remote peer's MSS (~1460) clamps the jail's TCP segments, so
+every transit packet crosses the pair at wire size and pays full
+per-traversal cost.  LRO/TSO would batch up to ~44 segments per
+traversal - order-of-magnitude territory, unlike the local +3.8%.
+The "open homework" above (forwarded CSUM_TSO at a non-TSO egress;
+LRO vs the keep-request-bits contract) is now done, with sources:
+
+Inbound (world -> jail): deployable today with no driver change.
+Enable LRO on the NIC (hardware, or the generic software engine in
+sys/netinet/tcp_lro.c that most drivers embed) and run the pair at
+mtu 65535: the default aggregate limit is TCP_LRO_LENGTH_MAX =
+65280 (tcp_lro.h:200, applied in tcp_lro.c:188), which fits.
+Merged frames carry CSUM_DATA_VALID|CSUM_PSEUDO_HDR plus the
+computed value (tcp_lro.c:804/817), which composes with our
+kept-request-bits contract - the jail's input accepts them as
+validated.  The flows terminate in the jail's own TCP stack, which
+is what makes LRO on a forwarding box sound here (endpoint
+semantics; the Linux GRO+veth container pattern).  The in-tree
+stance on LRO-plus-forwarding is exactly one data point: if_bridge
+strips IFCAP_LRO from members unconditionally (BRIDGE_IFCAPS_STRIP,
+if_bridge.c:204); no driver gates LRO on ipforwarding (tree-wide
+grep: zero hits) and ifconfig(8)'s lro text carries no forwarding
+warning - so the endpoint-semantics safety argument is ours to
+document, not the base system's.  Caveat: any OTHER transit through
+the same NIC toward a 1500-MTU egress breaks while LRO is on.
+
+Outbound (jail -> world): needs the pair to advertise IFCAP_TSO;
+the base plumbing is ready at every layer except one.
+- tcp_maxmtu() (tcp_subr.c:3657; v6 twin :3699) grants TF_TSO iff
+  the route's first-hop interface - pairNb, for a jail - has
+  IFCAP_TSO in capenable and CSUM_TSO in hwassist, and copies the
+  limits from its if_hw_tsomax{,segcount,segsize}: the pair alone
+  controls the jail's chain building.  tso_segsz stays the
+  remote-clamped MSS (tcp_output.c:1405), so segmentation size is
+  always correct regardless of the pair MTU.
+- ip_output() passes oversized chains iff csum_flags &
+  egress->if_hwassist & CSUM_TSO (ip_output.c:779; the vxlan
+  comment there is the in-tree precedent for non-origin TSO
+  frames); ip6_output() likewise (ip6_output.c:1132, minus
+  extension-header cases).  pf_route() implements the identical
+  exemption and balk (pf.c:9298/9318), so pf route-to composes.
+- The gap: ip_tryforward() checks bare ip_len <= nh->nh_mtu
+  (ip_fastfwd.c:494 - the comment above it promises "or if
+  hardware will fragment for us", unimplemented for TSO) and
+  ip6_tryforward() likewise (ip6_fastfwd.c:210/230); both consume
+  the packet with an ICMP error and never fall back to the slow
+  path, so routed TSO dies on the default forwarding path today.
+  Fix: mirror ip_output()'s hwassist test - a few lines, twice.
+  Upstream item below.
+- The failure mode at a non-TSO egress dictates default-off:
+  tcp_output()'s EMSGSIZE handler self-heals by clearing TF_TSO
+  (tcp_output.c:1694-1708; its comment anticipates exactly the
+  non-TSO-egress case) - but only when its OWN ip_output() call
+  fails.  In the routed topology the failure surfaces at the
+  host's forwarding hop and returns as ICMP needfrag;
+  tcp_mss_update() re-probes tcp_maxmtu(), which still reports the
+  TSO-capable pair, TF_TSO survives, and the connection stalls.
+  So pair TSO must ship default-off, enabled by an operator who
+  knows the egress NIC can take it - consistent with vlan(4)
+  (inherits parent TSO and maintains limits via
+  if_hw_tsomax_common()/_update(), if_vlan.c:2082-2127 - the
+  ready-made KPI for our advertised limits) and if_bridge (TSO
+  kept only when every member supports it, bridge_mutecaps()).
+  lo(4) has no TSO (if_loop.c:133), so an advertising pair goes
+  beyond its role model - worth stating in review.
+
 Benchmarking note (2026-08-15): an apparent directional throughput
 asymmetry turned out to be an iperf3 `--bidir` artifact (both
 directions share one client process; its CPU saturation throttles
@@ -305,7 +385,7 @@ and lift the single-worker throughput ceiling.
   by userland thread location is RFS territory the kernel does not
   offer, and single-flow throughput remains copy-bound either way.
 
-#### Future work: NUMA-aware flow steering (designed 2026-08-15, not implemented)
+#### Future work: NUMA-aware flow steering (designed 2026-08-15, parked)
 
 Goal: make it highly unlikely that a new flow's worker lives in a
 different NUMA domain than its sender. Design (small, ordering-safe,
@@ -353,7 +433,8 @@ send-buffer state. Root cause: the original design direct-dispatched
 into the peer's stack for performance, misreading `lo(4)`'s
 always-queue behavior as legacy rather than load-bearing. Fixed by
 unconditionally queueing (this section describes the corrected
-design).
+design).  The captured backtrace from that panic is preserved as
+`samples/crash.txt`.
 
 #### Runtime test log
 
@@ -695,22 +776,25 @@ interleaving of ioctl, vnet teardown and kldunload: the first
 destroyer through `pair_sx` with a live softc owns the teardown and
 clears both softcs (after the quiesce - clearing earlier would race
 producers between their RUNNING check and if_getsoftc()); everyone
-else no-ops on NULL; the nested partner unlink tolerates ENXIO
-(concurrent destroyer's framework caller already unlinked that side);
-the old panic() is gone (KASSERT only). `MOD_QUIESCE` flips
-`pair_unloading` under the same sx, making the flag a barrier that
-closes the create-vs-unload orphan window: any create either
-completed before the flip (visible to the detach loop) or refuses
-with ENXIO. Lock order is one-way (callers may hold
-`ifnet_detach_sxlock` before `pair_sx`; we never take the reverse).
-Worst-case control-op latency: one destroy's epoch wait + queue
-drains, tens of ms. The upstream fix (if_clone_detach() taking
-ifnet_detach_sxlock, fixing epair too) remains desirable; this scheme
-is self-sufficient without it.
+else no-ops on NULL; the nested partner unlink handles ENXIO via the
+wait-retry dichotomy (audit finding 2: create window -> wait for the
+pending addif; unload interleaving -> tolerate); the old panic() is
+gone (KASSERT only). `MOD_QUIESCE` flips `pair_unloading` under the
+same sx, making the flag a barrier that closes the create-vs-unload
+orphan window: any create either completed before the flip (so the
+pair is in the registry and the MOD_UNLOAD sweep destroys it) or
+refuses with ENXIO. Lock order is uniform: destroy callers and vnet
+teardown hold `ifnet_detach_sxlock` before `pair_sx`, and the
+MOD_UNLOAD sweep takes the two in that same order itself - the
+reverse order is never taken.  Worst-case control-op latency: one
+destroy's epoch wait + queue drains, tens of ms.  (An earlier note
+here proposed if_clone_detach() taking ifnet_detach_sxlock as the
+upstream fix; that analysis matured into audit finding 4 and the
+vnet_deregister_sysuninit() ordering fix described below.)
 
 Forced unload (`kldunload -f`): an extreme measure, not normal
 operation - the supported path is destroying pairs (or letting the
-unload's cloner detach do it) and a plain `kldunload`.  The driver
+unload's MOD_UNLOAD sweep do it) and a plain `kldunload`.  The driver
 nevertheless stays safe under force.  What `-f` actually changes on
 15.0 (kern_linker.c `linker_file_unload()`): `MOD_QUIESCE` still
 fires - only its veto is ignored - while `MOD_UNLOAD`'s veto is
@@ -766,9 +850,10 @@ visible interface - no corruption path.  Mitigated in-driver
 `if_clone_destroyif()` of the partner returns ENXIO with
 `pair_unloading` clear, that proves the create window (ioctl and
 netlink destroyers are serialized by their callers'
-`ifnet_detach_sxlock`, a vnet's cloner detach loop cannot overlap a
-syscall running in that vnet, and the unload detach loop cannot
-start before the flag is set), so the destroyer sleeps and retries
+`ifnet_detach_sxlock`, vnet teardown holds that same lock across its
+detach loop (`vnet_destroy()`), and the unload-time destroyers - the
+sweep and the cloner detach loops - cannot start before the flag is
+set), so the destroyer sleeps and retries
 until the creator's deferred addif lands - an unlinked side is
 never freed outside unload interleavings.  The invariant: never
 free an interface whose unlink failed.  Residual exposure after the
@@ -856,6 +941,19 @@ VNET_SYSUNINITs stop deadlocking against jail removal.  This fixes
 depends on it after the MOD_UNLOAD sweep, but remains a beneficiary
 (the unload-vs-create residue path can still reach the old
 ordering).
+
+Upstream fix for routed TSO (transit-offload prerequisite, found
+2026-08-18): ip_tryforward() and ip6_tryforward() lack ip_output()'s
+TSO exemption - they compare packet length against the egress MTU
+without testing csum_flags & ifp->if_hwassist & CSUM_TSO
+(ip_fastfwd.c:494; ip6_fastfwd.c:210/230) and consume the packet
+with an ICMP error, no slow-path fallback, so a forwarded TSO chain
+dies on the default forwarding path even when the egress NIC could
+segment it.  Mirroring the ip_output.c:779 test (pf_route() at
+pf.c:9298 already has it) enables routed TSO for every
+TSO-advertising interface.  Independent of if_pair - though nothing
+in-tree generates routed TSO frames today, which is presumably why
+the gap has gone unnoticed.
 
 Known open items:
 - Remaining runtime verification: transit checksum test via tcpdump
