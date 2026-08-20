@@ -532,8 +532,8 @@ design).  The captured backtrace from that panic is preserved as
   Never set `CSUM_DATA_VALID | CSUM_PSEUDO_HDR` here - the input paths
   then read `csum_data` as the hardware-computed checksum value, but it
   holds the checksum field offset. Two offloads are deliberately NOT
-  advertised: SCTP CRC (completion hooks exist only in kernels built
-  with SCTP support, which an out-of-tree module cannot assume) and
+  advertised: SCTP CRC (for epair parity and lack of demand, not
+  safety - see the 2026-08-20 re-analysis below) and
   the IPv4 header checksum, `CSUM_IP` (`divert_packet()` completes
   pending L4 checksums before a packet reaches a divert(4) socket, but
   not `ip_sum` - an elided header sum would reach natd(8) as garbage
@@ -543,6 +543,31 @@ design).  The captured backtrace from that panic is preserved as
   pending, `pair_csum_vouch()` vouches `CSUM_IP_CHECKED |
   CSUM_IP_VALID` unconditionally, sparing the peer's `ip_input()` a
   software verification.
+- **SCTP CRC re-analysis (2026-08-20)**: the original exclusion
+  rationale ("completion hooks exist only in kernels built with SCTP
+  support, which an out-of-tree module cannot assume") was wrong.
+  Pending SCTP CRCs are produced only by the SCTP stack itself,
+  whose protocol hooks (in_proto.c:115) require the
+  SCTP/SCTP_SUPPORT kernel option - and the same option compiles
+  sctp_delayed_cksum() completion into ip_output() (:765),
+  ip_tryforward() (ip_fastfwd.c:106/477), pf_route() and
+  divert_packet() (ip_divert.c:200 - so the natd(8) failure mode
+  that forced the CSUM_IP exclusion does not exist for SCTP), while
+  sctp_crc32.c itself is "optional inet | inet6" (conf/files:4421)
+  and thus present in practically every kernel.  Producer implies
+  completer: a kernel able to generate a pending SCTP CRC can always
+  complete it, so advertising CSUM_IP_SCTP would be safe
+  unconditionally - no compile-time gate or runtime probe needed.
+  (For the record: config.mk does generate opt_sctp.h for
+  out-of-tree builds - "#define SCTP_SUPPORT 1" when the src tree
+  has MK_SCTP_SUPPORT, or symlinked from the real kernel build dir
+  under KERNBUILDDIR - but that tests the build environment, not the
+  running kernel, and turns out to be unnecessary here.  GENERIC
+  ships SCTP_SUPPORT.)  The bit stays off for epair parity and lack
+  of demand; the one open item before ever advertising it is whether
+  libalias' alias_sctp.c recomputes the CRC from scratch after NAT
+  rewriting - if it does, even the ipfw-nat caveat would not apply
+  to SCTP.
 - **pf**: needs no special driver support (verified against
   `sys/netpfil/pf` in 15.0). pf attaches to interfaces generically via
   pfil/pfi hooks; both sides of a pair are in interface group `pair`
