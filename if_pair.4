@@ -168,7 +168,7 @@ driver exposes the following
 variable, which can also be set as a
 .Xr loader.conf 5
 tunable:
-.Bl -tag -width "net.link.pair.batch"
+.Bl -tag -width "net.link.pair.batch_overruns"
 .It Va net.link.pair.batch
 Number of packets a delivery worker processes before briefly
 yielding its CPU so that timers and user processes keep running
@@ -180,6 +180,14 @@ even for expensive packets.
 Values above the per-queue limit of 4096 are reduced to it with a
 console warning; a value of 0 or less disables yielding, in which
 case a saturated worker monopolizes its CPU.
+.It Va net.link.pair.batch_overruns
+Read-only count of worker passes cut short because a clock tick
+elapsed before the packet budget ran out.
+Yielding after a full batch is normal under load; a steadily growing
+overrun count means single batches regularly outlive a clock tick,
+for example with very large MTUs, and a smaller
+.Va net.link.pair.batch
+may bound timer latency more smoothly.
 .El
 .Sh DIAGNOSTICS
 Interface counters, shown by

@@ -233,7 +233,13 @@ pool rather than leaning on it.)
   uncontended yield resumes in well under a microsecond
   (sub-percent overhead); Linux's NAPI uses the same shape (64
   packets + a 2 ms jiffies time budget) for the same problem, with
-  lighter per-packet work.
+  lighter per-packet work.  Tick-triggered yields are counted in the
+  read-only counter(9) sysctl `net.link.pair.batch_overruns`
+  (per-CPU slots match the pinned workers; COUNTER_U64_DEFINE_EARLY
+  avoids the window where a module's sysctl is visible before a
+  SYSINIT-time counter_u64_alloc() has run); count-budget yields are
+  deliberately not counted - yielding between batches is normal
+  under load, an overrun means a batch outlived a callout deadline.
   The yield is legal inside the NET_TASK epoch section (a voluntary
   yield takes the same mi_switch() path as the involuntary
   preemption EPOCH_PREEMPT is designed for) and happens with no

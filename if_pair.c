@@ -24,6 +24,7 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/counter.h>
 #include <sys/cpuset.h>
 #include <sys/epoch.h>
 #include <sys/hash.h>
@@ -221,6 +222,20 @@ SYSCTL_PROC(_net_link_pair, OID_AUTO, batch,
     pair_batch_sysctl, "I",
     "Packets delivered per worker pass before yielding the CPU"
     " (<= 0: never yield)");
+
+/*
+ * Tick-triggered yields only; count-budget yields are deliberately
+ * not counted, since yielding between batches is normal operation
+ * under load.  COUNTER_U64_DEFINE_EARLY backs the counter with
+ * static per-CPU storage valid from module link time, so there is
+ * no counter_u64_alloc() lifecycle and no window where the sysctl
+ * is visible before a SYSINIT has allocated the counter.  The
+ * per-CPU increment slots line up with the pinned workers.
+ */
+COUNTER_U64_DEFINE_EARLY(pair_batch_overruns);
+SYSCTL_COUNTER_U64(_net_link_pair, OID_AUTO, batch_overruns, CTLFLAG_RD,
+    &pair_batch_overruns,
+    "Worker passes cut short by a clock tick before the packet budget");
 
 /*
  * Control-plane lock, serializing pair creation, destruction and the
@@ -443,6 +458,10 @@ pair_input(if_t ifp, struct mbuf *m)
  * userland sub-tick fairness and remains the effective bound at
  * hz=100 (VM guests), where a tick is 10 ms.  batch <= 0 disables
  * both budgets - the documented off-switch to pre-yield behavior.
+ * Tick-triggered yields increment net.link.pair.batch_overruns;
+ * count-budget yields are not counted, because yielding between
+ * batches is normal under load, while a tick overrun means one
+ * batch outlived a callout deadline and is worth noticing.
  * The yield is legal inside the NET_TASK_INIT epoch section:
  * preemptible epochs support being switched out, and a voluntary
  * yield takes the same mi_switch() path as the involuntary
@@ -457,7 +476,7 @@ pair_task_deferred(void *arg, int pending __unused)
 	struct mbuf *m, *n;
 	sbintime_t t0;
 	int batch, left;
-	bool resched;
+	bool resched, ticked;
 
 	if_ref(ifp);
 	CURVNET_SET(if_getvnet(ifp));
@@ -475,11 +494,15 @@ pair_task_deferred(void *arg, int pending __unused)
 		m->m_nextpkt = NULL;
 		pair_input(ifp, m);
 		m = n;
-		if (m != NULL && batch > 0 &&
-		    (--left == 0 || getsbinuptime() != t0)) {
-			kern_yield(PRI_USER);
-			left = batch;
-			t0 = getsbinuptime();
+		if (m != NULL && batch > 0) {
+			ticked = (getsbinuptime() != t0);
+			if (ticked)
+				counter_u64_add(pair_batch_overruns, 1);
+			if (ticked || --left == 0) {
+				kern_yield(PRI_USER);
+				left = batch;
+				t0 = getsbinuptime();
+			}
 		}
 	}
 

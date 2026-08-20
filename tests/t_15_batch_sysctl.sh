@@ -22,5 +22,10 @@ must "and clamped to the queue size" test "$(sysctl -n $OID)" -eq 4096
 must_retry 3 "clamp warning reached the console buffer" \
     sh -c "dmesg | tail -5 | grep -q 'if_pair: batch size 8192'"
 
+must "batch_overruns is readable and numeric" \
+    sh -c "sysctl -n net.link.pair.batch_overruns | grep -qE '^[0-9]+$'"
+mustfail "batch_overruns is read-only" \
+    sysctl net.link.pair.batch_overruns=0
+
 must "restore original value" sysctl "$OID=$orig"
 pass
