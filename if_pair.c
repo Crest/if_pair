@@ -33,11 +33,14 @@
 #include <sys/mbuf.h>
 #include <sys/module.h>
 #include <sys/mutex.h>
+#include <sys/priority.h>
+#include <sys/proc.h>
 #include <sys/queue.h>
 #include <sys/smp.h>
 #include <sys/socket.h>
 #include <sys/sockio.h>
 #include <sys/sx.h>
+#include <sys/sysctl.h>
 #include <sys/taskqueue.h>
 
 #include <net/bpf.h>
@@ -117,6 +120,7 @@ enum pair_side {
  * lock, would silently strand packets on an idle queue.
  */
 #define	PAIR_QLIMIT	4096	/* epair's RXRSIZE */
+#define	PAIR_BATCH_DFLT	64	/* packets per worker pass between yields */
 
 struct pair_softc;
 
@@ -173,6 +177,49 @@ static u_int pair_next_defq;
 
 /* Random per-load seed so flow-to-worker mapping is not guessable. */
 static uint32_t pair_hash_seed;
+
+SYSCTL_DECL(_net_link);
+SYSCTL_NODE(_net_link, OID_AUTO, pair, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+    "if_pair(4) point-to-point interface pairs");
+
+/*
+ * Packets a worker delivers per pass before yielding the CPU; see
+ * pair_task_deferred() for why the yield exists.  Plain int read
+ * once per pass: the value is advisory per-iteration state with no
+ * cross-thread invariant, so stale reads are harmless (contrast
+ * pair_unloading, which participates in an invariant and lives
+ * under pair_sx).  Values <= 0 disable yielding; values above
+ * PAIR_QLIMIT are clamped by the handler with a warning, since a
+ * single pass can never hold more than one queue's worth anyway.
+ * The handler also serves the loader tunable: the sysctl framework
+ * applies CTLFLAG_RWTUN tunables through the handler at module
+ * load, so an oversized loader.conf value is clamped (and warns)
+ * the same way.
+ */
+static int pair_batch = PAIR_BATCH_DFLT;
+
+static int
+pair_batch_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	int error, val;
+
+	val = pair_batch;
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (val > PAIR_QLIMIT) {
+		printf("if_pair: batch size %d exceeds queue size %d, "
+		    "clamping\n", val, PAIR_QLIMIT);
+		val = PAIR_QLIMIT;
+	}
+	pair_batch = val;
+	return (0);
+}
+SYSCTL_PROC(_net_link_pair, OID_AUTO, batch,
+    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, NULL, 0,
+    pair_batch_sysctl, "I",
+    "Packets delivered per worker pass before yielding the CPU"
+    " (<= 0: never yield)");
 
 /*
  * Control-plane lock, serializing pair creation, destruction and the
@@ -374,6 +421,23 @@ pair_input(if_t ifp, struct mbuf *m)
  * single flush per task run (rescheduling if more arrived meanwhile)
  * is epair's guard against starving other pairs sharing the worker.
  * if_ref() pins the ifnet across the run, matching epair.
+ *
+ * Every net.link.pair.batch packets the worker kern_yield(PRI_USER)s.
+ * Workers run at PI_NET, which outranks all of userland and - one
+ * priority step below - the per-CPU callout threads, so a saturated
+ * worker starves timers on its CPU.  Measured on a 128-core arm64
+ * server (samples/starve.log): ~35 workers at 99.8% left the clock
+ * threads ~30% of a CPU, TCP timers stalled machine-wide, ssh froze
+ * and iperf3 aborted on a control-connection timeout.  Yielding at
+ * PRI_USER drops the worker below both for one scheduling decision,
+ * bounding callout lateness to one batch - ~0.4 ms at the default 64
+ * with the measured ~6 us/packet full-delivery cost, under one tick
+ * - for sub-percent throughput cost (an uncontended yield resumes in
+ * well under a microsecond).  The yield is legal inside the
+ * NET_TASK_INIT epoch section: preemptible epochs support being
+ * switched out, and a voluntary yield takes the same mi_switch()
+ * path as the involuntary preemption they are designed for; it must
+ * not, and does not, happen while pq_mtx is held.
  */
 static void
 pair_task_deferred(void *arg, int pending __unused)
@@ -381,6 +445,7 @@ pair_task_deferred(void *arg, int pending __unused)
 	struct pair_queue *q = arg;
 	if_t ifp = q->pq_sc->sc_ifp;
 	struct mbuf *m, *n;
+	int batch, left;
 	bool resched;
 
 	if_ref(ifp);
@@ -391,11 +456,17 @@ pair_task_deferred(void *arg, int pending __unused)
 	q->pq_state = PAIR_QUEUE_RUNNING;
 	mtx_unlock(&q->pq_mtx);
 
+	batch = pair_batch;	/* one consistent value per pass */
+	left = batch;
 	while (m != NULL) {
 		n = STAILQ_NEXT(m, m_stailqpkt);
 		m->m_nextpkt = NULL;
 		pair_input(ifp, m);
 		m = n;
+		if (batch > 0 && --left == 0 && m != NULL) {
+			kern_yield(PRI_USER);
+			left = batch;
+		}
 	}
 
 	/* Emptiness re-check under the lock; see struct pair_queue. */

@@ -204,6 +204,32 @@ pool rather than leaning on it.)
   callouts) and `qgroup_softirq` (epoch callbacks) - exactly as any
   saturated NIC ithread always has; measured worker load (28-54%
   at benchmark saturation) leaves ample gaps in practice.
+  **UPDATE 2026-08-20: "ample gaps in practice" did not survive big
+  iron.**  On a 128-core arm64 server, `iperf3 -P 40` between two
+  jails saturated ~35 workers at 99.8% (the flow-hash birthday math,
+  load average ~35 with the other ~90 CPUs idle), the callout
+  threads - top priority -54 vs the workers' -55 - got ~30% of a
+  CPU, TCP timers stalled machine-wide, interactive ssh froze and
+  iperf3's own control connection timed out.  Full evidence in
+  `samples/starve.log` (batch-mode top + procstat, captured through
+  the freeze with a pre-launched daemon(8) logger); an 8-core VM
+  never shows this because client and server compete with the
+  workers for the same CPUs and the feedback loop self-throttles.
+  FIXED 2026-08-20 with NAPI-style bounded batches: workers deliver
+  `net.link.pair.batch` packets (default 64, CTLFLAG_RWTUN - both a
+  loader tunable and a runtime sysctl; values above PAIR_QLIMIT are
+  clamped with a console warning, <= 0 disables yielding) and then
+  kern_yield(PRI_USER), dropping below the callout threads and
+  userland for one scheduling decision.  Sizing: 64 x the measured
+  ~6 us/packet full-delivery cost is ~0.4 ms per batch, under one
+  callout tick, while an uncontended yield resumes in well under a
+  microsecond (sub-percent overhead); Linux's NAPI budget for the
+  same problem is also 64 per poll, with lighter per-packet work.
+  The yield is legal inside the NET_TASK epoch section (a voluntary
+  yield takes the same mi_switch() path as the involuntary
+  preemption EPOCH_PREEMPT is designed for) and happens with no
+  locks held.  Needs revalidation on the 128-core box and one
+  INVARIANTS pass.
 - **No stack-depth guard needed**: since transmit never delivers
   inline, chained pairs and routing loops cannot grow the kernel
   stack; each hop is a fresh pass of the next queue's worker task.

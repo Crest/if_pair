@@ -160,6 +160,24 @@ Tear everything down again:
 ifconfig pair0a destroy
 jail -r demo
 .Ed
+.Sh SYSCTL VARIABLES
+The
+.Nm
+driver exposes the following
+.Xr sysctl 8
+variable, which can also be set as a
+.Xr loader.conf 5
+tunable:
+.Bl -tag -width "net.link.pair.batch"
+.It Va net.link.pair.batch
+Number of packets a delivery worker processes before briefly
+yielding its CPU so that timers and user processes keep running
+under sustained load.
+The default is 64.
+Values above the per-queue limit of 4096 are reduced to it with a
+console warning; a value of 0 or less disables yielding, in which
+case a saturated worker monopolizes its CPU.
+.El
 .Sh DIAGNOSTICS
 Interface counters, shown by
 .Xr netstat 1
