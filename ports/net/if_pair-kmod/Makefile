@@ -20,12 +20,14 @@ USES=		kmod uidfix
 OPTIONS_DEFINE=	DOCS
 
 PLIST_FILES=	${KMODDIR}/if_pair.ko \
-		share/man/man4/if_pair.4.gz
+		share/man/man4/if_pair.4.gz \
+		share/man/man4/pair.4.gz
 PORTDOCS=	README.md NOTES.md
 
 post-install:
 	${INSTALL_MAN} ${WRKSRC}/if_pair.4 \
 		${STAGEDIR}${PREFIX}/share/man/man4/
+	${LN} -sf if_pair.4.gz ${STAGEDIR}${PREFIX}/share/man/man4/pair.4.gz
 
 post-install-DOCS-on:
 	${MKDIR} ${STAGEDIR}${DOCSDIR}

@@ -4,7 +4,7 @@ jails, or between the jail host and vnet jails.
 
 Unlike epair(4), no Ethernet layer is emulated: there are no MAC
 addresses, no ARP/NDP neighbor discovery and no link-layer headers.  A
-packet transmitted on one side is handed directly to the peer's
+packet transmitted on one side is delivered into the peer's
 protocol input path in the peer's vnet, with TCP/UDP checksum
 computation elided for traffic that never leaves the machine.
 
