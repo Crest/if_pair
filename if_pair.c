@@ -64,11 +64,19 @@
  * true egress (see pair_csum_vouch()).  The set matches epair(4)
  * exactly, and the two omissions are deliberate:
  *
- * SCTP CRC offload: the forwarding paths do complete pending SCTP
- * CRCs (sctp_delayed_cksum() in ip_tryforward(), ip6_tryforward(),
- * ip_output() and pf_route(); commit bcb298fa9e23), but only in
- * kernels built with SCTP support, which an out-of-tree module
- * cannot assume.
+ * SCTP CRC offload: not omitted for safety - that concern dissolved
+ * on inspection (2026-08-20).  Pending SCTP CRCs are produced only
+ * by the SCTP stack itself, which cannot run without the
+ * SCTP/SCTP_SUPPORT kernel option (its protocol hooks in in_proto.c
+ * sit under the same #if), and that option also compiles the
+ * completion calls into every egress and diversion point:
+ * sctp_delayed_cksum() in ip_output(), ip_tryforward(),
+ * ip6_tryforward(), pf_route() and - unlike the IPv4 header sum
+ * below - divert_packet() (commit bcb298fa9e23).  A kernel able to
+ * produce a pending SCTP CRC can therefore always complete it.  The
+ * bit stays off for epair(4) parity, because SCTP across jail links
+ * is rare, and because libalias' SCTP NAT (alias_sctp.c) is
+ * unverified against pending CRCs; see NOTES.md.
  *
  * CSUM_IP (IPv4 header checksum): divert_packet() completes pending
  * L4 checksums before handing a packet to a divert(4) socket (commit
