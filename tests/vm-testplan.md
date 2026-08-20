@@ -1,9 +1,11 @@
 # if_pair VM test plan
 
-Ordered stages; stop at the first failure and capture state. The
-always-queue rework (post-iperf3-panic) has never been runtime-tested
-- stage 2 is the old crash reproducer and the most important test in
-this file.
+Ordered stages; stop at the first failure and capture state.  The
+scripted suite (`sh tests/run_all.sh`) covers most of stages 1-4 and
+passed 2026-08-17 on GENERIC and GENERIC-DEBUG; this file remains
+the manual battery for what the scripts cannot drive (iperf3 loads,
+crash capture, stage 5) and as the reference for what each stage is
+meant to prove.  Stage 2 is the original crash reproducer.
 
 ## Stage 0 - VM preparation
 
@@ -33,7 +35,7 @@ Baseline notes to record: `sysctl net.isr.maxthreads net.isr.dispatch`,
 
 ```sh
 kldload ./if_pair.ko
-sh tests/smoke.sh        # jails, IPv4+IPv6 ping, b-side destroy refusal
+sh tests/smoke.sh        # jails, IPv4+IPv6 ping, either-side destroy
 ```
 
 Also eyeball: `ifconfig pair0a` (flags, mtu 16384),
@@ -85,7 +87,7 @@ sleep 5; ifconfig pair0a destroy
 #   (pair created on host, b moved in -> expect b returns to host)
 jail -r dummy2
 
-# module unload with live pairs (cloner detach path):
+# module unload with live pairs (MOD_UNLOAD sweep path):
 ifconfig pair create; ifconfig pair create
 kldunload if_pair
 
