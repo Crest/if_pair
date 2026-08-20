@@ -174,6 +174,9 @@ Number of packets a delivery worker processes before briefly
 yielding its CPU so that timers and user processes keep running
 under sustained load.
 The default is 64.
+While yielding is enabled, a worker also yields early whenever a
+clock tick elapses during a batch, so timer lateness stays bounded
+even for expensive packets.
 Values above the per-queue limit of 4096 are reduced to it with a
 console warning; a value of 0 or less disables yielding, in which
 case a saturated worker monopolizes its CPU.

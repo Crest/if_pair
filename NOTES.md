@@ -215,16 +215,25 @@ pool rather than leaning on it.)
   the freeze with a pre-launched daemon(8) logger); an 8-core VM
   never shows this because client and server compete with the
   workers for the same CPUs and the feedback loop self-throttles.
-  FIXED 2026-08-20 with NAPI-style bounded batches: workers deliver
-  `net.link.pair.batch` packets (default 64, CTLFLAG_RWTUN - both a
-  loader tunable and a runtime sysctl; values above PAIR_QLIMIT are
-  clamped with a console warning, <= 0 disables yielding) and then
-  kern_yield(PRI_USER), dropping below the callout threads and
-  userland for one scheduling decision.  Sizing: 64 x the measured
-  ~6 us/packet full-delivery cost is ~0.4 ms per batch, under one
-  callout tick, while an uncontended yield resumes in well under a
-  microsecond (sub-percent overhead); Linux's NAPI budget for the
-  same problem is also 64 per poll, with lighter per-packet work.
+  FIXED 2026-08-20 with NAPI-style dual budgets: workers
+  kern_yield(PRI_USER) on the earlier of `net.link.pair.batch`
+  packets (default 64, CTLFLAG_RWTUN - both a loader tunable and a
+  runtime sysctl; values above PAIR_QLIMIT are clamped with a
+  console warning, <= 0 disables yielding entirely) or a hardclock
+  tick elapsing mid-batch, detected per packet by a getsbinuptime()
+  comparison (~ns: it reads the cached per-tick snapshot, and a
+  change in it IS the deadline signal - a tick fired, callouts may
+  be pending).  The yield drops the worker below the callout
+  threads and userland for one scheduling decision.  Sizing: the
+  tick check bounds callout lateness to one tick plus one packet
+  regardless of per-packet cost (a pure count budget stretches with
+  MTU - 64 x ~20 us at mtu 65535 overruns the 1 ms tick); the count
+  budget provides sub-tick fairness to userland and remains the
+  effective bound at hz=100 VM guests (10 ms ticks).  An
+  uncontended yield resumes in well under a microsecond
+  (sub-percent overhead); Linux's NAPI uses the same shape (64
+  packets + a 2 ms jiffies time budget) for the same problem, with
+  lighter per-packet work.
   The yield is legal inside the NET_TASK epoch section (a voluntary
   yield takes the same mi_switch() path as the involuntary
   preemption EPOCH_PREEMPT is designed for) and happens with no

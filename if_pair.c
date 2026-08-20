@@ -42,6 +42,7 @@
 #include <sys/sx.h>
 #include <sys/sysctl.h>
 #include <sys/taskqueue.h>
+#include <sys/time.h>
 
 #include <net/bpf.h>
 #include <net/if.h>
@@ -422,7 +423,11 @@ pair_input(if_t ifp, struct mbuf *m)
  * is epair's guard against starving other pairs sharing the worker.
  * if_ref() pins the ifnet across the run, matching epair.
  *
- * Every net.link.pair.batch packets the worker kern_yield(PRI_USER)s.
+ * The worker kern_yield(PRI_USER)s on the earlier of two budgets:
+ * every net.link.pair.batch packets, or as soon as a hardclock tick
+ * elapses mid-batch (getsbinuptime() reads the cached per-tick
+ * snapshot - a few ns - and a change in it IS the deadline signal:
+ * a tick fired, so callouts may now be pending behind this thread).
  * Workers run at PI_NET, which outranks all of userland and - one
  * priority step below - the per-CPU callout threads, so a saturated
  * worker starves timers on its CPU.  Measured on a 128-core arm64
@@ -430,14 +435,19 @@ pair_input(if_t ifp, struct mbuf *m)
  * threads ~30% of a CPU, TCP timers stalled machine-wide, ssh froze
  * and iperf3 aborted on a control-connection timeout.  Yielding at
  * PRI_USER drops the worker below both for one scheduling decision,
- * bounding callout lateness to one batch - ~0.4 ms at the default 64
- * with the measured ~6 us/packet full-delivery cost, under one tick
- * - for sub-percent throughput cost (an uncontended yield resumes in
- * well under a microsecond).  The yield is legal inside the
- * NET_TASK_INIT epoch section: preemptible epochs support being
- * switched out, and a voluntary yield takes the same mi_switch()
- * path as the involuntary preemption they are designed for; it must
- * not, and does not, happen while pq_mtx is held.
+ * bounding callout lateness to one tick plus one packet regardless
+ * of per-packet cost (the count budget alone would stretch with MTU
+ * - 64 x ~20 us at mtu 65535 overruns the 1 ms tick), for
+ * sub-percent throughput cost (an uncontended yield resumes in well
+ * under a microsecond).  The count budget still matters: it gives
+ * userland sub-tick fairness and remains the effective bound at
+ * hz=100 (VM guests), where a tick is 10 ms.  batch <= 0 disables
+ * both budgets - the documented off-switch to pre-yield behavior.
+ * The yield is legal inside the NET_TASK_INIT epoch section:
+ * preemptible epochs support being switched out, and a voluntary
+ * yield takes the same mi_switch() path as the involuntary
+ * preemption they are designed for; it must not, and does not,
+ * happen while pq_mtx is held.
  */
 static void
 pair_task_deferred(void *arg, int pending __unused)
@@ -445,6 +455,7 @@ pair_task_deferred(void *arg, int pending __unused)
 	struct pair_queue *q = arg;
 	if_t ifp = q->pq_sc->sc_ifp;
 	struct mbuf *m, *n;
+	sbintime_t t0;
 	int batch, left;
 	bool resched;
 
@@ -458,14 +469,17 @@ pair_task_deferred(void *arg, int pending __unused)
 
 	batch = pair_batch;	/* one consistent value per pass */
 	left = batch;
+	t0 = getsbinuptime();
 	while (m != NULL) {
 		n = STAILQ_NEXT(m, m_stailqpkt);
 		m->m_nextpkt = NULL;
 		pair_input(ifp, m);
 		m = n;
-		if (batch > 0 && --left == 0 && m != NULL) {
+		if (m != NULL && batch > 0 &&
+		    (--left == 0 || getsbinuptime() != t0)) {
 			kern_yield(PRI_USER);
 			left = batch;
+			t0 = getsbinuptime();
 		}
 	}
 
