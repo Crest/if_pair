@@ -136,8 +136,17 @@ input path right there in the worker; netisr's own queues and threads
 are involved only if the admin selects deferred dispatch. (netisr
 itself, despite its per-CPU workstream architecture, ships as a
 single *unpinned* thread - `net.isr.maxthreads=1`,
-`net.isr.bindthreads=0` - which is why the driver brings its own
-pool rather than leaning on it.)
+`net.isr.bindthreads=0`.  Both are loader tunables (RDTUN;
+maxthreads=-1 means all CPUs), so an operator CAN turn netisr into
+a pinned per-CPU pool at boot - the reasons the driver brings its
+own pool anyway: netisr is system-shared infrastructure (every
+netisr_queue() consumer competes in the same ~256-deep per-proto
+queues), it is boot-frozen where our knobs are runtime sysctls,
+requiring global retuning for one driver fails GENERIC-first, and
+swi_net has no batch/yield discipline - a 128-CPU pinned PI_NET
+netisr would reproduce the big-iron callout starvation with no
+place to put the fix, while our pool is exactly where the
+batch/tick/yield machinery and the LRO seam live.)
 
 - **Why queueing is mandatory, not a choice** (learned the hard way -
   see the postmortem below): inline dispatch runs the peer's entire
@@ -244,6 +253,25 @@ pool rather than leaning on it.)
   SYSINIT-time counter_u64_alloc() has run); count-budget yields are
   deliberately not counted - yielding between batches is normal
   under load, an overrun means a batch outlived a callout deadline.
+  CORRECTED 2026-08-21: the build validated above contained an
+  accident.  kern_yield(PRI_USER) demotes via sched_prio(9), which
+  rewrites td_base_pri - the anchor every priority-restoration
+  mechanism (turnstile unlending, sched_userret()) unwinds to - and
+  a pure taskqueue kthread has no restoration net (no userret; the
+  taskqueue idle sleep passes priority 0).  The FIRST yield
+  therefore demoted each worker to timeshare for the thread's
+  lifetime, and the validated responsiveness partly rode on that
+  permanent demotion rather than on the designed bounded-donation
+  contract; equally, throughput under concurrent user CPU load
+  would have degraded to timeshare fair-share, and post-first-yield
+  delivery latency depended on unrelated user load.  Fixed by
+  re-asserting PI_NET after every yield (thread_lock + sched_prio,
+  the sched_userret_slowpath() idiom), making the
+  one-scheduling-decision semantics real: interrupt-class service
+  between yields, donation bounded per batch/tick.  The -P 40
+  responsiveness validation needs a re-run on the post-fix build -
+  workers now hold PI_NET far more of the time than the
+  accidentally-demoted ones that passed it.
   The yield is legal inside the NET_TASK epoch section (a voluntary
   yield takes the same mi_switch() path as the involuntary
   preemption EPOCH_PREEMPT is designed for) and happens with no
@@ -580,6 +608,99 @@ loading ipsec.ko for BGP TCP-MD5 affects every large FreeBSD
 router.  Not blockers: both machines stay responsive, small
 systems behave classically, and the remaining falloff is the
 gentle kind operators expect.
+
+#### RSS status research (2026-08-21)
+
+Context: the scaling levers above raised "integrate with the
+kernel's RSS framework when present" as the principled version of
+locality steering.  Researched before committing to it; findings:
+
+What RSS offers over our jenkins+modulo: rss_hash2cpuid() is the
+mapping stage (our `hash % pt_count` analog), backed by Toeplitz
+with a shared key - the hash NIC hardware implements, so hardware
+and software agree on values system-wide - and an indirection table
+(2^rss_bits buckets, ~2x per CPU, rss_config.c:213) that decouples
+flow identity from CPU choice.  It only trusts its own hash types:
+M_HASHTYPE_RSS_* resolve, everything else (including our
+OPAQUE_HASH writeback) returns NETISR_CPUID_NONE - adoption means
+computing software Toeplitz and marking honest RSS types, not just
+calling the mapper.  All of it is `optional inet rss | inet6 rss`
+(conf/files:4237): none exists on GENERIC, which is why if_pair
+rolled Jenkins (GENERIC-first requirement).
+
+The table's celebrated rebalance-without-rehashing property is
+DORMANT in FreeBSD: rss_table is written in exactly one place (boot
+init, round-robin, rss_config.c:248), every sysctl is RD/RDTUN, and
+no in-tree rebalancer or setter exists.  What IS exercised is
+coherence: RSS-capable drivers (ixgbe, e1000, igc, ena, sfxge,
+iavf) program their hardware indirection from the kernel table, so
+hardware and stack steering agree.  Dynamic rebalancing is real in
+the wider ecosystem (Windows RSS, Linux ethtool -X) but FreeBSD
+never grew the consumer.
+
+Why RSS is not in GENERIC - no official statement, but the tree
+testifies: the option is absent from the sys/conf/NOTES catalog
+(bare mapping in conf/options:477 only); the implementation's own
+TODO (rss_config.c:64) still lists fundamentals - key
+synchronization, config-change event handlers (the missing
+rebalance consumer), "Randomize key on boot", IPv6 support; the
+shipped key is the PUBLIC Microsoft specification key with "XXXRW:
+And that we don't randomize it yet!" (:149), so flow-to-CPU
+placement is attacker-computable - the exact hash-flooding concern
+our per-load random pair_hash_seed avoids; and the header still
+describes PCBGROUP machinery removed wholesale in 2021.
+Meanwhile GENERIC gets the valuable half anyway: multiqueue NICs
+spread flows across queues with their own keys/tables without
+`options RSS` - the option only adds the (unfinished) stack-wide
+coordination layer.
+
+Git history of the core files (rss_config.*, in_rss.*, in6_rss.*):
+born as ~599 lines by Robert Watson in one commit (2014-03-15);
+essentially all development by Adrian Chadd - 20 commits,
++1670/-724, May 2014 through November 2015 - then NOTHING but
+housekeeping for a decade (spelling, sysctl-flag sweeps,
+whitespace, a warning fix, boilerplate removal), the only
+substantive touch being Gleb Smirnoff's 2021-12-02 decoupling of
+RSS from PCBGROUP so PCBGROUP could be deleted: life support, not
+development.  The 2014-era TODO has never been worked.
+
+Provenance and the production-use question (in_rss.h carries
+"Copyright 2010-2011 Juniper Networks... developed by Robert N. M.
+Watson under contract to Juniper"): Watson's merge message for the
+2014 birth commit states directly that "this prototype (and
+derived patches) are in use at Juniper and several other
+FreeBSD-using companies", and gives the merge's purpose as
+refining it "in collaboration rather than maintained as a set of
+gradually diverging patch sets" - production use was the stated
+premise, and fits Junos's FreeBSD-based control plane (a routing
+engine terminating thousands of BGP sessions is the pcbgroup
+scaling problem; the forwarding plane is ASIC territory).  The
+collaboration never happened, and the sponsorship record proves
+the negative sharply: Juniper remains a heavyweight FreeBSD
+sponsor (25-36 commits/year in the early 2010s, 124 in 2022, 133
+in 2023, still active 2025 - veriexec/secure-boot, toolchain,
+platform work), yet across ~600 sponsored commits over 15 years,
+exactly ONE ever touched the RSS core files: the 2014 merge
+itself.  Whether they still use it (frozen feature set, resumed
+private divergence, or superseded by the Linux-based Junos
+Evolved on newer platforms) the tree cannot say; what it can say
+is that the "reservations about its maturity" the merge promised
+to refine away are still in the TODO, verbatim, eleven years
+later.
+
+Implications for if_pair: (1) the Jenkins-plus-per-load-seed choice
+is vindicated - it targets the kernels people run and is more
+steering-attack-resistant than RSS's shipped default; (2) "use RSS
+when available" stays on the future-work list but only as a thin
+optional veneer (software Toeplitz + honest hash types when
+opt_rss.h says so) for the custom-kernel minority - never a
+dependency on a framework whose last feature commit predates
+FreeBSD 11; (3) cautionary precedent, sharpened by the Juniper
+history: infrastructure calcifies half-finished even when it HAS
+a production user - a sponsor with abundant ongoing upstream
+capacity never funded its completion - so our steering/cap knobs
+arrive together with the measurements and consumers that justify
+them, or not at all.
 
 #### Postmortem: iperf3 panic (2026-08-14)
 

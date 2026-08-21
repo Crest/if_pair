@@ -37,6 +37,7 @@
 #include <sys/priority.h>
 #include <sys/proc.h>
 #include <sys/queue.h>
+#include <sys/sched.h>
 #include <sys/smp.h>
 #include <sys/socket.h>
 #include <sys/sockio.h>
@@ -445,7 +446,15 @@ pair_input(if_t ifp, struct mbuf *m)
  * a tick fired, so callouts may now be pending behind this thread).
  * Workers run at PI_NET, which outranks all of userland and - one
  * priority step below - the per-CPU callout threads, so a saturated
- * worker starves timers on its CPU.  Measured on a 128-core arm64
+ * worker starves timers on its CPU.  Priority note: kern_yield()
+ * demotes via sched_prio(9), which REWRITES td_base_pri - the
+ * anchor every restoration mechanism (turnstile unlending,
+ * sched_userret()) unwinds to - and a pure taskqueue kthread has
+ * no restoration net: no userret, and the taskqueue idle sleep
+ * passes priority 0.  Without the explicit re-assert after each
+ * yield, the first yield would demote the worker to timeshare for
+ * the thread's lifetime; with it, the demotion really does last
+ * one scheduling decision.  Measured on a 128-core arm64
  * server (samples/starve.log): ~35 workers at 99.8% left the clock
  * threads ~30% of a CPU, TCP timers stalled machine-wide, ssh froze
  * and iperf3 aborted on a control-connection timeout.  Yielding at
@@ -500,6 +509,14 @@ pair_task_deferred(void *arg, int pending __unused)
 				counter_u64_add(pair_batch_overruns, 1);
 			if (ticked || --left == 0) {
 				kern_yield(PRI_USER);
+				/*
+				 * kern_yield() rewrote td_base_pri;
+				 * re-assert interrupt-class service
+				 * (see the priority note above).
+				 */
+				thread_lock(curthread);
+				sched_prio(curthread, PI_NET);
+				thread_unlock(curthread);
 				left = batch;
 				t0 = getsbinuptime();
 			}
