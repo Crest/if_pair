@@ -44,7 +44,6 @@
 #include <sys/sx.h>
 #include <sys/sysctl.h>
 #include <sys/taskqueue.h>
-#include <sys/time.h>
 
 #include <net/bpf.h>
 #include <net/if.h>
@@ -225,9 +224,15 @@ SYSCTL_PROC(_net_link_pair, OID_AUTO, batch,
     " (<= 0: never yield)");
 
 /*
- * Tick-triggered yields only; count-budget yields are deliberately
- * not counted, since yielding between batches is normal operation
- * under load.  COUNTER_U64_DEFINE_EARLY backs the counter with
+ * Tick-triggered yields only (both the in-loop and the end-of-pass
+ * site); count-budget yields are deliberately not counted, since
+ * yielding between batches is normal operation under load.  Every
+ * increment means a tick boundary passed since the thread's last
+ * voluntary switch, and each one resets that anchor, so a worker
+ * contributes at most ~one count per tick - the counter integrates
+ * busy-worker time (~hz x the sum of worker duty cycles), which is
+ * how the scaling analysis in NOTES.md reads it.
+ * COUNTER_U64_DEFINE_EARLY backs the counter with
  * static per-CPU storage valid from module link time, so there is
  * no counter_u64_alloc() lifecycle and no window where the sysctl
  * is visible before a SYSINIT has allocated the counter.  The
@@ -236,7 +241,7 @@ SYSCTL_PROC(_net_link_pair, OID_AUTO, batch,
 COUNTER_U64_DEFINE_EARLY(pair_batch_overruns);
 SYSCTL_COUNTER_U64(_net_link_pair, OID_AUTO, batch_overruns, CTLFLAG_RD,
     &pair_batch_overruns,
-    "Worker passes cut short by a clock tick before the packet budget");
+    "Worker yields forced by a clock tick before the packet budget");
 
 /*
  * Control-plane lock, serializing pair creation, destruction and the
@@ -434,34 +439,68 @@ pair_input(if_t ifp, struct mbuf *m)
 }
 
 /*
+ * Has a hardclock tick boundary passed since this thread last gave
+ * up a CPU voluntarily?  td_swvoltick is stamped by mi_switch() on
+ * every voluntary switch - our own yields, the wait-retry's
+ * pause(), and the taskqueue idle sleep - so the measurement spans
+ * worker passes and resets exactly when the monopoly it measures
+ * is broken.  This is should_yield(9)'s mechanism recalibrated
+ * from two scheduler timeslices to one tick; reading the field
+ * unlocked for curthread follows should_yield() itself.
+ */
+static inline bool
+pair_ticked(void)
+{
+	return ((u_int)ticks - (u_int)curthread->td_swvoltick >= 1);
+}
+
+/*
+ * Donate the CPU for one scheduling decision, then re-assert
+ * interrupt-class service.  kern_yield() demotes via sched_prio(9),
+ * which rewrites td_base_pri - the anchor every priority
+ * restoration mechanism (turnstile unlending, sched_userret())
+ * unwinds to - and a pure taskqueue kthread has no restoration
+ * net: no userret, and the taskqueue idle sleep passes priority 0.
+ * Without the re-assert the first yield would demote the worker to
+ * timeshare for the thread's lifetime.
+ */
+static void
+pair_yield(void)
+{
+	kern_yield(PRI_USER);
+	thread_lock(curthread);
+	sched_prio(curthread, PI_NET);
+	thread_unlock(curthread);
+}
+
+/*
  * Pool worker: flush this queue once and deliver each packet.  The
  * single flush per task run (rescheduling if more arrived meanwhile)
  * is epair's guard against starving other pairs sharing the worker.
  * if_ref() pins the ifnet across the run, matching epair.
  *
- * The worker kern_yield(PRI_USER)s on the earlier of two budgets:
- * every net.link.pair.batch packets, or as soon as a hardclock tick
- * elapses mid-batch (getsbinuptime() reads the cached per-tick
- * snapshot - a few ns - and a change in it IS the deadline signal:
- * a tick fired, so callouts may now be pending behind this thread).
+ * The worker yields (pair_yield()) on the earlier of two budgets:
+ * every net.link.pair.batch packets, or as soon as a hardclock
+ * tick boundary has passed since the thread's last voluntary
+ * switch (pair_ticked() - a tick fired, so callouts may be pending
+ * behind this thread).  The tick budget deliberately spans passes:
+ * it is anchored to td_swvoltick rather than to pass entry, so
+ * back-to-back passes each individually under both budgets cannot
+ * chain into unbounded PI_NET occupancy - the end-of-pass check
+ * below closes that gap, and the anchor resets automatically at
+ * every yield and at the taskqueue idle sleep.
  * Workers run at PI_NET, which outranks all of userland and - one
  * priority step below - the per-CPU callout threads, so a saturated
- * worker starves timers on its CPU.  Priority note: kern_yield()
- * demotes via sched_prio(9), which REWRITES td_base_pri - the
- * anchor every restoration mechanism (turnstile unlending,
- * sched_userret()) unwinds to - and a pure taskqueue kthread has
- * no restoration net: no userret, and the taskqueue idle sleep
- * passes priority 0.  Without the explicit re-assert after each
- * yield, the first yield would demote the worker to timeshare for
- * the thread's lifetime; with it, the demotion really does last
- * one scheduling decision.  Measured on a 128-core arm64
+ * worker starves timers on its CPU; see pair_yield() for why the
+ * priority must be re-asserted after every yield.  Measured on a 128-core arm64
  * server (samples/starve.log): ~35 workers at 99.8% left the clock
  * threads ~30% of a CPU, TCP timers stalled machine-wide, ssh froze
  * and iperf3 aborted on a control-connection timeout.  Yielding at
  * PRI_USER drops the worker below both for one scheduling decision,
  * bounding callout lateness to one tick plus one packet regardless
- * of per-packet cost (the count budget alone would stretch with MTU
- * - 64 x ~20 us at mtu 65535 overruns the 1 ms tick), for
+ * of per-packet cost or pass pattern (the count budget alone would
+ * stretch with MTU - 64 x ~20 us at mtu 65535 overruns the 1 ms
+ * tick), for
  * sub-percent throughput cost (an uncontended yield resumes in well
  * under a microsecond).  The count budget still matters: it gives
  * userland sub-tick fairness and remains the effective bound at
@@ -483,7 +522,6 @@ pair_task_deferred(void *arg, int pending __unused)
 	struct pair_queue *q = arg;
 	if_t ifp = q->pq_sc->sc_ifp;
 	struct mbuf *m, *n;
-	sbintime_t t0;
 	int batch, left;
 	bool resched, ticked;
 
@@ -497,28 +535,18 @@ pair_task_deferred(void *arg, int pending __unused)
 
 	batch = pair_batch;	/* one consistent value per pass */
 	left = batch;
-	t0 = getsbinuptime();
 	while (m != NULL) {
 		n = STAILQ_NEXT(m, m_stailqpkt);
 		m->m_nextpkt = NULL;
 		pair_input(ifp, m);
 		m = n;
 		if (m != NULL && batch > 0) {
-			ticked = (getsbinuptime() != t0);
+			ticked = pair_ticked();
 			if (ticked)
 				counter_u64_add(pair_batch_overruns, 1);
 			if (ticked || --left == 0) {
-				kern_yield(PRI_USER);
-				/*
-				 * kern_yield() rewrote td_base_pri;
-				 * re-assert interrupt-class service
-				 * (see the priority note above).
-				 */
-				thread_lock(curthread);
-				sched_prio(curthread, PI_NET);
-				thread_unlock(curthread);
+				pair_yield();
 				left = batch;
-				t0 = getsbinuptime();
 			}
 		}
 	}
@@ -533,8 +561,21 @@ pair_task_deferred(void *arg, int pending __unused)
 		q->pq_state = PAIR_QUEUE_IDLE;
 	}
 	mtx_unlock(&q->pq_mtx);
-	if (resched)
+	if (resched) {
 		taskqueue_enqueue(pair_tasks.pt_tq[q->pq_id], &q->pq_task);
+		/*
+		 * Close the chained-small-passes gap: the in-loop
+		 * checks skip a pass's final packet, so back-to-back
+		 * passes each under both budgets would never yield.
+		 * pair_ticked() spans passes, so this fires exactly
+		 * when a tick boundary has passed since the last
+		 * voluntary switch and more work is already queued.
+		 */
+		if (batch > 0 && pair_ticked()) {
+			counter_u64_add(pair_batch_overruns, 1);
+			pair_yield();
+		}
+	}
 
 	CURVNET_RESTORE();
 	if_rele(ifp);

@@ -233,16 +233,27 @@ batch/tick/yield machinery and the LRO seam live.)
   packets (default 64, CTLFLAG_RWTUN - both a loader tunable and a
   runtime sysctl; values above PAIR_QLIMIT are clamped with a
   console warning, <= 0 disables yielding entirely) or a hardclock
-  tick elapsing mid-batch, detected per packet by a getsbinuptime()
-  comparison (~ns: it reads the cached per-tick snapshot, and a
-  change in it IS the deadline signal - a tick fired, callouts may
-  be pending).  The yield drops the worker below the callout
-  threads and userland for one scheduling decision.  Sizing: the
-  tick check bounds callout lateness to one tick plus one packet
-  regardless of per-packet cost (a pure count budget stretches with
-  MTU - 64 x ~20 us at mtu 65535 overruns the 1 ms tick); the count
-  budget provides sub-tick fairness to userland and remains the
-  effective bound at hz=100 VM guests (10 ms ticks).  An
+  tick boundary having passed since the thread's last VOLUNTARY
+  context switch.  (Reworked 2026-08-21: the original per-pass
+  getsbinuptime() snapshot could not see across passes -
+  back-to-back passes each under both budgets, with tick crossings
+  landing on final packets, could chain into unbounded PI_NET
+  occupancy, a measure-zero-but-real tail.  The tick budget is now
+  anchored to td_swvoltick, which mi_switch() stamps on every
+  voluntary switch - our yields, the wait-retry's pause(), the
+  taskqueue idle sleep - so it spans passes and resets exactly when
+  the monopoly it measures is broken; an end-of-pass check yields
+  before a rescheduled pass when a tick has passed and work is
+  queued.  This is should_yield(9)'s mechanism recalibrated from
+  two timeslices to one tick, and reading `ticks` is cheaper than
+  the timehands snapshot it replaced.)  The yield drops the worker
+  below the callout threads and userland for one scheduling
+  decision.  Sizing: the tick check hard-bounds callout lateness to
+  one tick plus one packet regardless of per-packet cost or pass
+  pattern (a pure count budget stretches with MTU - 64 x ~20 us at
+  mtu 65535 overruns the 1 ms tick); the count budget provides
+  sub-tick fairness to userland and remains the effective bound at
+  hz=100 VM guests (10 ms ticks).  An
   uncontended yield resumes in well under a microsecond
   (sub-percent overhead); Linux's NAPI uses the same shape (64
   packets + a 2 ms jiffies time budget) for the same problem, with
@@ -268,10 +279,14 @@ batch/tick/yield machinery and the LRO seam live.)
   re-asserting PI_NET after every yield (thread_lock + sched_prio,
   the sched_userret_slowpath() idiom), making the
   one-scheduling-decision semantics real: interrupt-class service
-  between yields, donation bounded per batch/tick.  The -P 40
-  responsiveness validation needs a re-run on the post-fix build -
-  workers now hold PI_NET far more of the time than the
-  accidentally-demoted ones that passed it.
+  between yields, donation bounded per batch/tick.  REVALIDATED
+  2026-08-21: t_16 (hw.ncpu/3 connections, host heartbeat canary)
+  passed on the 128-core server with the re-assert in place, and
+  t_18 throughput is statistically identical to the demoted build
+  (the re-assert costs nothing measurable at ~385k yields per
+  sweep).  The designed contract - interrupt-class service between
+  yields, starvation bounded by the batch/tick budgets alone -
+  now stands validated without the accident's help.
   The yield is legal inside the NET_TASK epoch section (a voluntary
   yield takes the same mi_switch() path as the involuntary
   preemption EPOCH_PREEMPT is designed for) and happens with no
