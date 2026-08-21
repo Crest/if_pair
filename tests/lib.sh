@@ -131,6 +131,16 @@ jname() {
 	echo "${JPREFIX}_$1"
 }
 
+# ifdrops jail iface: print the interface's input-discard and
+# output-queue-drop counters as "<idrop> <oqdrops>", taken from the
+# netstat link row.  Fields are addressed from the end of the line
+# because the address column is empty on point-to-point interfaces.
+ifdrops() {
+	jexec "$1" netstat -I "$2" -dn | awk '
+	    /<Link/ { print $(NF - 4), $NF; found = 1; exit }
+	    END { if (!found) print "0 0" }'
+}
+
 # mkjail name: persistent vnet jail sharing the host file system.
 mkjail() {
 	if jls -j "$1" jid >/dev/null 2>&1; then
