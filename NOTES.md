@@ -90,8 +90,12 @@ Port builds (`ports/net/if_pair-kmod`) stage everything in their own
 - `samples/` - captured evidence referenced by these notes: the
   original iperf3 panic backtrace (`crash.txt`), the
   top(1) captures behind the flow-hashing and scheduler analyses
-  (`top-*.txt`), and the GENERIC-DEBUG run's filtered syslog with
-  the vnet-teardown LOR (`syslog-after-test.txt`).
+  (`top-*.txt`), the GENERIC-DEBUG run's filtered syslog with
+  the vnet-teardown LOR (`syslog-after-test.txt`), the 128-core
+  starvation log behind the batch/yield fix (`starve.log`), and
+  the big-iron scaling investigation's benchmark and profiling
+  captures (`t17_*.txt`, `t18_*.txt`, `t19_*.txt`,
+  `dtrace-tail.txt`).
 - `LICENSE` - BSD-2-Clause.
 - `ports/net/if_pair-kmod/` - FreeBSD port skeleton (see Roadmap).
 
@@ -462,6 +466,120 @@ queue structures and socket-buffer bookkeeping, while the dominant
 per-byte copyout runs in the application's thread, whose placement
 the scheduler owns. Parked per project discipline: no optimization
 without a demonstrated need and a machine to measure it on.
+
+#### Big-iron scaling investigation (2026-08-20/21)
+
+Symptom (t_17 connection sweep, 5 s per point, receiver averages in
+Gbit/s): an 8-core VM behaves classically - climbs to a peak at
+P=8 (122), declines gently (67.9 at P=128).  A 128-core arm64
+server (Ampere, bare metal, GENERIC) peaks at the SAME P=8 (89.9)
+despite 16x the cores, then collapses: 72.5 at 16, 48.9 at 32,
+19.5 at P=128 - HALF its own single-connection rate, with ~90 CPUs
+idle.  Both systems stayed fully responsive throughout (the
+batch/yield fix doing its job).  Three hypotheses: (A) cross-CPU
+coordination costs, (B) queue overflow feeding TCP loss collapse,
+(C) the yield donating worker time to co-located userland.
+
+Elimination chain, one instrument per step (evidence in samples/):
+
+- t_18 (batch sweep 16/64/256, t18_*.txt): throughput is
+  batch-invariant on the Ampere (<2% spread at every connection
+  count across a 16x yield-frequency range) - hypothesis C dead.
+  Bonus: batch 64 is best-or-tied on the VM; the default stands.
+- batch_overruns reinterpreted: a worker can overrun at most ~once
+  per tick, so the counter integrates busy-worker time (~hz x sum
+  of duty cycles).  Dividing throughput by it gives per-busy-worker
+  efficiency on the Ampere: ~10.5 Gbit/s per worker at P=8, 0.78
+  at P=64, 0.28 at P=128 - a 37x efficiency collapse while fully
+  busy.  (VM overruns are 100x lower: batches almost never outlive
+  a tick there.)
+- t_18 with per-run drop deltas (t18_*_a.txt): ZERO oqdrops and
+  ZERO idrop on the Ampere at every point of the collapse, while
+  the VM - declining gently - does drop at P>=64.  The inversion
+  kills hypothesis B: loss is not the mechanism.
+- t_19 (profile-497 kernel-PC sampling, t19_*.txt): the VM at P=64
+  is a healthy saturated profile (52% copy, copycommon 49.8%,
+  locks 13.5%, sched ~0).  The Ampere: lock_delay 30.8% of
+  non-idle cycles, sched 0.0% (the wakeup-IPI variant of A:
+  refuted), 33% idle - and a surprise: ipsec_kmod_hdrsize 21.8%,
+  ipsec_kmod_output/input/check_policy/capability ~30% more, ~52%
+  total.  The server runs ipsec.ko in production for BGP TCP-MD5
+  session protection (two mature tcp-md5 SAs, empty SPD): once
+  loaded, its hooks tax EVERY packet - traffic no policy will ever
+  match.
+- lockstat spin capture during t_19 (dtrace-tail.txt): ~4.9M lock
+  spins in 10 s, top sites in_pcblookup_hash_smr (inpcb lock
+  acquisition after the lockless SMR lookup, 1.75M),
+  soreceive/sosend_generic_locked (sockbuf locks, 2.9M combined)
+  and callout_reset_sbt_on (cross-CPU timer wheel locks, 0.23M).
+  NO ipsec frames among the spins.
+
+Conclusion - two independent taxes, neither a driver bug:
+
+1. A ~52% per-packet cycle tax from the loaded ipsec.ko's hooks,
+   which converts into throughput loss once workers saturate
+   (P=1 is unaffected - see the A/B below): measured at 2.5x peak
+   and 7x high-connection throughput on this machine.  Upstream-
+   worthy on its own; see open item (c) below.
+2. The scaling collapse itself: per-connection lock ping-pong.
+   Each connection's inpcb, socket-buffer and callout locks are
+   handed around a triangle - sender thread (sosend), pinned
+   worker (whole TCP input/output in worker context), receiver
+   thread (soreceive) - each on a different CPU of a 128-core
+   coherence mesh.  Spin cost per handoff grows with topological
+   distance and participant count; on the 8-core VM the same dance
+   is nearly free inside one cache complex.  Honest driver-side
+   admission: if_pair's deferred-worker design INSERTS the third
+   party into that triangle (lo(4) delivers inline in the sender's
+   context and keeps its locality), so part of tax 2 is the price
+   of the architecture that fixed the inline-dispatch panic and
+   bought small-system parallelism.  Corollary: the VM's
+   "metastable 42 Gbit/s single-flow dip" (2026-08-15, above) was
+   ULE co-locating worker and application - locality WORKING, not
+   a scheduler quirk.
+
+A/B confirmation (2026-08-21, t17_ampere_noipsec.txt): unloading
+ipsec.ko was confirmed operationally safe on the Ampere and t_17
+rerun without it.  Peak 89.9 -> 223 Gbit/s (moving from P=8 to
+P=16), P=128 19.5 -> 140 (7.2x), falloff softened from -78% to
+-37% off peak, still zero drops - the curve is now classic and the
+128-core machine finally outruns the 8-core VM.  Tax 1 is thereby
+causally confirmed and was the dominant scaling killer.  Two model
+refinements: P=1 was UNCHANGED (within the 30-37 run spread), so
+the hook tax converts into throughput loss only once workers
+saturate - a single flow's worker absorbs it in idle headroom (an
+earlier draft of this section wrongly blamed the tax for the
+single-connection gap).  And tax 2 persists exactly as predicted:
+at P=128 the overruns still integrate to ~77 busy CPU-equivalents
+moving 140 Gbit/s (~1.8 Gbit/s per worker vs ~30 at the P=16
+peak), so per-worker efficiency still collapses ~16x - the lock
+triangle remains the residual, now-gentle falloff.  The post-unload
+P=64 profile (t19_ampere_noipsec.txt) makes that residual vivid:
+lock_delay is 86.9% of non-idle cycles (locks bucket 90.2%, copy
+6.4%, protocol work 0.7%, idle down to 9.7%) - with the IPsec
+cycle sink gone and packet rates 4x higher, tax 2 monopolizes the
+machine; the remaining ceiling is pure lock contention and the
+productive cycles are a sliver, which also quantifies the upside
+of the LRO/steering levers below.  Supporting actor visible in the
+top frames: mbuf cluster refcount atomics (mb_dupcl/mb_free_ext -
+tcp_m_copym reference-shares clusters with the retransmit queue,
+and the worker drops those references from another CPU).
+
+Open items: (a) lo(4) baseline sweep on the Ampere (same stack, no
+worker triangle) to apportion the residual tax 2 between platform
+TCP behavior and if_pair's indirection; (b) if (a) implicates the
+triangle: software LRO on the receive batches (divides per-packet
+lock traffic by the aggregation factor; the in-tree tcp_lro engine
+fits the worker's existing batch structure), sticky
+transmit-CPU steering as an opt-in policy (costs single-flow
+pipelining, helps flow-heavy big iron), and/or a capped worker set
+sysctl, all as measured future work; (c) consider an upstream
+report for tax 1 with these numbers - a 2.5x peak / 7x
+high-connection cost on unrelated local traffic from merely
+loading ipsec.ko for BGP TCP-MD5 affects every large FreeBSD
+router.  Not blockers: both machines stay responsive, small
+systems behave classically, and the remaining falloff is the
+gentle kind operators expect.
 
 #### Postmortem: iperf3 panic (2026-08-14)
 
