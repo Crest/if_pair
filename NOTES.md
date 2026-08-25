@@ -403,6 +403,115 @@ the base plumbing is ready at every layer except one.
   lo(4) has no TSO (if_loop.c:133), so an advertising pair goes
   beyond its role model - worth stating in review.
 
+**Implementation requirements (2026-08-24, verified against this
+host's /usr/src).**  Everything above re-verified; one gap is new.
+
+Driver side (if_pair.c) - small, self-contained:
+
+- Advertise IFCAP_TSO4|IFCAP_TSO6 in if_capabilities but NOT in the
+  default capenable (default-off per the stall analysis above).
+- SIOCSIFCAP: map IFCAP_TSO4 -> CSUM_IP_TSO and IFCAP_TSO6 ->
+  CSUM_IP6_TSO into hwassist.  tcp_maxmtu()/tcp_maxmtu6() require
+  BOTH the capenable bit and hwassist & CSUM_TSO (tcp_subr.c:3657/
+  3699).  Follow driver convention: TSO only alongside the matching
+  TXCSUM (tcp_output marks TSO frames CSUM_TCP, assuming checksum
+  offload rides along).  Each side's capenable is independent and
+  that is the right granularity: a jail's connections consult the
+  first-hop ifp, i.e. the jail's own side - enabling TSO on pairNb
+  grants TSO to that jail, not to the host.
+- TSO limits: leave if_hw_tsomax{,segcount,segsize} at 0.
+  if_attach() fills the tree-wide conservative defaults - 65518
+  bytes, 35 segments, 2048 per segment (if.c:917-920) - which any
+  TSO-capable NIC is expected to meet, so no vxlan-style
+  arithmetic and no new tunables.  Cosmetic: if_attach() then
+  prints "Using defaults for TSO" once per interface when
+  IFCAP_TSO is in if_capabilities; set the same values explicitly
+  before if_attach() to silence it.
+- pair_output()/pair_input(): NO changes needed - deliver-whole
+  already works.  tcp_output() sets CSUM_TCP alongside CSUM_TSO
+  (tcp_output.c:1384/1404), so a TSO frame terminating in the peer's
+  stack is accepted by tcp_input()'s existing local-host request-bit
+  branch (tcp_input.c:718/652) - the keep-request-bits contract
+  covers TSO with zero new code.  The M_EXTPG guard in pair_input()
+  is compatible: sendfile-built TSO chains keep the headers in a
+  mapped lead mbuf; pair_hash_mbuf() already reads via m_copydata().
+  pair_csum_vouch() stays valid: CSUM_IP is not in our hwassist, so
+  ip_output() computes ip_sum in software even on TSO frames.
+- Considerations to document (not blockers): mbufq is count-limited,
+  so worst-case queue memory rises from 64 MB (16K) to 256 MB
+  (4096 x 64K) per queue - in practice bounded by aggregate TCP
+  windows, but worth a byte-cap thought if it ever bites; OPACKETS
+  counts one per unsplit frame (ip_output's ia counters divide by
+  tso_segsz - we could do the same when CSUM_TSO is set).
+
+Kernel side - the payoff case (routed transit) needs three small
+upstream patches, all the same one-line shape (add the TSO-hwassist
+exemption ip_output.c:779 already implements):
+
+- ip_tryforward(): bare ip_len <= nh->nh_mtu at ip_fastfwd.c:494.
+- ip6_tryforward(): two bare checks, ip6_fastfwd.c:210 and :230.
+- NEW (2026-08-24): ip6_forward() - the v6 SLOW path - also balks:
+  bare IN6_LINKMTU check at ip6_forward.c:388.  IPv4's slow path is
+  exempt only by delegation (ip_forward() -> ip_output()); v6 does
+  its own check, so for IPv6 both paths are broken today.
+
+Already in place upstream (verified): ip_output.c:779,
+ip6_output.c:1131, pf_route pf.c:9298/9318.  No generic software
+GSO exists in-tree, so there is no fallback that avoids the kernel
+patches for routed traffic; unpatched, a routed TSO frame dies as
+ICMP too-big and TF_TSO survives the re-probe -> connection stalls,
+which is exactly why default-off is a hard requirement, not a
+preference.  Host->jail and jail->host TSO (pair-local termination)
+works without any kernel patch, but that is the measured +3.8% case.
+
+Test matrix when built: pair-local TSO both directions; transit on a
+patched kernel through a TSO NIC (expect order-of-magnitude, the
+~44x batching argument); transit to a non-TSO egress (expect and
+document the stall); pf enabled (pf_test on 64K frames, route-to via
+the pf_route exemption); tcpdump on giant frames; INVARIANTS pass.
+
+**Router-grade LRO+TSO composition (investigated 2026-08-24).**
+Question: could a FreeBSD router run LRO and TSO on all interfaces,
+Linux GRO/GSO style (merge at ingress, re-segment at egress)?  Not
+today: tcp_lro records only lro_nsegs (accounting) - never
+tso_segsz, never CSUM_TSO (verified tree-wide) - and no output path
+re-segments anything, so a merged frame at a smaller-MTU egress
+blackholes (ICMP needfrag quoting an MTU the origin already
+honors).  Enabling it = two separable upstream projects:
+
+- Phase A, software GSO: a tcp_gso() that splits a CSUM_TSO frame
+  in software (regenerate headers, step seq/ip_id, FIN|PSH only on
+  the tail, per-segment checksums), hooked at every current balk:
+  ip_output.c:819-825, ip6_output.c:1161 region, the three
+  forwarding sites above, pf_route pf.c:9318.  Contained,
+  independently valuable, and precedented: Garzarella's 2014 "GSO
+  for FreeBSD" patch (freebsd-net), never merged.  DIRECT if_pair
+  relevance: GSO at the balk points removes the non-TSO-egress
+  stall - the sole reason pair TSO must ship default-off.  With
+  Phase A upstream, pair TSO becomes safe unconditionally.
+- Phase B, reversible ("GRO-mode") LRO: invasive tcp_lro surgery.
+  Current merge is endpoint-oriented and lossy - tcp_lro.c:734
+  overwrites the header tsval with the newest merged segment's
+  ("Incorporate latest timestamp") - so a forwarding-safe mode
+  must merge only what re-segmentation reconstructs exactly:
+  equal-size full segments (record as tso_segsz), byte-identical
+  TCP options (flush on tsval change instead of mutating),
+  identical TTL/TOS/ECN (no CE smearing), DF-only with the RFC
+  6864 stance on regenerated IP IDs, th_sum rewritten to
+  pseudo-header form at hand-off.  The local/forwarded split is
+  decided at the forwarding lookup, not at merge time: LRO stamps
+  reversibility + tso_segsz; ip_tryforward converts to CSUM_TSO
+  when the frame transits.  Hardware LRO engines cannot promise
+  any of this, so GRO-mode forces the software engine.
+- Phase C, policy: default-off knobs, pf/ipfw see 1 merged packet
+  instead of N (state/counter semantics), bpf sees giants,
+  if_bridge keeps stripping (L2 out of scope).
+
+Not an if_pair work item - recorded because Phase A alone changes
+the pair TSO calculus above, and any freebsd-net proposal for the
+three forwarding exemptions can cite Phase A as the principled
+fix the exemptions approximate.
+
 Benchmarking note (2026-08-15): an apparent directional throughput
 asymmetry turned out to be an iperf3 `--bidir` artifact (both
 directions share one client process; its CPU saturation throttles
@@ -491,8 +600,10 @@ ready to build when a multi-domain if_pair host exists to measure on):
    qid` - residue selects the worker through the existing modulo
    path, high bits keep jenkins entropy for downstream consumers.
 
-Properties: per-flow ordering absolute (sender migration degrades
-locality, never order); the flowid-reflection loop keeps BOTH
+Properties: per-flow ordering absolute for every flow that carries
+or learns a flowid - see the 2026-08-25 correction below for the
+residual class (sender migration degrades locality, never order,
+for the covered flows); the flowid-reflection loop keeps BOTH
 directions of a connection on that one in-domain worker, and wakeup
 affinity then tends to pull the receiving application into the same
 domain; single-domain machines degenerate to current behavior; empty
@@ -509,6 +620,51 @@ queue structures and socket-buffer bookkeeping, while the dominant
 per-byte copyout runs in the application's thread, whose placement
 the scheduler owns. Parked per project discipline: no optimization
 without a demonstrated need and a machine to measure it on.
+
+**Correction (2026-08-25)**: step 2's framing - "the only moment
+steering is decided, on a flow's first packet" - and the ordering
+property derived from it overstate the case. `pair_hash_mbuf()`
+runs on EVERY flowid-less packet, so any curcpu-derived input
+(here, the sender's domain) is re-read per packet, and a sender
+migrating mid-flow would remap such a flow between workers -
+ordering is absolute only for flows whose packets carry a flowid
+or whose endpoints learn the written-back one (the TCP reflection
+loop; a packet or two of pre-learning exposure is acceptable).
+The residual flowid-less class is however far smaller than a
+first draft of this correction assumed ("unidirectional UDP"):
+verified on 15.0, every UDP socket is born with a synthetic
+per-socket flowid (`udp_attach()`, udp_usrreq.c:1573-1575, atomic
+counter, `M_HASHTYPE_OPAQUE`), and `connect()`ed sockets on
+ROUTE_MPATH kernels (GENERIC) get one in `in_pcbconnect()`
+(in_pcb.c:1171-1180; Toeplitz over the 5-tuple) - though only once
+`net.route.hash_outbound` is on, which defaults to 0 and
+auto-enables when the first multipath route is installed
+(route_ctl.c:903-910).  So UDP always arrives pre-stamped, TCP
+only on hosts that actually use multipath routes; elsewhere TCP
+still relies on our writeback plus its learn sites and never
+consults `pair_hash_mbuf()` again after learning.  TCP's learn site
+(tcp_input.c:927-931, guarded by `inp_flowtype == M_HASHTYPE_NONE`;
+server side inherits the SYN's flowid via tcp_syncache.c:813)
+covers the rest of TCP.  What actually remains flowid-less:
+raw-socket/ICMP traffic, kernel-originated packets without an
+inpcb, and forwarded packets whose ingress NIC stamps no RSS hash
+- and of those only the userland raw-socket sender migrates on
+scheduler whim (ULE re-decides placement at every wakeup;
+forwarding ithreads are effectively CPU-stable).  Design rule if
+this is ever built: take the domain decision only on the
+flowid-writeback path, and keep the no-writeback fallback
+domain-independent (plain global modulo), so the residual class
+retains today's absolute ordering.  The same 2026-08-25 discussion
+also settled why curcpu-derived steering cannot dodge
+sender/worker CPU collisions at all: ULE's wakeup affinity
+(placement decided at every wakeup, cache-warmth window
+`affinity` = hz/1000 ticks per topology level, sched_ule.c:317)
+re-plants a blocking sender next to the worker that wakes it, so
+hash-time avoidance decays within a few RTTs; only cpuset(1), the
+~1 Hz balancer (sched_ule.c:1000), or per-side salting of the
+queue index (deterministic, ordering-safe, but pointless while the
+single-flow ceiling is the receiver's copyout at 100% vs the
+shared worker at 54%) actually move that needle.
 
 #### Big-iron scaling investigation (2026-08-20/21)
 
