@@ -132,6 +132,29 @@ Traffic to directly connected destinations, including the other end of
 the pair, continues to use the interface MTU.
 Alternatively, lowering the interface MTU on both sides bounds all
 traffic, including that between the two ends of the pair.
+.Sh TUNING
+On kernels built without
+.Cd options RSS ,
+which includes
+.Cd GENERIC ,
+the TCP stack schedules every connection's timers on the callout
+wheel of CPU 0.
+Every acknowledged segment rearms a timer, so under heavy TCP load
+between vnet jails on a machine with many CPUs the spin mutex
+protecting that single wheel becomes a serialization point for the
+entire system.
+Setting the host-global
+.Va net.inet.tcp.per_cpu_timers
+.Xr sysctl 8
+variable to 1 distributes each connection's timers across the CPUs
+by flow and removes the bottleneck; on a 128-core test system this
+more than doubled aggregate TCP throughput between two jails.
+Machines with few cores are unaffected by the setting either way.
+The variable affects every TCP connection on the host, not only
+traffic over
+.Nm
+interfaces, and is not virtualized: it can only be set on the host,
+where it covers all vnet jails.
 .Sh EXAMPLES
 Connect a new vnet jail to the host and give it a default route
 through the pair:
