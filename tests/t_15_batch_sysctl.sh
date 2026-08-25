@@ -16,6 +16,10 @@ cleanup_push "sysctl $OID=$orig"
 must "set batch to 32" sysctl "$OID=32"
 must "reads back 32" test "$(sysctl -n $OID)" -eq 32
 must "0 (yielding disabled) is accepted" sysctl "$OID=0"
+must "negative values are the same off-switch" sysctl "$OID=-1"
+must "even INT_MIN is well-defined (no arithmetic is performed)" \
+    sysctl "$OID=-2147483648"
+must "reads back as written" test "$(sysctl -n $OID)" = "-2147483648"
 
 must "oversized value is accepted by the handler" sysctl "$OID=8192"
 must "and clamped to the queue size" test "$(sysctl -n $OID)" -eq 4096
