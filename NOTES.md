@@ -764,6 +764,171 @@ top frames: mbuf cluster refcount atomics (mb_dupcl/mb_free_ext -
 tcp_m_copym reference-shares clusters with the retransmit queue,
 and the worker drops those references from another CPU).
 
+**MTU 65535 A/B on the Ampere (2026-08-25): batching lever
+confirmed.**  Predicted above ("divides per-packet lock traffic by
+the aggregation factor") and measured: with mtu 65535 on both
+sides (jail-to-jail, single iperf3 client process), P=128 went
+140 -> 283 Gbit/s (2.0x) and the peak moved from 223 at P=16 to
+346 at P=64 (1.55x); falloff off peak softened from -37% to -18%.
+The contrast with the VM's +3.8% for the same knob (2026-08-15) is
+the whole story: on the VM locks were 13.5% of cycles and 4x fewer
+packets bought almost nothing; on the Ampere locks were 86.9% of
+non-idle cycles and the same 4x cut of lock-tour frequency doubled
+high-connection throughput.  Batch size is a per-machine lever,
+not a constant - the 16384 default (chosen on the VM) stands for
+small systems, but many-core deployments should raise the MTU;
+worth stating in the man page's MTU CONFIGURATION section.
+Caveats and follow-ups: single-client-process iperf3 may itself
+cap the sweep (the 2026-08-15 benchmarking note), so the true peak
+may be higher with multiple client processes; a t_19-style profile
+at mtu 65535 would show whether the residual -18% falloff is still
+lock_delay or has shifted back to copy; an overruns capture would
+give the per-busy-worker efficiency comparison.  This also
+partially re-scopes the parked TSO/LRO work: for pair-local
+traffic mtu 65535 captures the batching win directly, so LRO's
+remaining case is transit traffic clamped to wire-size segments
+by a remote MSS.
+
+**debug.lock.delay_max sweep (2026-08-25): backoff is
+load-bearing, default validated, knob closed.**  Hypothesis
+tested: with ~100 waiters backing off up to 32767 spinwait
+iterations, released locks might sit idle while spinners
+oversleep, so a lower ceiling might re-acquire faster.  Measured
+at P=64, mtu 65535, no ipsec (Gbit/s): 32767 -> 380, 8192 -> 159,
+2048 -> 65.2, 512 -> 60.4.  Refuted, monotonically and 6x over:
+aggressive re-probing collapses throughput because spinner probe
+storms on the lock cache line slow the OWNER's critical section -
+on a 128-core mesh the exponential backoff is what protects owner
+progress, and the ncpus-scaled default (min(roundup_2(ncpus)*256,
+SHRT_MAX), already saturated at 128 cores) is correct.  Do not
+lower; nothing to raise (u16 ceiling).  Two byproducts: baseline
+380 vs the sweep's earlier 346 peak bounds run-to-run spread at
+~10% for these 10 s points; and the extreme sensitivity of
+throughput to spin-probe rate is itself evidence that lock
+contention - not copy - still owns the residual ceiling at 64K
+MTU, without needing the deferred t_19 re-profile.  The locality
+levers (capped worker set, cpuset confinement) therefore stay
+live as the next experiments.
+
+**t_20 lockstat attribution (2026-08-25, samples/t20_noargs.txt =
+mtu 65535, t20_mtu16k.txt = mtu 16384; P=128, 10 s windows): the
+top lock is GLOBAL, not the triangle.**  The instance analysis
+found the #1 spin sink is a SINGLE lock instance: lo_name
+"callout", 4.85M spins and 575 s of aggregate spin time in 10 s
+(~57 CPU-equivalents) at 64K MTU; 5.04M/604 s at 16K.  Mechanism,
+verified in source: with net.inet.tcp.per_cpu_timers=0 - the
+DEFAULT on non-RSS kernels (tcp_timer.c:195) - inp_to_cpuid()
+returns 0 (tcp_timer.c:250-252), so EVERY TCP timer in the system
+lives on CPU 0's callout wheel, and every rearm (essentially every
+ACK processed and every transmit, see the captured stacks:
+callout_reset_sbt_on from tcp_do_segment/tcp_default_output) takes
+CPU 0's cc_lock - a spin mutex hammered from all 128 CPUs.  The
+triangle locks are real but second tier: tcpinp rw-spin 490 s
+spread over 256 instances (top 0.8%), so_snd/so_rcv ~40 s over
+128+129 - textbook per-connection ping-pong, no single fixable
+instance.  Two more findings: lock wait totals are nearly
+IDENTICAL across MTUs (575 vs 604 s callout, 490 vs 530 s tcpinp)
+while throughput-under-capture doubles (200 vs 97.8 Gbit/s) - the
+contention wall is a fixed per-machine cost and larger packets
+simply move 4x the bytes per lock tour, which is exactly the
+batching model.  And observation overhead is ~30% (200 under
+capture vs 283 uninstrumented at 64K): treat t_20 throughput as
+directional only.
+Next experiment, one sysctl, reversible: net.inet.tcp.per_cpu_timers=1.
+On non-RSS kernels that maps each connection's timer to
+inp_flowid % (mp_maxid + 1) (tcp_timer.c:246) - and since our
+worker steering is flowid % pt_count with pt_count == mp_ncpus,
+dense CPU numbering makes the timer CPU EQUAL the connection's
+worker CPU: rearms become CPU-local instead of cross-mesh, on top
+of the wheel spreading 128 ways.  Predicted effect: the current
+#1 sink (~57 busy CPU-equivalents of pure spinning) largely
+vanishes; tcpinp becomes the leader.  Caveat for the record: the
+sysctl default (0) has history - per-CPU timers interact with CPU
+offlining (absent-CPU fallback is curcpu, tcp_timer.c:247-249) -
+but on a fixed-topology server the exposure is nil.
+
+**per_cpu_timers=1 A/B (2026-08-25, samples/t20_percpu.txt +
+t20_percpu_mtu16k.txt): the callout wheel WAS the wall.**
+net.inet.tcp.per_cpu_timers=1 (host-global, not CTLFLAG_VNET -
+one setting covers all vnets), same P=128 t_20 runs:
+
+- Throughput UNDER CAPTURE: 64K mtu 200 -> 335 Gbit/s; 16K mtu
+  97.8 -> 332.  Under-observation now exceeds the old
+  uninstrumented 283, so the true rates are unknown and higher -
+  t_17 rerun needed for the real curve.
+- The callout lock is gone from the 64K tables entirely; at 16K
+  it re-enters at rank 9 with 6.5k spins over 87 instances (top
+  30%) - spread across per-CPU wheels exactly as predicted by
+  inp_flowid % (mp_maxid+1) == the connection's worker CPU.
+- Aggregate lock wait collapsed ~5x (was ~1100 s per 10 s window
+  across the top sinks, now ~230 s).
+- REVISION of the batching narrative: with the global wheel fixed,
+  the MTU advantage nearly vanishes (335 vs 332).  The earlier
+  "batching lever confirmed" result was real but its mechanism is
+  now clear: 4x fewer packets bought 4x fewer tours of ONE
+  serialized lock.  With that lock spread, per-connection lock
+  tours no longer bind at these rates, and mtu 16384 is
+  competitive again on big iron.
+- New leader: the mbuf UMA ZONE lock - single instance, 100%
+  share, 110 s spin + 29 s block at 64K (413k spins) - i.e. the
+  next wall is allocator refill pressure past the per-CPU UMA
+  caches, with turnstile_chain (~20 s, one dominant chain) as its
+  derivative: many threads now BLOCK on the same zone lock and
+  hash to one turnstile chain.  Driver locks stay negligible
+  (pairq ~2 s block, 150 instances, top 3.7%).
+- Upstream-worthy alongside the ipsec finding: the non-RSS
+  default (per_cpu_timers=0) funnels every TCP timer in the
+  system through CPU 0's cc_lock; on 128 cores that one spin
+  mutex burned ~57 CPU-equivalents and capped local TCP at less
+  than half of what the machine does with the timers spread.
+  Caveat for any report: the default likely protects CPU-offline
+  edge cases (tcp_timer.c:247-249) and low-core-count machines
+  won't see the cliff.
+
+All four t20_*.txt samples were RE-CAPTURED 2026-08-25 with the
+final t_20 (provenance header; idle-baseline delta subtraction),
+toggling the knob per condition so every file self-describes.
+The 2x2 matrix reproduced within the ~10% run spread: timers=0
+64K/16K = 203/95.1 (was 200/97.8), timers=1 64K/16K = 334/330
+(was 335/332) Gbit/s under capture, and the mbuf-zone finding is
+stable (138 s spin + 39 s block above baseline, turnstile_chain
+29 s derivative).  The numbers quoted above stand.
+
+**16K vs 64K contention with per_cpu_timers=1 (2026-08-25,
+t20_percpu_mtu16k.txt vs t20_percpu.txt): MTU is now
+contention-neutral.**  At equal throughput (330 vs 334 Gbit/s
+under capture), dropping the MTU 4x moves total spin from ~224 to
+~170 CPU-s per 10 s window (~17% -> ~13% of the machine) - i.e.
+DOWN, and by far less than the packet-count change.  The
+composition confirms the model:
+
+- Per-connection locks scale with PACKET rate but stay cheap:
+  so_rcv 1.9M -> 4.8M spins (time only 29 -> 34 s), tcpinp 308k ->
+  524k (24 -> 30 s), pairq 21k -> 35k (still noise).  Quadrupling
+  the packet count costs ~10-15 s of machine-wide spin - the
+  spread per-connection locks absorb the extra tours.
+- The mbuf zone lock is BYTE-rate-driven and therefore MTU-immune:
+  413k -> 401k spins, flat, because sosend chops copyin into
+  PAGE_SIZE clusters regardless of packet size - clusters per byte
+  are identical across MTUs at equal throughput.  No packet-level
+  lever (MTU, batch, future TSO/LRO) touches it; only
+  allocator-side changes (firmware NUMA domain split, a BUCKET_MAX
+  bump - uma_core.c:252, buckets already autoscale to the cap on
+  contention per uma_core.c:702) or moving fewer bytes.  Its spin
+  TIME does differ (138 vs 90 s at equal count): longer zone-lock
+  holds when 64K chains free in bigger bursts; second-order.
+- turnstile_chain tracks mbuf blocking down (29 -> 14 s),
+  confirming it is purely the mbuf zone lock's blocking shadow.
+
+Recommended operating point on the Ampere going forward:
+per_cpu_timers=1 (loader.conf/sysctl.conf), MTU per taste - the
+16K default is no longer a big-iron penalty.  The sysctl
+recommendation is now also in the man page (if_pair.4 TUNING
+section, added 2026-08-25).  Next levers if the
+new ceiling matters: t_17 uninstrumented rerun first, then the
+mbuf zone (UMA per-CPU bucket sizing / allocation batching) and
+the lo(4) baseline in open item (a).
+
 Open items: (a) lo(4) baseline sweep on the Ampere (same stack, no
 worker triangle) to apportion the residual tax 2 between platform
 TCP behavior and if_pair's indirection; (b) if (a) implicates the
