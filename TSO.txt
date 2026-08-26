@@ -1,0 +1,307 @@
+TSO in FreeBSD, and TSO for if_pair(4)
+======================================
+
+Study report and implementation plan, 2026-08-26.  All file:line
+references were verified against this machine's /usr/src (15.1);
+the underlying research was done 2026-08-24 and is recorded with
+sources in NOTES.md ("Future work: transit offload" and its
+follow-ups).  This file is the self-contained version.
+
+
+1. What TSO is
+--------------
+
+TCP Segmentation Offload lets the TCP stack build one oversized
+TCP segment - up to ~64 KB - and hand it down the output path as a
+single packet.  The device at the end of that path splits it into
+MSS-sized wire segments, replicating and fixing up the IP/TCP
+headers (lengths, sequence numbers, checksums, IP IDs) per piece.
+The stack pays its per-packet costs (tcp_output, ip_output,
+routing, firewall, driver handoff, locks) once per large frame
+instead of once per wire segment - the same per-packet-cost
+amortization if_pair gets from a large MTU, but decoupled from the
+MTU and therefore available even when the wire (or the remote
+peer's MSS) forces 1460-byte segments.
+
+For a virtual interface there is no hardware splitter.  Two
+strategies exist:
+  - deliver-whole: hand the unsplit frame to whatever consumes the
+    packet next.  If that consumer is a local TCP stack, it accepts
+    the big segment directly (exactly like an LRO aggregate); if it
+    is a TSO-capable physical NIC further down a forwarding path,
+    that NIC splits it.  This is what tap(4) does for bhyve
+    (virtio-net header) and what vxlan(4) relies on.
+  - software split: no generic implementation exists in FreeBSD
+    (no GSO; see section 4).
+
+if_pair uses deliver-whole.  The driver never touches the payload;
+it only advertises the capability and passes frames through.
+
+
+2. The stack/driver contract, end to end
+----------------------------------------
+
+Advertisement (driver side):
+  - IFCAP_TSO4 / IFCAP_TSO6 in if_capabilities and if_capenable
+    (if.h:274-275; IFCAP_TSO is both, if.h:309).
+  - CSUM_IP_TSO / CSUM_IP6_TSO in if_hwassist (mbuf.h:661,670;
+    CSUM_TSO is both bits, mbuf.h:735).
+  - Chain-geometry limits: if_hw_tsomax (max bytes per frame),
+    if_hw_tsomaxsegcount (max mbufs in the chain),
+    if_hw_tsomaxsegsize (max bytes per mbuf).  If a driver leaves
+    all three zero, if_attach() fills defaults (if.c:905-928):
+      tsomax      = min(IP_MAXPACKET, 32*MCLBYTES - 18) = 65518
+      segcount    = 35
+      segsize     = 2048
+
+Grant (TCP connection setup / PMTU updates):
+  - tcp_maxmtu() and tcp_maxmtu6() (tcp_subr.c:3652-3711) look at
+    the route's FIRST-HOP interface only.  If capenable has
+    IFCAP_TSO4 (resp. TSO6) and hwassist intersects CSUM_TSO, the
+    tcp_ifcap result carries the interface's three limits and the
+    connection gets TF_TSO.  For a jail whose route crosses a pair,
+    the first hop is the jail's own pair side - the pair alone
+    controls the grant.
+
+Frame construction (tcp_output):
+  - Chain building is bounded by the granted limits; segmentation
+    size is tp->t_maxseg, i.e. the MSS negotiated with the peer -
+    NOT the interface MTU.  The frame is marked
+    csum_flags |= CSUM_TSO and tso_segsz = MSS
+    (tcp_output.c:1401-1406).  Crucially CSUM_TCP (the checksum
+    request bit) is set alongside, and the pseudo-header checksum
+    is placed in th_sum - a TSO frame is also a
+    checksum-offload frame.
+
+Output path exemptions (why a >MTU frame survives):
+  - ip_output(): passes oversized frames iff
+    csum_flags & ifp->if_hwassist & (CSUM_TSO|CSUM_INNER_TSO)
+    (ip_output.c:779-781); otherwise EMSGSIZE (819-825).
+  - ip6_output(): same test (ip6_output.c:1129-1135); extension
+    headers disable TSO.
+  - pf route-to: identical exemption and balk (pf.c:9298/9318).
+  - The IPv4 header checksum is computed in software at the true
+    origin since CSUM_IP is not in the pair's hwassist, so
+    pair_csum_vouch()'s vouch remains valid for TSO frames.
+
+Termination of a delivered-whole frame in a local stack:
+  - tcp_input's "packet from local host" branch accepts any frame
+    whose request bit (CSUM_IP_TCP / CSUM_IP6_TCP) is set without
+    verifying the checksum (tcp_input.c:718, :652) - the same
+    keep-request-bits contract if_pair already relies on for
+    ordinary checksum elision covers TSO frames with zero new
+    driver code.  There is no MTU check on input; a 64 KB TCP
+    segment is processed like an LRO aggregate.
+
+Failure handling when a TSO frame meets a non-TSO egress:
+  - If tcp_output's OWN ip_output call fails with EMSGSIZE, the
+    EMSGSIZE handler clears TF_TSO and retries - self-healing
+    (tcp_output.c, EMSGSIZE handler; its comment anticipates the
+    non-TSO-egress case).
+  - If the failure happens at a downstream FORWARDING hop instead,
+    it surfaces as ICMP needfrag back to the sender;
+    tcp_mss_update() re-probes tcp_maxmtu(), which still reports
+    the TSO-capable first hop, TF_TSO survives, and the connection
+    STALLS.  This failure mode is why pair TSO must ship
+    default-off (section 5).
+
+
+3. The forwarding gap (kernel patches required for routed TSO)
+--------------------------------------------------------------
+
+The slow IPv4 forwarding path is safe: ip_forward() delegates to
+ip_output(), which has the exemption.  Three paths are not:
+
+  - ip_tryforward():  bare "ip_len <= nh->nh_mtu" test
+    (ip_fastfwd.c:494) - and this is the DEFAULT IPv4 forwarding
+    path; on failure it emits ICMP and consumes the packet, never
+    falling back to the slow path.
+  - ip6_tryforward(): two bare MTU tests (ip6_fastfwd.c:210,230).
+  - ip6_forward():    the v6 SLOW path does its own bare test
+    (ip6_forward.c:388), so for IPv6 both paths are broken.
+
+The fix in each case is the one-line exemption ip_output already
+implements, testing the EGRESS interface's hwassist.
+patches/routed-tso-forwarding.patch in this repository carries all
+three hunks against 15.1; until something like it lands upstream,
+routed TSO frames die at the forwarding hop and the stall of
+section 2 applies.  In-tree precedent that non-origin TSO frames
+on a forwarding path are legitimate: the vxlan comment at
+ip_output.c's exemption.
+
+There is no software GSO in FreeBSD to fall back on (a 2014 patch
+by Stefano Garzarella was posted to freebsd-net but never merged),
+so these patches have no in-kernel alternative.
+
+
+4. Related mechanisms, for orientation
+--------------------------------------
+
+  - LRO is the receive-side mirror: tcp_lro merges wire segments
+    into one large frame carrying CSUM_DATA_VALID|CSUM_PSEUDO_HDR.
+    Inbound world->jail batching is deployable today with NIC LRO
+    plus a large pair MTU (NOTES.md 2026-08-18); it needs nothing
+    from this work.
+  - FreeBSD's LRO is not reversible and there is no GSO, so
+    LRO+TSO router-style composition (Linux GRO/GSO) does not
+    exist; see NOTES.md 2026-08-24 for what building it would
+    take.  Not part of this work.
+  - vlan(4) inherits parent TSO and maintains limits via
+    if_hw_tsomax_common()/_update() (if_vlan.c) - the KPI for
+    derived limits; if_pair has no parent, so it advertises the
+    system defaults instead.
+
+
+5. Why this matters for if_pair, and the default-off decision
+-------------------------------------------------------------
+
+Measured motivation (NOTES.md 2026-08-26 MTU grid): a pair at
+MTU 1500 is the worst configuration in the matrix - 7.22 Gbit/s
+single-flow vs 37.8 at the 16K default, ~5x - and transit traffic
+is clamped to ~1460-byte segments by the remote MSS regardless of
+the pair MTU, so every jail<->world bulk flow lives on that row.
+TSO recovers large-frame batching independently of segment size:
+up to ~44 wire segments cross the pair as one frame.
+
+Two deployment cases:
+  - Pair-local termination (jail<->jail, jail<->host): works with
+    stock kernels TODAY.  Enabling TSO on a 1500-MTU pair gives
+    16K-class batching without touching the MTU, because TSO
+    frames bypass the MTU on the covered paths.
+  - Routed transit (jail<->world): requires BOTH the forwarding
+    patches (section 3) AND a TSO-capable egress NIC.  On an
+    unpatched kernel the connection stalls (section 2), and
+    because the failure needs a forwarding topology, the driver
+    cannot detect it locally.
+
+Hence: capability advertised, DEFAULT-OFF in capenable.  The
+operator who enables it asserts "my pair traffic terminates
+locally, or my kernel is patched and my egress can split".  This
+matches vlan(4)/if_bridge(4) practice of conditioning TSO on the
+full path, differs from lo(4) only because lo(4) never faces a
+forwarding hop, and costs nothing when left off.
+
+
+6. Implementation plan (living; updated as implemented)
+-------------------------------------------------------
+
+  [DONE] 6.1 Driver, capability plumbing (if_pair.c):
+      - IFCAP_TSO4|IFCAP_TSO6 added to if_capabilities only;
+        capenable default unchanged (off).
+      - SIOCSIFCAP: TSO4/TSO6 each require the matching TXCSUM
+        (cleared otherwise, standard driver convention: TSO frames
+        are also checksum-offload frames); enabled bits map to
+        CSUM_IP_TSO / CSUM_IP6_TSO in hwassist.
+      - Explicit limits equal to the if_attach() defaults
+        (65518/35/2048), set before if_attach() so the "Using
+        defaults for TSO" console line is not printed.  Rationale:
+        forwarded pair frames can meet any egress NIC; the stock
+        defaults are the geometry every TSO driver is expected to
+        accept, and there is no parent to inherit real limits
+        from.  Not tunable until a need is demonstrated.
+      - No datapath changes: deliver-whole needs none (section 2);
+        pair_input's M_EXTPG guard, pair_hash_mbuf's m_copydata
+        reads and pair_csum_vouch remain valid as-is.
+  [DONE] 6.2 Kernel forwarding patch shipped as
+      patches/routed-tso-forwarding.patch (three hunks, section 3).
+      Applies with patch(1) from /usr/src; rebuild kernel.
+  [DONE] 6.3 Man page: TSO documented in a new paragraph of the
+      DESCRIPTION (capability, deliver-whole, how to enable) and a
+      TUNING addition covering the default-off rationale, the
+      stall failure mode, and the patch requirement for routed
+      transit.
+  [DONE] 6.4 Test: tests/t_22_tso.sh - functional proof on stock
+      kernels using pair-local traffic at mtu 1500: asserts TSO is
+      off by default, enables it, verifies the TXCSUM coupling,
+      then runs a t_17-style connection sweep (CONNS, default
+      1..128) twice - tso off, tso on - logging throughput and
+      average transmit packet size per point.  Deliver-whole is
+      asserted from the sweep maxima (off <= MTU, on > 3000);
+      throughput stays informational.  The paired tables are the
+      wire-MTU recovery measurement for NOTES.md.
+  [HALF-DONE] 6.5 Measurements on the Ampere.  Pair-local half
+      DONE 2026-08-26 (samples/t22_pass.txt, NOTES.md): at mtu
+      1500 with tso on, the machine traces its full large-MTU
+      curve - 489 Gbit/s at P=32 (the machine peak), single flow
+      7.25 -> 32.1 Gbit/s (4.4x), ~43.5 KB average frames
+      crossing whole.  Remaining: with a patched kernel and a
+      TSO-capable egress, the jail->world transit A/B.
+  [TODO] 6.6 Upstream: propose the forwarding exemptions on
+      freebsd-net, citing the vxlan precedent and (ideally)
+      transit measurements; software GSO (NOTES.md 2026-08-24
+      "Phase A") remains the principled long-term fix that would
+      also lift the default-off restriction.
+
+Queue-memory note recorded during planning: mbufq limits are
+packet-counted (4096); 64 KB TSO frames raise the theoretical
+per-queue ceiling to 256 MB.  Healthy TCP keeps occupancy far
+below the cap (t_21), NIC queue practice is packet-counted too
+(NOTES.md 2026-08-26 survey), and a byte cap remains parked
+pending demonstrated need.
+
+
+7. Considered alternative: a driver-private splitter instead of
+   the kernel patches (analyzed 2026-08-26, parked)
+---------------------------------------------------------------
+
+Question: could if_pair avoid patches/routed-tso-forwarding.patch
+by duplicating the missing segmentation logic itself?
+
+Design that would work: a conditional software splitter at
+delivery.  In the worker, under CURVNET_SET(peer vnet), an
+in_localip()/in6_localip() lookup on the destination answers
+"will this frame terminate here?" the same way ip_input will
+decide moments later.  Local -> deliver whole, unchanged.
+Non-local -> segment to tso_segsz pieces before netisr_dispatch,
+so the peer's forwarding path only ever sees wire-size packets
+and needs no patch.  The splitter is the GSO routine FreeBSD
+never merged, privately scoped (~200 lines): per chunk, m_copym
+the headers plus payload range (cluster-sharing, no payload
+copies), then fix ip_len/ip6_plen, increment ip_id (the RFC 6864
+stance hardware TSO already takes), advance th_seq, FIN/PSH only
+on the last segment, CWR only on the first (ECN), pseudo-header
+th_sum, and a driver-computed ip_sum (pair_csum_vouch() must not
+vouch for headers the driver just fabricated).  Segments keep the
+CSUM_TCP request bits, so the existing keep-request-bits contract
+carries them onward.
+
+What it would buy:
+  - Pair-local traffic: unchanged, full deliver-whole.
+  - Transit on UNPATCHED kernels: "stalls" becomes "works at half
+    the win" - the jail's stack builds and crosses the pair once
+    per 64 KB frame (sender-side amortization, ~44x fewer
+    tcp_output/ip_output/enqueue rounds), but the host still
+    forwards ~44 wire packets per frame, so host-side per-packet
+    costs remain.  Order-of-magnitude becomes small-integer
+    factor.
+
+Why it is parked, not implemented:
+  - The residual stall hazard does not close.  The locality test
+    replicates the routing verdict BEFORE the peer's pfil hooks
+    run; pf rdr to an external address or route-to forcing a
+    locally-destined packet out a real interface reverses the
+    verdict afterward, and the oversized frame reaches the
+    forwarding path anyway - the stall returns in exactly the
+    configurations hardest to reason about.  The driver cannot
+    see those rules, so the man page caveat would shrink, not
+    disappear.
+  - The marginal customer is narrow: unpatched kernel, transit-
+    heavy, unable to apply a three-hunk patch.  The current
+    default-off implementation already serves every safe case.
+  - The effort is better spent one layer down.  The splitter is
+    literally "Phase A" of the GSO analysis in NOTES.md
+    (2026-08-24): the same ~200 lines placed at the kernel's balk
+    sites (ip_output/ip6_output/tryforward/pf_route EMSGSIZE
+    paths) would fix the problem for every interface, remove the
+    stall failure mode globally, and obsolete both the forwarding
+    patch and this driver's default-off restriction.  Writing it
+    driver-private first is defensible only as prototype-then-
+    donate; as a permanent workaround it puts the code where it
+    helps least.
+
+Unpark trigger: a demonstrated user blocked on unpatched-kernel
+transit.  Then: implement behind a sysctl (default off), reuse
+t_22's deliver-whole methodology inverted (assert wire-size
+segments on the peer for non-local destinations), and treat the
+code as the prototype for the upstream GSO proposal (plan item
+6.6).

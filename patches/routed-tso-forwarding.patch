@@ -1,0 +1,64 @@
+Enable forwarding of TSO frames toward a TSO-capable egress.
+
+ip_output() has passed oversized frames whose csum_flags intersect
+the egress interface's CSUM_TSO hwassist since the vxlan work, and
+pf_route() implements the same exemption, but the tryforward fast
+paths and the IPv6 slow path still balk on a bare MTU comparison
+and consume the packet with an ICMP error.  A TSO frame originated
+behind an if_pair(4)/vxlan(4)-style interface therefore dies at the
+first forwarding hop.  Mirror ip_output()'s exemption in all three
+places: the egress interface has declared it will split the frame.
+
+Written for FreeBSD 15.1; apply from /usr/src with:
+  patch -p0 < routed-tso-forwarding.patch
+
+--- sys/netinet/ip_fastfwd.c	2026-08-26 16:09:23.218781000 +0200
++++ sys/netinet/ip_fastfwd.c	2026-08-26 16:09:30.265488000 +0200
+@@ -491,7 +491,9 @@
+ 	/*
+ 	 * Check if packet fits MTU or if hardware will fragment for us
+ 	 */
+-	if (ip_len <= nh->nh_mtu) {
++	if (ip_len <= nh->nh_mtu ||
++	    (m->m_pkthdr.csum_flags & nh->nh_ifp->if_hwassist &
++	    (CSUM_TSO | CSUM_INNER_TSO)) != 0) {
+ 		/*
+ 		 * Avoid confusing lower layers.
+ 		 */
+--- sys/netinet6/ip6_fastfwd.c	2026-08-26 16:09:23.222242000 +0200
++++ sys/netinet6/ip6_fastfwd.c	2026-08-26 16:09:56.782176000 +0200
+@@ -207,7 +207,9 @@
+ 		goto dropin;
+ 	}
+ 	if (!PFIL_HOOKED_OUT(V_inet6_pfil_head)) {
+-		if (m->m_pkthdr.len > nh->nh_mtu) {
++		if (m->m_pkthdr.len > nh->nh_mtu &&
++		    (m->m_pkthdr.csum_flags & nh->nh_ifp->if_hwassist &
++		    (CSUM_TSO | CSUM_INNER_TSO)) == 0) {
+ 			in6_ifstat_inc(nh->nh_ifp, ifs6_in_toobig);
+ 			icmp6_error(m, ICMP6_PACKET_TOO_BIG, 0, nh->nh_mtu);
+ 			m = NULL;
+@@ -227,7 +229,9 @@
+ 	 * We used slow path processing for packets with scoped addresses.
+ 	 * So, scope checks aren't needed here.
+ 	 */
+-	if (m->m_pkthdr.len > nh->nh_mtu) {
++	if (m->m_pkthdr.len > nh->nh_mtu &&
++	    (m->m_pkthdr.csum_flags & nh->nh_ifp->if_hwassist &
++	    (CSUM_TSO | CSUM_INNER_TSO)) == 0) {
+ 		in6_ifstat_inc(nh->nh_ifp, ifs6_in_toobig);
+ 		icmp6_error(m, ICMP6_PACKET_TOO_BIG, 0, nh->nh_mtu);
+ 		m = NULL;
+--- sys/netinet6/ip6_forward.c	2026-08-26 16:09:23.225483000 +0200
++++ sys/netinet6/ip6_forward.c	2026-08-26 16:09:56.782441000 +0200
+@@ -385,7 +385,9 @@
+ pass:
+ 	/* See if the size was changed by the packet filter. */
+ 	/* TODO: change to nh->nh_mtu */
+-	if (m->m_pkthdr.len > IN6_LINKMTU(nh->nh_ifp)) {
++	if (m->m_pkthdr.len > IN6_LINKMTU(nh->nh_ifp) &&
++	    (m->m_pkthdr.csum_flags & nh->nh_ifp->if_hwassist &
++	    (CSUM_TSO | CSUM_INNER_TSO)) == 0) {
+ 		in6_ifstat_inc(nh->nh_ifp, ifs6_in_toobig);
+ 		if (mcopy)
+ 			icmp6_error(mcopy, ICMP6_PACKET_TOO_BIG, 0,

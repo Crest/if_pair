@@ -95,6 +95,40 @@
 #define	PAIR_CSUM_FEATURES	(CSUM_IP_TCP | CSUM_IP_UDP)
 #define	PAIR_CSUM_FEATURES6	(CSUM_IP6_TCP | CSUM_IP6_UDP)
 
+/*
+ * TSO, deliver-whole: the pair advertises IFCAP_TSO so the local
+ * TCP stack builds one oversized segment (marked CSUM_TSO,
+ * tso_segsz = the connection MSS) instead of MSS-sized packets,
+ * and the frame crosses the pair unsplit - there is no splitter
+ * here and none is needed.  A frame terminating in the peer vnet
+ * is accepted whole by tcp_input()'s request-bit branch (the
+ * CSUM_TSO mark from tcp_output() always rides with CSUM_TCP), so
+ * the keep-request-bits contract below covers TSO with no datapath
+ * code; a frame the peer FORWARDS onward is split by the egress
+ * NIC's hardware iff that NIC has TSO and the kernel's forwarding
+ * path honors it (ip_output() does; ip_tryforward(),
+ * ip6_tryforward() and ip6_forward() need the exemptions shipped
+ * in patches/routed-tso-forwarding.patch).  Because a routed TSO
+ * frame that reaches a non-TSO egress makes the connection stall -
+ * the ICMP needfrag comes from a forwarding hop, so tcp_output()'s
+ * EMSGSIZE self-healing never runs and TF_TSO survives the
+ * tcp_maxmtu() re-probe - the capability ships DEFAULT-OFF in
+ * capenable; enabling it is the operator's assertion that pair
+ * traffic terminates locally or the egress path can split.  See
+ * TSO.txt for the full analysis.
+ *
+ * The advertised chain-geometry limits equal the if_attach()
+ * defaults (if.c: min(IP_MAXPACKET, 32*MCLBYTES - 18) bytes, 35
+ * mbufs, 2048 bytes per mbuf): the pair has no parent interface to
+ * inherit real limits from (contrast vlan(4)), forwarded frames
+ * can meet any egress NIC, and the stock defaults are the geometry
+ * every TSO driver must accept.  Set explicitly only so if_attach()
+ * does not print its "Using defaults for TSO" console line.
+ */
+#define	PAIR_TSO_MAXLEN		65518
+#define	PAIR_TSO_MAXSEGCNT	35
+#define	PAIR_TSO_MAXSEGSZ	2048
+
 static const char pairname[] = PAIR_NAME;
 
 static MALLOC_DEFINE(M_PAIR, "if_pair", "Point-to-point interface pairs");
@@ -861,10 +895,31 @@ pair_ioctl(if_t ifp, u_long cmd, caddr_t data)
 
 		/* Link state reporting cannot be turned off. */
 		reqcap |= IFCAP_LINKSTATE;
+		/*
+		 * TSO rides on checksum offload - tcp_output() marks
+		 * every TSO frame with the checksum request bit and
+		 * leaves only the pseudo-header sum in th_sum - so
+		 * each TSO capability requires the matching TXCSUM,
+		 * the convention hardware drivers follow.
+		 */
+		if ((reqcap & IFCAP_TXCSUM) == 0)
+			reqcap &= ~IFCAP_TSO4;
+		if ((reqcap & IFCAP_TXCSUM_IPV6) == 0)
+			reqcap &= ~IFCAP_TSO6;
 		if (reqcap & IFCAP_TXCSUM)
 			hwassist |= PAIR_CSUM_FEATURES;
 		if (reqcap & IFCAP_TXCSUM_IPV6)
 			hwassist |= PAIR_CSUM_FEATURES6;
+		/*
+		 * tcp_maxmtu() grants TF_TSO iff the capenable bit
+		 * and a CSUM_TSO hwassist bit are BOTH set; keeping
+		 * hwassist in step here is what makes ifconfig's
+		 * tso/-tso toggles effective for new connections.
+		 */
+		if (reqcap & IFCAP_TSO4)
+			hwassist |= CSUM_IP_TSO;
+		if (reqcap & IFCAP_TSO6)
+			hwassist |= CSUM_IP6_TSO;
 		if_setcapenable(ifp, reqcap);
 		if_sethwassist(ifp, hwassist);
 		break;
@@ -923,11 +978,16 @@ pair_alloc_side(int unit, enum pair_side side)
 	if_setbaudrate(ifp, IF_Gbps(10));
 	if_setoutputfn(ifp, pair_output);
 	if_setioctlfn(ifp, pair_ioctl);
+	/* TSO is capability-only here: default-off, see PAIR_TSO_*. */
 	if_setcapabilities(ifp,
-	    IFCAP_HWCSUM | IFCAP_HWCSUM_IPV6 | IFCAP_LINKSTATE);
+	    IFCAP_HWCSUM | IFCAP_HWCSUM_IPV6 | IFCAP_TSO4 | IFCAP_TSO6 |
+	    IFCAP_LINKSTATE);
 	if_setcapenable(ifp,
 	    IFCAP_HWCSUM | IFCAP_HWCSUM_IPV6 | IFCAP_LINKSTATE);
 	if_sethwassist(ifp, PAIR_CSUM_FEATURES | PAIR_CSUM_FEATURES6);
+	if_sethwtsomax(ifp, PAIR_TSO_MAXLEN);
+	if_sethwtsomaxsegcount(ifp, PAIR_TSO_MAXSEGCNT);
+	if_sethwtsomaxsegsize(ifp, PAIR_TSO_MAXSEGSZ);
 
 	return (sc);
 }

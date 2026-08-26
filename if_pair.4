@@ -98,6 +98,30 @@ within the machine are never computed at all, and for traffic
 forwarded onward they are computed once at the true egress.
 The offloads can be disabled per side with
 .Xr ifconfig 8 .
+.Pp
+TCP segmentation offloading
+.Pq Cm tso4 , tso6
+is supported but
+.Em disabled
+by default; see the
+.Sx TUNING
+section before enabling it.
+With TSO enabled on a side, TCP connections entering there hand the
+pair segments of up to 64 kilobytes regardless of the interface MTU
+and of the segment size negotiated with the peer, and the frame
+crosses the pair unsplit: a frame that terminates in the other
+side's network stack is consumed whole, and one that is forwarded
+onward is split by the egress interface.
+Because the negotiated segment size still bounds what may reach any
+real network, enabling TSO recovers large-frame batching even for
+traffic that a remote peer's MSS or a small pair MTU would
+otherwise clamp to wire-sized packets.
+TSO on a side requires the matching transmit checksum offload;
+disabling
+.Cm txcsum
+or
+.Cm txcsum6
+also disables the corresponding TSO capability.
 .Sh MTU CONFIGURATION
 The large default MTU reduces per-packet overhead for traffic between
 the two ends of a pair, which never leaves the machine.
@@ -155,6 +179,42 @@ traffic over
 .Nm
 interfaces, and is not virtualized: it can only be set on the host,
 where it covers all vnet jails.
+.Pp
+TCP segmentation offloading
+.Pq Cm tso
+ships disabled because its safety depends on where the traffic
+goes, which only the operator knows.
+Traffic that terminates on the same machine \(em in the other
+side's vnet jail or in the host \(em is always safe and needs no
+kernel changes; enabling TSO on both sides of a pair used for
+jail-to-jail traffic removes the per-packet cost of small MTUs
+entirely.
+Traffic
+.Em forwarded
+beyond the machine is only safe when the egress interface can
+split TSO frames in hardware
+.Em and
+the kernel's forwarding paths honor TSO
+.Po
+stock kernels balk in
+.Fn ip_tryforward ,
+.Fn ip6_tryforward
+and
+.Fn ip6_forward ;
+the file
+.Pa patches/routed-tso-forwarding.patch
+in the source distribution carries the required one-line
+exemptions
+.Pc .
+On an unpatched kernel or a non-TSO egress, a routed TSO
+connection does not degrade but
+.Em stalls :
+the ICMP packet-too-big error arises at the forwarding hop, so the
+sender's TCP never clears its TSO state and keeps building
+oversized frames.
+Enable TSO only for pairs whose forwarded traffic meets both
+conditions, and prefer enabling it on the side where the
+connections originate.
 .Sh EXAMPLES
 Connect a new vnet jail to the host and give it a default route
 through the pair:

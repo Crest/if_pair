@@ -1156,6 +1156,67 @@ for scale.
   - 9000 behaves as the 8192 class (within spread); nothing
     special about jumbo-Ethernet geometry on this path.
 
+**TSO UNPARKED AND IMPLEMENTED (2026-08-26).**  The 2026-08-24
+"transit offload" research above is now code; the self-contained
+study report and living plan is TSO.txt at the repository root.
+What shipped:
+- if_pair.c: IFCAP_TSO4|TSO6 advertised, DEFAULT-OFF in capenable
+  (the routed-stall rationale above, restated in a design comment
+  at PAIR_TSO_*); SIOCSIFCAP maps enabled TSO to
+  CSUM_IP_TSO/CSUM_IP6_TSO in hwassist and couples each TSO bit to
+  its TXCSUM (cleared together, driver convention); chain limits
+  set explicitly to the if_attach() defaults (65518/35/2048,
+  silencing the console line).  ZERO datapath changes - the
+  deliver-whole analysis held: request-bit contract covers
+  termination, M_EXTPG guard and m_copydata hashing already
+  compatible.  Module builds clean.
+- patches/routed-tso-forwarding.patch: the three forwarding
+  exemptions (ip_fastfwd.c one site, ip6_fastfwd.c two,
+  ip6_forward.c one), generated against and dry-run-verified on
+  this 15.1 tree; needed only for routed transit.
+- if_pair.4: TSO paragraph in DESCRIPTION, and a TUNING block with
+  the enable-conditions and the stall failure mode.
+- tests/t_22_tso.sh: stock-kernel functional proof at mtu 1500 -
+  default-off, tso/txcsum coupling, and deliver-whole asserted via
+  average tx packet size (obytes/opkts >> MTU) from libxo JSON
+  counters, with off/on throughput logged.
+Key operational insight from the study: enabling TSO decouples
+pair batching from the MTU entirely - a 1500-MTU pair with TSO
+moves 64K frames for pair-local TCP, so the worst row of the
+2026-08-26 MTU grid becomes recoverable without touching the MTU.
+Pending (TSO.txt 6.5/6.6): Ampere measurements (t_17 mtu 1500
+tso on/off; patched-kernel transit A/B) and the freebsd-net
+upstream proposal for the exemptions.
+
+**t_22 on the Ampere (2026-08-26, samples/t22_pass.txt): TSO at
+wire MTU recovers the full machine curve.**  mtu 1500 both sides,
+timers=1, autoscaled windows.  tso-off baseline reproduces the
+MTU grid's 1500 row (7.25 -> 269 Gbit/s, avg tx packet pinned at
+1499 B).  tso-on, same MTU:
+
+    conns:      1     2     4     8    16    32    64   128
+    Gbit/s:  32.1  60.2  87.1   170   321   489   346   338
+    avg B:  43499 43650 43297 43609 43565 39472 15768 25617
+
+  - P=32 reaches 489 Gbit/s - the machine peak, statistically
+    identical to the 16K/64K grid peaks (485/503).  P=64/128 land
+    exactly on the autoscaled-window working-set wall (346/338 vs
+    the grid's ~335-360).  With TSO on, a wire-MTU pair traces
+    the SAME curve as the large-MTU configurations end to end:
+    the worst row of the grid is fully rehabilitated without
+    touching the MTU, confirming deliver-whole end to end (the
+    driver's counters see ~43.5 KB frames, ~30 segments each).
+  - Single flow 32.1 vs 7.25 (4.4x), within reach of the 16K-MTU
+    single-flow best (37.8).
+  - avg-tx-bytes tapers at high P (15-26 KB) - smaller per-flow
+    cwnd shares build shorter chains, TCP behaving as expected,
+    not the driver splitting.
+  - All capability assertions passed (default-off, tso/txcsum
+    coupling); the earlier t22_fail.txt records the pre-fix
+    harness bug (clobbered -P argument), kept as a curiosity.
+  TSO.txt item 6.5's pair-local half is thereby DONE; the
+  patched-kernel transit A/B remains.
+
 Open items: (a) lo(4) baseline sweep on the Ampere (same stack, no
 worker triangle) to apportion the residual tax 2 between platform
 TCP behavior and if_pair's indirection; (b) if (a) implicates the
