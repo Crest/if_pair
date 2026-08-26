@@ -1068,6 +1068,46 @@ in a jail whose traffic is verifiably machine-local.  Recording
 the curve here as benchmark insight, not operator guidance;
 generalizing it would be overfitting one microbenchmark.
 
+**Hardware constants (2026-08-26, Ampere Altra Max Rev A1
+datasheet v1.25; the a07 SKU matches M128-30, 128 cores @ 3.00
+GHz): the cache arithmetic closes.**  Per core: 64 KB L1I + 64 KB
+L1D, 1 MB L2 (128 MB aggregate).  Shared: 16 MB System Level
+Cache.  Memory: 8x 72-bit DDR4-3200 -> 204.8 GB/s theoretical
+peak.  Coherent Mesh Interconnect with distributed snoop
+directories (the fabric all the lock-line ping-pong crossed).
+Fitting the t_21 measurements:
+
+- The ~49 MB optimal working set does NOT fit the 16 MB SLC - it
+  fits the AGGREGATE L2: ~380 KB per connection resident in the
+  1 MB L2s of the 2-3 cores touching that flow.  Default windows
+  put ~9.4 MB per connection - 9x a core's L2 - forcing DRAM.
+- Bandwidth cross-check, default windows (336 Gbit/s = 42 GB/s
+  payload).  DRAM touches per payload byte, cold-cluster case:
+  cluster write costs an RFO read plus an eventual writeback
+  (arm64 kernel memcpy uses ordinary stores, so write misses
+  read-for-ownership first), and the copyout read of the
+  meanwhile-evicted cluster is a third - the iperf user buffers
+  are reused and stay cache-hot, so ~3x payload (4x if they
+  did not) = 126-168 GB/s against a 204.8 theoretical /
+  ~145-165 practical (STREAM-class ~70-80%) ceiling: ~80-100%
+  of practical peak - saturation strongly indicated, DMC
+  counters would make it measured.
+- At the 64k optimum (493 Gbit/s = 61.6 GB/s payload), proof by
+  contradiction: IF the cold-case >= 3x multiplier still
+  applied, the demand would be >= 185 GB/s, above the practical
+  ceiling, so 493 would be unreachable - therefore the cluster
+  traffic is cache-served (cross-CPU reads ride the mesh's
+  snoop-directory cache-to-cache path, touching no DRAM
+  channel).  Load-bearing assumption: the RFO component; under
+  a charitable no-RFO 2x model (123 GB/s) the arithmetic alone
+  would not force the conclusion, though the t_21 netmem
+  correlation independently does.
+
+Caveat: SKU identification is by core count and clock match;
+lscpu/dmesg on a07 would confirm.  Datasheet cached at the URL in
+the 2026-08-26 conversation; SPECrate 2017_int_base estimate 350
+for scale.
+
 Open items: (a) lo(4) baseline sweep on the Ampere (same stack, no
 worker triangle) to apportion the residual tax 2 between platform
 TCP behavior and if_pair's indirection; (b) if (a) implicates the
