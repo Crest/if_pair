@@ -512,6 +512,273 @@ the pair TSO calculus above, and any freebsd-net proposal for the
 three forwarding exemptions can cite Phase A as the principled
 fix the exemptions approximate.
 
+**L2 sibling: LRO -> hardware-TSO re-split at if_bridge (theory
+2026-08-26, UNTESTED).**  Phase B's reversibility requirement
+exists because a router must forward ANY protocol transparently.
+Restrict to an if_bridge whose members ALL support LRO+TSO and to
+TCP - the only thing tcp_lro merges - and reversibility becomes
+unnecessary: TCP is a byte stream, so re-splitting a merged frame
+at DIFFERENT boundaries than the original wire segments is still
+valid TCP, and the egress NIC's TSO engine is the splitter.
+Linux ships exactly this shape (GRO across the bridge, NIC TSO
+re-split) as the standard container/VM datapath, so the model is
+field-proven elsewhere.  What FreeBSD would need, all bridge-
+local:
+1. Policy: move IFCAP_LRO from BRIDGE_IFCAPS_STRIP
+   (unconditional, if_bridge.c:204) into the negotiated
+   BRIDGE_IFCAPS_MASK (:198), kept only when EVERY member has
+   LRO+TSO - flooding means any frame can exit any port, so the
+   invariant must be bridge-wide.
+2. Mechanism: a conversion at bridge_enqueue() for frames
+   exceeding the egress MTU (detect: m_pkthdr.lro_nsegs > 1):
+   set CSUM_TSO + checksum request bits, rewrite th_sum to
+   pseudo-header form (header-only arithmetic), choose tso_segsz.
+   This is the GRO->GSO handoff FreeBSD never built, ~two dozen
+   lines, relocated to L2 where hardware splits.
+3. Safe segment-size inference: the bridge never saw the MSS, but
+   floor(merged_payload / lro_nsegs) <= max original segment <=
+   sender's MSS - provably never exceeds what the endpoints
+   negotiated or PMTUD validated; slightly conservative when the
+   last merged segment was short, never wrong.
+Known TCP-tolerable warts: all re-split segments share the merged
+tsval (RTT sampling coarsens), IP IDs are regenerated (RFC 6864,
+fine for DF TCP), and CE marks smear if the LRO engine merged
+across an ECN boundary (accounting blemish; worth a merge-rule
+check).  The bridge_pfil MTU/fragment site (if_bridge.c:4119)
+would need the CSUM_TSO exemption like the L3 sites.  Local
+delivery needs nothing (endpoint semantics).  Non-TCP simply
+flows unmerged.  Upstream framing: the natural third movement
+after the forwarding exemptions and an epair TSO capability -
+exemptions ship TSO frames, this manufactures them from LRO
+merges at the bridge, closing the bridged topology's standing
+LRO forfeit (host uplink loses LRO for ALL traffic on joining a
+bridge, including host-terminated).
+
+**Router-safe LRO, consolidated requirements (2026-08-26; refines
+Phase B above).**  The Phase B framing overstated the TCP
+obstacle: reversibility is not required for TCP forwarding - only
+the segment-size BOUND must survive the merge, and tcp_lro sees
+every segment at merge time.  Five changes, in order:
+1. Record at merge: tcp_lro sets m_pkthdr.tso_segsz to the
+   largest merged segment's payload (one assignment in the merge
+   path).  This is Linux's gso_size design; it makes the re-split
+   size EXACT - provably within the sender's MSS because it IS
+   one of the sender's segments - and dissolves most of Phase B's
+   reversibility machinery for TCP.
+2. Convert at egress: at the forwarding MTU-check sites (the same
+   ones as patches/routed-tso-forwarding.patch), a frame with
+   lro_nsegs > 1 gets receive-marks swapped for transmit-marks:
+   CSUM_TSO + request bits, th_sum rewritten to pseudo-header
+   form, tso_segsz clamped to min(recorded, egress MTU - hdrs).
+   The clamp is router-specific: TSO hardware splits at segsz
+   blindly, and unlike the bridge case the egress may be narrower
+   than the merge context.
+3. Software GSO as the fallback (Phase A) - the keystone that
+   makes it safe BY DEFAULT.  Egress is per-packet and dynamic;
+   the merge predates the route lookup; a TSO-less egress without
+   GSO means an unsplittable frame and the PMTUD blackhole that
+   bans LRO on routers today.  Without GSO the only gate is an
+   operator sysctl asserting all-egresses-TSO (default off,
+   fragile against config drift).  GSO first is also the right
+   sequencing: it independently fixes the TSO stall, lifts
+   if_pair's default-off restriction, and obsoletes the
+   forwarding-exemption patch.
+4. Merge hygiene for forwarding-eligible traffic: never merge
+   across ECN CE boundaries (re-split would smear congestion
+   marks), require identical TTL/TOS (merged header values
+   replicate into every re-split segment), and SOFTWARE LRO ONLY
+   - hardware engines merge by fixed firmware policy and cannot
+   promise any of these rules or the segsz recording (survey
+   below).  tsval keep-latest may stay (TCP-correct; RTT
+   sampling coarsens).
+5. Policy/bookkeeping: default-off knob until GSO lands; document
+   that pf/ipfw states and counters see one merged packet where N
+   crossed the wire (already true for endpoint LRO); accept that
+   the router becomes a TCP-aware middlebox for merged flows -
+   the line Linux crossed a decade ago with GRO+GSO forwarding,
+   which this shape reproduces (record at merge, convert at
+   egress, split in hardware when possible and software always).
+   Non-TCP is untouched: tcp_lro merges nothing else.
+Bridge vs router recap: the bridge variant is mechanically safe
+via mutecaps negotiation (all members capable, forced); the
+router variant knows its single egress per packet (no flooding
+invariant) but cannot pre-negotiate, hence the GSO dependency.
+
+**Hardware vs software LRO in the base system (surveyed
+2026-08-26).**  LRO is overwhelmingly a SOFTWARE feature: the
+generic tcp_lro(9) engine is embedded per receive queue by iflib
+itself (iflib.c:3000/3029 - so every iflib driver: ix, em/igb/
+igc, ixl/iavf, ice, bnxt, vmx, ...) and by a dozen-plus
+standalone drivers (mlx4, ena, gve, mana, cxgb/cxgbe, mxge,
+qlxge, liquidio, mvneta, al_eth).  The NIC delivers wire-size
+packets; the driver's CPU merges - GRO in mechanism, LRO in
+name.  ixgbe's 82599-class silicon has an RSC engine that
+FreeBSD's driver does not use.  TRUE hardware LRO exists in
+exactly three drivers: mlx5 (ConnectX-4+, hw_lro_en, aggregation
+configured in the device TIR context), qlnx (FastLinQ
+ECORE_TPA_MODE_RSC) and bxe (Broadcom 578xx TPA) - the device
+hands the host pre-merged frames.  Both classes emit the same
+artifact (oversized frame, CSUM_DATA_VALID marks) under the same
+IFCAP_LRO gate, indistinguishable to consumers.  Consequence for
+the requirements above: the merge-behavior changes (segsz
+recording, CE/TTL rules) are implementable only in the software
+engine; router-safe mode must decline hardware merging - which
+orphans nothing, since the hw-LRO fleet is three drivers and
+each falls back to the same tcp_lro path (mlx5 has the hw_lro
+toggle explicitly).
+
+**How the other operating systems solved it (surveyed
+2026-08-26).**  The motivating failure is the NIC-to-NIC transit
+case: ingress LRO manufactures frames no wire-MTU egress can
+carry, blackholing forwarded TCP erratically (load-dependent
+merging).  Every major OS except FreeBSD has an answer:
+
+- Linux: the reference architecture, safe by default.  Software
+  GRO merges reversibly and records gso_size at merge; egress
+  always has a splitter - hardware TSO when present, software
+  GSO (skb_gso_segment) unconditionally otherwise - so GRO'd
+  packets forward anywhere.  Irreversible HARDWARE LRO is
+  mechanically excluded: enabling IP forwarding calls
+  dev_disable_lro().  Record + convert + universal fallback +
+  automatic hw exclusion = items 1-4 of the requirements list
+  above, kernel-enforced.
+- OpenBSD (7.4, 2023): the closest cousin and an existence proof
+  that the design fits a BSD stack - TSO with a SOFTWARE
+  implementation as fallback where hardware lacks it, and
+  explicit "forwarding of LRO packets via TSO in ix(4)": segment
+  size recorded at LRO, re-chopped at egress in hardware or
+  software.  net.inet.tcp.tso global knob, -tcplro per
+  interface.  Effectively the five-item list, shipped.
+- Windows: RSC (their LRO) is spec'd with merge rules and
+  DISABLED on interfaces where forwarding is enabled; newer
+  Windows Server moved coalescing into the vSwitch, paired with
+  LSO egress re-segmentation - merge and split owned by the same
+  forwarding-aware component.
+- Solaris free successors (illumos: OmniOS/OpenIndiana/SmartOS):
+  the TSO half only, with the keystone.  The GLDv3 MAC layer
+  carries LSO metadata across vnics (their zone-networking
+  analogue - deliver-whole across virtual links, like pair TSO),
+  and mac_hw_emul()/mac_sw_lso/mac_sw_cksum EMULATE the offload
+  in software at any consumer that cannot perform it (built for
+  bhyve/viona) - transmit-side safe by construction.  No generic
+  LRO/GRO merge engine exists, so the router trap cannot arise
+  (and no receive batching either).  Oracle's closed Solaris 11
+  documents driver LRO with restrictions; unverified.
+
+Scoreboard for merged/oversized-frame forwarding: Linux both
+halves + automatic enforcement; OpenBSD both halves; Windows
+coalescing gated, splitting universal; illumos transmit half
+with software emulation; FreeBSD neither (hardware-only TSO with
+balking forwarders, endpoint-only LRO; the 2014 GSO patch was
+posted to freebsd-current and never merged).  The pattern to
+cite upstream: every OS that has ANY answer has the software
+segmenter, and none made merged-frame forwarding safe without
+one - four independent codebases converged on the same keystone.
+Sources: openbsd.org/74.html, man.openbsd.org/ifconfig.8,
+lists.freebsd.org freebsd-current 2014-September/052226
+(Garzarella GSO RFC), kernel.org segmentation-offloads.txt,
+illumos.org issue 12679 (viona), illumos bug 17504 (viona LSO
+emulation), smartos.org OS-7331 (mac_sw_cksum), illumos mac(9E).
+
+**LRO reversibility (2026-08-26): the merge conceals, it does not
+destroy.**  tcp_lro's data-segment merge is copy-free splicing:
+m_adj() only advances m_data (the original per-segment headers
+remain byte-intact in their clusters at m_data - trim),
+m_demote_pkthdr() strips status, and the chain is linked by
+reference (tcp_lro.c:1101-1104).  What the merge discards is only
+the MAP (segment starts, trim lengths) plus the head's original
+header fields (overwritten at flush) - and pure ACKs, the one
+true destruction (folded then m_freem'd, tcp_lro.c:1088; legal
+ACK thinning, but gone).  Full reversibility therefore costs:
+(1) a per-entry map {mbuf*, trim, paylen} per merged segment,
+(2) ~24 saved bytes of original head fields, (3) ACK compression
+off for eligible flows, (4) an m_tag to carry the map past flush
+(one allocation per aggregate - the only real cost), and (5) an
+O(nsegs) undo: un-adjust, re-promote, split at segment starts,
+restore the head.  The resurrected packets ARE the originals -
+checksums still valid, zero synthesis - so reversal is CHEAPER
+than re-segmentation where it applies.  What it can never cover:
+origin-TSO frames (tcp_output built one chain; there were never
+small packets to resurrect).  FreeBSD's LRO is irreversible by
+EAGERNESS, not architecture: it discards recoverable information
+at merge time instead of consumer-known time (the engine's sort
+queue and the tcp_lro_flush_tcphpts train path already hold
+originals untouched pre-flush).
+
+**CLOSING SYNTHESIS: the target offload architecture
+(2026-08-26).**  Everything in this cluster converges on one
+egress-side oversize handler at the balk sites (ip_output/
+ip6_output EMSGSIZE, both tryforwards, ip6_forward, pf_route,
+later bridge_pfil), ordered by fidelity and cost:
+  1. fits egress MTU               -> send
+  2. egress has hardware TSO       -> pass whole (today's
+     exemption patch, demoted from only-path to fast path)
+  3. CSUM_TSO frame, or egress narrower than the ORIGINAL
+     segments                      -> software chop (~200 lines:
+     synthesized headers at clamped tso_segsz, payload
+     reference-shared, request-bit checksums)
+  4. frame carries a reversal map  -> reverse (bit-exact
+     originals, free checksums)
+  5. none                          -> ICMP, as today
+(3 outranks 4 only in the narrow-egress geometry, where legal
+TCP resizing beats emitting originals that still will not fit.)
+Software chop is not merely a safety net - it is the second half
+of the transit win: splitting at the EGRESS means one route
+lookup, one pfil pass, one set of lock tours per ~44 segments,
+composing with pair TSO to amortize BOTH hops of jail->world
+transit; hardware TSO remains the fast path on capable NICs.
+Cascading consequences once the chopper exists: pair TSO's
+default-off restriction lifts (the stall becomes impossible; the
+man page TUNING block shrinks to a performance note); TSO.txt
+section 7's driver-private splitter is permanently obsolete;
+patches/routed-tso-forwarding.patch becomes a handler instead of
+an exemption; router LRO becomes safe per the five-item list
+with reversal as the transparency upgrade; and FreeBSD would
+pass OpenBSD 7.4 (chopper-only, synthesis for everything) by
+returning literal originals for merged frames - which no
+shipping OS does.  Sequencing, final: chopper first (load-
+bearing for every case, sufficient for all), balk-site handler
+second, reversal third as fidelity refinement.  The chopper
+alone converts every "safe under stated invariants" in this
+cluster into "safe"; reversal converts "safe" into
+"transparent".
+
+**In-tree precedent for the chopper (found 2026-08-26): sfxge(4)
+already contains a genuine software TCP segmenter.**  Tree-wide
+sweep result: exactly one true implementation exists, buried in
+the Solarflare driver.  With firmware-assisted TSO off
+(tso_fw_assisted == 0), tso_start_new_packet()
+(sfxge_tx.c:1214) synthesizes a fresh header per MSS-sized
+packet - advanced th_seq, per-packet IP length (v4 ip_len / v6
+ip6_plen: BOTH families handled, incl. VLAN parsing; v6
+extension headers excluded, matching the stack's own TSO
+exclusion), FIN|PUSH cleared on non-final segments - and
+tso_fill_packet_with_fragment() attaches payload by DMA
+reference into the original mbuf, no copies; the NIC contributes
+only DMA.  Shipping since the FreeBSD 9 era (old Solarflare
+silicon lacked TSO).  Two qualifications: it emits efx hardware
+descriptors, not mbufs (mbuf-chain-in, DMA-program-out - the
+reusable part is the algorithm, not the function), and it is
+driver-private, unreachable from any balk site.  Everything else
+in the tree is deliver-whole (Xen netback injects guest TSO
+frames CSUM_TSO-marked, netback.c:1897 - same trick as
+tap/bhyve/if_pair), wrong-layer (ip_fragment), primitives
+(m_split/m_copym), or endpoint-only (tcp_output's EMSGSIZE
+recovery re-segments from the socket buffer, not from a formed
+packet).  Upstream-pitch value: the "software TSO is subtle"
+counterargument is answered by pointing at sfxge_tx.c - the
+header-fixup edge cases have been handled in production for a
+decade; the Phase A chopper is substantially a PORT of that
+logic from descriptor-emission to mbuf-emission behind a KPI the
+balk sites can call - relocation, not invention.  Two inherited
+decisions to make explicit in the port: sfxge does NOT step the
+v4 IP ID across software-split segments (XXX comment,
+sfxge_tx.c:1332 - RFC 6864-legal for DF-set TCP, but a shipped
+answer to a question worth deciding deliberately), and it leans
+on hardware checksum offload for the per-segment sums (copied
+headers carry tcp_output's pseudo-header sum); a balk-site
+chopper must set request bits or compute sums itself.
+
 Benchmarking note (2026-08-15): an apparent directional throughput
 asymmetry turned out to be an iperf3 `--bidir` artifact (both
 directions share one client process; its CPU saturation throttles
@@ -1216,6 +1483,62 @@ MTU grid's 1500 row (7.25 -> 269 Gbit/s, avg tx packet pinned at
     harness bug (clobbered -P argument), kept as a curiosity.
   TSO.txt item 6.5's pair-local half is thereby DONE; the
   patched-kernel transit A/B remains.
+
+**TSO outlook: the jail-router deployment picture (2026-08-26).**
+Reference scenario: host routes for vnet jails on if_pair (TSO
+enabled both sides), uplink NIC(s) at MTU 1500 with LRO+TSO
+enabled.  Per direction and protocol:
+
+- Jail -> world TCP: UNPATCHED kernel STALLS (the chain dies at
+  ip_tryforward, TF_TSO survives the re-probe; route clamps do
+  NOT help - they size the MSS, not the chain).  On a stock
+  kernel, pair TSO is incompatible with world-bound TCP from
+  that jail, full stop (the man page TUNING warning).  PATCHED:
+  optimal - the ~44x chain reaches the NIC and splits in
+  hardware.
+- World -> jail TCP: NIC LRO merges carry RECEIVE marks, never
+  CSUM_TSO, so the exemption patch is irrelevant; the only gate
+  is the plain MTU check against the pair.  Pair MTU 65535:
+  works today.  Pair MTU 16384: merges over 16K die with
+  needfrag sent to a remote already sending 1460s - the
+  LRO-manufactured blackhole, erratic by merge size.  LRO on
+  the uplink REQUIRES pair mtu 65535.
+- Jail <-> jail via routing: chains up to tsomax 65518 cross a
+  forwarding hop; works unpatched only at pair mtu 65535 (fits),
+  needs the patch at smaller MTUs.  Pair-local (one pair, no
+  forwarding): always works, MTU-independent (t_22).
+- UDP: non-DF v4 fragments at the egress (works today); DF/v6
+  oversize dies at the host - connected sockets learn,
+  unconnected cannot; the route clamp converts that to
+  synchronous local EMSGSIZE.  ICMP: forwarded normally, and it
+  is the control channel - do not filter needfrag/PTB.
+
+Recommended configuration: pair mtu 65535 everywhere (inbound
+LRO admission and unpatched inter-jail both require it; TCP is
+MTU-decoupled under TSO; UDP/SCTP get maximum batching - the
+old 64K single-flow caution applied to non-TSO TCP only);
+world-facing routes inside jails clamped to 1500 (for the
+datagram protocols, not TCP); inter-jail routes unclamped.
+Unpatched hosts: enable pair TSO only for jails without
+world-bound TCP.
+
+lagg(4) uplink variant: transparent to all of the above.
+lagg_capabilities() (if_lagg.c:663-728) makes lagg0's
+caps/hwassist the AND of its ports and its TSO limits the
+member-min, pushing the common capenable back down - so
+configure offloads on lagg0 (member changes recompute, which is
+also the drift vector: hot-adding a TSO-less port silently
+strips CSUM_TSO and stalls forwarded chains).  Flow-to-port
+affinity (local hash out, switch LACP hash in) keeps ordering
+and per-member LRO intact.  lagg consolidates a multi-port
+egress into one honest advertisement - bookkeeping, NOT a
+safety mechanism: the router-safety condition ranges over the
+whole route table's egresses, which neither ix0 nor lagg0
+changes.  Corrected safety hierarchy: bridge (mutecaps closes
+it - egress set IS the member set) > single-egress router
+(closed by topology, one honest hwassist check) > multi-egress
+router (open, human-maintained) - and only software GSO (Phase
+A) closes the last case by construction.
 
 Open items: (a) lo(4) baseline sweep on the Ampere (same stack, no
 worker triangle) to apportion the residual tax 2 between platform
