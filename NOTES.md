@@ -1108,6 +1108,54 @@ lscpu/dmesg on a07 would confirm.  Datasheet cached at the URL in
 the 2026-08-26 conversation; SPECrate 2017_int_base estimate 350
 for scale.
 
+**MTU x connection grid (2026-08-26, samples/t17_{1k,1500,2k,4k,
+8k,9000,16k,32k,64k}.txt; timers=1, autoscaled windows, Gbit/s):**
+
+    MTU\P      1     2     4     8    16    32    64   128
+    1024    5.06  9.05  17.9  34.9  64.4  118   167   226
+    1500    7.22  14.0  27.0  44.3  88.4  156   232   269
+    2048    9.59  18.5  35.4  64.0  111   178   238   298
+    4096    19.1  36.7  69.3  129   205   408   337   320
+    8192    20.5  47.1  89.1  163   328   446   358   329
+    9000    28.7  55.6  90.7  176   326   455   372   331
+    16384   37.8  73.3  126   206   355   485   360   335
+    32768   30.7  60.2  107   208   357   477   349   338
+    65535   24.4  59.7  114   215   346   503   351   339
+
+  The whole investigation in one table - three regimes:
+  (1) packet-cost-bound (small MTU or low P): throughput ~
+  MTU x conns, packet rate the currency; (2) the machine peak
+  ~490 +/- spread at P=32, reached by every MTU >= 8192 (485/
+  477/503 statistically indistinguishable); (3) the P=128
+  autoscaled-window wall at 320-339 for EVERY MTU >= 4096 -
+  MTU-independent to within 6%, because it is the byte-rate
+  working-set ceiling t_21 identified (same wall t_21 removed
+  with 64k windows).
+  Findings on top of the regimes:
+  - 16384 is the SMALLEST MTU that reaches the machine peak AND
+    the single-flow best (37.8); single-flow DECLINES above it
+    (32k: 30.7, 64k: 24.4, -35%) - coarser per-packet chains and
+    lumpier stage handoff hurt when one flow must pipeline.
+    This revises the 2026-08-15 VM result (+3.8% for 64K):
+    machine-dependent, and on Altra Max large MTUs are a
+    single-flow LOSS.  The 16384 default is optimal over the
+    entire measured grid.
+  - Small MTUs produce the investigation's first queue drops:
+    oqdrops at every P for MTU <= 1500 (403 at P=1!), shrinking
+    with MTU up to 4096 (trace), zero above.  ~0.01% loss - the
+    4096-slot mbufq overflows during bursts when per-packet
+    service cost stops amortizing.  Small-MTU curves also never
+    fall off (rising through P=128): they are packet-rate-bound
+    and too slow to reach the byte-rate wall.
+  - Cluster granularity: 2048 beats 1500 (9.59 vs 7.22 at P=1) -
+    a 1500-byte packet consumes the same 2K cluster as a full
+    2048-byte one; wire-MTU emulation is the worst measured
+    configuration (5x below default single-flow), reinforcing
+    the man page's route -mtu clamping advice over lowering the
+    interface MTU.
+  - 9000 behaves as the 8192 class (within spread); nothing
+    special about jumbo-Ethernet geometry on this path.
+
 Open items: (a) lo(4) baseline sweep on the Ampere (same stack, no
 worker triangle) to apportion the residual tax 2 between platform
 TCP behavior and if_pair's indirection; (b) if (a) implicates the

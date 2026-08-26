@@ -21,7 +21,8 @@
 #
 # Requires iperf3 and a working dtrace; skipped if either is missing.
 # BENCH_SECS (default 15) is the iperf3 duration, PROF_SECS (default
-# 10) the profiling window inside it, LOAD_P the connection count.
+# 10) the profiling window inside it, LOAD_P the connection count,
+# PAIR_MTU (default 16384, the driver default) both sides' MTU.
 . "$(dirname "$0")/lib.sh"
 
 if ! command -v iperf3 >/dev/null 2>&1; then
@@ -63,6 +64,7 @@ test_init
 SECS=${BENCH_SECS:-15}
 PROF=${PROF_SECS:-10}
 P=${LOAD_P:-64}
+MTU=${PAIR_MTU:-16384}
 
 A4=192.0.2.1; B4=192.0.2.2
 J1=$(jname 1); J2=$(jname 2)
@@ -71,6 +73,8 @@ mkjail "$J1"
 mkjail "$J2"
 must "move ${PAIRA} into ${J1}" ifconfig "$PAIRA" vnet "$J1"
 must "move ${PAIRB} into ${J2}" ifconfig "$PAIRB" vnet "$J2"
+must "mtu ${MTU} side a" jexec "$J1" ifconfig "$PAIRA" mtu "$MTU"
+must "mtu ${MTU} side b" jexec "$J2" ifconfig "$PAIRB" mtu "$MTU"
 must "address side a" jexec "$J1" ifconfig "$PAIRA" inet "${A4}/32" "$B4" up
 must "address side b" jexec "$J2" ifconfig "$PAIRB" inet "${B4}/32" "$A4" up
 must_retry 5 "baseline ping" jexec "$J1" ping -q -o -c 3 -t 2 "$B4"
@@ -83,7 +87,7 @@ sleep 1
 OUT=$(mktemp -t ifp_prof) || fail "mktemp failed"
 cleanup_push "rm -f ${OUT} ${OUT}.err ${OUT}.sum"
 
-log "iperf3 -P ${P} for ${SECS}s, profiling ${PROF}s inside the run"
+log "iperf3 -P ${P} for ${SECS}s at mtu ${MTU}, profiling ${PROF}s inside the run"
 jexec "$J2" timeout $((SECS + 30)) iperf3 -c "$A4" -P "$P" -t "$SECS" \
     >/dev/null 2>&1 &
 CLI=$!

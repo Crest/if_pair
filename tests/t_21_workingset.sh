@@ -28,7 +28,10 @@
 # that does not complete still fails the sweep after the table is
 # printed.  Requires iperf3; skipped if missing.  BENCH_SECS
 # (default 5) per run; WINDOWS (default "default 4m 1m 256k 64k")
-# is the sweep list, where "default" means autoscaling.
+# is the sweep list, where "default" means autoscaling; PAIR_MTU
+# (default 16384, the driver default) sets both sides' MTU - note
+# the optimal window scales with the MTU (the pipeline needs ~4
+# segments in flight), so reinterpret the sweep when changing it.
 . "$(dirname "$0")/lib.sh"
 
 if ! command -v iperf3 >/dev/null 2>&1; then
@@ -40,6 +43,7 @@ test_init
 
 SECS=${BENCH_SECS:-5}
 P=${LOAD_P:-128}
+MTU=${PAIR_MTU:-16384}
 WINDOWS=${WINDOWS:-"default 4m 1m 256k 64k"}
 
 # Kernel-global knobs that persist across runs; log for provenance
@@ -56,6 +60,8 @@ mkjail "$J1"
 mkjail "$J2"
 must "move ${PAIRA} into ${J1}" ifconfig "$PAIRA" vnet "$J1"
 must "move ${PAIRB} into ${J2}" ifconfig "$PAIRB" vnet "$J2"
+must "mtu ${MTU} side a" jexec "$J1" ifconfig "$PAIRA" mtu "$MTU"
+must "mtu ${MTU} side b" jexec "$J2" ifconfig "$PAIRB" mtu "$MTU"
 must "address side a" jexec "$J1" ifconfig "$PAIRA" inet "${A4}/32" "$B4" up
 must "address side b" jexec "$J2" ifconfig "$PAIRB" inet "${B4}/32" "$A4" up
 must_retry 5 "baseline ping" jexec "$J1" ping -q -o -c 3 -t 2 "$B4"
@@ -115,7 +121,7 @@ TMPOUT=$(mktemp -t ifp_ws) || fail "mktemp failed"
 cleanup_push "rm -f ${TMPOUT}"
 
 failed=0
-log "conns   window  Gbit/s  netmemKiB  oqdrops   idrop  overruns  (${SECS}s runs)"
+log "conns   window  Gbit/s  netmemKiB  oqdrops   idrop  overruns  (${SECS}s runs, mtu ${MTU})"
 one_run 32 default
 for w in $WINDOWS; do
 	one_run "$P" "$w"

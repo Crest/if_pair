@@ -11,7 +11,8 @@
 # still fails the sweep after the table is printed.
 #
 # Requires iperf3 (benchmarks/iperf3 package); skipped if missing.
-# BENCH_SECS (default 5) sets the per-run duration.
+# BENCH_SECS (default 5) sets the per-run duration; PAIR_MTU
+# (default 16384, the driver default) sets both sides' MTU.
 . "$(dirname "$0")/lib.sh"
 
 if ! command -v iperf3 >/dev/null 2>&1; then
@@ -22,6 +23,7 @@ fi
 test_init
 
 SECS=${BENCH_SECS:-5}
+MTU=${PAIR_MTU:-16384}
 A4=192.0.2.1; B4=192.0.2.2
 J1=$(jname 1); J2=$(jname 2)
 create_pair
@@ -29,6 +31,8 @@ mkjail "$J1"
 mkjail "$J2"
 must "move ${PAIRA} into ${J1}" ifconfig "$PAIRA" vnet "$J1"
 must "move ${PAIRB} into ${J2}" ifconfig "$PAIRB" vnet "$J2"
+must "mtu ${MTU} side a" jexec "$J1" ifconfig "$PAIRA" mtu "$MTU"
+must "mtu ${MTU} side b" jexec "$J2" ifconfig "$PAIRB" mtu "$MTU"
 must "address side a" jexec "$J1" ifconfig "$PAIRA" inet "${A4}/32" "$B4" up
 must "address side b" jexec "$J2" ifconfig "$PAIRB" inet "${B4}/32" "$A4" up
 must_retry 5 "baseline ping" jexec "$J1" ping -q -o -c 3 -t 2 "$B4"
@@ -39,7 +43,7 @@ cleanup_push "kill ${SRV}"
 sleep 1
 
 failed=0
-log "conns  Gbit/s  oqdrops   idrop  overruns  (${SECS}s runs)"
+log "conns  Gbit/s  oqdrops   idrop  overruns  (${SECS}s runs, mtu ${MTU})"
 for n in 1 2 4 8 16 32 64 128; do
 	ov0=$(sysctl -n net.link.pair.batch_overruns 2>/dev/null || echo 0)
 	set -- $(ifdrops "$J1" "$PAIRA"); ai0=$1; ao0=$2
