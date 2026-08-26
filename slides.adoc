@@ -1,0 +1,182 @@
+= if_pair(4): IP without Ethernet
+crest@c-base.org
+:duration: 5
+:max-width: 45em
+
+Fast point-to-point IP links for FreeBSD jails.
+
+[role="handout"]
+--
+5 minutes. One idea: containers talk IP, so connect them with IP -
+stop emulating Ethernet network stacks inside the same kernel.
+--
+
+
+== Containers on FreeBSD, in one slide
+
+- They're called jails because they're supposed to safely contain root.
+- FreeBSD jails can have their own virtual network stack (aka vnet) or share
+  a subset of the host IP addresses (aka alias).
+- Alias jails have no measurable network overhead, but lack flexibility.
+- A *vnet jail* is FreeBSD's network namespace: it has its own interfaces,
+  addresses, routes, firewall rules, etc.
+- The classic plumbing is *epair(4)* -
+  if you're coming from Linux think of it as FreeBSD's veth: a virtual
+  Ethernet cable, usually plugged into a bridge.
+- Familiar model if you run Linux containers: veth + bridge, ARP/NDP,
+  DHCP/SLAAC, broadcast domains.
+- If you can use it, SR-IOV is the cheat code for performance, but you need
+  hardware support (NIC, IOMMU) and network access is unrestricted.
+
+[role="handout"]
+--
+Level-set for generalists, mapping table for container operators:
+vnet jail = netns, epair = veth, if_bridge = the Linux bridge.
+--
+
+
+== The cost of pretending to be Ethernet
+
+- Ethernet semantics aren't needed between jails, especially on the same host,
+  but the epair + bridge setup emulates Ethernet anyway.
+- ARP/NDP neighbor discovery, broadcast and multicast chatter, a bridge
+  lookup for every frame - between two network stacks inside the *same kernel*.
+- In default kernel configuration epair behaves like a single-queue NIC:
+  packets are processed by *one kernel thread* per interface.
+- Bridging the emulated Ethernet to the physical network means
+  we have to abide by the MTU of the physical network.
+- The achievable packet rate becomes a bottleneck
+  long before the memory bandwidth is reached.
+
+[role="handout"]
+--
+The overhead isn't one big thing, it's a tax on every packet plus a
+concurrency ceiling. None of it buys anything on a host-internal hop.
+--
+
+
+== if_pair(4): two endpoints without a wire
+
+- `ifconfig pair0 create` -> *pair0a* and *pair0b* - buffered packets travel
+  directly from one half of the pair to the other.
+- Move either side into a jail; destroying one side destroys both.
+- Point-to-point, bare IPv4/IPv6: *no* Ethernet headers, no ARP/NDP,
+  no bridge, no L2 attack surface.
+- Checksums elided for traffic that never leaves the machine --
+  completed later only if it really exits via a NIC
+- Default MTU *16384*: ~11x fewer traversals for bulk TCP than 1500
+
+[role="handout"]
+--
+Same lifecycle ergonomics as epair on purpose. The interface is
+literally just a link for IP traffic.
+--
+
+
+== Multi-queue by design
+
+- All pairs share a pool of *CPU-pinned worker threads*, one per core
+- Each packet is *flow-hashed* to a worker: flows spread across
+  cores, per-flow packet ordering preserved
+- Under flood, workers yield CPU (batch and time limit):
+  a saturated link can't starve lower priority threads
+  like TCP timers and userspace.
+- Contrast: epair runs one kernel thread per interface
+  and lets the kernel scheduler do the rest.
+
+[role="handout"]
+--
+The one internals slide. The yield discipline came out of a real
+128-core lab incident: TCP timers stalled machine-wide until workers
+learned to give the clock threads room. Now bounded to ~one tick.
+--
+
+
+== Does it perform?
+
+Measured with iperf3 on an 8 vCPU VM on this laptop.
+[cols="2,1,3", options="header"]
+|===
+| Workload | Gbit/s | Limited by
+| epair(4) | ~42 | its single kernel thread per interface
+| if_pair, 8 flows, single worker | ~60 | one saturated worker thread (earlier prototype)
+| if_pair, 8 flows, flow-hashed | *~120* | the whole machine -- zero idle CPUs
+| if_pair, 1 flow | ~60 | the receiver's memory copy, not the driver
+|===
+
+- Peaks at over 330 Gbit/s on a 128-core @ 3 GHz Ampere ARM server --
+  after one sysctl of tuning (next slide).
+- Expect at least a 3x performance gain over epair with the same MTU
+  for traffic between jails on the same host.
+- Routed overlay: inter-jail traffic can be routed over WireGuard/IPsec VTI
+  directly, no VXLAN/GENEVE encapsulation layer required.
+
+[role="handout"]
+--
+Honest numbers: epair tops out around 42 regardless of flow count --
+the per-interface thread is the ceiling.  if_pair triples that once
+flows spread across all cores; single-flow is copy-bound everywhere,
+no driver can fix that.  Overlay point lands with operators building
+multi-host setups.
+--
+
+
+== Benchmarking surprise: 128 cores, one timer lock
+
+- Scaling stalled: past 16 connections *adding* flows *lost* throughput,
+  with ~90 CPUs idle.  The driver wasn't the bottleneck -- what was?
+- DTrace to the rescue: the kernel's `lockstat` provider attributes every
+  contended lock -- no reboot, no rebuild, ~10 lines of D.
+- Verdict: on non-RSS kernels *every* TCP timer on the machine rearms on
+  *CPU 0's* callout wheel.  One spin lock burned ~57 cores' worth of CPU.
+- One line: `sysctl net.inet.tcp.per_cpu_timers=1` -- throughput more
+  than *doubled*.  Tuning advice ships in the if_pair(4) man page.
+
+[role="handout"]
+--
+The war story slide.  Not an if_pair bug -- stock FreeBSD behavior
+that affects any many-core TCP workload; small machines never
+notice.  Same method earlier caught loaded ipsec.ko taxing every
+packet ~52%.  Moral: measure, don't guess -- DTrace makes the
+kernel explain itself.
+--
+
+
+== Using it
+
+----
+ifconfig pair0 create                     # both ends appear
+jail -c name=demo vnet persist
+ifconfig pair0b vnet demo                 # give the jail one end
+
+ifconfig pair0a inet 192.0.2.1/32 192.0.2.2 up
+ifconfig -j demo pair0b inet 192.0.2.2/32 192.0.2.1 up
+
+jexec demo route add default 192.0.2.1
+sysctl net.inet.ip.forwarding=1           # host routes (and NATs)
+----
+
+- `tcpdump -i pair0a`: unencapsulated IP packets, no Ethernet headers, delayed checksum
+
+[role="handout"]
+--
+Read the shape, not every line: create, hand one end to the jail,
+address both ends, route. IPv6 works identically.
+--
+
+
+== Status & where it's going
+
+- Kernel module for FreeBSD 15, tested on amd64 + arm64 -
+  pre-release: give it a spin on a test machine.
+- Scales from laptops to 128-core servers while staying *fair*
+  under overload.
+- Next: TSO for jail -> world bulk TCP -- potentially up to ~40x fewer
+  routed packets compared to the default 1500-byte Ethernet MTU.
+- Get it: `make && kldload ./if_pair.ko` -- README walks the rest
+
+[role="handout"]
+--
+Close: if your jails route, the Ethernet emulation between them is
+pure overhead -- if_pair deletes it. Questions welcome.
+--

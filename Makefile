@@ -20,6 +20,14 @@ MANDIR=		${LOCALBASE}/share/man/man
 MAN=		if_pair.4
 MLINKS=		if_pair.4 pair.4
 
+# `make slides` renders the presentation into a self-contained W3C
+# Slidy slideshow.  Needs textproc/asciidoc; not part of `all`.
+CLEANFILES+=	slides.html
+
+slides: slides.html .PHONY
+slides.html: ${.CURDIR}/slides.adoc
+	asciidoc -b slidy -o ${.TARGET} ${.ALLSRC}
+
 .include <bsd.kmod.mk>
 .include <bsd.man.mk>
 
