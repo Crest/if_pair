@@ -929,6 +929,145 @@ new ceiling matters: t_17 uninstrumented rerun first, then the
 mbuf zone (UMA per-CPU bucket sizing / allocation batching) and
 the lo(4) baseline in open item (a).
 
+**Uninstrumented t_17 A/B after reboot (2026-08-26,
+samples/t17_ampere_retest.txt; security patches installed, default
+16K MTU): peak 479 Gbit/s.**  timers=0 first: the curve reproduces
+the 2026-08-21 no-ipsec baseline almost exactly (223 @ P=16 peak,
+144 @ P=128 vs 223/140) - the baseline is stable across a reboot
+and a patch level, which also retroactively validates comparing
+the pre/post-reboot captures.  timers=1: 354 @ 16, **479 @ P=32
+peak** (2.15x), 362 @ 64, 337 @ 128 (2.34x); the peak moved from
+16 to 32 connections, the same only-more-connections-fit-now shift
+the MTU change produced, and high-P overruns FELL (374k -> 191k
+counts while moving 2.3x the data) - per-worker efficiency up,
+not just aggregate.  Cross-checks: t_20's 334 under capture at
+P=128/64K vs 337 uninstrumented at P=128/16K confirms both MTU
+neutrality and that lockstat capture overhead collapsed along with
+the contention it observes (probe cost is per contention event;
+the events are gone).  One honest wrinkle: low connection counts
+dip slightly under timers=1 (2 conns 68 -> 56, 4 conns 120 -> 110)
+- plausibly the flowid-placed timer landing on the connection's
+busy worker CPU; at or beyond the old ~10% run spread, negligible
+against the 2x scaling win, not worth chasing.  The man page's
+"more than doubled" claim is now backed uninstrumented at the
+default MTU (223 -> 479).  Residual falloff past P=32 (-30% off
+peak) remains the mbuf-zone + triangle territory mapped by t_20.
+Slides note: the 330 figure is again stale (pending, slides parked
+2026-08-26).
+
+**t_20 retest on 15.1-p3 (2026-08-26, samples/t20_retest.txt):
+stable, and the mbuf-zone traffic is now stack-attributed.**
+Same shape as the 2026-08-25 percpu captures (329 Gbit/s under
+capture, mbuf 118 s spin + 38 s block, so_rcv 25 s, tcpinp 21+17 s,
+turnstile 24 s) - the contention picture survives the reboot and
+patch level.  New: the loaded-window stacks split the mbuf zone
+lock traffic by site, confirming the alloc/free CPU-split model
+exactly: ALLOC in transmit contexts - cache_alloc_retry via
+tcp_m_copym (retransmit-chain header mbufs, from both
+tcp_usr_send and ACK-clocked tcp_do_segment output) and via
+m_getjcl <- mc_uiotomc (sosend copyin) - and FREE in receive
+contexts - cache_free via m_free from soreceive_generic_locked
+(post-copyout) and mb_free_ext (shared-cluster refs).  Notable:
+tcp_m_copym means every transmit allocates header mbufs even
+though clusters are reference-shared, so the zone churn has a
+per-segment component on top of the per-byte cluster component.
+
+**t_19 at P=32 vs P=128 with timers=1 (2026-08-26,
+samples/t19_p32.txt / t19_p128.txt): peak is half-idle, falloff is
+copy-efficiency collapse.**  Two headline facts and one derived
+mechanism:
+
+- P=32 - the 479 Gbit/s PEAK - runs the machine at 49.6% IDLE.
+  The ceiling at peak is per-connection pipeline depth (32 flows
+  x their sender/worker/receiver legs occupy ~64 CPUs), not any
+  global resource.  Non-idle split: copy 46.3% (copycommon
+  45.3%), locks 22.1%, alloc 12.3%, proto 8.8%.
+- P=128: 0.0% idle, yet LESS throughput (337).  Split: copy
+  56.6%, locks 15.0%, alloc 13.2%.
+- The derived mechanism: absolute copy productivity collapses.
+  P=32: ~30 CPUs' worth of copycommon moves 479 Gbit/s -> ~16
+  Gbit/s per copying CPU.  P=128: ~72 CPUs' worth moves 337 ->
+  ~4.7.  The same memcpy running 3.4x slower per CPU is a
+  memory-system effect: 128 connections' socket buffers blow the
+  system-level cache, copies come from DRAM, and all 128 CPUs
+  contend for bandwidth.  Locks are bit players everywhere now
+  (~14 vs ~19 absolute CPU-equivalents at the two points,
+  independently matching t_20).  The alloc bucket (~13%:
+  mb_dupcl, mb_free_ext, mb_ctor_clust, m_demote) is the
+  mbuf-lifecycle cost stack-attributed in the retest above.
+- Falsifiable next test (cheap, causal): rerun P=128 with small
+  fixed windows (iperf3 -w 256k) - recovery toward the peak
+  confirms the working-set explanation; a STREAM run would supply
+  the bandwidth denominator for the copy arithmetic.
+- Caveat: total profile samples differ 2x between captures (482k
+  at P=32 vs 244k at P=128 against ~636k theoretical), so some
+  context at high P evades sampling (suspect interrupt-masked
+  sections); within-capture percentages and the t_20-corroborated
+  lock numbers are solid, fine cross-capture deltas are not.
+
+**t_21 working-set sweep (2026-08-26, samples/t21_ampere.txt):
+hypothesis CONFIRMED - the falloff is buffer working set vs
+cache, and right-sized buffers ELIMINATE it.**  P=128 with
+descending fixed windows, P=32 default-window reference first:
+
+    conns  window   Gbit/s  netmemKiB
+       32  default     486      43258   <- peak reference
+      128  default     336    1198082   <- autoscaled: 1.2 GB(!)
+      128  4m          339     549766
+      128  1m          360     193939
+      128  256k        397      77978
+      128  64k         493      49583   <- EXCEEDS the peak
+
+  Monotonic recovery tracking the measured footprint, zero drops
+  anywhere; at 64k windows P=128 beats the machine's best
+  (493 vs 486) - the "falloff" was never about connection count
+  at all, only about the ~1.2 GB of autoscaled socket buffers
+  (128 conns x up to 8+8 MB sendbuf_max/recvbuf_max) thrashing
+  the cache hierarchy, exactly as the t_19 copy-efficiency
+  arithmetic predicted.  With buffers fitting in ~50 MB the
+  machine holds ~490 Gbit/s FLAT from P=32 to P=128; that
+  plateau is the true ceiling (presumably copy/memory bandwidth
+  - a STREAM run remains the missing denominator).  The knee
+  below 64k is unexplored (WINDOWS="64k 32k 16k" would find it;
+  BDP at these us RTTs is only tens of KB, so headroom likely
+  remains).
+  Operator lever, and it is jail-scoped: net.inet.tcp.sendbuf_max
+  and recvbuf_max are CTLFLAG_VNET (tcp_output.c:126-127,
+  tcp_input.c:222, 8 MB defaults) - a vnet jail can cap ITS OWN
+  autoscaling (e.g. 256k-1m for machine-local bulk) without
+  affecting the host's WAN connections, whose long-RTT BDPs
+  genuinely need large buffers.  Autoscaling overshoots
+  machine-local flows by ~100x: it grows toward bandwidth x
+  loss-recovery targets sized for real networks, while a
+  microsecond-RTT pair flow needs tens of KB.  Candidate for the
+  man page TUNING section alongside per_cpu_timers.
+
+**t_21 knee sweep (2026-08-26, samples/t21_to16k.txt): the
+optimum is 64k, and the floor is segment-count granularity.**
+P=128, powers of two 512k -> 16k (P=32 default reference 491):
+512k 373, 256k 398, 128k 450, **64k 492**, 32k 425, 16k 342.
+Above 64k the cache-thrash side of the curve (footprint 117 ->
+49 MB); below it throughput falls while footprint barely moves
+(44 -> 42 MB), so the small side is NOT working-set - it is
+pipeline starvation, and the numbers say why: at the default
+16384 MTU the MSS is ~16344, so a 64k window is ~4 segments in
+flight, 32k is 2, and 16k is stop-and-wait with a single
+segment.  The three-stage sender -> worker -> receiver pipeline
+needs a few segments in flight to stay busy; ~4 x MSS is the
+floor, and the optimum is the smallest window that clears it.
+Consequences: the optimal window scales WITH the MTU (a 64K-MTU
+pair would want ~256k windows), so at very high connection
+counts the default 16K MTU plus small per-flow buffers is the
+cache-friendliest operating point.
+NOT man-page material (decided 2026-08-26): the vnet sysctls cap
+EVERY TCP connection in the jail, and any external connection
+has a BDP orders of magnitude above 64k - a jail-wide cap would
+cripple exactly the traffic autoscaling exists for.  Capping is
+only sound per APPLICATION (setsockopt/SO_*BUF, iperf3 -w) or
+in a jail whose traffic is verifiably machine-local.  Recording
+the curve here as benchmark insight, not operator guidance;
+generalizing it would be overfitting one microbenchmark.
+
 Open items: (a) lo(4) baseline sweep on the Ampere (same stack, no
 worker triangle) to apportion the residual tax 2 between platform
 TCP behavior and if_pair's indirection; (b) if (a) implicates the
