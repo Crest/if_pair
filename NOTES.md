@@ -705,6 +705,75 @@ at merge time instead of consumer-known time (the engine's sort
 queue and the tcp_lro_flush_tcphpts train path already hold
 originals untouched pre-flush).
 
+**Reversal detection point and pfil interaction (2026-08-26).**
+"Need to reverse" is the conjunction (frame > egress MTU) AND
+(no hardware TSO at egress) AND (reversal map attached) - the
+first two facts exist only after the routing decision, so
+detection belongs at the egress oversize handler, after both
+pfil passes; nothing upstream knows reversal exists.  (Purist
+fallback designs, deliberately not chosen: reverse before the
+pfil-OUT hook - exact per-packet filter semantics, N pfil
+passes; or decide merge-vs-train at flush - needs an early
+destination peek, forfeits forwarding batching.)  Both pfil
+hooks therefore see the MERGED aggregate: one state lookup, one
+verdict, one rule pass per ~44 segments - the single-pass
+batching benefit, matching endpoint-LRO semantics pf already
+tolerates and Linux's netfilter-filters-GSO-aggregates
+precedent.  Verdicts are per-flow-coherent (drop/pass of N
+segments at once is sound); what shifts is accounting (packet
+counters undercount, probabilistic per-packet policies coarsen).
+THE TRAP: pfil hooks MODIFY headers - NAT addresses/ports, scrub
+TOS/min-ttl - applied to the aggregate's head only, while the
+hidden per-segment originals still carry pre-NAT values;
+reversing after NAT would emit packets that UNDO the
+translation.  THE RESOLUTION, free of charge: the ~24 saved
+original head fields (kept so reversal can restore what LRO's
+flush rewrote) double as a TAMPER DETECTOR - at the balk site,
+any live-header difference outside LRO's own mutation set (len,
+ack, window, tsval) proves a hook modified the aggregate, and
+reversal is vetoed with a downgrade to the chopper, which
+templates from the live post-NAT header so modifications
+propagate correctly into every synthesized segment.  Reversal
+for untouched aggregates (exact originals), chop for modified
+ones (modifications faithfully replicated), never a wrong
+packet.  Divert/dummynet custody likewise vetoes reversal.
+Lifecycle bonus: the map rides a non-persistent m_tag, stripped
+at trust boundaries - including by if_pair's own
+m_tag_delete_nonpersistent() on vnet crossing - so losing the
+map degrades automatically to the always-correct chop floor:
+the failure mode is the safe one by construction.
+
+**Final refinement (2026-08-26): the chopper is SUFFICIENT;
+reversal is formally optional.**  Two facts close the question:
+(1) tcp_lro never modifies plain non-TCP traffic - UDP/ICMP/
+etc. pass through unmerged and undelayed, and even TCP merges
+only pure ACK|PSH data runs (any SYN/FIN/RST/URG, SACK option,
+or non-monotonic tsval forces flush-and-replace,
+tcp_lro.c:1050-1063) - with exactly ONE exception: VXLAN-
+encapsulated TCP, where the LRO_TYPE_*_UDP types parse the
+INNER headers (tcp_lro.c:411-418), merge the inner TCP stream,
+and rewrite the OUTER UDP/IP lengths and v4 header checksum at
+flush (tcp_lro.c:704-718).  The only UDP header LRO ever touches
+is the tunnel wrapper of a TCP merge.  (2) Therefore every
+aggregate LRO can produce is TCP (possibly VXLAN-wrapped), the
+byte-stream property covers all of it, and the chopper with the
+recorded merge-time segsz meets EVERY correctness requirement -
+legal re-split, post-pfil modification propagation via
+live-header templating, narrow-egress clamp - without ever
+reconstructing an original packet.  Reversal's remaining value
+is fidelity only (exact per-segment IP IDs/tsvals/ECN/
+boundaries, cheaper split, permits relaxing the CE merge-hygiene
+rule since exact reversal preserves marks synthesis would
+smear).  Chopper-only is the complete architecture - OpenBSD's
+shipped design, Linux's in synthesis form.  Scoping decision
+required for VXLAN aggregates: either an encap-aware chopper
+(replicate + length-fix the outer UDP/IP/VXLAN headers per inner
+segment - the software analogue of CSUM_INNER_TSO, which
+ip_output's exemption already anticipates) or have forwarding-
+safe LRO mode decline inner-TCP merging for encapsulated flows,
+leaving them unmerged and correct.  Feeding a VXLAN aggregate to
+a plain-TCP chopper is the only wrong answer.
+
 **CLOSING SYNTHESIS: the target offload architecture
 (2026-08-26).**  Everything in this cluster converges on one
 egress-side oversize handler at the balk sites (ip_output/
@@ -778,6 +847,292 @@ answer to a question worth deciding deliberately), and it leans
 on hardware checksum offload for the per-segment sums (copied
 headers carry tcp_output's pseudo-header sum); a balk-site
 chopper must set request bits or compute sums itself.
+
+**lro2tso prototype built (2026-08-27, extras/lro2tso/).**  The
+zero-base-change proof of concept for "convert LRO aggregates to
+TSO frames": a pfil module hooking the inet/inet6 INPUT heads
+(which ip_tryforward() runs before its MTU check), converting any
+frame with lro_nsegs >= 2 that still carries the software-LRO
+receive marks and is plain ACK|PSH TCP.  segsz =
+floor(payload/nsegs) (provably <= sender MSS), th_sum rewritten to
+tcp_output()'s pseudo-header form, request bits set.  Knobs:
+net.lro2tso.enable (RWTUN), counters net.lro2tso.{converted,
+skipped}.  Builds clean -Werror against 15.1.  Two design facts
+discovered while writing it, both load-bearing for the eventual
+tcp_lro_flush() version:
+- m_pkthdr.lro_nsegs IS tso_segsz - a #define alias (mbuf.h:219),
+  one 16-bit field with direction-dependent meaning.  The
+  conversion must read the count and overwrite with the size, in
+  that order; and marking CSUM_TSO on an aggregate WITHOUT
+  rewriting the field would make a NIC split at "44"-byte
+  segments - the landmine that makes half-conversions worse than
+  none.
+- The keep-both-mark-families idea from the flush-time sketch does
+  NOT work: csum_data is one field with two meanings
+  (validated-sum value on receive, th_sum offset on transmit).
+  Conversion must be COMPLETE - strip receive marks, set request
+  bits - and locally-delivered converted frames are then accepted
+  by tcp_input()'s request-bit branch instead of checksum
+  verification, justified because NIC/LRO verified the wire
+  checksum before merging.
+Also gate-relevant: PFIL_FWD is not passed by the tryforward
+paths, so the hook cannot distinguish forwarded from local frames
+- conversion is unconditional, covered by the request-bit
+argument.  Measurement plan: on the Ampere, inbound-style traffic
+with the module loaded and the pair at the 16K default - the
+configuration that previously REQUIRED pair mtu 65535 - watching
+net.lro2tso.converted and throughput; success = the
+pair-mtu-65535 requirement and the symmetric-clamp landmine both
+dissolve via the (patched) forwarding exemption.
+
+**The conversion formula and its unit analysis (2026-08-27).**
+The aliased pkthdr field holds a PACKET COUNT inbound and a
+PAYLOAD-BYTE size outbound:
+  - lro_nsegs: dimensionless count of original wire segments
+    folded into the aggregate (stamped 1 per packet at rx,
+    tcp_lro.c:1372; summed on merge, :958).  Exists so tcp_input
+    can restore per-segment semantics for delayed-ACK and
+    byte-counting congestion accounting.
+  - tso_segsz: TCP payload bytes per split segment, NET OF ALL
+    HEADERS AND OPTIONS - tcp_output sets t_maxseg - optlen -
+    ipsec_optlen (tcp_output.c:1405); the splitter replicates
+    header+options per segment and chops only payload (sfxge's
+    ip_length = header_len - nh_off + seg_size confirms;
+    ip_output.c:798's len/segsz packet estimate is approximate
+    for exactly this reason).
+Conversion (lro2tso):
+  v4: tcp_total = ntohs(ip_len) - 4*ip_hl
+  v6: tcp_total = ntohs(ip6_plen)          (plain TCP only)
+  payload   = tcp_total - 4*th_off         (options subtracted
+              once here, mirroring t_maxseg - optlen, since the
+              splitter re-adds them per segment)
+  tso_segsz = floor(payload / lro_nsegs)   (bytes = bytes/count;
+              read count THEN overwrite - same 16 bits)
+Safety: original per-segment payloads p_i <= P_max <= the
+sender's own effective segsz; payload = sum(p_i) so the floored
+average <= P_max - the re-split can never exceed what the sender
+wired.  Equality for full-sized bursts; short tail segments
+underestimate slightly, and with remainder r > 0 the splitter
+emits ceil(payload/segsz) = up to n+1 segments (extra small
+tail) - legal, harmless, and precisely the gap between the
+prototype's INFERENCE and merge-time RECORDING: tracking
+max(p_i) during the merge (one comparison per appended segment)
+gives the exact size, reproduces the original packet count for
+uniform bursts, and needs no division - why router-safe item 1
+says record, not derive.
+
+**pfil placement analysis: why lro2tso fits pfil and GSO/GRO do
+not (2026-08-27).**  Where the hooks run (synchronous, in the
+protocol path, NET_EPOCH, per-vnet, with mbuf+ifp+direction):
+ip[6]_input slow path IN before the local-vs-forward decision;
+ip[6]_tryforward IN before the route lookup and OUT after it
+(egress known) BEFORE the MTU check - the property lro2tso rides;
+ip[6]_output OUT after routing (ip_output.c:705) before the
+MTU/TSO/fragment block (:779); plus the link-layer heads and
+if_bridge's optional reuse of the inet heads.  PFIL_CONSUMED
+exists (pfil.h) - a hook may take custody and reinject later;
+dummynet is the in-tree proof of that pattern.
+Could GRO be a pfil IN hook?  Possible via consume-and-batch, but
+against the API's grain: pfil is a per-packet call with no
+end-of-burst signal, while tcp_lro lives in the driver rx loop
+precisely because interrupt-batch boundaries ARE its flush
+points.  A pfil GRO needs callout flushing (latency floor),
+reinjection loop guards, and reorders held TCP against passed
+non-TCP - solvable, clumsy, and redundant wherever drivers embed
+tcp_lro.  The batch boundary lives in the driver; so should the
+merge.
+Could GSO be a pfil OUT hook?  Right moment (egress known, before
+the balk) but two API gaps: a hook returns ONE mbuf and nothing
+downstream of pfil consumes an m_nextpkt train (the fragment send
+loop runs only in ip_output's own branch, after pfil); and the
+hook NEVER RECEIVES THE NEXTHOP (mbuf, ifp, flags, ruleset, inp -
+no sockaddr, no route), so a chopping hook must consume and
+reinject per segment with re-routing or dummynet-style tag-borne
+context.  The balk sites, by contrast, hold the nexthop and
+already own the 1-in-N-out integration shape - ip_fragment()
+returns an m_nextpkt chain the existing send loop consumes - so
+the chopper there is a small splice into a proven pattern rather
+than a custody subsystem.
+Principle: pfil is the right layer for O(1) in-place
+single-packet transformations (mark/convert/rewrite - lro2tso's
+exact shape) and the wrong layer for operations changing packet
+MULTIPLICITY or needing HELD STATE: splitting wants the balk
+site's routing context and send loop, merging wants the driver's
+batch boundaries.  Linux agrees from the other side: GRO sits in
+the receive path and GSO in validate_xmit_skb() at the driver
+edge, both OUTSIDE netfilter, which filters the aggregates in
+between - hooks decide about and relabel packets; offload
+machinery belongs at the edges where packets enter and leave the
+stack.
+
+**The pf precedent: multiplicity inside pfil, and its price
+(2026-08-27).**  pf scrub is the in-tree proof that BOTH custody
+patterns from the placement analysis work in production - and an
+independent reinvention of record-and-reverse:
+- Reassembly (N->1, IN hook, before rule evaluation - the point:
+  stateful rules need ports, non-first fragments have none).
+  Fragments accumulate in pf's PRIVATE table (RB-tree by
+  src/dst/id/proto, entry limits + timeouts as DoS guards);
+  incomplete -> *m0 = NULL (pf_norm.c:828/934), the NULLed
+  pointer being the custody signal, per-call contract intact.
+  Completion stitches one chain, rewrites the head (total
+  ip_len, MF/offset cleared, incremental cksum, :869-875).
+- The tag IS a reversal map: PACKET_TAG_PF_REASSEMBLED carries
+  {hdrlen, maxlen, frag_id} (:856-867) where maxlen = fr_maxlen,
+  the LARGEST FRAGMENT SEEN, tracked one comparison per arriving
+  fragment (:655).  Record the max piece size at merge, in a
+  tag, so the far side reproduces the original geometry -
+  literally router-safe LRO item 1 and the reversal-map design,
+  shipped years ago one layer down.
+- Refragmentation (1->N, OUT hook): v4 DELEGATES (a reassembled
+  v4 datagram was non-DF; ip_output fragments after the hook).
+  v6 cannot (routers must not fragment), so pf_refragment6()
+  (:1034) reads the tag, calls ip6_fragment(..., maxlen,
+  frag_id) reproducing ORIGINAL size and ID (:1087), then
+  TRANSMITS EACH FRAGMENT ITSELF - the m_nextpkt loop over
+  nd6_output_ifp()/ip6_forward() (:1101-1128), *m0 = NULL - the
+  dummynet custody pattern, independently built.
+Verdict for the placement principle: multiplicity in pfil is
+possible and shipped, and the bill is visible - private state
+table with GC and limits, a tag protocol for undo-geometry, a
+self-transmit loop bypassing the normal flow, per-family
+asymmetry (v4 delegates, v6 self-drives, route-to vs forward
+branches).  pf pays because normalization has no other possible
+home: its purpose is that the filter's own rules see whole
+packets.  GSO/GRO have homes where the context is already
+present - the principle holds, price tag attached.  Deepest
+takeaway: FreeBSD already ships a complete, battle-tested
+"consume originals, record max piece size, reproduce geometry
+faithfully" system - pf scrub is the existence proof for the
+record-and-reverse architecture, at the IP-fragmentation layer.
+
+**ipfw and ipfilter complete the ladder (2026-08-27).**  The
+three in-tree firewalls occupy exactly the three rungs of the
+custody-cost spectrum:
+- ipfw ('reass' action, O_REASS, ip_fw2.c:3395-3430): DELEGATES
+  to the stack's own ip_reass() - the queue ip_input uses, same
+  global DoS knobs.  NULL return = swallowed; completion gets a
+  full ip_sum recompute (:3418-3424; contrast pf's incremental
+  fixup) and IP_FW_REASS restarts rule evaluation on the whole
+  packet.  v4-ONLY (:3399 "IPv6 is not supported yet") - which
+  spares it refragmentation entirely: reassembled v4 is
+  necessarily non-DF, ip_output refragments after the hook for
+  free.  ~30 lines; the price is coupling to the endpoint
+  reassembler's global limits and no v6.
+- ipfilter (ip_frag.c): NO reassembly - a verdict cache.  First
+  fragment matching a 'keep frags' rule stores its PASS FLAGS
+  plus expected next offset (ipfr_off = off + dlen>>3, :480,
+  in-order tracking) keyed by src/dst/id/proto; later fragments
+  inherit the verdict via ipf_frag_known() (:856) without the
+  filter ever seeing ports.  N in, N out, zero custody, metadata
+  only.  Cost of cheapness: out-of-order first-fragment-last
+  bursts find no entry, and no defense against fragment-overlap
+  evasion (the historic pf-vs-ipf security argument - ipf trusts
+  the endpoint's reassembler after judging the pieces; pf's
+  normalization exists to close exactly that).
+The ladder: pf = full custody (private table + reversal tag +
+self-refragmentation); ipfw = borrowed custody (stack
+reassembler, delegated refrag, v4 only); ipf = no custody
+(verdict metadata, packets untouched).  Mapping onto the offload
+designs is exact: pf ~ record-and-reverse, ipfw ~ reuse the
+stack's machinery (the chopper splicing into ip_fragment's
+pattern), ipf ~ relabel without restructuring (lro2tso's shape).
+Three independent authors facing the same fragment problem chose
+the three strategies this cluster derived from first principles
+- each taking the cheapest rung whose semantics their design
+goals tolerated.
+
+**dummynet vs pf custody: the two LEGAL shapes (2026-08-27;
+corrects the "tag-borne context" phrasing above).**  The two
+custody precedents differ on TIME, and epoch discipline forces
+it: pf_refragment6 is SYNCHRONOUS custody - one call frame,
+inside the caller's NET_EPOCH section, so it may use in-hand
+routing state (route-to: known ifp/neighbor) or re-derive per
+fragment (ip6_forward); nothing survives the call; 1->N.
+dummynet is DEFERRED custody - and its dn_pkt_tag
+(ip_dn_private.h:368-378) deliberately carries NO routing
+result, only a RE-ENTRY POINT: {dn_dir, output_time,
+if_index+generation, iphdr_off}.  dummynet_send() dispatches by
+direction - DIR_OUT reinjects via ip_output with a NULL route,
+RE-ROUTING FROM SCRATCH; DIR_IN via netisr_dispatch; L2 via
+ether_demux - and even the ifp is a generation-checked index,
+not a pointer.  Why: nexthops are NET_EPOCH-protected, and
+deferred custody outlives the epoch section BY DESIGN, so
+captured routing state would dangle; re-entry + re-route is the
+only epoch-safe option.  1->1 (delay/drop only).  Corrected
+consequence for the pfil-GSO analysis: "carry the nexthop in a
+tag" is practiced by NEITHER precedent and is not epoch-safe for
+the deferred case; the real menu is pf-shaped synchronous custody
+(borrow the caller's context, self-transmit loop) or
+dummynet-shaped deferred custody (re-entry tag, per-piece
+re-routing, strictly costlier).  The balk-site chopper needs
+neither: it runs where the nexthop is a live local variable.
+
+**tso_wrap prototype built (2026-08-27, extras/tso_wrap/).**  The
+out-of-tree software TSO from the advertise+interpose recipe: a
+module that (1) ADVERTISES - saves then sets IFCAP_TSO4/6,
+CSUM_*_TSO hwassist and the stack-default 65518/35/2048 limits on
+a designated interface, so tcp_maxmtu() grants TF_TSO and
+ip_output()'s exemption (plus the patched forwarding paths)
+passes chains toward it - and (2) INTERPOSES if_output
+(if_setoutputfn; original read via net/if_private.h, which
+gif/me/edsc/dummymbuf also include), chopping CSUM_TSO frames
+larger than the MTU into tso_segsz segments in the wrapper.  The
+placement IS the efficiency argument: if_output receives dst and
+ro, so this is pf-shaped synchronous custody with the nexthop in
+hand - no re-routing, no re-entry tags, segments reuse the
+caller's route within the caller's epoch.  Chopper details:
+sfxge arithmetic emitting mbufs (m_gethdr + m_dup_pkthdr
+preserves flowid/fib/tags for NIC queue steering; header bytes
+copied, payload m_copym reference-shared); per-segment th_seq,
+v4 ip_len+INCREMENTING ip_id (deciding sfxge's XXX
+deliberately) / v6 ip6_plen; FIN|PSH last-only, CWR first-only;
+th_sum recomputed per segment ALWAYS (the original pseudo-sum
+covered the whole chain) - pseudo-header form + request bits
+when the interface has hardware TCP csum, full software sum
+(in_cksum_skip / in6_cksum, in_delayed_cksum pattern) otherwise;
+v4 header csum always computed (nothing downstream would).
+Control: sysctl net.tso_wrap.control (write name to attach,
+-name to detach, read to list); counters chopped/segments/
+sw_csum/drops.  Teardown: restore output pointer FIRST,
+NET_EPOCH_WAIT(), then unlink and restore saved caps; interface
+departure auto-detaches; unload detaches all.  Builds -Werror
+clean on 15.1.  Caveats: capenable/hwassist poked directly, so a
+driver SIOCSIFCAP pass may overwrite the advertisement (reattach
+after ifconfig offload changes); plain TCP only; unpatched
+tryforward still balks for ROUTED frames - module + the 3-hunk
+patch = full software TSO on any NIC, module alone covers
+ip_output-originated paths.  Strategic role: working demo for
+the upstream chopper proposal and a stopgap for
+module-yes-rebuild-no deployments; pairs with lro2tso (convert
+inbound merges) to exercise the full target architecture out of
+tree.
+
+Chopper KPI work plan: CHOPPER.txt (2026-08-27) - the living
+plan for generalizing tw_chop() into tcp_tso_chop(), the one
+function serving both the balk sites (Phase A) and TSO-less
+drivers (epair caps, gif demo, tunnel family), with the
+measurement matrix and the upstream patch series it feeds.
+
+Receive-side module: considered and NOT built (decided
+2026-08-27).  tso_wrap is transmit-only; nothing in extras/
+creates aggregates - merging is the job of the drivers' embedded
+tcp_lro (all of iflib plus the standalone dozen), and lro2tso
+only relabels merges that already exist.  Division of labor for
+e.g. NIC-to-NIC transit: driver tcp_lro merges -> lro2tso
+converts marks -> (patched) forwarding exemption passes ->
+tso_wrap chops at a TSO-less egress.  A software-LRO module for
+drivers LACKING lro would be the if_input mirror of tso_wrap
+(interpose input fn, module-owned lro_ctrl, tcp_lro_rx per
+packet) but inherits the placement analysis' flush-signal
+problem: if_input interposition sees packets singly with no
+end-of-batch marker - the boundary the driver rx loop has and an
+outsider does not - forcing bounded-count flushing or a
+fine-grained callout (latency or timer churn).  Combined with
+its only customers being the few non-iflib non-LRO drivers, none
+in the test topology, it fails the project's demonstrated-need
+tripwire.  Unpark trigger: a measured workload on such a driver;
+then build it as the third extras/ sibling.
 
 Benchmarking note (2026-08-15): an apparent directional throughput
 asymmetry turned out to be an iperf3 `--bidir` artifact (both
@@ -1539,6 +1894,58 @@ it - egress set IS the member set) > single-egress router
 (closed by topology, one honest hwassist check) > multi-egress
 router (open, human-maintained) - and only software GSO (Phase
 A) closes the last case by construction.
+
+**Overlay drivers for jail hosts: architecture and bystander cost
+(2026-08-26).**  The slides recommend routing inter-host jail
+traffic over an encrypted overlay; the ipsec.ko tax finding makes
+the choice of overlay driver asymmetric in a way tunnel-only
+benchmarks never show.  Verified in source:
+
+- if_ipsec(4) (route-based VTI): compiled INTO ipsec.ko itself
+  (sys/modules/ipsec/Makefile lists if_ipsec.c beside the
+  transforms and hook code) - there is no tunnel-only subset.
+  Creating one if_ipsec interface registers the IPSEC_SUPPORT
+  method table: every packet on the host, all vnets, pays the
+  per-packet hook consultation (ip_input/ip_output/forwarding
+  policy checks plus ipsec_hdrsiz per TCP segment built).  The
+  measured empty-SPD tax (~52% of non-idle cycles on the Ampere,
+  2.5x peak / 7x high-P throughput, t19/A-B 2026-08-21) is the
+  FLOOR: if_ipsec registers real policies
+  (key_register_ifnet(), if_ipsec.c:1045), so bystander lookups
+  walk a non-empty SPD.  Static 'options IPSEC' is no escape
+  (hooks compiled in unconditionally); NIC inline IPsec offload
+  moves crypto, not the policy consultation.  Root cause the
+  module boundary hides the SPD-emptiness/relevance fast path
+  from the inline check; upstream fix sketch in open item (c).
+- if_wg(4) (WireGuard): MODULE_DEPEND crypto only
+  (if_wg.c:3305).  Standalone UDP encap over opencrypto; no
+  netipsec hooks; zero cost to non-tunnel traffic.
+- if_ovpn(4) (OpenVPN DCO, 14+): same class - MODULE_DEPEND
+  crypto only (if_ovpn.c:2871), opencrypto AES-GCM/ChaCha20,
+  own UDP encap; userland OpenVPN keeps the TLS control channel,
+  kernel does the data channel.  Zero bystander cost.
+
+Published tunnel-throughput benchmarks (pfSense ecosystem =
+FreeBSD-based; appliance-class low-core hardware): Netgate
+pfSense 2.5 measured kernel WireGuard 1846 vs IPsec 1724 Mbit/s
+at comparable packet sizes; Netgate's VPN scaling docs put
+traditional userland OpenVPN far below both, with DCO closing
+most of the gap ("can match or exceed" under ideal conditions);
+Protectli's KB tables show the same ordering.  None of them
+measure the BYSTANDER axis, where the ranking is categorical:
+if_wg = if_ovpn = zero by architecture, if_ipsec >= the measured
+hook tax.  Guidance for busy many-core jail hosts: prefer
+WireGuard (or DCO where OpenVPN compatibility matters); deploy
+if_ipsec knowingly with the Ampere A/B in mind, on hosts where
+tunnel traffic dominates.  The slides' even-handed
+"WireGuard/IPsec VTI" line should eventually reflect this
+(slides parked).  Candidate t_23: pair throughput with each
+overlay driver loaded plus one active tunnel, tunnel throughput
+alongside - would be novel data; no published comparison covers
+the bystander cost.  (Sources: netgate.com/blog/
+wireguard-in-pfsense-2-5-performance, docs.netgate.com pfsense
+vpn/performance, kb.protectli.com vpn-performance-results,
+wireguard.com/performance.)
 
 Open items: (a) lo(4) baseline sweep on the Ampere (same stack, no
 worker triangle) to apportion the residual tax 2 between platform
