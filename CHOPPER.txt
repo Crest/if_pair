@@ -1,0 +1,150 @@
+tcp_tso_chop(): a software TSO splitter KPI - work plan
+=======================================================
+
+Living plan, started 2026-08-27.  Companion to TSO.txt (the
+if_pair TSO work) and the offload cluster in NOTES.md, which
+holds the analysis this plan executes: the closing-synthesis
+target architecture, the sfxge precedent (the in-tree splitter,
+wrong interface), the custody analysis (why the balk sites and
+driver transmit paths are the right callers), and the tso_wrap
+prototype whose tw_chop() is the working core of the function.
+
+Objective
+---------
+
+One in-kernel function that splits a CSUM_TSO-marked mbuf chain
+into wire-ready segments, serving two consumer classes:
+
+  - forwarding balk sites (ip_output/ip6_output EMSGSIZE, both
+    tryforwards, ip6_forward, pf_route): split transit frames
+    when the egress lacks hardware TSO - "Phase A" of the GSO
+    analysis, which removes the routed-TSO stall, lifts
+    if_pair's default-off restriction, obsoletes
+    patches/routed-tso-forwarding.patch (exemption becomes
+    handler), and makes router-safe LRO possible;
+  - drivers without hardware TSO: advertise IFCAP_TSO honestly
+    and call the chopper in their transmit path - upgrading the
+    survey's "software endpoints and tunnels: no TSO" column
+    (gif/gre/wg/ovpn inner-chop-then-encap; legacy NICs;
+    tso_wrap shrinks to advertise-and-call).
+
+Both Ethernet-framed and bare-L3 callers are supported by a
+single l2hlen parameter: link headers are opaque replicated
+bytes (same MACs/ethertype/VLAN tag every segment), so Ethernet
+support is "copy l2hlen more bytes, parse IP at the offset".
+Worst-case header 14+4+60+60 = 138 bytes fits one pkthdr mbuf.
+
+API sketch (final form decided in P1):
+
+  int tcp_tso_chop(struct mbuf *m, struct mbuf **chain,
+      u_int l2hlen, int flags);
+
+  - Contract modeled on ip_fragment(): consumes m on success,
+    returns segments as an m_nextpkt chain for the caller's
+    send loop; frees everything and returns errno on failure;
+    M_NOWAIT only (callers hold epoch/locks).
+  - flags: TSO_CHOP_HWCSUM (keep per-segment request bits +
+    pseudo-header th_sum) vs software checksums (the
+    in_delayed_cksum pattern); room for future TSO_CHOP_*.
+  - Per segment (the tw_chop/sfxge arithmetic): th_seq advance;
+    v4 ip_len + INCREMENTING ip_id / v6 ip6_plen; FIN|PSH kept
+    last-only, CWR first-only; v4 header csum always computed;
+    payload attached by m_copym reference, headers copied;
+    m_dup_pkthdr preserves flowid/fib/tags for queue steering.
+
+Non-goals (decided in NOTES.md; do not relitigate silently):
+GRO/merge (driver rx loops own the batch boundary), LRO reversal
+(formally optional; chopper is sufficient), UDP/SCTP (boundary
+semantics), IPv6 extension headers (stack excludes them from TSO
+anyway), VXLAN-inner splitting (needs the encap-aware variant;
+explicit scoping decision when someone needs it), per-route TSO
+control (RTF_NOTSO idea parked).
+
+Phases
+------
+
+[TODO] P1  KPI core: extras/tcp_tso/{tcp_tso.c,tcp_tso.h}.
+    Generalize tso_wrap's tw_chop(): add l2hlen, adopt the
+    ip_fragment()-style chain contract, split out of the module
+    so both out-of-tree consumers and the future in-tree patch
+    compile the same file.  Decide and document the M_EXTPG
+    policy: software-checksum path over unmapped payload either
+    verified working (in_cksum_skip/in6_cksum mbuf walkers) or
+    explicitly rejected with EPROTONOSUPPORT and a comment -
+    never silently wrong.  ~250-300 lines including the KPI
+    comment block.  Est: one day.
+
+[TODO] P2  Refactor tso_wrap to advertise-and-call the KPI;
+    lro2tso untouched.  Regression: t_22-style run (pair mtu
+    1500, TSO on, wrapped egress) must reproduce current
+    tso_wrap behavior; counters preserved.  This is the KPI's
+    functional test until the in-tree callers exist.  Est: half
+    a day.
+
+[TODO] P3  Phase A patch: patches/software-tso-forwarding.patch.
+    At every balk site, replace the bare balk with the ordered
+    handler from the closing synthesis: fits -> send; egress
+    hwassist CSUM_TSO -> pass whole (today's exemption, now the
+    fast path); else tcp_tso_chop() and send the chain via the
+    site's existing loop (ip_fragment shows the shape at each).
+    Segment size clamped to egress MTU here (the router-specific
+    clamp).  Supersedes routed-tso-forwarding.patch, which stays
+    for exemption-only users.  Est: 1-2 days + kernel build.
+
+[TODO] P4  epair capability patch: patches/epair-tso.patch.
+    Mirror of if_pair's advertise-only change (caps default-off,
+    TXCSUM coupling, stock limits); NO internal chop - epair
+    delivers whole, and egress splitting is owned by bridge
+    mutecaps + member hardware or the P3 handler.  Est: one day
+    including a t_22-mirror test against epair.
+
+[TODO] P5  One tunnel demo caller, gif(4) (simplest encap):
+    advertise TSO, inner-chop (l2hlen 0) before encapsulation,
+    each segment encapsulated as today.  Demonstrates the
+    tunnel-family pattern for gre/wg/ovpn adopters.  Est: one
+    day.
+
+[TODO] P6  Measurements on the Ampere (t_17/t_22 tooling):
+    a) P2 regression numbers (KPI == tso_wrap baseline);
+    b) Phase A A/B: jail->world bulk with pair TSO through ix
+       with hardware TSO DISABLED (ifconfig -tso) - unpatched
+       stall vs P3 chopper throughput; the headline number;
+    c) chopper micro-cost: segments vs sw_csum counters, pmc
+       profile of the chop path under load;
+    d) epair-with-TSO vs if_pair t_22 tables (same MTU-1500
+       recovery story on the L2 twin).
+
+[TODO] P7  Upstream RFC to freebsd-net, patch series:
+    [1] tcp_tso_chop() KPI (+ optional later: sfxge refactored
+        onto it, retiring the private copy);
+    [2] balk-site handler (P3);
+    [3] epair capabilities (P4);
+    [4] gif demo caller + man page updates.
+    Evidence pack: sfxge precedent (in-tree, decade shipped),
+    OpenBSD tcp_chopper parity, the cross-OS survey, P6 numbers,
+    and the two working out-of-tree prototypes.  Decisions to
+    surface explicitly for review rather than bury: ip_id
+    increment policy (vs sfxge's XXX), M_EXTPG stance, M_NOWAIT
+    contract, l2hlen-instead-of-parsing, exemption->handler
+    semantics change at the balk sites.
+
+Risks / open questions
+----------------------
+
+- M_EXTPG + software checksum is the main correctness risk; P1
+  resolves it by verification or explicit rejection.
+- Converted LRO aggregates arrive as ~44-mbuf chains; when the
+  chopper's OUTPUT feeds a hardware-TSO NIC instead (P3 fast
+  path) the segcount reconciliation stays with iflib's m_defrag.
+  The chopper itself emits 2-mbuf segments (header + shared
+  cluster refs) - always within limits.
+- Performance target: chop cost at or below ip_fragment() for
+  equal output; anything worse needs explaining before P7.
+- Review risk: the P3 semantics change (balk -> handler) touches
+  hallowed paths; the fallback position is KPI + driver callers
+  only (P1/P4/P5 stand alone) with P3 as a follow-up RFC.
+- After upstreaming: tso_wrap and lro2tso remain as demos for
+  older systems; note their supersession in their headers.
+
+Effort summary: roughly a week of focused work to the end of P6;
+P7 is calendar time, not effort.
