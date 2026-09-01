@@ -139,6 +139,15 @@ enum pair_side {
 };
 
 /*
+ * Authors of the borrowed epair queue code (with relevant commits):
+ *   Mark Johnston           df7bbd8c354a  the three-state doorbell
+ *   Bjoern A. Zeeb          original epair (2008)
+ *   Kristof Provost         24f0bfbad57b  per-queue fanout
+ *   Alexander V. Chernikov  12aeeb91903b, 04a32b802ec7  refactoring
+ *
+ * The flow steering, the shared CPU-pinned worker pool, and the
+ * batching/yield governor are if_pair's own.
+ *
  * Receive queue, one per pool worker per side.  Transmitters enqueue
  * onto the receiving side's queue; the pinned worker for pq_id drains
  * it.  Modeled on epair(4)'s struct epair_queue, including the

@@ -1113,6 +1113,20 @@ plan for generalizing tw_chop() into tcp_tso_chop(), the one
 function serving both the balk sites (Phase A) and TSO-less
 drivers (epair caps, gif demo, tunnel family), with the
 measurement matrix and the upstream patch series it feeds.
+EXECUTED same day through P4: extras/tcp_tso/{tcp_tso.c,h} is
+the KPI (l2hlen framing, in-KPI maxlen clamp, EXTPG-swcsum
+rejected, v6 sw-csum via pseudo+in_cksum_skip since in6_cksum
+assumes offset-0 headers); tso_wrap refactored onto it (-Werror
+clean); patches/software-tso-forwarding.patch = Phase A at the
+four forwarding sites (12 hunks dry-run clean; new kernel files
+ship alongside as patches/tcp_tso.{c,h} because patch(1)
+rejects /dev/null hunks) - compile verification pending on the
+Ampere, THIS host's /usr/src being root-owned read-only;
+patches/epair-tso.patch = the epair capability mirror (4 hunks,
+peer-sync extended to TSO bits per epair's own convention,
+patched file compile-verified as a standalone module).  P5
+(gif) todo; P6 measurements + P3 buildkernel are the next
+Ampere session; P7 upstream after that.
 
 Receive-side module: considered and NOT built (decided
 2026-08-27).  tso_wrap is transmit-only; nothing in extras/
@@ -2623,3 +2637,338 @@ Known open items:
   passed 2026-08-17 on both GENERIC and GENERIC-DEBUG; see the
   runtime test log.
 - MTU is not synchronized between the two sides (documented: set both).
+
+Phase A deployed and measured on real hardware (2026-08-28, a07,
+Ampere Altra Max, 15.1-RELEASE-p3): the tcp_tso_chop() kernel with
+both patches went through the full pkgbase flow - releng/15.1
+checkout (the operator re-provisioned /usr/src; the previous tree
+was a stale releng/15.0 left by earlier tests, whose builds came out
+versioned 15.0p13 and were discarded), patches applied, buildworld +
+buildkernel KERNCONF="GENERIC GENERIC-DEBUG" + make packages,
+FreeBSD-kernel-generic pkg add -f'd into a bectl boot environment
+(tso-phaseA) jailed for the install, bectl activate -t, operator
+reboot.  Meta-mode rebuilds on the 128-core box cost ~1-2 minutes.
+
+tests/t_24_phaseA.sh (new) is the routed A/B from the closing
+synthesis, and it PASSES end to end - the numbers (LOAD_P=4,
+BENCH_SECS=5, all interfaces mtu 1500, samples/t24_phaseA.txt):
+
+  chop      (egress -tso):         26.3 Gbit/s, avg rx 1499 B
+  fast path (egress tso):          129  Gbit/s, avg rx 43694 B
+  sw-csum   (egress -tso -txcsum): 18.1 Gbit/s, avg rx 1492 B,
+                                   jail2 tcps_rcvbadsum delta 0
+
+On the stock kernel the chop row is a STALL (the balk sites drop
+oversized TSO chains with no sender heal - the bug Phase A fixes),
+so 26.3 Gbit/s replaces zero; the fast path proves the handler
+prefers a TSO-capable egress (whole 43 K chains); the sw-csum row is
+the software checksum path's end-to-end proof (receiver verifies in
+software, zero bad).  At LOAD_P=16 the sw-csum run reached 51
+Gbit/s - the chopper scales with connections.
+
+Chop micro-cost (P6c, fbt entry/return with vtimestamp during a
+LOAD_P=16 chop run, samples/t24_choppath_fbt.txt): 6.35 M calls in
+an 8 s window (~790 k/s), average 976 ns on-CPU per call, 74 % of
+calls in the 512-1023 ns bucket, tail negligible (28 calls above
+32 us).  That is the whole split - header replication, per-segment
+checksum arithmetic, m_copym payload references - at well under the
+cost of the ip_fragment() path it rides beside.
+
+Two operational discoveries from the same session, both now encoded
+in the tests:
+
+- A host firewall filters FORWARDED traffic: a07's pf defaults to
+  "block drop in all" in the host vnet, which silently ate the
+  routed topology (host-initiated flows pass by state, jail-initiated
+  and transit flows die - no IP-layer drop counter moves).  pf
+  rulesets are vnet-scoped, so t_24 puts the ROUTER in its own vnet
+  jail (forwarding=1 is vnet-local); the same kernel code runs,
+  firewall policy untouched.  This belongs in the TSO outlook's
+  deployment matrix: on a pf-protected router the balk-site handler
+  sits BEHIND the filter - transit TSO chains must also pass policy.
+
+- epair(4) deliver-whole needs ONE datapath change after all,
+  correcting the "capability-only mirror" theory recorded earlier:
+  epair_transmit() enforces the MTU by design ("a little bit more
+  like real hardware", E2BIG, if_epair.c:348) and bounced every TSO
+  chain (80 Oerrs, 0.00 Gbit/s).  patches/epair-tso.patch grew a
+  fifth hunk exempting CSUM_TSO frames up to the advertised
+  if_hw_tsomax; CSUM_TSO only appears under epair's own grant, so
+  the gate stays honest for everything else.  With the fix,
+  tests/t_25_epair_tso.sh PASSES (samples/t25_epair_tso.txt):
+  advertise/default-off/peer-sync/-txcsum coupling all hold, and the
+  mtu-1500 bulk run crosses at 29.5 Gbit/s with 19121 B average tx
+  packets.  The patch was also rebased onto releng/15.1, whose epair
+  syncs IFCAP_VLAN_HWTAGGING alongside TXCSUM and starts if_capenable
+  from if_capabilities (TSO explicitly masked off to stay
+  default-off).
+
+A dtrace footnote for future profiling on pkgbase systems: after
+pkg add -f of a rebuilt kernel package on the LIVE system, the
+on-disk /boot/kernel/kernel no longer matches the running kernel,
+and profile-provider symbolization (sym()/func()) resolves every
+address to nothing; fbt keeps working (in-kernel symtab).  Reboot,
+or measure with fbt as above.
+
+pf unload A/B (2026-08-28, a07, operator unloaded pf.ko): rerunning
+t_24 and t_25 shows NO measurable pf overhead on the pair-based
+paths - every delta is within run-to-run noise (samples/*_nopf*):
+
+  t_24 LOAD_P=4:  chop 26.8 (was 26.3), fast 116 (was 129),
+                  sw-csum 16.7 (was 18.1) Gbit/s
+  t_25 LOAD_P=4:  30.5 (was 29.5) Gbit/s
+
+Expected in hindsight: pf enable is per-vnet state, and only the
+HOST vnet had it enabled - the test jails' vnets ran no filter
+either way, so only pf.ko's mere presence could have mattered, and
+it does not.  The recorded with-pf numbers stand.
+
+New data from the same rerun - proper LOAD_P=16 rows (the earlier
+"LOAD_P=16" attempt silently ran at 4: doas strips the environment,
+so the knob must be set INSIDE the doas command line):
+
+  t_24 LOAD_P=16: chop 82.0, fast path 373, sw-csum 54.8 Gbit/s
+                  (tcps_rcvbadsum delta 0)
+  t_25 LOAD_P=16: 52.2 Gbit/s, avg tx chain 38597 B (chains grow
+                  toward tsomax under load; 18965 B at LOAD_P=4)
+
+The chopper scales 27 -> 82 Gbit/s from 4 -> 16 connections and the
+fast path reaches 373 Gbit/s routed - consistent with the t_17/t_22
+scaling tables' shape on this machine.
+
+Phase A milestone closed (2026-08-28, end of the a07 deployment
+session).  The operator committed the boot environment permanently
+('bectl activate tso-phaseA', now NR; 'default' remains in the
+loader as a stock-kernel fallback).  One alignment note: the
+RUNNING kernel is the 23:10 build while the BE's /boot carries the
+23:48 rebuild whose only delta is the epair transmit-gate hunk -
+that fix is already live via the reloaded if_epair.ko, and the next
+reboot puts kernel and modules on the same build.  No action needed.
+
+Status of the CHOPPER.txt plan after this session:
+
+  P1 KPI core                    DONE (tcp_tso_chop, extras/tcp_tso)
+  P2 tso_wrap on the KPI         DONE + regression (t_23: 250876
+                                 chains -> 9407472 segments, all
+                                 accepted)
+  P3 balk-site handler patch     DONE, compile-verified, DEPLOYED
+                                 (12 hunks + tcp_tso.{c,h} on
+                                 releng/15.1)
+  P4 epair capabilities          DONE, 5 hunks incl. the transmit-
+                                 gate exemption; verified (t_25)
+  P6 measurements                DONE: t_24 routed A/B (chop 82,
+                                 fast 373, sw-csum 55 Gbit/s at
+                                 LOAD_P=16, rcvbadsum 0), chop
+                                 micro-cost 976 ns/call at ~790k
+                                 calls/s, epair 52 Gbit/s, pf A/B
+                                 null result
+  P5 gif native demo caller      TODO
+  P7 freebsd-net RFC series      TODO - evidence pack now complete:
+                                 sfxge precedent, cross-OS survey,
+                                 both prototypes, and real-hardware
+                                 numbers for every claim (stall ->
+                                 82 Gbit/s routed chop is the
+                                 headline)
+
+The forwarded-TSO stall that opened this whole line of work (the
+routed-TSO gap block above, found 2026-08-18) is now FIXED on a07
+by construction: every balk site either sends, passes whole to a
+TSO-capable egress, or chops - no path drops a TSO chain, at any
+egress capability combination, with hardware or software checksums.
+
+P5 implemented + comprehensive benchmark sweep (2026-08-28, a07,
+Phase A kernel, per_cpu_timers=1, pf unloaded).  P5 is
+patches/gif-tso.patch (6 hunks): gif(4) advertises TSO4/6
+default-off, SIOCSIFCAP maps the grant into hwassist, and
+gif_transmit() inner-chops with tcp_tso_chop(flags 0 - gif has no
+TXCSUM, so full software checksums) BEFORE encapsulation.  The old
+transmit body became gif_transmit1(ifp, m, af); the af travels as a
+parameter because gif_output()'s csum_data "af cheat" and the
+chopper's fresh pkthdrs would otherwise collide.  One honest
+improvement over the original: the outer-family dispatch default
+now sets EAFNOSUPPORT instead of falling through with a stale
+error (caught by -Wsometimes-uninitialized).  tests/t_26_gif_tso.sh
+is written (gif-over-pair between two jails, asserts default-off,
+chop-before-encap via avg gif tx <= mtu, zero rcvbadsum, and an
+fbt count of tcp_tso_chop during the run) but SKIPs until reboot:
+gif is COMPILED INTO this kernel config, so the loaded old copy
+shadows the rebuilt module - kldload cannot replace it.  The
+fresh kernel image is on disk in the active BE; t_26 runs after
+the next (operator-approved) reboot.
+
+The sweep (samples/bench-2026-08-28/, BENCH_SECS=5): the full
+functional suite passes - 25 PASS, one expected SKIP (t_26,
+above).  Performance ladder:
+
+  t_17 raw (no TSO)   1     4     16    32    64    128 conns
+    mtu 16384      32.9   120   355   496   354    338  Gbit/s
+    mtu 65535      24.2   117   363   497   346    341
+    mtu 1500       7.23  26.5  92.6   156   218    270
+
+  t_22 if_pair TSO, mtu 1500 (deliver-whole):
+    tso off        7.44  27.0  89.6   135   219      -
+    tso on         37.6   123   353   496   348    342
+    -> TSO at mtu 1500 fully recovers the large-MTU peak (496 at
+       32 conns, avg tx ~43.5 KB); the sender-limited single
+       stream gains 5x (7.4 -> 37.6).
+
+  t_24 Phase A routed A/B      P=4     P=16    P=64
+    chop  (egress -tso)        26.9    88.1    228   Gbit/s
+    fast  (egress tso)         114     327     356
+    sw-csum (-tso -txcsum)     13.2    55.1    142
+    rcvbadsum delta            0       0       0
+    -> the kernel chopper scales to 228 Gbit/s of wire-size
+       segments at 64 connections - where the stock kernel
+       stalls at zero - and even full software checksums sustain
+       142 Gbit/s.  Fast-path avg rx shrinks to ~15 KB at P=64
+       (chains shrink as cwnd per flow drops; same effect as
+       t_22's 64-conn row).
+
+  t_25 epair TSO, mtu 1500:  30.5 (P=4), 43.1 (P=16), 38.6 (P=64)
+    - epair's own datapath is the ceiling here, consistent with
+      its known ~42 Gbit/s envelope; TSO removes the per-packet
+      penalty rather than raising the ceiling.
+
+  t_23 KPI wrapper regression: 161 Gbit/s deliver-whole baseline,
+    25.4 Gbit/s wrapped (single-interface chop floor unchanged).
+
+P5 runtime verification (2026-08-28, in progress): a07 rebooted
+with operator approval into the tso-phaseA BE's current kernel
+image (the Aug 28 00:38 build - first boot of an image carrying
+ALL THREE patches compiled in: forwarding handler, epair with the
+transmit-gate exemption, gif with native chop).  The reboot is
+what unshadows gif: it is compiled into this kernel config, so the
+previously running image's old copy took precedence over any
+kldload.  It also retires the earlier kernel/module skew note -
+kernel and modules are from one build again.  Post-boot checklist
+before t_26: per_cpu_timers=1 (reboot resets it), pf stays
+unloaded unless rc.conf loads it (operator removed it earlier
+today), leftover test state swept.  t_26 results follow below.
+
+t_26 PASSES (2026-08-28, first boot of the all-three-patches
+image): gif(4) native software TSO verified end to end
+(samples/t26_gif_tso.txt).  TSO4/6 advertised and default-off;
+with the grant enabled on both tunnel ends, the bulk transfer
+completes with the sender gif's average tx packet at 1279 B (=
+the 1280 gif MTU: chop-before-encap, nothing oversized ever
+reaches in_gif_output()), the receiver's TCP counts ZERO bad
+checksums (the chopper's software checksums verify in software -
+gif grants no RXCSUM either), and fbt counts 466947
+tcp_tso_chop() calls during the 5 s run - the grant and the
+native chop are demonstrably live.
+
+Honest throughput note: 3.05 Gbit/s baseline vs 2.76 Gbit/s with
+TSO (P=4).  No speedup - and none was promised: this gif tunnel
+is serialized behind a single outer flow (one if_pair worker) and
+its per-packet encap cost dominates, while the cwnd-limited
+chains average only ~3 segments, too short for the batching win
+to offset ~1 us of chop per chain.  P5's purpose was the
+adoption pattern - ten lines of driver logic plus a transmit
+split - and the mechanism proof, both delivered.  Where the
+sender-side win shows up for real is t_22 (long chains, fat
+path): tunnels want the chop for CORRECTNESS of the mtu-1500
+egress story, not for tunnel-local speed.
+
+Bridge-safe LRO, the concrete gap list (2026-08-28, follow-up to
+the router-safe LRO analysis; scenario: bridge0 = ix0 + several
+epair members, IP addresses on bridge0 itself).  Today
+bridge_mutecaps() answers by muting LRO/TSO on members to the
+common denominator - joining ix0 to a bridge turns its LRO off,
+correct but conservative.  Replacing the blanket mute with
+provable safety needs four pieces:
+
+1. INGRESS CONVERSION (missing in-tree): an aggregate that may
+   leave the terminating path must be re-marked as a TSO chain -
+   CSUM_TSO, tso_segsz = floor((tcp_total - 4*th_off) /
+   lro_nsegs) (provably <= the sender's largest original segment,
+   so PMTU is never violated), checksum request bits replacing
+   the RX valid bits.  The two recorded traps apply: lro_nsegs
+   and tso_segsz are the SAME field (count in, bytes out - read
+   before overwrite) and csum_data flips meaning (validated sum
+   -> th_sum offset), so the conversion is all-or-nothing.  This
+   is extras/lro2tso graduated into tcp_lro/the drivers.
+   Hard exclusion: NICs doing opaque hardware coalescing without
+   a truthful lro_nsegs produce unforwardable aggregates - their
+   LRO stays terminate-only/off.
+
+2. EVERY EGRESS SPLIT-OR-PASS (done by the patch series): epair
+   members deliver whole under the grant (epair-tso.patch incl.
+   the E2BIG exemption); the vnet peer terminates or forwards via
+   the balk-site handler (software-tso-forwarding.patch); ix0
+   egress splits in hardware once the request bits are set
+   (segcount reconciliation stays in iflib m_defrag); L3 egress
+   from bridge0's own addresses routes through the patched balk
+   sites.
+
+3. BRIDGE DATAPATH (missing): (a) the bridge forward/flood path
+   needs the same CSUM_TSO exemption at its member-MTU check
+   that epair_transmit() got; (b) FLOODING makes safety a GLOBAL
+   condition - a flooded frame exits every member at once, so
+   either bridge_mutecaps() keeps LRO on ix0 only while ALL
+   members grant TSO (revoking on a non-capable join), or the
+   bridge egress grows a tcp_tso_chop(l2hlen=14) fallback -
+   the Ethernet-framed case is what the KPI's l2hlen exists
+   for, and it decouples members (the cleaner long-term shape).
+
+4. FILTER TRAVERSAL (policy/documentation): with
+   pfil_bridge/pfil_member active, firewalls see >MTU TCP
+   packets on bridge hooks; pf/ipfw handle them (see the pfil
+   placement analysis), but size-keyed rules and per-packet
+   state accounting observe aggregates as single packets.
+
+Net: patches 1-3 of the RFC series cover the egress half; the
+genuinely open work for this topology is the ingress conversion
+in tcp_lro, the two if_bridge changes, and the
+no-lro_nsegs-no-forwarding exclusion rule.
+
+Could gif adopt vxlan(4)'s offload strategy? (2026-08-28,
+follow-up to the P5 gif work).  vxlan's optimization is the
+OPPOSITE of gif's chop-before-encap: it never splits.  With an
+underlay NIC advertising IFCAP_VXLAN_HWCSUM/HWTSO, vxlan
+advertises TSO itself (if_hw_tsomax* reduced by the encap
+overhead), prepends ONE outer IP+UDP+VXLAN header to the whole
+inner chain, and the encap-aware NIC segments the inner TCP and
+replicates both header layers - the entire outer path (route
+lookup, pfil, driver queue) runs once per CHAIN.  Porting that
+to gif hits three walls, in increasing hardness:
+
+1. Hardware: no meaningful NIC population advertises IP-in-IP
+   (proto 4/41) inner TSO, and the IFCAP_VXLAN_* bits are
+   vxlan-specific - FreeBSD has no generic encap-offload
+   capability negotiation.  Dead end in practice.
+
+2. A software late-chop needs an ENCAP-AWARE splitter: an outer
+   IP header is not an opaque l2hlen prefix (per-segment
+   ip_len/ip_id/header checksum change at BOTH levels).  This is
+   the "VXLAN-inner splitting" variant parked in CHOPPER.txt's
+   non-goals; as KPI code it is moderate (~100-150 lines).
+
+3. The real wall: mbuf metadata.  After encapsulation the frame
+   cannot describe itself - csum_flags/csum_data/tso_segsz
+   describe one protocol layer and the pkthdr has no
+   inner-header offsets (Linux grew skb->encapsulation + inner
+   offsets for exactly this).  A whole-chain-encapsulated
+   CSUM_TSO frame reaching our balk-site handler parses as
+   outer-proto IPPROTO_IPV4 and is rejected EPROTONOSUPPORT -
+   safe but inert.  Making late-chop generic means teaching the
+   mbuf and every consumer about two header layers: stack
+   surgery, a freebsd-net design discussion ("should mbufs
+   describe encapsulation?"), not a series follow-up.
+
+Attainable for gif, cheap to expensive:
+  - Route caching across the segment send loop (today each
+    segment pays a full ip_output(); t_26 showed the outer path
+    dominates).  Small, self-contained, best effort-to-payoff.
+  - A gif-LOCAL encap-aware chop: build the outer header once,
+    emit fully encapsulated segments from the KPI variant inside
+    gif_transmit() - amortizes ECN/header/BPF per chain, but
+    every segment still traverses ip_output(), so the gain is
+    real but bounded.  Moderate.
+  - The full vxlan analog (split at the last egress): blocked on
+    walls 1 and 3.
+
+Net: gif got chop-before-encap precisely because it needs
+nothing from the stack or hardware; vxlan's strategy is "let
+something downstream that understands the encapsulation split",
+and for IP-in-IP nothing downstream understands it - hardware
+does not parse it and the mbuf cannot describe it.
