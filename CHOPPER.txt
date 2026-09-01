@@ -63,7 +63,7 @@ control (RTF_NOTSO idea parked).
 Phases
 ------
 
-[TODO] P1  KPI core: extras/tcp_tso/{tcp_tso.c,tcp_tso.h}.
+[DONE 2026-08-27] P1  KPI core: extras/tcp_tso/{tcp_tso.c,h}.
     Generalize tso_wrap's tw_chop(): add l2hlen, adopt the
     ip_fragment()-style chain contract, split out of the module
     so both out-of-tree consumers and the future in-tree patch
@@ -73,15 +73,35 @@ Phases
     explicitly rejected with EPROTONOSUPPORT and a comment -
     never silently wrong.  ~250-300 lines including the KPI
     comment block.  Est: one day.
+    AS BUILT: M_EXTPG decided as REJECT (EPROTONOSUPPORT) for the
+    software-checksum combination, documented in the KPI header.
+    REFINEMENT: the egress-MTU clamp moved INTO the KPI as a
+    'maxlen' parameter (0 = trust tso_segsz) - the clamp needs the
+    parsed header sizes, which only the chopper has.  Plus one
+    correctness catch: in6_cksum() assumes the v6 header at offset
+    zero, so the v6 software path uses pseudo-sum + in_cksum_skip
+    like v4 (framing-agnostic).
 
-[TODO] P2  Refactor tso_wrap to advertise-and-call the KPI;
+[DONE 2026-08-27, code; regression run pending Ampere] P2
+    Refactor tso_wrap to advertise-and-call the KPI;
     lro2tso untouched.  Regression: t_22-style run (pair mtu
     1500, TSO on, wrapped egress) must reproduce current
     tso_wrap behavior; counters preserved.  This is the KPI's
     functional test until the in-tree callers exist.  Est: half
     a day.
+    AS BUILT: tw_chop() is now ~40 lines calling tcp_tso_chop();
+    builds -Werror clean; the Makefile shares
+    extras/tcp_tso/tcp_tso.c via .PATH.
+    REGRESSION RUN DONE 2026-08-27 on a07 (arm64 native build,
+    zero errors): tests/t_23_kpi.sh (new; host->jail topology
+    since the wrapper sysctl is host-vnet-scoped) PASSES -
+    deliver-whole baseline 104 Gbit/s at 37640 B/pkt, wrapper
+    attached 21.5 Gbit/s at 1499 B/pkt, 250876 chains ->
+    9407472 segments, every segment accepted by the receiving
+    TCP (per-segment header+checksum arithmetic validated).
+    samples/t23_kpi_hwcsum.txt.
 
-[TODO] P3  Phase A patch: patches/software-tso-forwarding.patch.
+[DONE 2026-08-28, compile-verified] P3  Phase A patch: patches/software-tso-forwarding.patch.
     At every balk site, replace the bare balk with the ordered
     handler from the closing synthesis: fits -> send; egress
     hwassist CSUM_TSO -> pass whole (today's exemption, now the
@@ -90,31 +110,125 @@ Phases
     Segment size clamped to egress MTU here (the router-specific
     clamp).  Supersedes routed-tso-forwarding.patch, which stays
     for exemption-only users.  Est: 1-2 days + kernel build.
+    AS BUILT: 12 modification hunks, all dry-run clean against
+    15.1.  The two new kernel files ship ALONGSIDE the patch as
+    patches/tcp_tso.{c,h} (FreeBSD patch(1) rejects /dev/null
+    new-file hunks; cp them into sys/netinet/ first - the patch
+    header says so).  Site shapes: v4 tryforward reuses its
+    existing fragment send loop via a 'sendchain' label; the two
+    v6 sites neuter the MTU balk for CSUM_TSO frames and chop at
+    the send site AFTER the delayed-cksum/scope tail with a
+    per-segment send loop (ip6_forward keeps its mcopy ICMP
+    semantics on failure).  COMPILE VERIFICATION PENDING: this
+    host's /usr/src is read-only (root-owned checkout); the
+    buildkernel on the Ampere is P6 item 0.
 
-[TODO] P4  epair capability patch: patches/epair-tso.patch.
+[DONE 2026-08-27, compile-verified] P4  epair capability patch:
+    patches/epair-tso.patch.
     Mirror of if_pair's advertise-only change (caps default-off,
     TXCSUM coupling, stock limits); NO internal chop - epair
     delivers whole, and egress splitting is owned by bridge
     mutecaps + member hardware or the P3 handler.  Est: one day
     including a t_22-mirror test against epair.
+    AS BUILT: 5 hunks (caps advertise + explicit stock limits in
+    epair_setup_ifp(); TSO->hwassist mapping in
+    epair_caps_changed(); TXCSUM coupling and the existing
+    TXCSUM peer-sync extended to the TSO bits in SIOCSIFCAP -
+    following epair's own sync convention, unlike if_pair's
+    independent sides; and ONE datapath hunk the original
+    "capability-only" theory missed: epair_transmit() enforces
+    the MTU with E2BIG by design, so CSUM_TSO chains get an
+    exemption up to the advertised if_hw_tsomax - discovered
+    2026-08-28 when the t_22 mirror stalled at 0.00 Gbit/s with
+    80 Oerrs on real hardware).  Rebased onto releng/15.1
+    (VLAN_HWTAGGING joined the peer-sync; if_capenable now
+    starts from if_capabilities, TSO masked off).  VERIFIED
+    2026-08-28 on a07: tests/t_25_epair_tso.sh PASSES -
+    advertise/default-off/peer-sync/-txcsum coupling and 29.5
+    Gbit/s deliver-whole bulk at mtu 1500 (avg tx 19121 B);
+    samples/t25_epair_tso.txt.
 
-[TODO] P5  One tunnel demo caller, gif(4) (simplest encap):
+[DONE 2026-08-28, runtime-verified after reboot: t_26 PASSES -
+    default-off holds, avg gif tx = 1279 B (= mtu: chop before
+    encap), 466947 fbt-counted chop calls, zero rcvbadsum.
+    Throughput-neutral at the tunnel itself (3.05 -> 2.76 Gbit/s,
+    single-flow serialization + ~3-segment chains; see NOTES.md) -
+    the demo delivers the adoption pattern, not tunnel-local
+    speed.]
+    P5  One tunnel demo caller, gif(4) (simplest encap):
     advertise TSO, inner-chop (l2hlen 0) before encapsulation,
     each segment encapsulated as today.  Demonstrates the
-    tunnel-family pattern for gre/wg/ovpn adopters.  Est: one
-    day.
+    tunnel-family pattern for gre/wg/ovpn adopters.
+    AS BUILT: patches/gif-tso.patch, 6 hunks - caps+limits in
+    gif_clone_create() (default-off), SIOCSIFCAP case (TSO only;
+    no TXCSUM coupling since gif has none - chopper runs flags 0,
+    full software checksums), and gif_transmit() split into
+    gif_transmit1(ifp, m, af) + a chop loop; the af rides as a
+    parameter around gif_output()'s csum_data cheat.  Compiles
+    clean into kernel + module; in the a07 repo/BE.  CAVEAT
+    found: gif is compiled into a07's kernel, so the running old
+    copy shadows the module until reboot - tests/t_26_gif_tso.sh
+    (asserts default-off, chop-before-encap, zero rcvbadsum, fbt
+    chop count) SKIPs until then.
+    (tso_wrap interposition remains the no-patch retrofit for
+    gre/other tunnels on stock kernels.)
 
 [TODO] P6  Measurements on the Ampere (t_17/t_22 tooling):
-    a) P2 regression numbers (KPI == tso_wrap baseline);
-    b) Phase A A/B: jail->world bulk with pair TSO through ix
-       with hardware TSO DISABLED (ifconfig -tso) - unpatched
-       stall vs P3 chopper throughput; the headline number;
-    c) chopper micro-cost: segments vs sw_csum counters, pmc
-       profile of the chop path under load;
-    d) epair-with-TSO vs if_pair t_22 tables (same MTU-1500
-       recovery story on the L2 twin).
+    0) FIRST: apply P3 (cp tcp_tso.{c,h}, patch), buildkernel,
+       boot - the deferred compile/boot verification.
+       [DONE 2026-08-28 - operator rebooted into the tso-phaseA
+       boot environment; uname confirms the patched releng/15.1
+       build, tcp_tso_chop present in the booted kernel.  After
+       Steps C/D passed the operator committed the BE with
+       'bectl activate tso-phaseA' (NR; 'default' remains in the
+       loader as fallback).  Deployment history:
+       a07's /usr/src re-provisioned by the operator as a clean
+       releng/15.1 git checkout (the old tree was a stale
+       releng/15.0 left by earlier tests - the first builds came
+       out 15.0p13 and were discarded).  Both patches applied
+       (12+4 hunks); epair-tso.patch REBASED onto 15.1, whose
+       epair grew IFCAP_VLAN_HWTAGGING in the peer-sync and now
+       enables all capabilities by default (TSO explicitly
+       masked off to keep default-off).  KERNCONF is now
+       "GENERIC GENERIC-DEBUG" (operator fixed /etc/src.conf,
+       which named a config absent from the tree); tcp_tso.o in
+       both kernels, tcp_tso_chop a linked symbol in GENERIC.
+       pkgbase flow done: make packages -> 15.1p3 repo ->
+       FreeBSD-kernel-generic + -generic-debug pkg add -f'd into
+       boot env tso-phaseA via bectl jail (devfs mounted inside),
+       bectl activate -t set for next boot (self-healing).
+       BUILD FIX (2026-08-27, still applies): tcp_tso.h used
+       u_int, which broke buildworld's header self-containment
+       test (tools/build/test-includes compiles each installed
+       header ALONE) - prototype changed to unsigned int in all
+       copies; a real portability improvement for the upstream
+       header, not a workaround.]
+    a) P2 regression numbers - DONE, see P2 (t_23, 2026-08-27);
+    b) Phase A A/B - DONE 2026-08-28 (tests/t_24_phaseA.sh,
+       routed two-pair with the router in its own vnet jail;
+       a07's host-vnet pf blocks transit): chop 26.3 Gbit/s at
+       avg rx 1499 B where stock stalls, fast path 129 Gbit/s
+       at 43694 B, sw-csum 18.1 Gbit/s (51 at LOAD_P=16) with
+       tcps_rcvbadsum delta 0; samples/t24_phaseA.txt and the
+       2026-08-28 NOTES.md block;
+    c) chopper micro-cost - DONE 2026-08-28 (fbt vtimestamp
+       during a LOAD_P=16 chop run): avg 976 ns on-CPU per
+       call, ~790 k calls/s, 74% in the 512-1023 ns bucket;
+       samples/t24_choppath_fbt.txt.  (profile-provider
+       symbolization was unavailable: on-disk kernel newer than
+       the running one after a live pkg add -f; fbt unaffected);
+    d) epair-with-TSO - DONE 2026-08-28, see P4 (t_25).
 
-[TODO] P7  Upstream RFC to freebsd-net, patch series:
+[IN PROGRESS 2026-08-28: drafts written for operator review in
+    rfc/0000-cover-letter.txt .. rfc/0004-gif-tso-demo.txt -
+    plaintext emails carrying the full evidence pack and the
+    explicit decision list.  gif.4/epair.4 man-page updates
+    written 2026-08-28 and folded into epair-tso.patch /
+    gif-tso.patch (mandoc-lint clean, applied on a07's tree -
+    the pristine+patches invariant still verifies).  Remaining
+    before sending: operator review/edit, rebase patches onto
+    main (developed on releng/15.1).]
+    P7  Upstream RFC to freebsd-net, patch series:
     [1] tcp_tso_chop() KPI (+ optional later: sfxge refactored
         onto it, retiring the private copy);
     [2] balk-site handler (P3);
