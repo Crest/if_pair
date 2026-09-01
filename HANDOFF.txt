@@ -1,0 +1,196 @@
+Ampere (a07) session handoff: CHOPPER.txt P6 execution
+======================================================
+
+Written 2026-08-27 for a fresh Claude Code session on a07 (or for
+running by hand).  Read CHOPPER.txt first (plan + status), then
+the offload cluster in NOTES.md for the analysis behind each
+step.  Record every result the usual way: output files into
+samples/, interpretation into NOTES.md, phase status into
+CHOPPER.txt.
+
+Assumptions: this repository synced to a07 (any path; commands
+below use ~/if_pair), /usr/src on a07 at 15.1 and writable via
+doas, net.inet.tcp.per_cpu_timers=1, ipsec.ko absent.  Verify:
+
+    uname -r ; sysctl net.inet.tcp.per_cpu_timers
+    kldstat -q -m ipsec && echo IPSEC-LOADED ; git -C /usr/src status --short
+
+
+Step A - module smoke on the CURRENT kernel (no reboot needed)
+--------------------------------------------------------------
+
+Builds:
+
+    make -C ~/if_pair                       # if_pair.ko
+    make -C ~/if_pair/extras/tcp_tso 2>/dev/null || true   # (no Makefile; built via tso_wrap)
+    make -C ~/if_pair/extras/tso_wrap       # tso_wrap.ko (contains the KPI)
+    make -C ~/if_pair/extras/lro2tso        # lro2tso.ko
+
+KPI correctness test - tso_wrap on a PAIR side.  This needs no
+external host and inverts t_22's assertion: with the wrapper
+chopping, the jail must see WIRE-SIZE segments where t_22 saw
+~43K ones.
+
+    doas kldload ~/if_pair/if_pair.ko
+    doas kldload ~/if_pair/extras/tso_wrap/tso_wrap.ko
+    # t_22-style setup: pair at mtu 1500, TSO on both sides,
+    # two jails, iperf3 server in jail 1 (see tests/t_22_tso.sh
+    # for the exact commands), THEN:
+    doas sysctl net.tso_wrap.control=pair0b   # wrap the sending side
+
+    Run 1 (hardware-csum mode): iperf3 -P 4; then inside jail 2
+      check the average tx packet size on pair0b (netstat -bnI,
+      obytes/opkts as in t_22): EXPECT ~1500, not ~43K, with
+      net.tso_wrap.chopped and .segments advancing and
+      throughput in the same order as the t_22 tso-off baseline.
+    (A software-csum run is NOT possible here: if_pair's own
+    TXCSUM<->TSO coupling means -txcsum revokes the TSO grant,
+    so no chains would reach the wrapper.  The software checksum
+    path gets its end-to-end test in Step C, where the EGRESS
+    checksum capability is an independent interface.)
+
+    Cleanup: sysctl net.tso_wrap.control=-pair0b; jails/pair as
+    in tests/cleanup.sh.
+
+Save the run as samples/t23_kpi_hwcsum.txt.
+
+
+Step B - Phase A kernel (P6 item 0: the deferred verification)
+--------------------------------------------------------------
+
+a07 manages base with pkgbase(7): make installworld/installkernel
+DO NOT WORK there.  The flow is buildworld + buildkernel, then
+"make packages" to produce a local base package repository, then
+install through pkg(8).  /etc/make.conf and /etc/src-env.conf are
+already tuned for fast repeated builds - do not fiddle with them.
+Our change is kernel-only and ABI-safe, so only the kernel
+package(s) need reinstalling.
+
+Patch and build (sources/objects are shared datasets outside any
+boot environment):
+
+    cd ~/if_pair
+    doas cp patches/tcp_tso.c patches/tcp_tso.h /usr/src/sys/netinet/
+    doas patch -p0 -d /usr/src < patches/software-tso-forwarding.patch
+    doas patch -p0 -d /usr/src < patches/epair-tso.patch
+    doas make -C /usr/src -j8 buildworld buildkernel
+    doas make -C /usr/src packages
+
+    # Locate the fresh kernel packages in the repo the build made
+    # (something like /usr/obj/usr/src/repo/FreeBSD:15:aarch64/latest):
+    find /usr/obj -name 'FreeBSD-kernel-generic-*.pkg' | sort | tail
+
+    # First time only: point pkg at the LOCAL base repo instead of
+    # upstream (a repos conf overriding the official FreeBSD-base
+    # entry with the file:// URL of the directory found above,
+    # enabled: yes; official one enabled: no).  Check what exists
+    # under /usr/local/etc/pkg/repos/ and /etc/pkg/ first.
+
+Install + boot, PRIMARY flow - jailed test BE with temporary
+activation (self-healing over SSH: the new kernel lives only in
+the clone; a failed boot falls back to default automatically):
+
+    doas bectl create tso-phaseA
+    doas bectl jail -b -o ip4=inherit -o ip6=inherit \
+        -o allow.mount=true -o allow.mount.devfs=true \
+        -o allow.chflags=true tso-phaseA
+    # bectl only passes kernel-handled jail parameters, so devfs
+    # is mounted/unmounted from INSIDE the jail.  The shared
+    # /usr/obj is not mounted inside the BE root, so copy the
+    # kernel packages in first:
+    JP=$(jls -j tso-phaseA path)
+    doas cp <repo-path>/FreeBSD-kernel-generic*.pkg $JP/tmp/
+    doas jexec tso-phaseA sh -c \
+        'mount -t devfs devfs /dev && \
+         pkg add -f /tmp/FreeBSD-kernel-generic*.pkg; \
+         umount /dev'
+    doas bectl unjail tso-phaseA
+    doas bectl activate -t tso-phaseA      # next boot only
+    doas shutdown -r now
+
+QUICK variant (needs reach to the console/reset if it goes bad:
+the new kernel lands on the DEFAULT BE, fallback is selecting the
+backup BE in the loader): doas bectl create pre-tso as a backup,
+then pkg add -f the kernel packages by absolute path on the live
+system and reboot.
+
+After reboot: confirm, run Steps C/D, then commit or discard:
+
+    bectl list                              # which BE booted
+    uname -v                                # new build date
+    strings /boot/kernel/kernel | grep -c tcp_tso_chop   # >= 1
+    ...run Steps C/D...
+    doas bectl activate tso-phaseA          # keep it
+    # or: plain reboot returns to default; then
+    # doas bectl destroy -o tso-phaseA
+
+Compile failures: fix in /usr/src, fold the fix back into the
+repo patch (the repo copy is authoritative), note it in
+CHOPPER.txt P3.
+
+
+Step C - the headline A/B: Phase A vs the stall (self-contained)
+----------------------------------------------------------------
+
+No external endpoint needed.  Routed two-pair topology where the
+EGRESS pair has TSO off - the forwarding hop must chop:
+
+    jail1 == pair1b (tso ON,  mtu 1500) == host routes ==
+    pair2a (tso OFF, mtu 1500) == jail2
+
+    doas kldload ~/if_pair/if_pair.ko
+    ifconfig pair0 create ; ifconfig pair1 create
+    # jail1: pair0b 10.1.0.2/32 peer 10.1.0.1, tso, mtu 1500
+    # jail2: pair1b 10.2.0.2/32 peer 10.2.0.1, mtu 1500
+    # host:  pair0a 10.1.0.1, pair1a 10.2.0.1, both mtu 1500,
+    #        pair1a: ifconfig pair1a -tso   (egress cannot split)
+    # jails: route add default <host side>; host: forwarding=1
+    # jail1: iperf3 -c 10.2.0.2 ...
+
+    EXPECT on the OLD kernel (optional pre-reboot control run):
+      connection STALLS (tryforward ICMP, TF_TSO survives).
+    EXPECT on the Phase A kernel: transfer proceeds; jail2-side
+      average rx packet size ~1500 (the chopper's segments);
+      throughput = the headline number vs the stall.
+    Also run the mirror with pair1a tso ON: frames pass whole
+      (fast path), jail2 sees ~43K - proves the handler ordering.
+    SOFTWARE-CHECKSUM variant (the sw path's end-to-end test):
+      additionally ifconfig pair1a -txcsum.  The kernel chopper
+      then computes full checksums in software and jail2's TCP
+      VERIFIES them in software (no request bits).  EXPECT:
+      clean transfer, tcps_rcvbadsum in jail2's
+      netstat -s -p tcp stays ZERO.  Any KPI checksum bug shows
+      here as bad-sum drops or a hung transfer.
+
+Save as samples/t24_phaseA_*.txt; run tests/t_19_profile.sh
+during the chopping run for the chop-path cost profile (P6c).
+
+
+Step D - epair TSO (P4 verification)
+------------------------------------
+
+The patched if_epair.ko arrives inside Step B's kernel package
+(pkgbase puts /boot/kernel modules in FreeBSD-kernel-generic).
+
+    kldload if_epair ; ifconfig epair0 create
+    # t_22 mirror by hand: both sides mtu 1500, tso, two jails,
+    # iperf3, netstat -bnI average tx size on the sending side.
+    EXPECT: TSO4/TSO6 default-off, enabled by ifconfig tso,
+      cleared by -txcsum, average tx size >> 1500 with tso on
+      (deliver-whole across the epair), throughput comparable to
+      if_pair's t_22 table at mtu 1500.
+
+Save as samples/t25_epair_tso.txt.
+
+
+Step E - bookkeeping
+--------------------
+
+- samples/ files committed with the repo conventions.
+- NOTES.md: one dated block per step (what ran, numbers, any
+  surprises), same style as the existing t_2x entries.
+- CHOPPER.txt: flip P3 to compile-verified, P6 items as they
+  complete; P2 regression note resolved by Step A.
+- If any step contradicts a recorded expectation, write the
+  correction into NOTES.md next to the original claim - that
+  convention is what makes these documents trustworthy.
