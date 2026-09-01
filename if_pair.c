@@ -104,18 +104,22 @@
  * is accepted whole by tcp_input()'s request-bit branch (the
  * CSUM_TSO mark from tcp_output() always rides with CSUM_TCP), so
  * the keep-request-bits contract below covers TSO with no datapath
- * code; a frame the peer FORWARDS onward is split by the egress
- * NIC's hardware iff that NIC has TSO and the kernel's forwarding
- * path honors it (ip_output() does; ip_tryforward(),
- * ip6_tryforward() and ip6_forward() need the exemptions shipped
- * in patches/routed-tso-forwarding.patch).  Because a routed TSO
- * frame that reaches a non-TSO egress makes the connection stall -
- * the ICMP needfrag comes from a forwarding hop, so tcp_output()'s
- * EMSGSIZE self-healing never runs and TF_TSO survives the
- * tcp_maxmtu() re-probe - the capability ships DEFAULT-OFF in
- * capenable; enabling it is the operator's assertion that pair
- * traffic terminates locally or the egress path can split.  See
- * TSO.txt for the full analysis.
+ * code; a frame the peer FORWARDS onward must be split at the
+ * egress, and the stock forwarding paths do not handle that:
+ * ip_output() honors an egress TSO grant but ip_tryforward(),
+ * ip6_tryforward() and ip6_forward() balk.
+ * patches/software-tso-forwarding.patch turns those balk sites
+ * into handlers (pass whole to a TSO egress, else split in
+ * software via tcp_tso_chop(); see CHOPPER.txt);
+ * patches/routed-tso-forwarding.patch is the older exemption-only
+ * variant for TSO-capable egresses.  Because on a stock kernel a
+ * routed TSO frame that reaches a non-TSO egress makes the
+ * connection stall - the ICMP needfrag comes from a forwarding
+ * hop, so tcp_output()'s EMSGSIZE self-healing never runs and
+ * TF_TSO survives the tcp_maxmtu() re-probe - the capability
+ * ships DEFAULT-OFF in capenable; enabling it is the operator's
+ * assertion that pair traffic terminates locally or the egress
+ * path can split.  See TSO.txt for the full analysis.
  *
  * The advertised chain-geometry limits equal the if_attach()
  * defaults (if.c: min(IP_MAXPACKET, 32*MCLBYTES - 18) bytes, 35
@@ -1007,10 +1011,24 @@ pair_alloc_side(int unit, enum pair_side side)
  * down before IFF_DRV_RUNNING clears; the reverse order on the way
  * up), following epair(4)'s epair_set_state().  A peer-reflecting
  * carrier (mirror the other side's administrative state, the truer
- * point-to-point semantic) was considered and deferred: SIOCSIFFLAGS
- * runs outside the network epoch, so dereferencing sc_peer there
- * would reopen the teardown race that pair_output()'s epoch
- * discipline closes.
+ * point-to-point semantic) was considered and deferred - but NOT
+ * for safety (an earlier version of this comment wrongly called the
+ * teardown race the blocker; re-analysis 2026-09-01, NOTES.md): a
+ * SIOCSIFFLAGS handler could adopt pair_output()'s own discipline -
+ * NET_EPOCH_ENTER, check its OWN IFF_DRV_RUNNING, only then deref
+ * sc_peer - and the destroy protocol (clear RUNNING both sides,
+ * NET_EPOCH_WAIT(), only then clear softcs and free, all under
+ * pair_sx) makes that exactly as safe as the datapath; pair_sx
+ * itself is a second sufficient guard.  The real blockers: the
+ * driver ioctl only sees transitions arriving via SIOCSIFFLAGS, so
+ * kernel-internal if_down()/if_up() would leave a reflected carrier
+ * stale without an ifnet_event eventhandler as well; and the
+ * reflected-state semantics are unsettled (mirror peer IFF_UP,
+ * IFF_DRV_RUNNING, or both? both sides would also start carrier-DOWN
+ * until the peer goes admin-up - an observable behavior change).
+ * Meanwhile the datapath already fails fast: pair_output() returns
+ * ENETDOWN when the peer is down, so only routing-daemon convergence
+ * speed is at stake.
  */
 static void
 pair_set_state(if_t ifp, bool running)

@@ -3051,3 +3051,41 @@ territory, not a series follow-up; (d) for the RFC the honest
 statement stands unchanged: gif TSO is correctness + adoption
 pattern, throughput-neutral-to-slightly-negative at the tunnel,
 and now we know precisely why.
+
+Peer-reflecting carrier: the rejection reason was wrong, the
+rejection stands (2026-09-01, prompted by the question whether the
+destroy path's wait-retry loop changes the old call).  The comment
+above pair_set_state() claimed peer-reflecting link state (mirror
+the peer's administrative state into the local carrier - the truest
+cable emulation) was deferred because SIOCSIFFLAGS runs outside the
+network epoch and a sc_peer deref there would reopen the teardown
+race.  Re-analysis: that is NOT a blocker, and the wait-retry loop
+is irrelevant to it (it defuses the create-return window, long
+after the quiesce, and protects no peer deref).  Two existing
+mechanisms each close the ioctl race on their own:
+
+  1. The ioctl handler can adopt pair_output()'s own discipline -
+     NET_EPOCH_ENTER, check its OWN IFF_DRV_RUNNING, only then
+     dereference sc_peer (if_link_state_change() is async and
+     non-sleeping, epoch-legal).  The destroy protocol (clear
+     RUNNING on both sides -> NET_EPOCH_WAIT() -> clear softcs ->
+     free, all under pair_sx) gives an ioctl-side epoch section the
+     same guarantee the datapath enjoys: saw RUNNING set => began
+     before the wait => completes before anything is freed.
+  2. pair_sx: the whole teardown from quiesce to free runs under
+     it, so sx_slock + re-read of the softc is a sufficient
+     sleepable-context guard by itself.
+
+The honest reasons to keep deferring, now recorded in the comment:
+(a) coverage - the driver ioctl only observes transitions that
+arrive via SIOCSIFFLAGS; kernel-internal if_down()/if_up() bypass
+it, so a reflected carrier needs the ifnet_event eventhandler too
+or it goes stale; (b) semantics - mirror peer IFF_UP,
+IFF_DRV_RUNNING, or both?  And reflection changes the initial
+state: both sides would come up carrier-DOWN until the peer goes
+admin-up, an observable change (t_09 asserts on today's behavior);
+(c) modest benefit - pair_output() already fails fast with
+ENETDOWN toward a downed peer, so only routing-daemon convergence
+latency is at stake.  If it is ever wanted, the implementation
+recipe is items 1 above plus the eventhandler, and t_09 grows the
+reflected-carrier assertions.
