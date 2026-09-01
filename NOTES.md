@@ -2762,13 +2762,22 @@ Status of the CHOPPER.txt plan after this session:
                                  micro-cost 976 ns/call at ~790k
                                  calls/s, epair 52 Gbit/s, pf A/B
                                  null result
-  P5 gif native demo caller      TODO
+  P5 gif native demo caller      TODO [superseded later the same
+                                 day: DONE + runtime-verified, see
+                                 the t_26 block below - chop before
+                                 encap proven, throughput-neutral
+                                 at the tunnel by design]
   P7 freebsd-net RFC series      TODO - evidence pack now complete:
                                  sfxge precedent, cross-OS survey,
                                  both prototypes, and real-hardware
                                  numbers for every claim (stall ->
                                  82 Gbit/s routed chop is the
                                  headline)
+                                 [superseded later the same day:
+                                 IN PROGRESS - drafts 0000-0004 in
+                                 rfc/, gif.4/epair.4 man updates
+                                 folded into the patches; remaining:
+                                 operator review, rebase onto main]
 
 The forwarded-TSO stall that opened this whole line of work (the
 routed-TSO gap block above, found 2026-08-18) is now FIXED on a07
@@ -2862,7 +2871,13 @@ TSO (P=4).  No speedup - and none was promised: this gif tunnel
 is serialized behind a single outer flow (one if_pair worker) and
 its per-packet encap cost dominates, while the cwnd-limited
 chains average only ~3 segments, too short for the batching win
-to offset ~1 us of chop per chain.  P5's purpose was the
+to offset ~1 us of chop per chain.  [Correction 2026-08-28, from
+the t_27 profile below: the serialization diagnosis holds, the
+cost attribution does not - encap proper measures only ~2.5% of
+non-idle samples; the tunnel's real ceiling is lock spin between
+the few pipeline threads (28-44%) plus socket copies, and TSO's
+regression comes from longer lock tenures, not from chop cost.]
+P5's purpose was the
 adoption pattern - ten lines of driver logic plus a transmit
 split - and the mechanism proof, both delivered.  Where the
 sender-side win shows up for real is t_22 (long chains, fat
@@ -2959,16 +2974,80 @@ Attainable for gif, cheap to expensive:
   - Route caching across the segment send loop (today each
     segment pays a full ip_output(); t_26 showed the outer path
     dominates).  Small, self-contained, best effort-to-payoff.
+    [STRUCK 2026-08-28: the t_27 profile measures the route
+    bucket at 0.4-0.6% in every cell - nothing to cache away.]
   - A gif-LOCAL encap-aware chop: build the outer header once,
     emit fully encapsulated segments from the KPI variant inside
     gif_transmit() - amortizes ECN/header/BPF per chain, but
     every segment still traverses ip_output(), so the gain is
     real but bounded.  Moderate.
+    [Demoted 2026-08-28: t_27 puts encap proper at ~2.5% - the
+    bounded gain is bounded by 2.5%.]
   - The full vxlan analog (split at the last egress): blocked on
     walls 1 and 3.
+  [Post-t_27 reality: the only lever touching the measured
+  ceiling is breaking the tunnel's serialization itself; see the
+  t_27 block below.]
 
 Net: gif got chop-before-encap precisely because it needs
 nothing from the stack or hardware; vxlan's strategy is "let
 something downstream that understands the encapsulation split",
 and for IP-in-IP nothing downstream understands it - hardware
 does not parse it and the mbuf cannot describe it.
+
+gif under the profiler: the route-caching hypothesis is REFUTED
+(2026-08-28, tests/t_27_gif_profile.sh - t_26's tunnel topology
+under t_19's dtrace pipeline, {tso off,on} x {1,4,16}
+connections, samples/t27_gif_profile.txt).  Correcting the
+gif-vs-vxlan block above, which ranked "route caching across the
+segment send loop" as the best effort-to-payoff step: the route
+bucket (fib/rib/nhop/rtalloc) measures 0.4-0.6% of non-idle
+samples in EVERY cell, both modes.  Route caching would buy
+nothing measurable.  The inference "outer path dominates,
+therefore the route lookup within it matters" attributed a real
+aggregate to the wrong component.
+
+What the profile actually shows (non-idle shares; the machine is
+98.4% idle in all cells - one gif tunnel is a serialized two-to-
+three-thread pipeline on a 128-core box, so this is a LATENCY
+problem, not a capacity one; P=16 does not scale: 2.9 Gbit/s):
+
+  throughput      P=1: 3.17 -> 2.91   P=4: 2.99 -> 2.87
+  (off -> on)     P=16: 2.91 -> 2.83  Gbit/s (-3..-8%)
+
+  bucket (P=1)    off     on      the story
+  locks           37.1    44.2    lock_delay+spinlock_exit UP
+  copy            17.8    10.8    copycommon (socket copyin/out)
+  proto           17.9    16.7    tcp_default_output 5.0 -> 3.9
+  cksum            4.4     5.4    in_cksumdata slightly up
+  gifenc           2.5     2.5    encap proper - flat, small
+  chop             0.0     0.4    the chopper is nearly free
+  route            0.6     0.5    NOT the bottleneck
+
+TSO's promised saving IS visible: tcp_default_output's share
+drops ~30-40% in every pair (fewer, larger sends - the batching
+works) and tcp_tso_chop costs 0.1-0.4%, consistent with the 976
+ns fbt figure.  But the saving is more than repaid to the locks
+bucket, which rises in every pair (P=1: +7 points).  Mechanism:
+the chop-encap-transmit loop emits a whole chain's segments in
+one tenure of the sender's critical path, so the packets arrive
+at the underlay in bursts and the pipeline's few threads spin on
+each other harder - batching bought throughput nothing because
+the tunnel was never syscall-bound, and it lengthened hold times
+on the serialized path.  gif's own encapsulation (gifenc) is a
+flat 2.5% - ALSO not the bottleneck, which retires the "encap
+cost dominates" wording from the t_26 block as imprecise: the
+tunnel's real ceiling is lock ping-pong between the few pipeline
+threads (28-44%) plus socket copies (11-30%), i.e. the
+serialization itself.
+
+Consequences: (a) route caching is struck as a gif optimization;
+(b) the attainable-ladder middle option (gif-local encap-aware
+chop) would attack the 2.5% gifenc bucket - also not worth it;
+(c) the only lever that touches the actual ceiling is breaking
+the serialization - multiple tunnels/flowids or moving segment
+emission out of the sender's lock tenure - which is redesign
+territory, not a series follow-up; (d) for the RFC the honest
+statement stands unchanged: gif TSO is correctness + adoption
+pattern, throughput-neutral-to-slightly-negative at the tunnel,
+and now we know precisely why.
