@@ -86,6 +86,8 @@
 
 #include <machine/in_cksum.h>
 
+#include "tcp_tso.h"
+
 static MALLOC_DEFINE(M_TSOWRAP, "tso_wrap", "software TSO interposer");
 
 struct tw_entry {
@@ -144,161 +146,49 @@ tw_lookup(struct ifnet *ifp)
 }
 
 /*
- * Chop one CSUM_TSO frame into tso_segsz segments and transmit
- * each via the saved original output function.  Consumes m.
+ * Chop one CSUM_TSO frame via the shared tcp_tso_chop() KPI
+ * (../tcp_tso) and transmit each segment through the saved
+ * original output function.  Consumes m except when the KPI
+ * declines the frame's shape (EPROTONOSUPPORT), which is passed
+ * through to the driver unmodified.
  */
 static int
 tw_chop(struct tw_entry *te, struct ifnet *ifp, struct mbuf *m,
     const struct sockaddr *dst, struct route *ro)
 {
-	struct mbuf *seg, *tail;
-	struct ip *ip = NULL;
-	struct ip6_hdr *ip6 = NULL;
-	struct tcphdr *th;
-	uint32_t seq;
-	u_int hdrlen, iphl, thl, paylen, off, plen, segsz;
-	uint16_t ipid = 0;
-	bool v6, hwcsum, first;
-	int error = 0;
+	struct mbuf *chain, *seg, *next;
+	uint8_t vers;
+	bool hwcsum;
+	int error;
 
-	segsz = m->m_pkthdr.tso_segsz;
-
-	/* Contiguous headers; TSO frames from tcp_output() comply. */
-	if (m->m_len < (int)sizeof(struct ip) &&
-	    (m = m_pullup(m, sizeof(struct ip))) == NULL)
-		goto drop_null;
-	v6 = (*mtod(m, uint8_t *) >> 4) == 6;
-	iphl = v6 ? sizeof(struct ip6_hdr) : 0;
-	if (v6) {
-		if (m->m_len < (int)(iphl + sizeof(*th)) &&
-		    (m = m_pullup(m, iphl + sizeof(*th))) == NULL)
-			goto drop_null;
-		ip6 = mtod(m, struct ip6_hdr *);
-		if (ip6->ip6_nxt != IPPROTO_TCP)
-			goto pass_unchopped;
-	} else {
-		ip = mtod(m, struct ip *);
-		iphl = ip->ip_hl << 2;
-		if (ip->ip_p != IPPROTO_TCP || iphl < sizeof(*ip))
-			goto pass_unchopped;
-		if (m->m_len < (int)(iphl + sizeof(*th)) &&
-		    (m = m_pullup(m, iphl + sizeof(*th))) == NULL)
-			goto drop_null;
-		ip = mtod(m, struct ip *);
-		ipid = ntohs(ip->ip_id);
-	}
-	th = (struct tcphdr *)(mtod(m, caddr_t) + iphl);
-	thl = th->th_off << 2;
-	if (thl < sizeof(*th))
-		goto pass_unchopped;
-	hdrlen = iphl + thl;
-	if (m->m_len < (int)hdrlen && (m = m_pullup(m, hdrlen)) == NULL)
-		goto drop_null;
-	if (v6)
-		ip6 = mtod(m, struct ip6_hdr *);
-	else
-		ip = mtod(m, struct ip *);
-	th = (struct tcphdr *)(mtod(m, caddr_t) + iphl);
-
-	if (segsz == 0 || m->m_pkthdr.len <= (int)hdrlen)
-		goto pass_unchopped;
-	paylen = m->m_pkthdr.len - hdrlen;
-	seq = ntohl(th->th_seq);
+	vers = m->m_len >= 1 ? *mtod(m, uint8_t *) >> 4 : 0;
 	hwcsum = (ifp->if_hwassist &
-	    (v6 ? CSUM_IP6_TCP : CSUM_IP_TCP)) != 0;
+	    (vers == 6 ? CSUM_IP6_TCP : CSUM_IP_TCP)) != 0;
+
+	error = tcp_tso_chop(&m, 0, ifp->if_mtu,
+	    hwcsum ? TSO_CHOP_HWCSUM : 0, &chain);
+	if (error == EPROTONOSUPPORT) {
+		/* Not a shape we segment; the driver sees it as-is. */
+		return (te->te_output(ifp, m, dst, ro));
+	}
+	if (error != 0) {
+		counter_u64_add(tw_drops, 1);
+		return (error);
+	}
 
 	counter_u64_add(tw_chopped, 1);
-	first = true;
-	for (off = 0; off < paylen; off += plen, first = false) {
-		struct ip *sip;
-		struct ip6_hdr *sip6;
-		struct tcphdr *sth;
-		bool last;
-
-		plen = ulmin(segsz, paylen - off);
-		last = (off + plen == paylen);
-
-		seg = m_gethdr(M_NOWAIT, MT_DATA);
-		if (seg == NULL)
-			goto drop;
-		if (m_dup_pkthdr(seg, m, M_NOWAIT) == 0) {
-			m_free(seg);
-			goto drop;
-		}
-		/* Header copy; hdrlen (<= 120) fits an mbuf header. */
-		m_copydata(m, 0, hdrlen, mtod(seg, caddr_t));
-		seg->m_len = hdrlen;
-		tail = m_copym(m, hdrlen + off, plen, M_NOWAIT);
-		if (tail == NULL) {
-			m_freem(seg);
-			goto drop;
-		}
-		m_cat(seg, tail);
-		seg->m_pkthdr.len = hdrlen + plen;
-
-		/* Per-segment offload metadata. */
-		seg->m_pkthdr.csum_flags &= ~(CSUM_TSO | CSUM_IP_TCP |
-		    CSUM_IP6_TCP);
-		seg->m_pkthdr.tso_segsz = 0;
-		if (hwcsum) {
-			seg->m_pkthdr.csum_flags |=
-			    v6 ? CSUM_IP6_TCP : CSUM_IP_TCP;
-			seg->m_pkthdr.csum_data =
-			    offsetof(struct tcphdr, th_sum);
-		}
-
-		/* Per-segment header fixup. */
-		sth = (struct tcphdr *)(mtod(seg, caddr_t) + iphl);
-		sth->th_seq = htonl(seq + off);
-		if (!last)
-			tcp_set_flags(sth, tcp_get_flags(sth) &
-			    ~(TH_FIN | TH_PUSH));
-		if (!first)
-			tcp_set_flags(sth, tcp_get_flags(sth) & ~TH_CWR);
-		if (v6) {
-			sip6 = mtod(seg, struct ip6_hdr *);
-			sip6->ip6_plen = htons(thl + plen);
-			if (hwcsum) {
-				sth->th_sum = in6_cksum_pseudo(sip6,
-				    thl + plen, IPPROTO_TCP, 0);
-			} else {
-				sth->th_sum = 0;
-				sth->th_sum = in6_cksum(seg, IPPROTO_TCP,
-				    iphl, thl + plen);
-				counter_u64_add(tw_swcsum, 1);
-			}
-		} else {
-			sip = mtod(seg, struct ip *);
-			sip->ip_len = htons(hdrlen + plen);
-			sip->ip_id = htons(ipid++);
-			sth->th_sum = in_pseudo(sip->ip_src.s_addr,
-			    sip->ip_dst.s_addr,
-			    htons(thl + plen + IPPROTO_TCP));
-			if (!hwcsum) {
-				sth->th_sum = in_cksum_skip(seg,
-				    hdrlen + plen, iphl);
-				counter_u64_add(tw_swcsum, 1);
-			}
-			sip->ip_sum = 0;
-			sip->ip_sum = in_cksum(seg, iphl);
-		}
-
+	for (seg = chain; seg != NULL; seg = next) {
+		next = seg->m_nextpkt;
+		seg->m_nextpkt = NULL;
 		counter_u64_add(tw_segments, 1);
-		error = te->te_output(ifp, seg, dst, ro);
-		if (error != 0)
-			break;
+		if (!hwcsum)
+			counter_u64_add(tw_swcsum, 1);
+		if (error == 0)
+			error = te->te_output(ifp, seg, dst, ro);
+		else
+			m_freem(seg);
 	}
-	m_freem(m);
 	return (error);
-
-pass_unchopped:
-	/* Not a shape we segment; the driver sees it as-is. */
-	return (te->te_output(ifp, m, dst, ro));
-drop:
-	m_freem(m);
-drop_null:
-	counter_u64_add(tw_drops, 1);
-	return (ENOBUFS);
 }
 
 static int
