@@ -3089,3 +3089,124 @@ ENETDOWN toward a downed peer, so only routing-daemon convergence
 latency is at stake.  If it is ever wanted, the implementation
 recipe is items 1 above plus the eventhandler, and t_09 grows the
 reflected-carrier assertions.
+
+epair offload matrix (2026-09-01, t_25_epair_tso.sh rewritten as a
+capability grid: {none, txcsum, txcsum+tso} x mtu {1500, 16384} x
+{1,4,16} connections, avg tx packet from sent-bytes/sent-packets
+deltas; samples/t25_offload_matrix.txt.  "-txcsum tso" is
+unsupported by design - the coupling revokes TSO - so the matrix
+has three offload rows.  Note epair byte counters include the
+14-byte Ethernet header: wire-size rows read ~1513/~16397, not
+1500/16384):
+
+   mtu  offloads    conns  Gbit/s  avg-tx
+  1500  none         1/4/16   5.41 / 4.88 / 4.71    ~1513
+  1500  txcsum       1/4/16   6.23 / 5.93 / 5.85    ~1513
+  1500  txcsum+tso   1/4/16   35.9 / 31.0 / 37.6    43674/19607/28222
+ 16384  none         1/4/16   30.4 / 19.6 / 16.1    ~16390
+ 16384  txcsum       1/4/16   35.0 / 37.1 / 36.7    ~16390
+ 16384  txcsum+tso   1/4/16   40.0 / 68.9 / 49.2    43728/47773/47156
+
+Readings:
+- TSO is worth 6-7x at mtu 1500 (5.9 -> 31-38 Gbit/s) and pushes
+  the 16384 config to 68.9 Gbit/s peak - epair's best recorded
+  number, consistent with the ~170-200k frames/s ceiling scaling
+  by chain size (P=1 runs sit lower, ~100k fps, latency-bound).
+- Checksum elision alone is modest at 1500 (+15%) but large at
+  16384 under load: the "none" column DEGRADES with connections
+  (30.4 -> 16.1) while txcsum holds ~36 - with no offloads both
+  the sender computes and the receiver verifies 16 KB checksums
+  in software on the serialized epair path, and that sum-walk
+  contention grows with parallelism.  txcsum+request-bit
+  traversal makes both ends' checksum work vanish for
+  jail-to-jail traffic.
+- avg-tx confirms deliver-whole in every tso row (43.7 KB chains
+  at P=1 - near tsomax - and 20-47 KB under load) and wire-size
+  in every non-tso row; the matrix asserts both per cell.
+
+if_pair offload matrix (2026-09-02, tests/t_28_pair_matrix.sh -
+t_25's exact grid against if_pair for the driver comparison;
+samples/t28_pair_matrix.txt.  Bare L3, so wire-size rows read
+~1499; no peer sync, both sides set explicitly per cell):
+
+   mtu  offloads    conns  Gbit/s               avg-tx (bytes)
+  1500  none         1/4/16   5.56 / 14.2 / 63.5   1499 / 1499 / 1499
+  1500  txcsum       1/4/16   7.67 / 26.3 / 89.2   1499 / 1499 / 1499
+  1500  txcsum+tso   1/4/16   20.0 / 97.2 / 349    43590 / 43626 / 36597
+ 16384  none         1/4/16   29.3 / 108  / 302    16374 / 16372 / 16245
+ 16384  txcsum       1/4/16   32.0 / 114  / 358    16371 / 16112 / 16307
+ 16384  txcsum+tso   1/4/16   29.0 / 146  / 380    43728 / 44008 / 42561
+
+A second full run of both matrices (2026-09-02, *_run2.txt in
+samples/) reproduces every reading within a few percent; the
+chain-size-coupled TSO cells swing the most (pair 1500+tso P=4:
+97.2 -> 132 Gbit/s at 44078 B; 16384+tso P=1: 29.0 -> 36.9 at
+43734 B), and the single-flow epair-beats-pair finding persists
+(1500+tso P=1: epair 37.8 vs pair 21.5).
+
+Side by side with the epair matrix (previous block):
+
+- PARALLEL SCALING is the story: at P=16 if_pair is 9x epair at
+  1500+tso (349 vs 37.6), 13x at 1500-none (63.5 vs 4.71), and
+  its "none" column SCALES (5.6 -> 63.5) where epair's DEGRADES
+  (30.4 -> 16.1 at 16384) - the flow-steered multi-worker pool
+  spreads both delivery and software checksum work, while epair
+  serializes on one queue without RSS.
+- SINGLE-FLOW DEFICIT, new and honest: at P=1 epair BEATS if_pair
+  in the TSO rows - 35.9 vs 20.0 Gbit/s at 1500+tso (103k vs 57k
+  frames/s), 40.0 vs 29.0 at 16384+tso - and roughly ties
+  elsewhere.  One flow means one worker, so if_pair pays the
+  enqueue/wake/handoff latency with no parallelism to buy back;
+  candidate suspects for the gap vs epair's identical-looking
+  path are the batching/yield governor (epair drains without
+  yielding) and the CPU-pinned worker vs epair's unpinned
+  taskqueue (locality vs migration).  UNINVESTIGATED - a t_19/27
+  style profile of the P=1 tso cell on both drivers would
+  attribute it.  Until then the fair summary: if_pair trades
+  single-flow latency for parallel throughput.
+- Deliver-whole holds in every tso cell on both drivers (~43 KB
+  chains at P=1, the per-cell assertions passed 36/36).
+
+Side-by-side driver comparison, run 2 of both offload matrices
+(2026-09-02, samples/t25_offload_matrix_run2.txt vs
+samples/t28_pair_matrix_run2.txt, same kernel, same grid; avg-tx
+in bytes, epair's includes its 14-byte Ethernet framing):
+
+   mtu  offloads    conns  epair Gb/s avg-tx   if_pair Gb/s avg-tx   ratio
+  1500  none          1       5.45    1513        5.51    1499       1.0x
+  1500  none          4       4.90    1512       19.4     1499       4.0x
+  1500  none         16       4.90    1510       60.0     1499      12.2x
+  1500  txcsum        1       6.72    1513        7.48    1499       1.1x
+  1500  txcsum        4       6.33    1513       27.0     1499       4.3x
+  1500  txcsum       16       6.22    1511       94.1     1499      15.1x
+  1500  txcsum+tso    1      37.8    43691       21.5    43638       0.57x
+  1500  txcsum+tso    4      32.2    20718      132      44078       4.1x
+  1500  txcsum+tso   16      37.3    28430      323      33572       8.7x
+ 16384  none          1      29.4    16396       28.8    16382       1.0x
+ 16384  none          4      19.5    16397      106      16368       5.4x
+ 16384  none         16      16.3    16349      297      16318      18.2x
+ 16384  txcsum        1      37.1    16347       34.2    16273       0.92x
+ 16384  txcsum        4      38.8    16397      103      16307       2.7x
+ 16384  txcsum       16      38.0    16373      367      16305       9.7x
+ 16384  txcsum+tso    1      43.0    43731       36.9    43734       0.86x
+ 16384  txcsum+tso    4      68.9    47801      141      43728       2.0x
+ 16384  txcsum+tso   16      49.6    47107      377      42486       7.6x
+
+Readings from the pairing:
+- At ONE connection the drivers are peers or epair wins (ratios
+  0.57-1.1x), the largest epair lead exactly where chains are
+  biggest relative to the path (1500+tso: 37.8 vs 21.5) - the
+  single-flow handoff-latency deficit, reproduced across runs.
+- Above one connection every cell belongs to if_pair, 7.6-18.2x
+  by P=16; epair's best cell in the whole grid (68.9) is below
+  if_pair's fourth-best.
+- avg-tx explains the mechanics: under 16-conn TSO load epair's
+  chains run LARGER than if_pair's (47107 vs 42486) while moving
+  7.6x less data - epair is frame-rate-bound (~130k fps in that
+  cell) while if_pair's workers push ~1.1M frames/s.
+- epair's software-checksum inversion shows in the "none" rows:
+  29.4 -> 16.3 falling with connections against if_pair's
+  28.8 -> 297 climbing.
+- Only if_pair 16384+tso P=1 moved meaningfully between runs
+  (29.0 -> 36.9, the known cwnd-coupled variance); every run-1
+  conclusion stands in run 2.
