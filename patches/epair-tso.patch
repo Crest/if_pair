@@ -1,0 +1,157 @@
+epair(4): advertise TSO (deliver-whole), default-off.
+
+The mirror of if_pair(4)'s TSO support for the Ethernet pair:
+IFCAP_TSO4/6 advertised (capability only - disabled by default
+per the forwarded-frame stall analysis in if_pair's TUNING
+section), CSUM_*_TSO mapped into hwassist when enabled, TSO
+coupled to the matching TXCSUM, the existing TXCSUM peer-sync
+extended to the TSO bits (a bridge muting TSO on one side
+propagates to the other), and the stack-default chain limits set
+explicitly.  ONE datapath change: epair_transmit() enforces the
+MTU ("a little bit more like real hardware", E2BIG) and must
+exempt CSUM_TSO chains - they exist only under our own grant and
+cross the pair whole, capped at the advertised if_hw_tsomax.  A
+bridge egress splits in member hardware (bridge_mutecaps()
+guarantees capability), a routed egress needs
+software-tso-forwarding.patch.  See NOTES.md and CHOPPER.txt in
+the if_pair repository.
+
+Rebased 2026-08-28 onto releng/15.1: the SIOCSIFCAP peer-sync
+grew IFCAP_VLAN_HWTAGGING, and if_capenable now starts from
+if_capabilities, so the TSO bits are masked OFF there to keep
+the default-off semantics.  The transmit-gate exemption was
+added the same day after t_25 caught the stall on real hardware
+(80 Oerrs, 0.00 Gbit/s: every TSO chain bounced with E2BIG).
+
+Apply from /usr/src:  patch -p0 < epair-tso.patch
+
+--- sys/net/if_epair.c
++++ sys/net/if_epair.c
+@@ -344,8 +344,15 @@
+ 	 * We could just transmit this, but it makes testing easier if we're a
+ 	 * little bit more like real hardware.
+ 	 * Allow just that little bit extra for ethernet (and vlan) headers.
++	 * TSO chains are the advertised exception: CSUM_TSO only appears
++	 * under our own IFCAP_TSO grant and the chain crosses the pair
++	 * WHOLE (deliver-whole, as in if_pair(4)) up to the advertised
++	 * if_hw_tsomax, to be split - if ever - at a later egress.
+ 	 */
+-	if (m->m_pkthdr.len > (ifp->if_mtu + sizeof(struct ether_vlan_header))) {
++	if (m->m_pkthdr.len > (ifp->if_mtu + sizeof(struct ether_vlan_header)) &&
++	    ((m->m_pkthdr.csum_flags & CSUM_TSO) == 0 ||
++	    m->m_pkthdr.len > (ifp->if_hw_tsomax +
++	    sizeof(struct ether_vlan_header)))) {
+ 		m_freem(m);
+ 		if_inc_counter(ifp, IFCOUNTER_OERRORS, 1);
+ 		return (E2BIG);
+@@ -443,6 +450,10 @@
+ 		hwassist |= CSUM_IP_TCP | CSUM_IP_UDP;
+ 	if (ifp->if_capenable & IFCAP_TXCSUM_IPV6)
+ 		hwassist |= CSUM_IP6_TCP | CSUM_IP6_UDP;
++	if (ifp->if_capenable & IFCAP_TSO4)
++		hwassist |= CSUM_IP_TSO;
++	if (ifp->if_capenable & IFCAP_TSO6)
++		hwassist |= CSUM_IP6_TSO;
+ 	ifp->if_hwassist = hwassist;
+ }
+ 
+@@ -488,6 +499,15 @@
+ 		 */
+ 		ifp->if_capenable = ifr->ifr_reqcap | IFCAP_RXCSUM |
+ 		    IFCAP_RXCSUM_IPV6;
++		/*
++		 * TSO rides on checksum offload (tcp_output() marks
++		 * TSO frames with the checksum request bit), so each
++		 * TSO capability requires the matching TXCSUM.
++		 */
++		if ((ifp->if_capenable & IFCAP_TXCSUM) == 0)
++			ifp->if_capenable &= ~IFCAP_TSO4;
++		if ((ifp->if_capenable & IFCAP_TXCSUM_IPV6) == 0)
++			ifp->if_capenable &= ~IFCAP_TSO6;
+ 		epair_caps_changed(ifp);
+ 		VLAN_CAPABILITIES(ifp);
+ 		/*
+@@ -505,13 +525,14 @@
+ 		 */
+ 		sc = ifp->if_softc;
+ 		if ((ifp->if_capenable ^ sc->oifp->if_capenable) &
+-		    (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6 | IFCAP_VLAN_HWTAGGING)) {
++		    (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6 | IFCAP_VLAN_HWTAGGING |
++		     IFCAP_TSO4 | IFCAP_TSO6)) {
+ 			sc->oifp->if_capenable &=
+ 			    ~(IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6 |
+-			      IFCAP_VLAN_HWTAGGING);
++			      IFCAP_VLAN_HWTAGGING | IFCAP_TSO4 | IFCAP_TSO6);
+ 			sc->oifp->if_capenable |= ifp->if_capenable &
+ 			    (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6 |
+-			     IFCAP_VLAN_HWTAGGING);
++			     IFCAP_VLAN_HWTAGGING | IFCAP_TSO4 | IFCAP_TSO6);
+ 			epair_caps_changed(sc->oifp);
+ 			VLAN_CAPABILITIES(sc->oifp);
+ 		}
+@@ -632,8 +653,22 @@
+ 	ifp->if_capabilities =
+ 	    IFCAP_VLAN_MTU | IFCAP_VLAN_HWTAGGING |
+ 	    IFCAP_TXCSUM | IFCAP_RXCSUM |
+-	    IFCAP_TXCSUM_IPV6 | IFCAP_RXCSUM_IPV6;
+-	ifp->if_capenable = ifp->if_capabilities;
++	    IFCAP_TXCSUM_IPV6 | IFCAP_RXCSUM_IPV6 |
++	    IFCAP_TSO4 | IFCAP_TSO6;
++	/*
++	 * TSO is deliver-whole (there is no wire to require
++	 * splitting) but ships DISABLED: a frame the peer FORWARDS
++	 * to an egress that cannot split it stalls the connection
++	 * (see if_pair(4) TUNING).  In a bridge, bridge_mutecaps()
++	 * keeps member TSO only when every member supports it.
++	 * Advertise the stack-default chain limits explicitly so
++	 * if_attach() does not print about filling them in.
++	 */
++	ifp->if_capenable = ifp->if_capabilities &
++	    ~(IFCAP_TSO4 | IFCAP_TSO6);
++	ifp->if_hw_tsomax = 65518;	/* if_attach() default */
++	ifp->if_hw_tsomaxsegcount = 35;
++	ifp->if_hw_tsomaxsegsize = 2048;
+ 	epair_caps_changed(ifp);
+ 	ifp->if_transmit = epair_transmit;
+ 	ifp->if_qflush = epair_qflush;
+--- share/man/man4/epair.4
++++ share/man/man4/epair.4
+@@ -25,7 +25,7 @@
+ .\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ .\" SUCH DAMAGE.
+ .\"
+-.Dd January 30, 2026
++.Dd August 28, 2026
+ .Dt EPAIR 4
+ .Os
+ .Sh NAME
+@@ -135,6 +135,29 @@
+ .Pp
+ The
+ .Nm
++supports TSO and TSO6, disabled by default.
++There is no wire between the two ends, so an accepted TSO chain is
++not segmented but delivered to the other end whole, up to the
++advertised chain limits.
++This removes the overhead of wire-sized segmentation for bulk TCP
++between the two ends.
++Each TSO capability requires the matching transmit checksum
++capability; disabling TXCSUM or TXCSUM6 also disables the
++corresponding TSO capability.
++Like TXCSUM, the TSO capabilities are synchronized between the
++.Nm
++interface pair.
++Only enable TSO if every path a delivered chain may take can
++terminate it, segment it in hardware, or segment it in software;
++forwarding an oversized chain to an egress interface that cannot
++segment it stalls the TCP connection on kernels without software
++TSO segmentation in the forwarding path.
++When one end is a member of an
++.Xr if_bridge 4 ,
++the bridge coordinates the capability across its members.
++.Pp
++The
++.Nm
+ supports VLAN_HWTAGGING without actually adding a VLAN tag.
+ The sending
+ .Nm

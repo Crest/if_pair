@@ -1,0 +1,211 @@
+Software TSO at the forwarding balk sites ("Phase A").
+
+Adds tcp_tso_chop(), the software TCP segmenter FreeBSD never had
+as a callable function (the sfxge(4) arithmetic emitting mbuf
+chains), and replaces the bare MTU balks in ip_tryforward(),
+ip6_tryforward() and ip6_forward() with the ordered handler: fits
+-> send; egress splits in hardware -> pass whole; CSUM_TSO ->
+chop in software (clamped to the egress MTU) and send the chain;
+else -> ICMP, as today.  Supersedes the exemption-only
+routed-tso-forwarding.patch.  See CHOPPER.txt (plan) and NOTES.md
+(analysis, precedents, measurements) in the if_pair repository.
+
+Install the two new files, then apply the rest:
+  cp tcp_tso.c tcp_tso.h /usr/src/sys/netinet/
+  patch -p0 < software-tso-forwarding.patch   (from /usr/src)
+
+--- sys/conf/files	2026-08-27 03:45:05.704807000 +0200
++++ sys/conf/files	2026-08-27 03:45:05.707018000 +0200
+@@ -4458,6 +4458,7 @@
+ netinet/tcp_subr.c		optional inet | inet6
+ netinet/tcp_syncache.c		optional inet | inet6
+ netinet/tcp_timer.c		optional inet | inet6
++netinet/tcp_tso.c		optional inet | inet6
+ netinet/tcp_timewait.c		optional inet | inet6
+ netinet/tcp_usrreq.c		optional inet | inet6
+ netinet/udp_usrreq.c		optional inet | inet6
+--- sys/netinet/ip_fastfwd.c	2026-08-27 03:45:05.705346000 +0200
++++ sys/netinet/ip_fastfwd.c	2026-08-27 03:45:05.707527000 +0200
+@@ -105,6 +105,7 @@
+ 
+ #if defined(SCTP) || defined(SCTP_SUPPORT)
+ #include <netinet/sctp_crc32.h>
++#include <netinet/tcp_tso.h>
+ #endif
+ 
+ #define	V_ipsendredirects	VNET(ipsendredirects)
+@@ -491,7 +492,9 @@
+ 	/*
+ 	 * Check if packet fits MTU or if hardware will fragment for us
+ 	 */
+-	if (ip_len <= nh->nh_mtu) {
++	if (ip_len <= nh->nh_mtu ||
++	    (m->m_pkthdr.csum_flags & nh->nh_ifp->if_hwassist &
++	    (CSUM_TSO | CSUM_INNER_TSO)) != 0) {
+ 		/*
+ 		 * Avoid confusing lower layers.
+ 		 */
+@@ -505,6 +508,24 @@
+ 		/*
+ 		 * Handle EMSGSIZE with icmp reply needfrag for TCP MTU discovery
+ 		 */
++		if ((m->m_pkthdr.csum_flags & CSUM_TSO) != 0) {
++			/*
++			 * TSO frame wider than an egress that cannot
++			 * split it in hardware: segment in software
++			 * and send the pieces via the fragment loop.
++			 */
++			if (tcp_tso_chop(&m, 0, nh->nh_mtu,
++			    (nh->nh_ifp->if_hwassist & CSUM_IP_TCP) != 0 ?
++			    TSO_CHOP_HWCSUM : 0, &m) != 0) {
++				if (m == NULL)
++					goto drop;
++				IPSTAT_INC(ips_cantfrag);
++				icmp_error(m, ICMP_UNREACH,
++				    ICMP_UNREACH_NEEDFRAG, 0, nh->nh_mtu);
++				goto consumed;
++			}
++			goto sendchain;
++		}
+ 		if (ip_off & IP_DF) {
+ 			IPSTAT_INC(ips_cantfrag);
+ 			icmp_error(m, ICMP_UNREACH, ICMP_UNREACH_NEEDFRAG,
+@@ -522,6 +543,7 @@
+ 			/*
+ 			 * Send off the fragments via outgoing interface
+ 			 */
++sendchain:
+ 			error = 0;
+ 			do {
+ 				m0 = m->m_nextpkt;
+--- sys/netinet6/ip6_fastfwd.c	2026-08-27 03:45:05.705691000 +0200
++++ sys/netinet6/ip6_fastfwd.c	2026-08-27 03:45:05.707766000 +0200
+@@ -57,6 +57,7 @@
+ 
+ #if defined(SCTP) || defined(SCTP_SUPPORT)
+ #include <netinet/sctp_crc32.h>
++#include <netinet/tcp_tso.h>
+ #endif
+ 
+ static int
+@@ -207,7 +208,8 @@
+ 		goto dropin;
+ 	}
+ 	if (!PFIL_HOOKED_OUT(V_inet6_pfil_head)) {
+-		if (m->m_pkthdr.len > nh->nh_mtu) {
++		if (m->m_pkthdr.len > nh->nh_mtu &&
++		    (m->m_pkthdr.csum_flags & CSUM_TSO) == 0) {
+ 			in6_ifstat_inc(nh->nh_ifp, ifs6_in_toobig);
+ 			icmp6_error(m, ICMP6_PACKET_TOO_BIG, 0, nh->nh_mtu);
+ 			m = NULL;
+@@ -227,7 +229,8 @@
+ 	 * We used slow path processing for packets with scoped addresses.
+ 	 * So, scope checks aren't needed here.
+ 	 */
+-	if (m->m_pkthdr.len > nh->nh_mtu) {
++	if (m->m_pkthdr.len > nh->nh_mtu &&
++	    (m->m_pkthdr.csum_flags & CSUM_TSO) == 0) {
+ 		in6_ifstat_inc(nh->nh_ifp, ifs6_in_toobig);
+ 		icmp6_error(m, ICMP6_PACKET_TOO_BIG, 0, nh->nh_mtu);
+ 		m = NULL;
+@@ -310,8 +313,38 @@
+ 
+ 	if (nh->nh_flags & NHF_GATEWAY)
+ 		dst.sin6_addr = nh->gw6_sa.sin6_addr;
+-	error = (*nh->nh_ifp->if_output)(nh->nh_ifp, m,
+-	    (struct sockaddr *)&dst, NULL);
++	if (__predict_false(m->m_pkthdr.len > nh->nh_mtu &&
++	    (m->m_pkthdr.csum_flags & nh->nh_ifp->if_hwassist &
++	    (CSUM_TSO | CSUM_INNER_TSO)) == 0)) {
++		/*
++		 * Oversized TSO frame toward an egress that cannot split
++		 * it in hardware (the MTU checks above pass CSUM_TSO
++		 * frames through to here): segment in software.
++		 */
++		if (tcp_tso_chop(&m, 0, nh->nh_mtu,
++		    (nh->nh_ifp->if_hwassist & CSUM_IP6_TCP) != 0 ?
++		    TSO_CHOP_HWCSUM : 0, &m) != 0) {
++			if (m != NULL) {
++				in6_ifstat_inc(nh->nh_ifp, ifs6_in_toobig);
++				icmp6_error(m, ICMP6_PACKET_TOO_BIG, 0,
++				    nh->nh_mtu);
++				m = NULL;
++			}
++			goto dropout;
++		}
++	}
++	error = 0;
++	while (m != NULL) {
++		struct mbuf *m_next = m->m_nextpkt;
++
++		m->m_nextpkt = NULL;
++		if (error == 0)
++			error = (*nh->nh_ifp->if_output)(nh->nh_ifp, m,
++			    (struct sockaddr *)&dst, NULL);
++		else
++			m_freem(m);
++		m = m_next;
++	}
+ 	if (error != 0) {
+ 		in6_ifstat_inc(nh->nh_ifp, ifs6_out_discard);
+ 		IP6STAT_INC(ip6s_cantforward);
+--- sys/netinet6/ip6_forward.c	2026-08-27 03:45:05.706012000 +0200
++++ sys/netinet6/ip6_forward.c	2026-08-27 03:45:05.707984000 +0200
+@@ -77,6 +77,7 @@
+ 
+ #if defined(SCTP) || defined(SCTP_SUPPORT)
+ #include <netinet/sctp_crc32.h>
++#include <netinet/tcp_tso.h>
+ #endif
+ 
+ /*
+@@ -385,7 +386,8 @@
+ pass:
+ 	/* See if the size was changed by the packet filter. */
+ 	/* TODO: change to nh->nh_mtu */
+-	if (m->m_pkthdr.len > IN6_LINKMTU(nh->nh_ifp)) {
++	if (m->m_pkthdr.len > IN6_LINKMTU(nh->nh_ifp) &&
++	    (m->m_pkthdr.csum_flags & CSUM_TSO) == 0) {
+ 		in6_ifstat_inc(nh->nh_ifp, ifs6_in_toobig);
+ 		if (mcopy)
+ 			icmp6_error(mcopy, ICMP6_PACKET_TOO_BIG, 0,
+@@ -421,7 +423,38 @@
+ 		in6_set_unicast_scopeid(&dst.sin6_addr, dst.sin6_scope_id);
+ 		dst.sin6_scope_id = 0;
+ 	}
+-	error = nd6_output_ifp(nh->nh_ifp, origifp, m, &dst, NULL);
++	if (__predict_false(m->m_pkthdr.len > IN6_LINKMTU(nh->nh_ifp) &&
++	    (m->m_pkthdr.csum_flags & nh->nh_ifp->if_hwassist &
++	    (CSUM_TSO | CSUM_INNER_TSO)) == 0)) {
++		/*
++		 * Oversized TSO frame toward an egress that cannot split
++		 * it in hardware (the MTU check above passes CSUM_TSO
++		 * frames through to here): segment in software.
++		 */
++		if (tcp_tso_chop(&m, 0, IN6_LINKMTU(nh->nh_ifp),
++		    (nh->nh_ifp->if_hwassist & CSUM_IP6_TCP) != 0 ?
++		    TSO_CHOP_HWCSUM : 0, &m) != 0) {
++			in6_ifstat_inc(nh->nh_ifp, ifs6_in_toobig);
++			if (mcopy != NULL) {
++				icmp6_error(mcopy, ICMP6_PACKET_TOO_BIG, 0,
++				    IN6_LINKMTU(nh->nh_ifp));
++				mcopy = NULL;
++			}
++			goto bad;
++		}
++	}
++	error = 0;
++	while (m != NULL) {
++		struct mbuf *m_next = m->m_nextpkt;
++
++		m->m_nextpkt = NULL;
++		if (error == 0)
++			error = nd6_output_ifp(nh->nh_ifp, origifp, m,
++			    &dst, NULL);
++		else
++			m_freem(m);
++		m = m_next;
++	}
+ 	if (error) {
+ 		in6_ifstat_inc(nh->nh_ifp, ifs6_out_discard);
+ 		IP6STAT_INC(ip6s_cantforward);

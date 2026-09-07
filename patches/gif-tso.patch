@@ -1,0 +1,225 @@
+gif(4): native software TSO via tcp_tso_chop() - the tunnel demo.
+
+The CHOPPER.txt P5 demo adopter: gif advertises IFCAP_TSO4/6
+(default-off, like if_pair(4) and epair(4)), maps the grant into
+if_hwassist, and inner-chops accepted chains in gif_transmit()
+BEFORE encapsulation - each segment then encapsulates exactly like
+an ordinary packet, so in_gif_output()/in6_gif_output() and the
+outer path never see an oversized frame.  gif advertises no TXCSUM,
+so the chopper runs with flags 0 (full software checksums, matching
+what tcp_output() would have produced without the grant).  The
+sender-side win is the usual software-TSO one: TCP builds few large
+chains instead of many wire-size packets, saving per-packet
+stack traversals down to the tunnel.
+
+Requires the tcp_tso_chop() KPI in the kernel
+(software-tso-forwarding.patch + tcp_tso.{c,h}).
+
+Structure: the old gif_transmit() body from the af extraction down
+becomes gif_transmit1(ifp, m, af); gif_transmit() keeps the entry
+checks and adds the chop loop.  Note gif_output()'s csum_data "af
+cheat" - the af is extracted before the chopper runs, and travels
+as a parameter, because the chopper's segments carry fresh pkthdrs.
+
+Apply from /usr/src:  patch -p0 < gif-tso.patch
+
+--- sys/net/if_gif.c
++++ sys/net/if_gif.c
+@@ -66,6 +66,8 @@
+ #include <net/bpf.h>
+ #include <net/vnet.h>
+ 
++#include <netinet/tcp_tso.h>
++
+ #include <netinet/in.h>
+ #include <netinet/in_systm.h>
+ #include <netinet/ip.h>
+@@ -157,6 +159,18 @@
+ #endif
+ 	GIF2IFP(sc)->if_capabilities |= IFCAP_LINKSTATE;
+ 	GIF2IFP(sc)->if_capenable |= IFCAP_LINKSTATE;
++	/*
++	 * Software TSO via tcp_tso_chop(): advertise the capability,
++	 * DISABLED by default like if_pair(4) and epair(4).
++	 * gif_transmit() splits accepted chains back to if_mtu-sized
++	 * segments BEFORE encapsulation, so the rest of gif and the
++	 * outer path never see an oversized frame.  The chain limits
++	 * are the stack defaults, stated explicitly.
++	 */
++	GIF2IFP(sc)->if_capabilities |= IFCAP_TSO4 | IFCAP_TSO6;
++	GIF2IFP(sc)->if_hw_tsomax = 65518;	/* if_attach() default */
++	GIF2IFP(sc)->if_hw_tsomaxsegcount = 35;
++	GIF2IFP(sc)->if_hw_tsomaxsegsize = 2048;
+ 	if_attach(GIF2IFP(sc));
+ 	bpfattach(GIF2IFP(sc), DLT_NULL, sizeof(u_int32_t));
+ 	if (ng_gif_attach_p != NULL)
+@@ -277,7 +291,7 @@
+ 
+ #define	MTAG_GIF	1080679712
+ static int
+-gif_transmit(struct ifnet *ifp, struct mbuf *m)
++gif_transmit1(struct ifnet *ifp, struct mbuf *m, uint32_t af)
+ {
+ 	struct gif_softc *sc;
+ 	struct etherip_header *eth;
+@@ -288,31 +302,10 @@
+ 	struct ip6_hdr *ip6;
+ 	uint32_t t;
+ #endif
+-	uint32_t af;
+ 	uint8_t proto, ecn;
+ 	int error;
+ 
+-	NET_EPOCH_ASSERT();
+-#ifdef MAC
+-	error = mac_ifnet_check_transmit(ifp, m);
+-	if (error) {
+-		m_freem(m);
+-		goto err;
+-	}
+-#endif
+-	error = ENETDOWN;
+ 	sc = ifp->if_softc;
+-	if ((ifp->if_flags & IFF_MONITOR) != 0 ||
+-	    (ifp->if_flags & IFF_UP) == 0 ||
+-	    (ifp->if_drv_flags & IFF_DRV_RUNNING) == 0 ||
+-	    sc->gif_family == 0 ||
+-	    (error = if_tunnel_check_nesting(ifp, m, MTAG_GIF,
+-		V_max_gif_nesting)) != 0) {
+-		m_freem(m);
+-		goto err;
+-	}
+-	/* Now pull back the af that we stashed in the csum_data. */
+-	af = m->m_pkthdr.csum_data;
+ 	m->m_flags &= ~(M_BCAST|M_MCAST);
+ 	M_SETFIB(m, sc->gif_fibnum);
+ 	BPF_MTAP2(ifp, &af, sizeof(af), m);
+@@ -384,8 +377,71 @@
+ 		break;
+ #endif
+ 	default:
++		m_freem(m);
++		error = EAFNOSUPPORT;
++	}
++err:
++	if (error)
++		if_inc_counter(ifp, IFCOUNTER_OERRORS, 1);
++	return (error);
++}
++
++static int
++gif_transmit(struct ifnet *ifp, struct mbuf *m)
++{
++	struct mbuf *chain;
++	uint32_t af;
++	int error;
++
++	NET_EPOCH_ASSERT();
++#ifdef MAC
++	error = mac_ifnet_check_transmit(ifp, m);
++	if (error) {
++		m_freem(m);
++		goto err;
++	}
++#endif
++	error = ENETDOWN;
++	if ((ifp->if_flags & IFF_MONITOR) != 0 ||
++	    (ifp->if_flags & IFF_UP) == 0 ||
++	    (ifp->if_drv_flags & IFF_DRV_RUNNING) == 0 ||
++	    ((struct gif_softc *)ifp->if_softc)->gif_family == 0 ||
++	    (error = if_tunnel_check_nesting(ifp, m, MTAG_GIF,
++		V_max_gif_nesting)) != 0) {
+ 		m_freem(m);
++		goto err;
+ 	}
++	/* Now pull back the af that we stashed in the csum_data. */
++	af = m->m_pkthdr.csum_data;
++	/*
++	 * Software TSO (tcp_tso_chop() native adopter): a chain
++	 * accepted under our IFCAP_TSO grant is split back to
++	 * <= if_mtu segments HERE, before encapsulation, so each
++	 * segment encapsulates exactly like an ordinary packet.
++	 * gif advertises no TXCSUM, so flags 0: the chopper computes
++	 * full software checksums (matching what tcp_output() would
++	 * have done without the grant).  EPROTONOSUPPORT is
++	 * unreachable in practice - the stack maps M_EXTPG payload
++	 * before non-MEXTPG interfaces - so every failure is a drop.
++	 */
++	if ((m->m_pkthdr.csum_flags & CSUM_TSO) != 0) {
++		error = tcp_tso_chop(&m, 0, ifp->if_mtu, 0, &chain);
++		if (error != 0) {
++			m_freem(m);	/* NULL on ENOBUFS; that's fine */
++			goto err;
++		}
++		while ((m = chain) != NULL) {
++			chain = m->m_nextpkt;
++			m->m_nextpkt = NULL;
++			if (error == 0)
++				error = gif_transmit1(ifp, m, af);
++			else
++				m_freem(m);
++		}
++		/* gif_transmit1() counted any error itself. */
++		return (error);
++	}
++	return (gif_transmit1(ifp, m, af));
+ err:
+ 	if (error)
+ 		if_inc_counter(ifp, IFCOUNTER_OERRORS, 1);
+@@ -609,6 +665,22 @@
+ 			return (EINVAL);
+ 		else
+ 			ifp->if_mtu = ifr->ifr_mtu;
++		return (0);
++	case SIOCSIFCAP:
++		/*
++		 * TSO4/TSO6 are the only toggleable capabilities.  gif
++		 * advertises no TXCSUM, so there is no coupling to
++		 * maintain - the chopper always computes full software
++		 * checksums.  The hwassist mapping is what grants
++		 * tcp_output() permission to build chains.
++		 */
++		ifp->if_capenable = ifr->ifr_reqcap &
++		    (IFCAP_TSO4 | IFCAP_TSO6 | IFCAP_LINKSTATE);
++		ifp->if_hwassist = 0;
++		if (ifp->if_capenable & IFCAP_TSO4)
++			ifp->if_hwassist |= CSUM_IP_TSO;
++		if (ifp->if_capenable & IFCAP_TSO6)
++			ifp->if_hwassist |= CSUM_IP6_TSO;
+ 		return (0);
+ 	}
+ 	sx_xlock(&gif_ioctl_sx);
+--- share/man/man4/gif.4
++++ share/man/man4/gif.4
+@@ -28,7 +28,7 @@
+ .\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ .\" SUCH DAMAGE.
+ .\"
+-.Dd August 27, 2025
++.Dd August 28, 2026
+ .Dt GIF 4
+ .Os
+ .Sh NAME
+@@ -295,6 +295,22 @@
+ It can be turned off by
+ .Dv IFF_LINK2
+ bit.
++.Ss TCP segmentation offloading
++.Nm
++supports TSO and TSO6, disabled by default.
++When enabled, the local TCP sender hands
++.Nm
++few large chains instead of many wire-sized packets, saving
++per-packet processing on the way to the tunnel.
++.Nm
++segments each chain in software immediately before encapsulation,
++so every encapsulated packet respects the
++.Nm
++interface MTU regardless of the capabilities of the interface the
++encapsulated packets leave through.
++.Nm
++does not advertise transmit checksum offloading; the checksums of
++the segments are computed in software during segmentation.
+ .Ss Miscellaneous
+ By default,
+ .Nm
