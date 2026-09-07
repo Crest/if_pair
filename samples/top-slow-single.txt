@@ -1,0 +1,40 @@
+last pid: 15161;  load averages:    1.35,    0.72,    0.87                                                                    up 0+01:31:03  18:33:33
+372 threads:   12 running, 342 sleeping, 18 waiting
+CPU 0:  2.0% user,  0.0% nice, 98.0% system,  0.0% interrupt,  0.0% idle
+CPU 1:  0.0% user,  0.0% nice,  0.0% system,  0.0% interrupt,  100% idle
+CPU 2:  0.0% user,  0.0% nice, 22.7% system,  0.0% interrupt, 77.3% idle
+CPU 3:  0.0% user,  0.0% nice,  0.0% system,  0.0% interrupt,  100% idle
+CPU 4:  0.0% user,  0.0% nice,  0.0% system,  0.0% interrupt,  100% idle
+CPU 5:  0.0% user,  0.0% nice, 34.7% system,  0.0% interrupt, 65.3% idle
+CPU 6:  0.0% user,  0.0% nice,  0.0% system,  0.0% interrupt,  100% idle
+CPU 7:  0.0% user,  0.0% nice,  0.0% system,  0.0% interrupt,  100% idle
+Mem: 31M Active, 96M Inact, 395M Wired, 2056K Buf, 3449M Free
+ARC: 111M Total, 32M MFU, 71M MRU, 128K Anon, 1048K Header, 6324K Other
+     76M Compressed, 169M Uncompressed, 2.24:1 Ratio
+
+  PID USERNAME    PRI NICE   SIZE    RES STATE    C   TIME    WCPU COMMAND
+85728 root        121    0    21M  8104K CPU0     0   0:28  64.31% iperf3 --server --daemon{iperf3}
+14233 root        116    0    20M  7876K CPU2     2   0:21  51.46% iperf3 -c 10.0.0.1 -t 600 -P 1{iperf3}
+    0 root        -55    -     0B  3120K CPU0     0   0:38  35.69% [kernel{pair_task_0}]
+58485 root          0    0    17M  7108K select   6   0:02   0.03% tmux: server (/tmp/tmux-0/default) (tmux)
+ 7505 root          0    0    17M  5336K CPU4     4   0:01   0.03% top -SHPaziocpu
+    7 root        -15    -     0B    16K -        6   0:04   0.02% [rand_harvestq]
+    8 root        -15    -     0B    48K psleep   3   0:03   0.01% [pagedaemon{dom0}]
+    2 root        -54    -     0B   128K WAIT     7   0:03   0.00% [clock{clock (0)}]
+   12 root        -55    -     0B   160K WAIT     1   0:04   0.00% [intr{gic0,s4: xhci1++}]
+14233 root          0    0    20M  7876K select   7   0:00   0.00% iperf3 -c 10.0.0.1 -t 600 -P 1{iperf3}
+57090 crest         0    0    21M  9484K select   1   0:00   0.00% sudo -s
+56786 crest         0    0    23M    11M select   7   0:02   0.00% sshd-session: crest@pts/0 (sshd-session)
+85728 root          0    0    21M  8104K select   3   0:00   0.00% iperf3 --server --daemon{iperf3}
+    6 root        -13    -     0B  1248K tx->tx   4   0:00   0.00% [zfskern{txg_thread_enter}]
+    6 root        -13    -     0B  1248K t->zth   7   0:00   0.00% [zfskern{arc_evict}]
+    6 root        -13    -     0B  1248K mmp->m   1   0:00   0.00% [zfskern{mmp_thread_enter}]
+    6 root        -13    -     0B  1248K t->zth   2   0:00   0.00% [zfskern{arc_reap}]
+    6 root        -13    -     0B  1248K tx->tx   1   0:00   0.00% [zfskern{txg_thread_enter}]
+   15 root        -15    -     0B    48K -        7   0:00   0.00% [bufdaemon{bufspacedaemon-1}]
+   17 root         -7    -     0B    16K syncer   1   0:00   0.00% [syncer]
+   16 root        -15    -     0B    16K vlruwt   4   0:00   0.00% [vnlru]
+   15 root        -15    -     0B    48K psleep   6   0:00   0.00% [bufdaemon{bufdaemon}]
+   15 root        -15    -     0B    48K -        3   0:00   0.00% [bufdaemon{bufspacedaemon-0}]
+    6 root        -13    -     0B  1248K l2arc_   5   0:00   0.00% [zfskern{l2arc_feed_thread}]
+    8 root        -15    -     0B    48K umarcl   6   0:00   0.00% [pagedaemon{uma}]

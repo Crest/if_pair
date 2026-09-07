@@ -1,0 +1,37 @@
+last pid:   982;  load averages:    7.36,    4.03,    1.87                                                                    up 0+00:05:28  17:07:58
+386 threads:   15 running, 353 sleeping, 18 waiting
+CPU 0:  1.2% user,  0.0% nice, 91.4% system,  0.0% interrupt,  7.5% idle
+CPU 1:  0.0% user,  0.0% nice,  100% system,  0.0% interrupt,  0.0% idle
+CPU 2:  0.8% user,  0.0% nice, 72.5% system,  0.0% interrupt, 26.7% idle
+CPU 3:  1.2% user,  0.0% nice, 71.4% system,  0.0% interrupt, 27.5% idle
+CPU 4:  0.4% user,  0.0% nice, 72.5% system,  0.0% interrupt, 27.1% idle
+CPU 5:  0.8% user,  0.0% nice, 67.8% system,  0.0% interrupt, 31.4% idle
+CPU 6:  0.8% user,  0.0% nice, 71.0% system,  0.0% interrupt, 28.2% idle
+CPU 7:  0.4% user,  0.0% nice, 72.9% system,  0.0% interrupt, 26.7% idle
+Mem: 29M Active, 21M Inact, 272M Wired, 2056K Buf, 3650M Free
+ARC: 33M Total, 6142K MFU, 25M MRU, 128K Anon, 245K Header, 1190K Other
+     17M Compressed, 46M Uncompressed, 2.74:1 Ratio
+
+  PID USERNAME    PRI NICE   SIZE    RES STATE    C   TIME    WCPU COMMAND
+    0 root        -55    -     0B  3120K CPU1     1   2:54  99.65% [kernel{pair_task_1}]
+    0 root        -55    -     0B  3120K CPU0     0   2:23  81.11% [kernel{pair_task_0}]
+68966 root         43    0    21M  9112K RUN      4   0:11  27.18% iperf3 --server --daemon{iperf3}
+99674 root         47    0    21M  9092K CPU6     6   0:11  27.13% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+68966 root         47    0    21M  9112K sbwait   6   0:11  26.75% iperf3 --server --daemon{iperf3}
+68966 root         45    0    21M  9112K sbwait   3   0:11  26.72% iperf3 --server --daemon{iperf3}
+99674 root         43    0    21M  9092K sbwait   2   0:11  26.69% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+68966 root         45    0    21M  9112K sbwait   3   0:11  26.66% iperf3 --server --daemon{iperf3}
+68966 root         45    0    21M  9112K sbwait   0   0:11  26.59% iperf3 --server --daemon{iperf3}
+99674 root         45    0    21M  9092K sbwait   6   0:11  26.57% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+99674 root         49    0    21M  9092K sbwait   2   0:11  26.50% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+99674 root         47    0    21M  9092K sbwait   3   0:11  26.40% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+99674 root         51    0    21M  9092K sbwait   2   0:11  26.35% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+99674 root         49    0    21M  9092K RUN      3   0:11  26.31% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+68966 root         47    0    21M  9112K CPU5     5   0:11  26.30% iperf3 --server --daemon{iperf3}
+68966 root         45    0    21M  9112K sbwait   5   0:11  26.27% iperf3 --server --daemon{iperf3}
+68966 root         45    0    21M  9112K sbwait   6   0:11  25.91% iperf3 --server --daemon{iperf3}
+99674 root         53    0    21M  9092K sbwait   7   0:11  25.82% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+58485 root          0    0    17M  6696K select   7   0:00   0.05% tmux: server (/tmp/tmux-0/default) (tmux)
+    7 root        -15    -     0B    16K -        3   0:00   0.04% [rand_harvestq]
+  982 root          0    0    14M  4364K CPU7     7   0:00   0.04% top -SHPaziocpu
+    2 root        -54    -     0B   128K WAIT     7   0:00   0.02% [clock{clock (0)}]

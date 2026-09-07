@@ -1,0 +1,32 @@
+a07# LOAD_P=128 sh ./t_19_profile.sh
+t_19_profile: created pair4a + pair4b
+t_19_profile: ok: create jail ifp_19_profile_1
+t_19_profile: ok: create jail ifp_19_profile_2
+t_19_profile: ok: move pair4a into ifp_19_profile_1
+t_19_profile: ok: move pair4b into ifp_19_profile_2
+t_19_profile: ok: address side a
+t_19_profile: ok: address side b
+t_19_profile: ok: baseline ping
+t_19_profile: iperf3 -P 128 for 15s, profiling 10s inside the run
+t_19_profile: ok: capture finished
+t_19_profile: ok: iperf3 completed
+t_19_profile: samples: 243841 total, 243806 non-idle (0.0% idle)
+t_19_profile: bucket locks    15.0%
+t_19_profile: bucket sched     0.0%
+t_19_profile: bucket copy     56.6%
+t_19_profile: bucket alloc    13.2%
+t_19_profile: bucket proto     5.1%
+t_19_profile: bucket other    10.1%
+t_19_profile: top  1  kernel`copycommon                          54.8%
+t_19_profile: top  2  kernel`soreceive_generic_locked             6.4%
+t_19_profile: top  3  kernel`lock_delay                           4.7%
+t_19_profile: top  4  kernel`mb_dupcl                             3.9%
+t_19_profile: top  5  kernel`mb_free_ext                          3.6%
+t_19_profile: top  6  kernel`spinlock_exit                        2.6%
+t_19_profile: top  7  kernel`mb_ctor_clust                        2.5%
+t_19_profile: top  8  kernel`tcp_default_output                   2.2%
+t_19_profile: top  9  kernel`m_demote                             2.1%
+t_19_profile: top 10  kernel`sbcut_internal                       1.7%
+t_19_profile: top 11  kernel`sbcompress                           1.6%
+t_19_profile: top 12  kernel`tcp_m_copym                          1.3%
+t_19_profile: PASS

@@ -1,0 +1,40 @@
+a07% doas ./t_17_throughput.sh
+t_17_throughput: created pair1a + pair1b
+t_17_throughput: ok: create jail ifp_17_throughput_1
+t_17_throughput: ok: create jail ifp_17_throughput_2
+t_17_throughput: ok: move pair1a into ifp_17_throughput_1
+t_17_throughput: ok: move pair1b into ifp_17_throughput_2
+t_17_throughput: ok: address side a
+t_17_throughput: ok: address side b
+t_17_throughput: ok: baseline ping
+t_17_throughput: conns  Gbit/s  oqdrops   idrop  overruns  (5s runs)
+t_17_throughput:     1    38.7        0       0      4811
+t_17_throughput:     2    68.1        0       0      9571
+t_17_throughput:     4     120        0       0     19020
+t_17_throughput:     8     190        0       0     37684
+t_17_throughput:    16     223        0       0     80881
+t_17_throughput:    32     193        0       0    150298
+t_17_throughput:    64     164        0       0    260928
+t_17_throughput:   128     144        0       0    373888
+t_17_throughput: PASS
+a07% doas sysctl net.inet.tcp.per_cpu_timers=1
+net.inet.tcp.per_cpu_timers: 0 -> 1
+a07% doas ./t_17_throughput.sh
+t_17_throughput: created pair2a + pair2b
+t_17_throughput: ok: create jail ifp_17_throughput_1
+t_17_throughput: ok: create jail ifp_17_throughput_2
+t_17_throughput: ok: move pair2a into ifp_17_throughput_1
+t_17_throughput: ok: move pair2b into ifp_17_throughput_2
+t_17_throughput: ok: address side a
+t_17_throughput: ok: address side b
+t_17_throughput: ok: baseline ping
+t_17_throughput: conns  Gbit/s  oqdrops   idrop  overruns  (5s runs)
+t_17_throughput:     1    35.8        0       0      4821
+t_17_throughput:     2    56.1        0       0      6722
+t_17_throughput:     4     110        0       0     17037
+t_17_throughput:     8     219        0       0     38384
+t_17_throughput:    16     354        0       0     72669
+t_17_throughput:    32     479        0       0    130177
+t_17_throughput:    64     362        0       0    204882
+t_17_throughput:   128     337        0       0    191452
+t_17_throughput: PASS

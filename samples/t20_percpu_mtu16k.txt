@@ -1,0 +1,112 @@
+t_20_lockstat: host a07.cabal5.net 15.1-RELEASE-p2 ncpu 128
+t_20_lockstat: knob net.inet.tcp.per_cpu_timers=1
+t_20_lockstat: knob debug.lock.delay_base=1
+t_20_lockstat: knob debug.lock.delay_max=32767
+t_20_lockstat: knob ipsec.ko=absent
+t_20_lockstat: created pair10a + pair10b
+t_20_lockstat: ok: create jail ifp_20_lockstat_1
+t_20_lockstat: ok: create jail ifp_20_lockstat_2
+t_20_lockstat: ok: move pair10a into ifp_20_lockstat_1
+t_20_lockstat: ok: move pair10b into ifp_20_lockstat_2
+t_20_lockstat: ok: mtu 16384 side a
+t_20_lockstat: ok: mtu 16384 side b
+t_20_lockstat: ok: address side a
+t_20_lockstat: ok: address side b
+t_20_lockstat: ok: baseline ping
+t_20_lockstat: idle baseline lockstat for 10s (before any load)
+t_20_lockstat: ok: baseline captured
+t_20_lockstat: iperf3 -P 128 for 15s at mtu 16384, lockstat for 10s inside
+t_20_lockstat: ok: loaded capture finished
+t_20_lockstat: ok: iperf3 completed
+t_20_lockstat: throughput: 330 Gbits/sec (receiver SUM, -P 128)
+t_20_lockstat: -- wait time above idle baseline (top 15, ms) --
+t_20_lockstat:   adaptive-spin   mbuf                        90331 ms
+t_20_lockstat:   adaptive-spin   so_rcv                      33740 ms
+t_20_lockstat:   rw-spin         tcpinp                      29518 ms
+t_20_lockstat:   adaptive-block  mbuf                        15936 ms
+t_20_lockstat:   rw-block        tcpinp                      14919 ms
+t_20_lockstat:   spin-spin       turnstile_chain             13727 ms
+t_20_lockstat:   adaptive-block  so_rcv                       5936 ms
+t_20_lockstat:   adaptive-spin   so_snd                       2237 ms
+t_20_lockstat:   adaptive-block  so_snd                       1136 ms
+t_20_lockstat:   adaptive-block  pairq                         957 ms
+t_20_lockstat:   adaptive-block  mbuf_jumbo_page               711 ms
+t_20_lockstat:   adaptive-spin   mbuf_jumbo_page               359 ms
+t_20_lockstat:   spin-spin       sleepq_chain                  195 ms  (idle 8 ms)
+t_20_lockstat:   adaptive-spin   pairq                         139 ms
+t_20_lockstat:   spin-spin       td_contested                   20 ms
+t_20_lockstat: -- contended instances per lock name, spins above baseline (top 10) --
+t_20_lockstat:      4806189 spins    129 instances  top   1.7%  so_rcv
+t_20_lockstat:       523902 spins    256 instances  top   1.4%  tcpinp
+t_20_lockstat:       400737 spins      1 instances  top 100.0%  mbuf
+t_20_lockstat:        85118 spins    128 instances  top   1.5%  so_snd
+t_20_lockstat:        48084 spins     74 instances  top  97.6%  turnstile_chain  (idle 1)
+t_20_lockstat:        34824 spins    144 instances  top   4.7%  pairq
+t_20_lockstat:        31225 spins    150 instances  top  17.0%  sleepq_chain  (idle 75)
+t_20_lockstat:        11703 spins      1 instances  top 100.0%  mbuf_jumbo_page
+t_20_lockstat:         3290 spins      1 instances  top 100.0%  td_contested
+t_20_lockstat:         3096 spins    331 instances  top   1.2%  turnstile_lock  (idle 1)
+t_20_lockstat: -- top contended acquisition stacks (loaded window) --
+t_20_lockstat:   
+t_20_lockstat:     mbuf                                              
+t_20_lockstat:                 kernel`cache_alloc_retry+0x38
+t_20_lockstat:                 kernel`tcp_m_copym+0x288
+t_20_lockstat:                 kernel`tcp_default_output+0x12b0
+t_20_lockstat:                 kernel`tcp_usr_send+0x240
+t_20_lockstat:               44156
+t_20_lockstat:     mbuf                                              
+t_20_lockstat:                 kernel`cache_alloc_retry+0x38
+t_20_lockstat:                 kernel`tcp_m_copym+0x288
+t_20_lockstat:                 kernel`tcp_default_output+0x12b0
+t_20_lockstat:                 kernel`tcp_do_segment+0x2afc
+t_20_lockstat:               49657
+t_20_lockstat:     mbuf                                              
+t_20_lockstat:                 kernel`cache_free+0x158
+t_20_lockstat:                 kernel`uma_zfree_arg+0x17c
+t_20_lockstat:                 kernel`mb_free_ext+0x178
+t_20_lockstat:                 kernel`m_free+0xcc
+t_20_lockstat:               61865
+t_20_lockstat:     tcpinp                                            
+t_20_lockstat:                 kernel`soreceive_generic_locked+0xb78
+t_20_lockstat:                 kernel`soreceive_generic+0xa8
+t_20_lockstat:                 kernel`soreceive+0x2c
+t_20_lockstat:                 kernel`dofileread+0x74
+t_20_lockstat:               72610
+t_20_lockstat:     mbuf                                              
+t_20_lockstat:                 kernel`cache_alloc_retry+0x38
+t_20_lockstat:                 kernel`m_getjcl+0xa4
+t_20_lockstat:                 kernel`mc_get+0x94
+t_20_lockstat:                 kernel`mc_uiotomc+0x74
+t_20_lockstat:               89141
+t_20_lockstat:     mbuf                                              
+t_20_lockstat:                 kernel`cache_free+0x158
+t_20_lockstat:                 kernel`uma_zfree_arg+0x17c
+t_20_lockstat:                 kernel`m_free+0xcc
+t_20_lockstat:                 kernel`soreceive_generic_locked+0x710
+t_20_lockstat:              110350
+t_20_lockstat:     tcpinp                                            
+t_20_lockstat:                 kernel`sosend_generic_locked+0x644
+t_20_lockstat:                 kernel`sosend_generic+0x68
+t_20_lockstat:                 kernel`sousrsend+0x60
+t_20_lockstat:                 kernel`dofilewrite+0x7c
+t_20_lockstat:              146690
+t_20_lockstat:     tcpinp                                            
+t_20_lockstat:                 kernel`in_pcblookup_hash_smr+0xe0
+t_20_lockstat:                 kernel`tcp_input_with_port+0x63c
+t_20_lockstat:                 kernel`tcp_input+0x10
+t_20_lockstat:                 kernel`ip_input+0x334
+t_20_lockstat:              304473
+t_20_lockstat:     so_rcv                                            
+t_20_lockstat:                 kernel`soreceive_generic+0xa8
+t_20_lockstat:                 kernel`soreceive+0x2c
+t_20_lockstat:                 kernel`dofileread+0x74
+t_20_lockstat:                 kernel`sys_read+0xf4
+t_20_lockstat:             2354655
+t_20_lockstat:     so_rcv                                            
+t_20_lockstat:                 kernel`tcp_input_with_port+0xcc8
+t_20_lockstat:                 kernel`tcp_input+0x10
+t_20_lockstat:                 kernel`ip_input+0x334
+t_20_lockstat:                 kernel`netisr_dispatch_src+0xdc
+t_20_lockstat:             2439038
+t_20_lockstat:   
+t_20_lockstat: PASS

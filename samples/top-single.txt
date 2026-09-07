@@ -1,0 +1,31 @@
+last pid:  7937;  load averages:    2.09,    1.22,    0.60                                                                    up 0+01:15:31  18:18:01
+372 threads:   12 running, 342 sleeping, 18 waiting
+CPU 0:  0.4% user,  0.0% nice,  0.0% system,  0.0% interrupt, 99.6% idle
+CPU 1:  0.0% user,  0.0% nice, 58.0% system,  0.0% interrupt, 42.0% idle
+CPU 2:  0.0% user,  0.0% nice,  0.0% system,  0.0% interrupt,  100% idle
+CPU 3:  0.0% user,  0.0% nice,  0.0% system,  0.0% interrupt,  100% idle
+CPU 4:  1.1% user,  0.0% nice, 70.8% system,  0.0% interrupt, 28.0% idle
+CPU 5:  0.0% user,  0.0% nice,  0.0% system,  0.0% interrupt,  100% idle
+CPU 6:  0.0% user,  0.0% nice,  0.0% system,  0.0% interrupt,  100% idle
+CPU 7:  0.8% user,  0.0% nice, 99.2% system,  0.0% interrupt,  0.0% idle
+Mem: 30M Active, 95M Inact, 392M Wired, 2056K Buf, 3452M Free
+ARC: 111M Total, 32M MFU, 71M MRU, 128K Anon, 1049K Header, 6320K Other
+     76M Compressed, 169M Uncompressed, 2.24:1 Ratio
+
+  PID USERNAME    PRI NICE   SIZE    RES STATE    C   TIME    WCPU COMMAND
+85728 root        137    0    21M  8052K CPU7     7   0:27 100.00% iperf3 --server --daemon{iperf3}
+ 7937 root         59    0    20M  7876K RUN      4   0:18  66.30% iperf3 -c 10.0.0.1 -t 60 -P 1{iperf3}
+    0 root        -55    -     0B  3120K CPU1     1   0:20  53.62% [kernel{pair_task_1}]
+58485 root          0    0    17M  7016K select   0   0:01   0.04% tmux: server (/tmp/tmux-0/default) (tmux)
+ 7505 root          0    0    17M  4840K CPU6     6   0:00   0.03% top -SHPaziocpu
+    7 root        -15    -     0B    16K -        3   0:04   0.02% [rand_harvestq]
+    2 root        -54    -     0B   128K WAIT     0   0:02   0.02% [clock{clock (0)}]
+   14 root        -54    -     0B   160K -        2   0:00   0.01% [usb{usbus0}]
+    8 root        -15    -     0B    48K psleep   0   0:03   0.01% [pagedaemon{dom0}]
+    6 root        -13    -     0B  1248K l2arc_   3   0:00   0.00% [zfskern{l2arc_feed_thread}]
+ 7937 root          0    0    20M  7876K select   5   0:00   0.00% iperf3 -c 10.0.0.1 -t 60 -P 1{iperf3}
+32554 root          0    0    13M  2676K nanslp   5   0:00   0.00% /usr/sbin/cron -s
+57090 crest         0    0    21M  9484K select   5   0:00   0.00% sudo -s
+56786 crest         0    0    23M    11M select   2   0:02   0.00% sshd-session: crest@pts/0 (sshd-session)
+   14 root        -54    -     0B   160K -        5   0:00   0.00% [usb{usbus1}]
+    6 root        -13    -     0B  1248K tx->tx   3   0:00   0.00% [zfskern{txg_thread_enter}]

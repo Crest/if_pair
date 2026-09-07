@@ -1,0 +1,20 @@
+a07# ./t_21_workingset.sh
+t_21_workingset: host a07.cabal5.net 15.1-RELEASE-p3 ncpu 128
+t_21_workingset: knob net.inet.tcp.per_cpu_timers=1
+t_21_workingset: knob ipsec.ko=absent
+t_21_workingset: created pair5a + pair5b
+t_21_workingset: ok: create jail ifp_21_workingset_1
+t_21_workingset: ok: create jail ifp_21_workingset_2
+t_21_workingset: ok: move pair5a into ifp_21_workingset_1
+t_21_workingset: ok: move pair5b into ifp_21_workingset_2
+t_21_workingset: ok: address side a
+t_21_workingset: ok: address side b
+t_21_workingset: ok: baseline ping
+t_21_workingset: conns   window  Gbit/s  netmemKiB  oqdrops   idrop  overruns  (5s runs)
+t_21_workingset:    32  default     486      43258        0       0    140825
+t_21_workingset:   128  default     336    1198082        0       0    202723
+t_21_workingset:   128       4m     339     549766        0       0    214002
+t_21_workingset:   128       1m     360     193939        0       0    253101
+t_21_workingset:   128     256k     397      77978        0       0    297364
+t_21_workingset:   128      64k     493      49583        0       0    303283
+t_21_workingset: PASS

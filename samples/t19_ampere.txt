@@ -1,0 +1,31 @@
+t_19_profile: created pair0a + pair0b
+t_19_profile: ok: create jail ifp_19_profile_1
+t_19_profile: ok: create jail ifp_19_profile_2
+t_19_profile: ok: move pair0a into ifp_19_profile_1
+t_19_profile: ok: move pair0b into ifp_19_profile_2
+t_19_profile: ok: address side a
+t_19_profile: ok: address side b
+t_19_profile: ok: baseline ping
+t_19_profile: iperf3 -P 64 for 15s, profiling 10s inside the run
+t_19_profile: ok: capture finished
+t_19_profile: ok: iperf3 completed
+t_19_profile: samples: 322293 total, 216045 non-idle (33.0% idle)
+t_19_profile: bucket locks    32.1%
+t_19_profile: bucket sched     0.0%
+t_19_profile: bucket copy      5.8%
+t_19_profile: bucket alloc     0.6%
+t_19_profile: bucket proto     8.8%
+t_19_profile: bucket other    52.6%
+t_19_profile: top  1  kernel`lock_delay                          30.8%
+t_19_profile: top  2  kernel`ipsec_kmod_hdrsize                  21.8%
+t_19_profile: top  3  kernel`ipsec_kmod_output                    8.4%
+t_19_profile: top  4  kernel`ipsec_kmod_check_policy              7.9%
+t_19_profile: top  5  kernel`ipsec_kmod_input                     7.1%
+t_19_profile: top  6  kernel`ipsec_kmod_capability                6.8%
+t_19_profile: top  7  kernel`copycommon                           5.7%
+t_19_profile: top  8  kernel`tcp_default_output                   3.2%
+t_19_profile: top  9  kernel`ip_input                             2.3%
+t_19_profile: top 10  kernel`ip_output                            1.5%
+t_19_profile: top 11  kernel`tcp_input_with_port                  1.4%
+t_19_profile: top 12  kernel`spinlock_exit                        0.7%
+t_19_profile: PASS

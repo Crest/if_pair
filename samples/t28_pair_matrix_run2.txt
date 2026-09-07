@@ -1,0 +1,30 @@
+t_28_pair_matrix: created pair0a + pair0b
+t_28_pair_matrix: ok: create jail ifp_28_pair_matrix_1
+t_28_pair_matrix: ok: create jail ifp_28_pair_matrix_2
+t_28_pair_matrix: ok: move pair0a into ifp_28_pair_matrix_1
+t_28_pair_matrix: ok: move pair0b into ifp_28_pair_matrix_2
+t_28_pair_matrix: ok: jail1 side
+t_28_pair_matrix: ok: jail2 side
+t_28_pair_matrix: ok: baseline ping
+t_28_pair_matrix: ok: iperf3 server listening
+t_28_pair_matrix:   mtu  offloads    conns    Gbit/s  avg-tx
+t_28_pair_matrix:  1500  none           1      5.51    1499
+t_28_pair_matrix:  1500  none           4      19.4    1499
+t_28_pair_matrix:  1500  none          16      60.0    1499
+t_28_pair_matrix:  1500  txcsum         1      7.48    1499
+t_28_pair_matrix:  1500  txcsum         4      27.0    1499
+t_28_pair_matrix:  1500  txcsum        16      94.1    1499
+t_28_pair_matrix:  1500  txcsum+tso     1      21.5   43638
+t_28_pair_matrix:  1500  txcsum+tso     4       132   44078
+t_28_pair_matrix:  1500  txcsum+tso    16       323   33572
+t_28_pair_matrix: 16384  none           1      28.8   16382
+t_28_pair_matrix: 16384  none           4       106   16368
+t_28_pair_matrix: 16384  none          16       297   16318
+t_28_pair_matrix: 16384  txcsum         1      34.2   16273
+t_28_pair_matrix: 16384  txcsum         4       103   16307
+t_28_pair_matrix: 16384  txcsum        16       367   16305
+t_28_pair_matrix: 16384  txcsum+tso     1      36.9   43734
+t_28_pair_matrix: 16384  txcsum+tso     4       141   43728
+t_28_pair_matrix: 16384  txcsum+tso    16       377   42486
+t_28_pair_matrix: ok: full offload matrix complete (TSO deliver-whole holds)
+t_28_pair_matrix: PASS

@@ -1,0 +1,25 @@
+a07# ./tests/t_22_tso.sh
+t_22_tso: created pair0a + pair0b
+t_22_tso: ok: create jail ifp_22_tso_1
+t_22_tso: ok: create jail ifp_22_tso_2
+t_22_tso: ok: move pair0a into ifp_22_tso_1
+t_22_tso: ok: move pair0b into ifp_22_tso_2
+t_22_tso: ok: mtu 1500 side a
+t_22_tso: ok: mtu 1500 side b
+t_22_tso: ok: address side a
+t_22_tso: ok: address side b
+t_22_tso: ok: baseline ping
+t_22_tso: ok: TSO off by default <RXCSUM,TXCSUM,LINKSTATE,RXCSUM_IPV6,TXCSUM_IPV6>
+t_22_tso: ok: enable tso side a
+t_22_tso: ok: enable tso side b
+t_22_tso: ok: tso enables TSO4+TSO6
+t_22_tso: ok: disable txcsum side b
+t_22_tso: ok: -txcsum clears TSO4, keeps TSO6
+t_22_tso: ok: restore txcsum+tso side b
+t_22_tso: ok: disable tso for baseline, side b
+t_22_tso: conns  Gbit/s  avg-tx-bytes  (tso off, 5s runs, mtu 1500)
+t_22_tso: 3221248    7.37          1499
+t_22_tso: FAIL: iperf3 run (-P 3221251) failed
+t_22_tso: state left in place for debugging; inspect with
+    jls; ifconfig -g pair; kldstat -m if_pair
+  and sweep with 'sh ./tests/cleanup.sh' when done.

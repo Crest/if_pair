@@ -1,0 +1,20 @@
+t_17_throughput: created pair9a + pair9b
+t_17_throughput: ok: create jail ifp_17_throughput_1
+t_17_throughput: ok: create jail ifp_17_throughput_2
+t_17_throughput: ok: move pair9a into ifp_17_throughput_1
+t_17_throughput: ok: move pair9b into ifp_17_throughput_2
+t_17_throughput: ok: mtu 16384 side a
+t_17_throughput: ok: mtu 16384 side b
+t_17_throughput: ok: address side a
+t_17_throughput: ok: address side b
+t_17_throughput: ok: baseline ping
+t_17_throughput: conns  Gbit/s  oqdrops   idrop  overruns  (5s runs, mtu 16384)
+t_17_throughput:     1    37.8        0       0      4809
+t_17_throughput:     2    73.3        0       0      9582
+t_17_throughput:     4     126        0       0     19185
+t_17_throughput:     8     206        0       0     33985
+t_17_throughput:    16     355        0       0     76287
+t_17_throughput:    32     485        0       0    131179
+t_17_throughput:    64     360        0       0    213357
+t_17_throughput:   128     335        0       0    204142
+t_17_throughput: PASS

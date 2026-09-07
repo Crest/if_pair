@@ -1,0 +1,39 @@
+t_22_tso: created pair2a + pair2b
+t_22_tso: ok: create jail ifp_22_tso_1
+t_22_tso: ok: create jail ifp_22_tso_2
+t_22_tso: ok: move pair2a into ifp_22_tso_1
+t_22_tso: ok: move pair2b into ifp_22_tso_2
+t_22_tso: ok: mtu 1500 side a
+t_22_tso: ok: mtu 1500 side b
+t_22_tso: ok: address side a
+t_22_tso: ok: address side b
+t_22_tso: ok: baseline ping
+t_22_tso: ok: TSO off by default <RXCSUM,TXCSUM,LINKSTATE,RXCSUM_IPV6,TXCSUM_IPV6>
+t_22_tso: ok: enable tso side a
+t_22_tso: ok: enable tso side b
+t_22_tso: ok: tso enables TSO4+TSO6
+t_22_tso: ok: disable txcsum side b
+t_22_tso: ok: -txcsum clears TSO4, keeps TSO6
+t_22_tso: ok: restore txcsum+tso side b
+t_22_tso: ok: disable tso for baseline, side b
+t_22_tso: conns  Gbit/s  avg-tx-bytes  (tso off, 5s runs, mtu 1500)
+t_22_tso:     1    7.44          1499
+t_22_tso:     2    14.3          1499
+t_22_tso:     4    27.0          1499
+t_22_tso:     8    50.1          1499
+t_22_tso:    16    89.6          1499
+t_22_tso:    32     135          1499
+t_22_tso:    64     219          1499
+t_22_tso:   128     271          1499
+t_22_tso: ok: re-enable tso side b
+t_22_tso: conns  Gbit/s  avg-tx-bytes  (tso on, 5s runs, mtu 1500)
+t_22_tso:     1    37.6         43551
+t_22_tso:     2    45.7         43663
+t_22_tso:     4     123         43680
+t_22_tso:     8     165         39547
+t_22_tso:    16     353         42283
+t_22_tso:    32     496         43391
+t_22_tso:    64     348         16110
+t_22_tso:   128     342         25110
+t_22_tso: ok: deliver-whole confirmed (1499 -> 43680 bytes/packet at mtu 1500)
+t_22_tso: PASS

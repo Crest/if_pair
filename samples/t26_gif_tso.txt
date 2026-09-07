@@ -1,0 +1,23 @@
+t_26_gif_tso: created pair0a + pair0b
+t_26_gif_tso: ok: create jail ifp_26_gif_tso_1
+t_26_gif_tso: ok: create jail ifp_26_gif_tso_2
+t_26_gif_tso: ok: move pair0b into ifp_26_gif_tso_1
+t_26_gif_tso: ok: move pair0a into ifp_26_gif_tso_2
+t_26_gif_tso: ok: underlay j1
+t_26_gif_tso: ok: underlay j2
+t_26_gif_tso: ok: underlay ping
+t_26_gif_tso: ok: tunnel j1
+t_26_gif_tso: ok: tunnel j2
+t_26_gif_tso: ok: gif addr j1
+t_26_gif_tso: ok: gif addr j2
+t_26_gif_tso: ok: tunnel ping
+t_26_gif_tso: ok: gif advertises TSO, default-off
+t_26_gif_tso: ok: iperf3 server listening
+t_26_gif_tso: baseline (tso off): 3.05 Gbit/s, avg gif tx packet 1279 bytes
+t_26_gif_tso: ok: tso on gif0
+t_26_gif_tso: ok: tso on gif0
+t_26_gif_tso: gif tso (native chop): 2.76 Gbit/s, avg gif tx packet 1279 bytes
+t_26_gif_tso: jail2 tcps_rcvbadsum delta: 0
+t_26_gif_tso: tcp_tso_chop() calls during run: 466947
+t_26_gif_tso: ok: gif chops TSO chains natively before encapsulation
+t_26_gif_tso: PASS

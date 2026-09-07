@@ -1,0 +1,20 @@
+t_25_epair_tso: ok: load if_epair
+t_25_epair_tso: created epair0a + epair0b
+t_25_epair_tso: ok: TSO advertised, default-off
+t_25_epair_tso: ok: enable tso on epair0a
+t_25_epair_tso: ok: tso enables and peer-syncs
+t_25_epair_tso: ok: disable txcsum on epair0a
+t_25_epair_tso: ok: -txcsum revokes TSO4
+t_25_epair_tso: ok: restore txcsum+tso
+t_25_epair_tso: ok: create jail ifp_25_epair_tso_1
+t_25_epair_tso: ok: create jail ifp_25_epair_tso_2
+t_25_epair_tso: ok: move epair0a into ifp_25_epair_tso_1
+t_25_epair_tso: ok: move epair0b into ifp_25_epair_tso_2
+t_25_epair_tso: ok: jail1 side
+t_25_epair_tso: ok: jail2 side
+t_25_epair_tso: ok: tso jail2 side
+t_25_epair_tso: ok: baseline ping
+t_25_epair_tso: ok: iperf3 server listening
+t_25_epair_tso: tso bulk: 43.1 Gbit/s, avg tx packet 28689 bytes
+t_25_epair_tso: ok: epair TSO deliver-whole at mtu 1500
+t_25_epair_tso: PASS

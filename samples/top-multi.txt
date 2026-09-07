@@ -1,0 +1,48 @@
+last pid:  7988;  load averages:    5.71,    2.23,    1.03                                                                    up 0+01:17:08  18:19:38
+386 threads:   28 running, 340 sleeping, 18 waiting
+CPU 0:  0.4% user,  0.0% nice, 99.6% system,  0.0% interrupt,  0.0% idle
+CPU 1:  0.8% user,  0.0% nice, 99.2% system,  0.0% interrupt,  0.0% idle
+CPU 2:  0.8% user,  0.0% nice, 99.2% system,  0.0% interrupt,  0.0% idle
+CPU 3:  0.4% user,  0.0% nice, 99.6% system,  0.0% interrupt,  0.0% idle
+CPU 4:  0.0% user,  0.0% nice,  100% system,  0.0% interrupt,  0.0% idle
+CPU 5:  0.0% user,  0.0% nice,  100% system,  0.0% interrupt,  0.0% idle
+CPU 6:  0.8% user,  0.0% nice, 99.2% system,  0.0% interrupt,  0.0% idle
+CPU 7:  0.8% user,  0.0% nice, 98.4% system,  0.0% interrupt,  0.8% idle
+Mem: 31M Active, 97M Inact, 392M Wired, 2056K Buf, 3451M Free
+ARC: 111M Total, 32M MFU, 71M MRU, 128K Anon, 1049K Header, 6339K Other
+     76M Compressed, 169M Uncompressed, 2.24:1 Ratio
+
+  PID USERNAME    PRI NICE   SIZE    RES STATE    C   TIME    WCPU COMMAND
+    0 root        -55    -     0B  3120K -        3   0:16  47.90% [kernel{pair_task_3}]
+    0 root        -55    -     0B  3120K CPU5     5   0:20  47.45% [kernel{pair_task_5}]
+85728 root         59    0    22M  9136K RUN      6   0:09  45.66% iperf3 --server --daemon{iperf3}
+85728 root         59    0    22M  9136K RUN      2   0:09  44.91% iperf3 --server --daemon{iperf3}
+85728 root         59    0    22M  9136K sbwait   6   0:09  44.74% iperf3 --server --daemon{iperf3}
+85728 root         59    0    22M  9136K RUN      2   0:09  43.90% iperf3 --server --daemon{iperf3}
+85728 root         59    0    22M  9136K RUN      4   0:08  41.28% iperf3 --server --daemon{iperf3}
+85728 root         59    0    22M  9136K RUN      6   0:08  40.93% iperf3 --server --daemon{iperf3}
+85728 root        105    0    22M  9136K CPU0     0   0:08  40.07% iperf3 --server --daemon{iperf3}
+85728 root         59    0    22M  9136K RUN      1   0:08  39.06% iperf3 --server --daemon{iperf3}
+ 7988 root        100    0    21M  9072K CPU3     3   0:07  33.63% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+ 7988 root         99    0    21M  9072K RUN      7   0:06  32.35% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+ 7988 root         99    0    21M  9072K RUN      5   0:07  31.94% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+ 7988 root        100    0    21M  9072K CPU6     6   0:06  31.68% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+ 7988 root         98    0    21M  9072K RUN      4   0:06  30.41% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+ 7988 root         59    0    21M  9072K RUN      6   0:06  29.99% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+    0 root        -55    -     0B  3120K RUN      2   0:06  29.56% [kernel{pair_task_2}]
+    0 root        -55    -     0B  3120K CPU4     4   0:37  29.45% [kernel{pair_task_4}]
+ 7988 root        100    0    21M  9072K CPU2     2   0:06  28.88% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+    0 root        -55    -     0B  3120K -        0   0:11  28.71% [kernel{pair_task_0}]
+    0 root        -55    -     0B  3120K CPU1     1   0:43  28.66% [kernel{pair_task_1}]
+ 7988 root         98    0    21M  9072K RUN      1   0:06  28.27% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+58485 root          0    0    17M  7016K select   6   0:01   0.11% tmux: server (/tmp/tmux-0/default) (tmux)
+    7 root        -15    -     0B    16K -        7   0:04   0.05% [rand_harvestq]
+ 7505 root          0    0    17M  5288K CPU7     7   0:00   0.04% top -SHPaziocpu
+ 7988 root          0    0    21M  9072K select   6   0:00   0.04% iperf3 -c 10.0.0.1 -t 60 -P 8{iperf3}
+    2 root        -54    -     0B   128K WAIT     0   0:02   0.01% [clock{clock (0)}]
+85728 root          0    0    22M  9136K select   1   0:00   0.01% iperf3 --server --daemon{iperf3}
+   14 root        -54    -     0B   160K -        6   0:00   0.01% [usb{usbus0}]
+    6 root        -13    -     0B  1248K tx->tx   2   0:00   0.01% [zfskern{txg_thread_enter}]
+   14 root        -54    -     0B   160K -        0   0:00   0.00% [usb{usbus1}]
+    8 root        -15    -     0B    48K psleep   7   0:03   0.00% [pagedaemon{dom0}]
+56786 crest         0    0    23M    11M select   1   0:02   0.00% sshd-session: crest@pts/0 (sshd-session)

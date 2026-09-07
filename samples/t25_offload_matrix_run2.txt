@@ -1,0 +1,36 @@
+t_25_epair_tso: created epair3a + epair3b
+t_25_epair_tso: ok: TSO advertised, default-off
+t_25_epair_tso: ok: enable tso on epair3a
+t_25_epair_tso: ok: tso enables and peer-syncs
+t_25_epair_tso: ok: disable txcsum on epair3a
+t_25_epair_tso: ok: -txcsum revokes TSO4 ("-txcsum tso" unsupported by design)
+t_25_epair_tso: ok: restore txcsum
+t_25_epair_tso: ok: create jail ifp_25_epair_tso_1
+t_25_epair_tso: ok: create jail ifp_25_epair_tso_2
+t_25_epair_tso: ok: move epair3a into ifp_25_epair_tso_1
+t_25_epair_tso: ok: move epair3b into ifp_25_epair_tso_2
+t_25_epair_tso: ok: jail1 side
+t_25_epair_tso: ok: jail2 side
+t_25_epair_tso: ok: baseline ping
+t_25_epair_tso: ok: iperf3 server listening
+t_25_epair_tso:   mtu  offloads    conns    Gbit/s  avg-tx
+t_25_epair_tso:  1500  none           1      5.45    1513
+t_25_epair_tso:  1500  none           4      4.90    1512
+t_25_epair_tso:  1500  none          16      4.90    1510
+t_25_epair_tso:  1500  txcsum         1      6.72    1513
+t_25_epair_tso:  1500  txcsum         4      6.33    1513
+t_25_epair_tso:  1500  txcsum        16      6.22    1511
+t_25_epair_tso:  1500  txcsum+tso     1      37.8   43691
+t_25_epair_tso:  1500  txcsum+tso     4      32.2   20718
+t_25_epair_tso:  1500  txcsum+tso    16      37.3   28430
+t_25_epair_tso: 16384  none           1      29.4   16396
+t_25_epair_tso: 16384  none           4      19.5   16397
+t_25_epair_tso: 16384  none          16      16.3   16349
+t_25_epair_tso: 16384  txcsum         1      37.1   16347
+t_25_epair_tso: 16384  txcsum         4      38.8   16397
+t_25_epair_tso: 16384  txcsum        16      38.0   16373
+t_25_epair_tso: 16384  txcsum+tso     1      43.0   43731
+t_25_epair_tso: 16384  txcsum+tso     4      68.9   47801
+t_25_epair_tso: 16384  txcsum+tso    16      49.6   47107
+t_25_epair_tso: ok: full offload matrix complete (TSO deliver-whole holds)
+t_25_epair_tso: PASS

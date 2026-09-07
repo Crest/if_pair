@@ -1,0 +1,569 @@
+==> t_01_create_props.sh
+t_01_create_props: created pair0a + pair0b
+t_01_create_props: ok: pair0a exists
+t_01_create_props: ok: pair0b exists
+t_01_create_props: ok: pair0a is POINTOPOINT
+t_01_create_props: ok: pair0a is not BROADCAST
+t_01_create_props: ok: pair0a default mtu is 16384
+t_01_create_props: ok: pair0a is in group pair
+t_01_create_props: ok: pair0b is POINTOPOINT
+t_01_create_props: ok: pair0b is not BROADCAST
+t_01_create_props: ok: pair0b default mtu is 16384
+t_01_create_props: ok: pair0b is in group pair
+t_01_create_props: PASS
+
+==> t_02_destroy_either.sh
+t_02_destroy_either: created pair0a + pair0b
+t_02_destroy_either: ok: destroy via the a side
+t_02_destroy_either: ok: pair0a is gone
+t_02_destroy_either: ok: pair0b is gone
+t_02_destroy_either: created pair0a + pair0b
+t_02_destroy_either: ok: destroy via the b side
+t_02_destroy_either: ok: pair0a is gone
+t_02_destroy_either: ok: pair0b is gone
+t_02_destroy_either: PASS
+
+==> t_03_names_units.sh
+t_03_names_units: ok: unit 73 is free before the test
+t_03_names_units: ok: explicit-unit create reports pair73a
+t_03_names_units: ok: pair73b exists too
+t_03_names_units: ok: duplicate unit is refused
+t_03_names_units: ok: side name is not a clone name
+t_03_names_units: ok: junk name is refused
+t_03_names_units: ok: destroying nonexistent pair9999a
+t_03_names_units: ok: destroy pair73a
+t_03_names_units: ok: pair73b is gone
+t_03_names_units: PASS
+
+==> t_04_mtu_bounds.sh
+t_04_mtu_bounds: created pair0a + pair0b
+t_04_mtu_bounds: ok: set mtu 1500 on a
+t_04_mtu_bounds: ok: b keeps its own mtu 16384
+t_04_mtu_bounds: ok: set minimum mtu 72
+t_04_mtu_bounds: ok: set maximum mtu 65535
+t_04_mtu_bounds: ok: mtu 71 is refused
+t_04_mtu_bounds: ok: mtu 65536 is refused
+t_04_mtu_bounds: PASS
+
+==> t_05_ping4.sh
+t_05_ping4: created pair0a + pair0b
+t_05_ping4: ok: create jail ifp_05_ping4_1
+t_05_ping4: ok: move pair0b into ifp_05_ping4_1
+t_05_ping4: ok: address the host side
+t_05_ping4: ok: address the jail side
+t_05_ping4: ok: host -> jail ping
+t_05_ping4: ok: jail -> host ping
+t_05_ping4: PASS
+
+==> t_06_ping6.sh
+t_06_ping6: created pair0a + pair0b
+t_06_ping6: ok: create jail ifp_06_ping6_1
+t_06_ping6: ok: move pair0b into ifp_06_ping6_1
+t_06_ping6: ok: address the host side
+t_06_ping6: ok: address the jail side
+t_06_ping6: ok: host -> jail ping6
+t_06_ping6: ok: jail -> host ping6
+t_06_ping6: PASS
+
+==> t_07_ping_jails.sh
+t_07_ping_jails: created pair0a + pair0b
+t_07_ping_jails: ok: create jail ifp_07_ping_jails_1
+t_07_ping_jails: ok: create jail ifp_07_ping_jails_2
+t_07_ping_jails: ok: move pair0a into ifp_07_ping_jails_1
+t_07_ping_jails: ok: move pair0b into ifp_07_ping_jails_2
+t_07_ping_jails: ok: address side a
+t_07_ping_jails: ok: address side b
+t_07_ping_jails: ok: jail1 -> jail2 ping
+t_07_ping_jails: ok: jail2 -> jail1 ping
+t_07_ping_jails: PASS
+
+==> t_08_vmove_group.sh
+t_08_vmove_group: created pair0a + pair0b
+t_08_vmove_group: ok: b in the host's pair group
+t_08_vmove_group: ok: create jail ifp_08_vmove_group_1
+t_08_vmove_group: ok: move pair0b into ifp_08_vmove_group_1
+t_08_vmove_group: ok: b in the jail's pair group
+t_08_vmove_group: ok: b not in the host group while jailed
+t_08_vmove_group: ok: remove the jail
+t_08_vmove_group: ok: b returned to the host
+t_08_vmove_group: ok: b back in the host's pair group
+t_08_vmove_group: ok: destroy after the round trip
+t_08_vmove_group: ok: pair0b is gone
+t_08_vmove_group: PASS
+
+==> t_09_updown.sh
+t_09_updown: created pair0a + pair0b
+t_09_updown: ok: create jail ifp_09_updown_1
+t_09_updown: ok: move pair0b into ifp_09_updown_1
+t_09_updown: ok: address the host side
+t_09_updown: ok: address the jail side
+t_09_updown: ok: baseline ping
+t_09_updown: ok: down the jail side
+t_09_updown: ok: ping fails while the peer is down
+t_09_updown: ok: up the jail side again
+t_09_updown: ok: ping works again
+t_09_updown: PASS
+
+==> t_10_txcsum.sh
+t_10_txcsum: created pair0a + pair0b
+t_10_txcsum: ok: create jail ifp_10_txcsum_1
+t_10_txcsum: ok: move pair0b into ifp_10_txcsum_1
+t_10_txcsum: ok: address the host side
+t_10_txcsum: ok: address the jail side
+t_10_txcsum: ok: baseline ping
+t_10_txcsum: ok: disable txcsum on a
+t_10_txcsum: ok: ping with a-side offload off
+t_10_txcsum: ok: disable txcsum on b
+t_10_txcsum: ok: ping with both offloads off
+t_10_txcsum: ok: re-enable txcsum on a
+t_10_txcsum: ok: re-enable txcsum on b
+t_10_txcsum: ok: ping with offloads restored
+t_10_txcsum: PASS
+
+==> t_11_destroy_load.sh
+t_11_destroy_load: created pair0a + pair0b
+t_11_destroy_load: ok: create jail ifp_11_destroy_load_1
+t_11_destroy_load: ok: move pair0b into ifp_11_destroy_load_1
+t_11_destroy_load: ok: address the host side
+t_11_destroy_load: ok: address the jail side
+t_11_destroy_load: ok: baseline ping
+t_11_destroy_load: ok: destroy under load
+t_11_destroy_load: ok: pair0a is gone
+t_11_destroy_load: ok: pair0b is gone from the jail
+t_11_destroy_load: PASS
+
+==> t_12_churn.sh
+t_12_churn: ok: created 30 pairs
+t_12_churn: ok: destroyed all 30 pairs via their b sides
+t_12_churn: ok: pair group membership unchanged
+t_12_churn: PASS
+
+==> t_13_race.sh
+t_13_race: ok: unit 89 is free before the test
+t_13_race: racing create/destroy for 20s ...
+t_13_race: ok: pair89a is gone
+t_13_race: ok: pair89b is gone
+t_13_race: ok: no ghost members in the pair group
+t_13_race: PASS
+
+==> t_14_unload.sh
+t_14_unload: created pair0a + pair0b
+t_14_unload: ok: create jail ifp_14_unload_1
+t_14_unload: created pair1a + pair1b
+t_14_unload: ok: move pair1b into ifp_14_unload_1
+t_14_unload: ok: kldunload with live pairs
+t_14_unload: ok: no leaked-memory warning
+t_14_unload: ok: no pair_task worker threads left
+t_14_unload: ok: pair group is empty
+t_14_unload: ok: malloc type unregistered
+t_14_unload: ok: pair0a is gone
+t_14_unload: ok: pair1a is gone
+t_14_unload: ok: jailed pair1b is gone
+t_14_unload: ok: reload the module
+t_14_unload: PASS
+
+==> t_15_batch_sysctl.sh
+t_15_batch_sysctl: ok: net.link.pair.batch exists (value: 64)
+t_15_batch_sysctl: ok: set batch to 32
+t_15_batch_sysctl: ok: reads back 32
+t_15_batch_sysctl: ok: 0 (yielding disabled) is accepted
+t_15_batch_sysctl: ok: negative values are the same off-switch
+t_15_batch_sysctl: ok: even INT_MIN is well-defined (no arithmetic is performed)
+t_15_batch_sysctl: ok: reads back as written
+t_15_batch_sysctl: ok: oversized value is accepted by the handler
+t_15_batch_sysctl: ok: and clamped to the queue size
+t_15_batch_sysctl: ok: clamp warning reached the console buffer
+t_15_batch_sysctl: ok: batch_overruns is readable and numeric
+t_15_batch_sysctl: ok: batch_overruns is read-only
+t_15_batch_sysctl: ok: restore original value
+t_15_batch_sysctl: PASS
+
+==> t_16_load_partial.sh
+t_16_load_partial: hw.ncpu=128 -> 42 parallel connections for 20s
+t_16_load_partial: created pair0a + pair0b
+t_16_load_partial: ok: create jail ifp_16_load_partial_1
+t_16_load_partial: ok: create jail ifp_16_load_partial_2
+t_16_load_partial: ok: move pair0a into ifp_16_load_partial_1
+t_16_load_partial: ok: move pair0b into ifp_16_load_partial_2
+t_16_load_partial: ok: address side a
+t_16_load_partial: ok: address side b
+t_16_load_partial: ok: baseline ping
+t_16_load_partial: running iperf3 -P 42 for 20s ...
+t_16_load_partial: ok: iperf3 completed
+t_16_load_partial:   [SUM]   0.00-20.00  sec  1.17 TBytes   513 Gbits/sec    0             sender
+t_16_load_partial:   [SUM]   0.00-20.00  sec  1.17 TBytes   513 Gbits/sec                  receiver
+t_16_load_partial: largest host heartbeat gap: 1s (limit 5s)
+t_16_load_partial: ok: host stayed responsive
+t_16_load_partial: batch_overruns during the run: 761451 (informational)
+t_16_load_partial: PASS
+
+==> t_17_throughput.sh
+t_17_throughput: created pair0a + pair0b
+t_17_throughput: ok: create jail ifp_17_throughput_1
+t_17_throughput: ok: create jail ifp_17_throughput_2
+t_17_throughput: ok: move pair0a into ifp_17_throughput_1
+t_17_throughput: ok: move pair0b into ifp_17_throughput_2
+t_17_throughput: ok: mtu 16384 side a
+t_17_throughput: ok: mtu 16384 side b
+t_17_throughput: ok: address side a
+t_17_throughput: ok: address side b
+t_17_throughput: ok: baseline ping
+t_17_throughput: conns  Gbit/s  oqdrops   idrop  overruns  (5s runs, mtu 16384)
+t_17_throughput:     1    31.5        0       0      4796
+t_17_throughput:     2    58.3        0       0      9378
+t_17_throughput:     4     104        0       0     18605
+t_17_throughput:     8     212        0       0     37934
+t_17_throughput:    16     351        0       0     76563
+t_17_throughput:    32     496        0       0    145012
+t_17_throughput:    64     370        0       0    208124
+t_17_throughput:   128     344        0       0    199110
+t_17_throughput: PASS
+
+==> t_18_throughput_batch.sh
+t_18_throughput_batch: created pair1a + pair1b
+t_18_throughput_batch: ok: create jail ifp_18_throughput_batch_1
+t_18_throughput_batch: ok: create jail ifp_18_throughput_batch_2
+t_18_throughput_batch: ok: move pair1a into ifp_18_throughput_batch_1
+t_18_throughput_batch: ok: move pair1b into ifp_18_throughput_batch_2
+t_18_throughput_batch: ok: address side a
+t_18_throughput_batch: ok: address side b
+t_18_throughput_batch: ok: baseline ping
+t_18_throughput_batch: ok: set batch size to 16
+t_18_throughput_batch: batch  16  conns   1    32.8  oqdrops 0       idrop 0      overruns 4658
+t_18_throughput_batch: batch  16  conns   2    68.4  oqdrops 0       idrop 0      overruns 9617
+t_18_throughput_batch: batch  16  conns   4     119  oqdrops 0       idrop 0      overruns 18935
+t_18_throughput_batch: batch  16  conns   8     202  oqdrops 0       idrop 0      overruns 36658
+t_18_throughput_batch: batch  16  conns  16     344  oqdrops 0       idrop 0      overruns 76960
+t_18_throughput_batch: batch  16  conns  32     491  oqdrops 0       idrop 0      overruns 136037
+t_18_throughput_batch: batch  16  conns  64     355  oqdrops 0       idrop 0      overruns 205561
+t_18_throughput_batch: batch  16  conns 128     339  oqdrops 0       idrop 0      overruns 200632
+t_18_throughput_batch: ok: set batch size to 64
+t_18_throughput_batch: batch  64  conns   1    33.6  oqdrops 0       idrop 0      overruns 4842
+t_18_throughput_batch: batch  64  conns   2    46.5  oqdrops 0       idrop 0      overruns 6820
+t_18_throughput_batch: batch  64  conns   4     111  oqdrops 0       idrop 0      overruns 17366
+t_18_throughput_batch: batch  64  conns   8     190  oqdrops 0       idrop 0      overruns 33319
+t_18_throughput_batch: batch  64  conns  16     348  oqdrops 0       idrop 0      overruns 70889
+t_18_throughput_batch: batch  64  conns  32     484  oqdrops 0       idrop 0      overruns 132267
+t_18_throughput_batch: batch  64  conns  64     354  oqdrops 0       idrop 0      overruns 205789
+t_18_throughput_batch: batch  64  conns 128     338  oqdrops 0       idrop 0      overruns 191954
+t_18_throughput_batch: ok: set batch size to 256
+t_18_throughput_batch: batch 256  conns   1    30.6  oqdrops 0       idrop 0      overruns 4738
+t_18_throughput_batch: batch 256  conns   2    57.7  oqdrops 0       idrop 0      overruns 9380
+t_18_throughput_batch: batch 256  conns   4     111  oqdrops 0       idrop 0      overruns 18910
+t_18_throughput_batch: batch 256  conns   8     203  oqdrops 0       idrop 0      overruns 37558
+t_18_throughput_batch: batch 256  conns  16     367  oqdrops 0       idrop 0      overruns 70029
+t_18_throughput_batch: batch 256  conns  32     492  oqdrops 0       idrop 0      overruns 154829
+t_18_throughput_batch: batch 256  conns  64     355  oqdrops 0       idrop 0      overruns 199970
+t_18_throughput_batch: batch 256  conns 128     338  oqdrops 0       idrop 0      overruns 197855
+t_18_throughput_batch: conns  batch16  batch64  batch256  (Gbits/sec receiver average)
+t_18_throughput_batch:     1     32.8     33.6      30.6
+t_18_throughput_batch:     2     68.4     46.5      57.7
+t_18_throughput_batch:     4      119      111       111
+t_18_throughput_batch:     8      202      190       203
+t_18_throughput_batch:    16      344      348       367
+t_18_throughput_batch:    32      491      484       492
+t_18_throughput_batch:    64      355      354       355
+t_18_throughput_batch:   128      339      338       338
+t_18_throughput_batch: PASS
+
+==> t_19_profile.sh
+t_19_profile: created pair2a + pair2b
+t_19_profile: ok: create jail ifp_19_profile_1
+t_19_profile: ok: create jail ifp_19_profile_2
+t_19_profile: ok: move pair2a into ifp_19_profile_1
+t_19_profile: ok: move pair2b into ifp_19_profile_2
+t_19_profile: ok: mtu 16384 side a
+t_19_profile: ok: mtu 16384 side b
+t_19_profile: ok: address side a
+t_19_profile: ok: address side b
+t_19_profile: ok: baseline ping
+t_19_profile: iperf3 -P 64 for 15s at mtu 16384, profiling 10s inside the run
+t_19_profile: ok: capture finished
+t_19_profile: ok: iperf3 completed
+t_19_profile: samples: 327706 total, 317694 non-idle (3.1% idle)
+t_19_profile: bucket locks    17.2%
+t_19_profile: bucket sched     0.0%
+t_19_profile: bucket copy     55.3%
+t_19_profile: bucket alloc    13.3%
+t_19_profile: bucket proto     5.9%
+t_19_profile: bucket other     8.2%
+t_19_profile: top  1  kernel`copyout_mops                        48.7%
+t_19_profile: top  2  kernel`lock_delay                           6.7%
+t_19_profile: top  3  kernel`soreceive_generic_locked             6.3%
+t_19_profile: top  4  kernel`copyout_std                          5.3%
+t_19_profile: top  5  kernel`mb_dupcl                             4.1%
+t_19_profile: top  6  kernel`mb_free_ext                          3.6%
+t_19_profile: top  7  kernel`spinlock_exit                        2.8%
+t_19_profile: top  8  kernel`mb_ctor_clust                        2.5%
+t_19_profile: top  9  kernel`tcp_default_output                   2.1%
+t_19_profile: top 10  kernel`m_demote                             1.4%
+t_19_profile: top 11  kernel`tcp_addoptions                       1.2%
+t_19_profile: top 12  kernel`sbcut_internal                       1.2%
+t_19_profile: PASS
+
+==> t_20_lockstat.sh
+t_20_lockstat: host a07.cabal5.net 15.1-RELEASE-p3 ncpu 128
+t_20_lockstat: knob net.inet.tcp.per_cpu_timers=1
+t_20_lockstat: knob debug.lock.delay_base=1
+t_20_lockstat: knob debug.lock.delay_max=32767
+t_20_lockstat: knob ipsec.ko=absent
+t_20_lockstat: created pair3a + pair3b
+t_20_lockstat: ok: create jail ifp_20_lockstat_1
+t_20_lockstat: ok: create jail ifp_20_lockstat_2
+t_20_lockstat: ok: move pair3a into ifp_20_lockstat_1
+t_20_lockstat: ok: move pair3b into ifp_20_lockstat_2
+t_20_lockstat: ok: mtu 65535 side a
+t_20_lockstat: ok: mtu 65535 side b
+t_20_lockstat: ok: address side a
+t_20_lockstat: ok: address side b
+t_20_lockstat: ok: baseline ping
+t_20_lockstat: idle baseline lockstat for 10s (before any load)
+t_20_lockstat: ok: baseline captured
+t_20_lockstat: iperf3 -P 128 for 15s at mtu 65535, lockstat for 10s inside
+t_20_lockstat: ok: loaded capture finished
+t_20_lockstat: ok: iperf3 completed
+t_20_lockstat: throughput: 333 Gbits/sec (receiver SUM, -P 128)
+t_20_lockstat: -- wait time above idle baseline (top 15, ms) --
+t_20_lockstat:   adaptive-spin   mbuf                       119024 ms
+t_20_lockstat:   adaptive-block  mbuf                        39263 ms
+t_20_lockstat:   spin-spin       turnstile_chain             25032 ms  (idle 2 ms)
+t_20_lockstat:   adaptive-spin   so_rcv                      22074 ms  (idle 1 ms)
+t_20_lockstat:   rw-block        tcpinp                      19399 ms
+t_20_lockstat:   rw-spin         tcpinp                      17448 ms  (idle 1 ms)
+t_20_lockstat:   adaptive-block  so_rcv                       7800 ms
+t_20_lockstat:   adaptive-block  mbuf_jumbo_page              4730 ms
+t_20_lockstat:   adaptive-block  pairq                        2794 ms
+t_20_lockstat:   adaptive-spin   so_snd                       2012 ms
+t_20_lockstat:   adaptive-block  so_snd                       1676 ms
+t_20_lockstat:   adaptive-spin   mbuf_jumbo_page              1153 ms
+t_20_lockstat:   spin-spin       sleepq_chain                  181 ms  (idle 16 ms)
+t_20_lockstat:   adaptive-spin   pairq                         121 ms
+t_20_lockstat:   adaptive-block  pair_task_123                  27 ms
+t_20_lockstat: -- contended instances per lock name, spins above baseline (top 10) --
+t_20_lockstat:      1777857 spins    129 instances  top   1.5%  so_rcv  (idle 3)
+t_20_lockstat:       382938 spins      1 instances  top 100.0%  mbuf
+t_20_lockstat:       286006 spins    256 instances  top   1.3%  tcpinp  (idle 1)
+t_20_lockstat:        76277 spins     84 instances  top  97.6%  turnstile_chain  (idle 7)
+t_20_lockstat:        32495 spins    128 instances  top   1.5%  so_snd
+t_20_lockstat:        27008 spins    151 instances  top  17.5%  sleepq_chain  (idle 176)
+t_20_lockstat:        21664 spins    174 instances  top   2.9%  pairq
+t_20_lockstat:        11784 spins      2 instances  top  99.8%  mbuf_jumbo_page
+t_20_lockstat:         4832 spins     85 instances  top  28.6%  callout  (idle 29)
+t_20_lockstat:         4101 spins    345 instances  top   1.0%  turnstile_lock  (idle 5)
+t_20_lockstat: -- top contended acquisition stacks (loaded window) --
+t_20_lockstat:   
+t_20_lockstat:     turnstile chain                                   
+t_20_lockstat:                 kernel`__mtx_lock_sleep+0x120
+t_20_lockstat:                 kernel`zone_put_bucket+0x138
+t_20_lockstat:                 kernel`critical_exit+0x20
+t_20_lockstat:                 kernel`uma_zfree_arg+0x8
+t_20_lockstat:               34721
+t_20_lockstat:     mbuf                                              
+t_20_lockstat:                 kernel`uma_zfree_arg+0x134
+t_20_lockstat:                 kernel`tcp_m_copym+0x114
+t_20_lockstat:                 kernel`tcp_default_output+0x113c
+t_20_lockstat:                 kernel`tcp_do_segment+0x2988
+t_20_lockstat:               41470
+t_20_lockstat:     mbuf                                              
+t_20_lockstat:                 kernel`uma_zfree_arg+0x134
+t_20_lockstat:                 kernel`tcp_m_copym+0x114
+t_20_lockstat:                 kernel`tcp_default_output+0x113c
+t_20_lockstat:                 kernel`tcp_usr_send+0xcc
+t_20_lockstat:               50603
+t_20_lockstat:     tcpinp                                            
+t_20_lockstat:                 kernel`sosend_generic_locked+0x644
+t_20_lockstat:                 kernel`sosend_generic+0x68
+t_20_lockstat:                 kernel`sousrsend+0x60
+t_20_lockstat:                 kernel`dofilewrite+0x7c
+t_20_lockstat:               56128
+t_20_lockstat:     mbuf                                              
+t_20_lockstat:                 kernel`critical_exit+0x20
+t_20_lockstat:                 kernel`uma_zfree_arg+0x8
+t_20_lockstat:                 kernel`mb_free_ext+0x178
+t_20_lockstat:                 kernel`m_free+0xcc
+t_20_lockstat:               77756
+t_20_lockstat:     mbuf                                              
+t_20_lockstat:                 kernel`uma_zfree_arg+0x134
+t_20_lockstat:                 kernel`m_getjcl+0xa4
+t_20_lockstat:                 kernel`mc_get+0x94
+t_20_lockstat:                 kernel`mc_uiotomc+0x74
+t_20_lockstat:               93048
+t_20_lockstat:     mbuf                                              
+t_20_lockstat:                 kernel`critical_exit+0x20
+t_20_lockstat:                 kernel`uma_zfree_arg+0x8
+t_20_lockstat:                 kernel`m_free+0xcc
+t_20_lockstat:                 kernel`soreceive_generic_locked+0x710
+t_20_lockstat:               96756
+t_20_lockstat:     tcpinp                                            
+t_20_lockstat:                 kernel`inp_v4_multi_match+0x1c
+t_20_lockstat:                 kernel`tcp_input_with_port+0x4c8
+t_20_lockstat:                 kernel`tcp_autorcvbuf+0x58
+t_20_lockstat:                 kernel`ip_input+0x1c0
+t_20_lockstat:              201603
+t_20_lockstat:     so_rcv                                            
+t_20_lockstat:                 kernel`tcp_input_with_port+0xb54
+t_20_lockstat:                 kernel`tcp_autorcvbuf+0x58
+t_20_lockstat:                 kernel`ip_input+0x1c0
+t_20_lockstat:                 kernel`netisr_queue_internal+0x178
+t_20_lockstat:              839670
+t_20_lockstat:     so_rcv                                            
+t_20_lockstat:                 kernel`soreceive_generic+0xa8
+t_20_lockstat:                 kernel`soreceive+0x2c
+t_20_lockstat:                 kernel`dofileread+0x74
+t_20_lockstat:                 kernel`sys_read+0xf4
+t_20_lockstat:              935986
+t_20_lockstat:   
+t_20_lockstat: PASS
+
+==> t_21_workingset.sh
+t_21_workingset: host a07.cabal5.net 15.1-RELEASE-p3 ncpu 128
+t_21_workingset: knob net.inet.tcp.per_cpu_timers=1
+t_21_workingset: knob ipsec.ko=absent
+t_21_workingset: created pair4a + pair4b
+t_21_workingset: ok: create jail ifp_21_workingset_1
+t_21_workingset: ok: create jail ifp_21_workingset_2
+t_21_workingset: ok: move pair4a into ifp_21_workingset_1
+t_21_workingset: ok: move pair4b into ifp_21_workingset_2
+t_21_workingset: ok: mtu 16384 side a
+t_21_workingset: ok: mtu 16384 side b
+t_21_workingset: ok: address side a
+t_21_workingset: ok: address side b
+t_21_workingset: ok: baseline ping
+t_21_workingset: conns   window  Gbit/s  netmemKiB  oqdrops   idrop  overruns  (5s runs, mtu 16384)
+t_21_workingset:    32  default     496      43782        0       0    140296
+t_21_workingset:   128  default     338    1212759        0       0    204866
+t_21_workingset:   128       4m     342     619440        0       0    220020
+t_21_workingset:   128       1m     365     191059        0       0    253396
+t_21_workingset:   128     256k     402      76279        0       0    317682
+t_21_workingset:   128      64k     488      48662        0       0    300828
+t_21_workingset: PASS
+
+==> t_22_tso.sh
+t_22_tso: created pair5a + pair5b
+t_22_tso: ok: create jail ifp_22_tso_1
+t_22_tso: ok: create jail ifp_22_tso_2
+t_22_tso: ok: move pair5a into ifp_22_tso_1
+t_22_tso: ok: move pair5b into ifp_22_tso_2
+t_22_tso: ok: mtu 1500 side a
+t_22_tso: ok: mtu 1500 side b
+t_22_tso: ok: address side a
+t_22_tso: ok: address side b
+t_22_tso: ok: baseline ping
+t_22_tso: ok: TSO off by default <RXCSUM,TXCSUM,LINKSTATE,RXCSUM_IPV6,TXCSUM_IPV6>
+t_22_tso: ok: enable tso side a
+t_22_tso: ok: enable tso side b
+t_22_tso: ok: tso enables TSO4+TSO6
+t_22_tso: ok: disable txcsum side b
+t_22_tso: ok: -txcsum clears TSO4, keeps TSO6
+t_22_tso: ok: restore txcsum+tso side b
+t_22_tso: ok: disable tso for baseline, side b
+t_22_tso: conns  Gbit/s  avg-tx-bytes  (tso off, 5s runs, mtu 1500)
+t_22_tso:     1    7.59          1499
+t_22_tso:     2    14.1          1499
+t_22_tso:     4    28.2          1499
+t_22_tso:     8    51.4          1499
+t_22_tso:    16    82.1          1499
+t_22_tso:    32     149          1499
+t_22_tso:    64     222          1499
+t_22_tso:   128     270          1499
+t_22_tso: ok: re-enable tso side b
+t_22_tso: conns  Gbit/s  avg-tx-bytes  (tso on, 5s runs, mtu 1500)
+t_22_tso:     1    37.9         43619
+t_22_tso:     2    52.0         43555
+t_22_tso:     4    97.8         43623
+t_22_tso:     8     192         43390
+t_22_tso:    16     306         35494
+t_22_tso:    32     498         43413
+t_22_tso:    64     350         15879
+t_22_tso:   128     342         26303
+t_22_tso: ok: deliver-whole confirmed (1499 -> 43623 bytes/packet at mtu 1500)
+t_22_tso: PASS
+
+==> t_23_kpi.sh
+t_23_kpi: ok: load tso_wrap
+t_23_kpi: created pair6a + pair6b
+t_23_kpi: ok: create jail ifp_23_kpi_1
+t_23_kpi: ok: move pair6a into ifp_23_kpi_1
+t_23_kpi: ok: mtu 1500 side a
+t_23_kpi: ok: mtu 1500 side b
+t_23_kpi: ok: tso side a
+t_23_kpi: ok: tso side b
+t_23_kpi: ok: address side a
+t_23_kpi: ok: address side b
+t_23_kpi: ok: baseline ping
+t_23_kpi: ok: iperf3 server listening
+t_23_kpi: deliver-whole baseline: 153 Gbit/s, avg tx packet 43693 bytes
+t_23_kpi: ok: attach tso_wrap to pair6b
+t_23_kpi: tso_wrap chopping    : 25.5 Gbit/s, avg tx packet 1499 bytes
+t_23_kpi: tso_wrap counters: chopped +290165, segments +11172229
+t_23_kpi: ok: KPI chops to wire size (43693 -> 1499 bytes/packet)
+t_23_kpi: PASS
+
+==> t_24_phaseA.sh
+t_24_phaseA: created pair7a + pair7b
+t_24_phaseA: created pair8a + pair8b
+t_24_phaseA: ok: create jail ifp_24_phaseA_1
+t_24_phaseA: ok: create jail ifp_24_phaseA_2
+t_24_phaseA: ok: create jail ifp_24_phaseA_r
+t_24_phaseA: ok: move pair7b into ifp_24_phaseA_1
+t_24_phaseA: ok: move pair8b into ifp_24_phaseA_2
+t_24_phaseA: ok: move pair7a into ifp_24_phaseA_r
+t_24_phaseA: ok: move pair8a into ifp_24_phaseA_r
+t_24_phaseA: ok: router side 1
+t_24_phaseA: ok: router side 2
+t_24_phaseA: ok: jail1 side
+t_24_phaseA: ok: jail2 side
+t_24_phaseA: ok: jail1 default route
+t_24_phaseA: ok: jail2 default route
+t_24_phaseA: ok: enable forwarding in router
+t_24_phaseA: ok: routed ping
+t_24_phaseA: ok: iperf3 server listening
+t_24_phaseA: ok: egress tso off
+t_24_phaseA: chop (egress -tso)          : 27.6 Gbit/s, avg rx packet 1499 bytes
+t_24_phaseA: ok: egress tso on
+t_24_phaseA: fast path (egress tso)      : 122 Gbit/s, avg rx packet 43697 bytes
+t_24_phaseA: ok: egress tso+txcsum off
+t_24_phaseA: sw-csum (egress -tso -txcsum): 16.8 Gbit/s, avg rx packet 1495 bytes
+t_24_phaseA: jail2 tcps_rcvbadsum delta: 0
+t_24_phaseA: ok: kernel chopper splits, fast path passes whole, sw csums verify
+t_24_phaseA: PASS
+
+==> t_25_epair_tso.sh
+t_25_epair_tso: ok: load if_epair
+t_25_epair_tso: created epair0a + epair0b
+t_25_epair_tso: ok: TSO advertised, default-off
+t_25_epair_tso: ok: enable tso on epair0a
+t_25_epair_tso: ok: tso enables and peer-syncs
+t_25_epair_tso: ok: disable txcsum on epair0a
+t_25_epair_tso: ok: -txcsum revokes TSO4
+t_25_epair_tso: ok: restore txcsum+tso
+t_25_epair_tso: ok: create jail ifp_25_epair_tso_1
+t_25_epair_tso: ok: create jail ifp_25_epair_tso_2
+t_25_epair_tso: ok: move epair0a into ifp_25_epair_tso_1
+t_25_epair_tso: ok: move epair0b into ifp_25_epair_tso_2
+t_25_epair_tso: ok: jail1 side
+t_25_epair_tso: ok: jail2 side
+t_25_epair_tso: ok: tso jail2 side
+t_25_epair_tso: ok: baseline ping
+t_25_epair_tso: ok: iperf3 server listening
+t_25_epair_tso: tso bulk: 32.6 Gbit/s, avg tx packet 20054 bytes
+t_25_epair_tso: ok: epair TSO deliver-whole at mtu 1500
+t_25_epair_tso: PASS
+
+==> t_26_gif_tso.sh
+t_26_gif_tso: created pair7a + pair7b
+t_26_gif_tso: ok: create jail ifp_26_gif_tso_1
+t_26_gif_tso: ok: create jail ifp_26_gif_tso_2
+t_26_gif_tso: ok: move pair7b into ifp_26_gif_tso_1
+t_26_gif_tso: ok: move pair7a into ifp_26_gif_tso_2
+t_26_gif_tso: ok: underlay j1
+t_26_gif_tso: ok: underlay j2
+t_26_gif_tso: ok: underlay ping
+t_26_gif_tso: ok: tunnel j1
+t_26_gif_tso: ok: tunnel j2
+t_26_gif_tso: ok: gif addr j1
+t_26_gif_tso: ok: gif addr j2
+t_26_gif_tso: ok: tunnel ping
+t_26_gif_tso: SKIP: gif0 does not advertise TSO4 (unpatched gif)
+
+passed 26, failed 0

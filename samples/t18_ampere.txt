@@ -1,0 +1,48 @@
+t_18_throughput_batch: created pair5a + pair5b
+t_18_throughput_batch: ok: create jail ifp_18_throughput_batch_1
+t_18_throughput_batch: ok: create jail ifp_18_throughput_batch_2
+t_18_throughput_batch: ok: move pair5a into ifp_18_throughput_batch_1
+t_18_throughput_batch: ok: move pair5b into ifp_18_throughput_batch_2
+t_18_throughput_batch: ok: address side a
+t_18_throughput_batch: ok: address side b
+t_18_throughput_batch: ok: baseline ping
+t_18_throughput_batch: ok: set batch size to 16
+t_18_throughput_batch: batch  16  conns   1  30.3
+t_18_throughput_batch: batch  16  conns   2  62.3
+t_18_throughput_batch: batch  16  conns   4  84.4
+t_18_throughput_batch: batch  16  conns   8  88.8
+t_18_throughput_batch: batch  16  conns  16  65.4
+t_18_throughput_batch: batch  16  conns  32  52.9
+t_18_throughput_batch: batch  16  conns  64  36.0
+t_18_throughput_batch: batch  16  conns 128  18.4
+t_18_throughput_batch: batch 16: overruns delta 918297 (informational)
+t_18_throughput_batch: ok: set batch size to 64
+t_18_throughput_batch: batch  64  conns   1  36.8
+t_18_throughput_batch: batch  64  conns   2  51.5
+t_18_throughput_batch: batch  64  conns   4  84.1
+t_18_throughput_batch: batch  64  conns   8  85.1
+t_18_throughput_batch: batch  64  conns  16  65.7
+t_18_throughput_batch: batch  64  conns  32  59.6
+t_18_throughput_batch: batch  64  conns  64  38.8
+t_18_throughput_batch: batch  64  conns 128  19.6
+t_18_throughput_batch: batch 64: overruns delta 916633 (informational)
+t_18_throughput_batch: ok: set batch size to 256
+t_18_throughput_batch: batch 256  conns   1  33.7
+t_18_throughput_batch: batch 256  conns   2  62.0
+t_18_throughput_batch: batch 256  conns   4  78.5
+t_18_throughput_batch: batch 256  conns   8  85.2
+t_18_throughput_batch: batch 256  conns  16  65.5
+t_18_throughput_batch: batch 256  conns  32  64.8
+t_18_throughput_batch: batch 256  conns  64  39.0
+t_18_throughput_batch: batch 256  conns 128  19.5
+t_18_throughput_batch: batch 256: overruns delta 896690 (informational)
+t_18_throughput_batch: conns  batch16  batch64  batch256  (Gbits/sec receiver average)
+t_18_throughput_batch:     1     30.3     36.8      33.7
+t_18_throughput_batch:     2     62.3     51.5      62.0
+t_18_throughput_batch:     4     84.4     84.1      78.5
+t_18_throughput_batch:     8     88.8     85.1      85.2
+t_18_throughput_batch:    16     65.4     65.7      65.5
+t_18_throughput_batch:    32     52.9     59.6      64.8
+t_18_throughput_batch:    64     36.0     38.8      39.0
+t_18_throughput_batch:   128     18.4     19.6      19.5
+t_18_throughput_batch: PASS

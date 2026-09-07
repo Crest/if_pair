@@ -1,0 +1,18 @@
+t_23_kpi: ok: load tso_wrap
+t_23_kpi: created pair0a + pair0b
+t_23_kpi: ok: create jail ifp_23_kpi_1
+t_23_kpi: ok: move pair0a into ifp_23_kpi_1
+t_23_kpi: ok: mtu 1500 side a
+t_23_kpi: ok: mtu 1500 side b
+t_23_kpi: ok: tso side a
+t_23_kpi: ok: tso side b
+t_23_kpi: ok: address side a
+t_23_kpi: ok: address side b
+t_23_kpi: ok: baseline ping
+t_23_kpi: ok: iperf3 server listening
+t_23_kpi: deliver-whole baseline: 161 Gbit/s, avg tx packet 43688 bytes
+t_23_kpi: ok: attach tso_wrap to pair0b
+t_23_kpi: tso_wrap chopping    : 25.4 Gbit/s, avg tx packet 1499 bytes
+t_23_kpi: tso_wrap counters: chopped +292517, segments +11188665
+t_23_kpi: ok: KPI chops to wire size (43688 -> 1499 bytes/packet)
+t_23_kpi: PASS

@@ -1,0 +1,27 @@
+t_24_phaseA: created pair0a + pair0b
+t_24_phaseA: created pair1a + pair1b
+t_24_phaseA: ok: create jail ifp_24_phaseA_1
+t_24_phaseA: ok: create jail ifp_24_phaseA_2
+t_24_phaseA: ok: create jail ifp_24_phaseA_r
+t_24_phaseA: ok: move pair0b into ifp_24_phaseA_1
+t_24_phaseA: ok: move pair1b into ifp_24_phaseA_2
+t_24_phaseA: ok: move pair0a into ifp_24_phaseA_r
+t_24_phaseA: ok: move pair1a into ifp_24_phaseA_r
+t_24_phaseA: ok: router side 1
+t_24_phaseA: ok: router side 2
+t_24_phaseA: ok: jail1 side
+t_24_phaseA: ok: jail2 side
+t_24_phaseA: ok: jail1 default route
+t_24_phaseA: ok: jail2 default route
+t_24_phaseA: ok: enable forwarding in router
+t_24_phaseA: ok: routed ping
+t_24_phaseA: ok: iperf3 server listening
+t_24_phaseA: ok: egress tso off
+t_24_phaseA: chop (egress -tso)          : 82.0 Gbit/s, avg rx packet 1499 bytes
+t_24_phaseA: ok: egress tso on
+t_24_phaseA: fast path (egress tso)      : 373 Gbit/s, avg rx packet 43676 bytes
+t_24_phaseA: ok: egress tso+txcsum off
+t_24_phaseA: sw-csum (egress -tso -txcsum): 54.8 Gbit/s, avg rx packet 1490 bytes
+t_24_phaseA: jail2 tcps_rcvbadsum delta: 0
+t_24_phaseA: ok: kernel chopper splits, fast path passes whole, sw csums verify
+t_24_phaseA: PASS

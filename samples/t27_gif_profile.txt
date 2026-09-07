@@ -1,0 +1,171 @@
+t_27_gif_profile: created pair0a + pair0b
+t_27_gif_profile: ok: create jail ifp_27_gif_profile_1
+t_27_gif_profile: ok: create jail ifp_27_gif_profile_2
+t_27_gif_profile: ok: move pair0b into ifp_27_gif_profile_1
+t_27_gif_profile: ok: move pair0a into ifp_27_gif_profile_2
+t_27_gif_profile: ok: underlay j1
+t_27_gif_profile: ok: underlay j2
+t_27_gif_profile: ok: tunnel j1
+t_27_gif_profile: ok: tunnel j2
+t_27_gif_profile: ok: gif addr j1
+t_27_gif_profile: ok: gif addr j2
+t_27_gif_profile: ok: tunnel ping
+t_27_gif_profile: ok: iperf3 server listening
+t_27_gif_profile: === tso=off P=1: 3.17 Gbit/s ===
+samples: 441196 total, 6912 non-idle (98.4% idle)
+bucket locks    37.1%
+bucket sched     0.1%
+bucket copy     17.8%
+bucket alloc     6.8%
+bucket route     0.6%
+bucket gifenc    2.5%
+bucket chop      0.0%
+bucket cksum     4.4%
+bucket proto    17.9%
+bucket other    12.7%
+top  1  kernel`copycommon                              16.7%
+top  2  kernel`lock_delay                              16.2%
+top  3  kernel`spinlock_exit                            9.8%
+top  4  kernel`tcp_default_output                       5.0%
+top  5  kernel`in_cksumdata                             3.8%
+top  6  kernel`soreceive_generic_locked                 3.8%
+top  7  kernel`tcp_do_segment                           3.5%
+top  8  kernel`ip_output                                3.0%
+top  9  kernel`__mtx_lock_sleep                         2.0%
+top 10  kernel`ip_input                                 1.9%
+top 11  kernel`gif_input                                1.7%
+top 12  kernel`uma_zfree_arg                            1.6%
+top 13  kernel`uma_zalloc_arg                           1.5%
+top 14  kernel`sorwakeup_locked                         1.2%
+t_27_gif_profile: === tso=on P=1: 2.91 Gbit/s ===
+samples: 442212 total, 6881 non-idle (98.4% idle)
+bucket locks    44.2%
+bucket sched     0.1%
+bucket copy     10.8%
+bucket alloc     6.6%
+bucket route     0.5%
+bucket gifenc    2.5%
+bucket chop      0.4%
+bucket cksum     5.4%
+bucket proto    16.7%
+bucket other    12.8%
+top  1  kernel`lock_delay                              20.4%
+top  2  kernel`spinlock_exit                           11.2%
+top  3  kernel`copycommon                               8.8%
+top  4  kernel`in_cksumdata                             4.5%
+top  5  kernel`soreceive_generic_locked                 4.5%
+top  6  kernel`tcp_do_segment                           4.0%
+top  7  kernel`tcp_default_output                       3.9%
+top  8  kernel`ip_output                                2.4%
+top  9  kernel`__mtx_lock_sleep                         2.4%
+top 10  kernel`ip_input                                 2.0%
+top 11  kernel`uma_zfree_arg                            1.9%
+top 12  kernel`gif_input                                1.7%
+top 13  kernel`uma_zalloc_arg                           1.5%
+top 14  kernel`__rw_wlock_hard                          1.2%
+t_27_gif_profile: === tso=off P=4: 2.99 Gbit/s ===
+samples: 442219 total, 6975 non-idle (98.4% idle)
+bucket locks    34.5%
+bucket sched     0.0%
+bucket copy     20.5%
+bucket alloc     6.2%
+bucket route     0.5%
+bucket gifenc    2.7%
+bucket chop      0.0%
+bucket cksum     4.7%
+bucket proto    18.4%
+bucket other    12.6%
+top  1  kernel`copycommon                              19.1%
+top  2  kernel`lock_delay                              15.7%
+top  3  kernel`spinlock_exit                            7.9%
+top  4  kernel`tcp_default_output                       4.9%
+top  5  kernel`soreceive_generic_locked                 4.5%
+top  6  kernel`in_cksumdata                             4.1%
+top  7  kernel`tcp_do_segment                           3.6%
+top  8  kernel`ip_output                                3.1%
+top  9  kernel`ip_input                                 2.0%
+top 10  kernel`gif_input                                1.9%
+top 11  kernel`uma_zfree_arg                            1.6%
+top 12  kernel`__mtx_lock_sleep                         1.6%
+top 13  kernel`uma_zalloc_arg                           1.2%
+top 14  kernel`__rw_wlock_hard                          1.0%
+t_27_gif_profile: === tso=on P=4: 2.87 Gbit/s ===
+samples: 442607 total, 6970 non-idle (98.4% idle)
+bucket locks    35.6%
+bucket sched     0.1%
+bucket copy     20.2%
+bucket alloc     6.4%
+bucket route     0.5%
+bucket gifenc    2.4%
+bucket chop      0.3%
+bucket cksum     6.6%
+bucket proto    14.9%
+bucket other    13.2%
+top  1  kernel`copycommon                              17.6%
+top  2  kernel`lock_delay                              16.8%
+top  3  kernel`spinlock_exit                            7.8%
+top  4  kernel`in_cksumdata                             5.6%
+top  5  kernel`soreceive_generic_locked                 4.2%
+top  6  kernel`tcp_do_segment                           3.4%
+top  7  kernel`tcp_default_output                       3.1%
+top  8  kernel`ip_output                                2.2%
+top  9  kernel`ip_input                                 1.9%
+top 10  kernel`__mtx_lock_sleep                         1.8%
+top 11  kernel`gif_input                                1.5%
+top 12  kernel`uma_zalloc_arg                           1.5%
+top 13  kernel`uma_zfree_arg                            1.5%
+top 14  kernel`if_inc_counter                           1.2%
+t_27_gif_profile: === tso=off P=16: 2.91 Gbit/s ===
+samples: 441578 total, 7675 non-idle (98.3% idle)
+bucket locks    28.1%
+bucket sched     0.0%
+bucket copy     30.3%
+bucket alloc     6.2%
+bucket route     0.4%
+bucket gifenc    2.6%
+bucket chop      0.0%
+bucket cksum     5.0%
+bucket proto    16.0%
+bucket other    11.4%
+top  1  kernel`copycommon                              28.6%
+top  2  kernel`lock_delay                              13.6%
+top  3  kernel`spinlock_exit                            4.5%
+top  4  kernel`in_cksumdata                             4.5%
+top  5  kernel`soreceive_generic_locked                 4.5%
+top  6  kernel`tcp_default_output                       4.0%
+top  7  kernel`tcp_do_segment                           3.2%
+top  8  kernel`ip_output                                2.8%
+top  9  kernel`ip_input                                 1.9%
+top 10  kernel`gif_input                                1.8%
+top 11  kernel`uma_zfree_arg                            1.5%
+top 12  kernel`__mtx_lock_sleep                         1.5%
+top 13  kernel`uma_zalloc_arg                           1.2%
+top 14  kernel`if_inc_counter                           0.9%
+t_27_gif_profile: === tso=on P=16: 2.83 Gbit/s ===
+samples: 442985 total, 7490 non-idle (98.3% idle)
+bucket locks    31.5%
+bucket sched     0.0%
+bucket copy     26.9%
+bucket alloc     6.4%
+bucket route     0.4%
+bucket gifenc    2.5%
+bucket chop      0.1%
+bucket cksum     6.5%
+bucket proto    13.9%
+bucket other    11.7%
+top  1  kernel`copycommon                              24.6%
+top  2  kernel`lock_delay                              15.6%
+top  3  kernel`spinlock_exit                            6.1%
+top  4  kernel`in_cksumdata                             5.7%
+top  5  kernel`soreceive_generic_locked                 4.2%
+top  6  kernel`tcp_do_segment                           2.9%
+top  7  kernel`tcp_default_output                       2.7%
+top  8  kernel`ip_output                                2.6%
+top  9  kernel`ip_input                                 1.8%
+top 10  kernel`uma_zalloc_arg                           1.8%
+top 11  kernel`uma_zfree_arg                            1.8%
+top 12  kernel`gif_input                                1.7%
+top 13  kernel`__mtx_lock_sleep                         1.6%
+top 14  kernel`if_inc_counter                           0.9%
+t_27_gif_profile: ok: gif profile matrix complete
+t_27_gif_profile: PASS

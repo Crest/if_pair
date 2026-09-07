@@ -1,0 +1,45 @@
+t_18_throughput_batch: created pair6a + pair6b
+t_18_throughput_batch: ok: create jail ifp_18_throughput_batch_1
+t_18_throughput_batch: ok: create jail ifp_18_throughput_batch_2
+t_18_throughput_batch: ok: move pair6a into ifp_18_throughput_batch_1
+t_18_throughput_batch: ok: move pair6b into ifp_18_throughput_batch_2
+t_18_throughput_batch: ok: address side a
+t_18_throughput_batch: ok: address side b
+t_18_throughput_batch: ok: baseline ping
+t_18_throughput_batch: ok: set batch size to 16
+t_18_throughput_batch: batch  16  conns   1    33.9  oqdrops 0       idrop 0      overruns 2728
+t_18_throughput_batch: batch  16  conns   2    65.4  oqdrops 0       idrop 0      overruns 8499
+t_18_throughput_batch: batch  16  conns   4    86.0  oqdrops 0       idrop 0      overruns 19966
+t_18_throughput_batch: batch  16  conns   8    84.3  oqdrops 0       idrop 0      overruns 40178
+t_18_throughput_batch: batch  16  conns  16    79.9  oqdrops 0       idrop 0      overruns 65506
+t_18_throughput_batch: batch  16  conns  32    52.4  oqdrops 0       idrop 0      overruns 143818
+t_18_throughput_batch: batch  16  conns  64    35.9  oqdrops 0       idrop 0      overruns 264504
+t_18_throughput_batch: batch  16  conns 128    19.4  oqdrops 0       idrop 0      overruns 364683
+t_18_throughput_batch: ok: set batch size to 64
+t_18_throughput_batch: batch  64  conns   1    34.5  oqdrops 0       idrop 0      overruns 2230
+t_18_throughput_batch: batch  64  conns   2    62.7  oqdrops 0       idrop 0      overruns 8535
+t_18_throughput_batch: batch  64  conns   4    88.3  oqdrops 0       idrop 0      overruns 19523
+t_18_throughput_batch: batch  64  conns   8    78.7  oqdrops 0       idrop 0      overruns 40277
+t_18_throughput_batch: batch  64  conns  16    75.2  oqdrops 0       idrop 0      overruns 80736
+t_18_throughput_batch: batch  64  conns  32    51.0  oqdrops 0       idrop 0      overruns 139740
+t_18_throughput_batch: batch  64  conns  64    40.2  oqdrops 0       idrop 0      overruns 247865
+t_18_throughput_batch: batch  64  conns 128    19.7  oqdrops 0       idrop 0      overruns 352727
+t_18_throughput_batch: ok: set batch size to 256
+t_18_throughput_batch: batch 256  conns   1    34.3  oqdrops 0       idrop 0      overruns 3649
+t_18_throughput_batch: batch 256  conns   2    60.9  oqdrops 0       idrop 0      overruns 8515
+t_18_throughput_batch: batch 256  conns   4    79.4  oqdrops 0       idrop 0      overruns 19985
+t_18_throughput_batch: batch 256  conns   8    91.0  oqdrops 0       idrop 0      overruns 40293
+t_18_throughput_batch: batch 256  conns  16    68.4  oqdrops 0       idrop 0      overruns 75649
+t_18_throughput_batch: batch 256  conns  32    52.4  oqdrops 0       idrop 0      overruns 155850
+t_18_throughput_batch: batch 256  conns  64    42.8  oqdrops 0       idrop 0      overruns 243468
+t_18_throughput_batch: batch 256  conns 128    19.4  oqdrops 0       idrop 0      overruns 359933
+t_18_throughput_batch: conns  batch16  batch64  batch256  (Gbits/sec receiver average)
+t_18_throughput_batch:     1     33.9     34.5      34.3
+t_18_throughput_batch:     2     65.4     62.7      60.9
+t_18_throughput_batch:     4     86.0     88.3      79.4
+t_18_throughput_batch:     8     84.3     78.7      91.0
+t_18_throughput_batch:    16     79.9     75.2      68.4
+t_18_throughput_batch:    32     52.4     51.0      52.4
+t_18_throughput_batch:    64     35.9     40.2      42.8
+t_18_throughput_batch:   128     19.4     19.7      19.4
+t_18_throughput_batch: PASS

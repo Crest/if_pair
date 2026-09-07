@@ -1,0 +1,14 @@
+Aug 17 15:05:23 ifpair kernel: nd6_setmtu0: new link MTU on pair0a (72) is too small for IPv6
+Aug 17 15:05:24 ifpair kernel: lock order reversal:
+Aug 17 15:05:24 ifpair kernel:  1st 0xffff0000011725c8 ifnet_detach_sx (ifnet_detach_sx, sx) @ /usr/src/sys/net/vnet.c:300
+Aug 17 15:05:24 ifpair kernel:  2nd 0xffff000001174f28 vnet_sysinit_sxlock (vnet_sysinit_sxlock, sx) @ /usr/src/sys/net/vnet.c:644
+Aug 17 15:05:24 ifpair kernel: lock order ifnet_detach_sx -> vnet_sysinit_sxlock attempted at:
+Aug 17 15:05:24 ifpair kernel: #0 0xffff00000055958c at witness_checkorder+0xad4
+Aug 17 15:05:24 ifpair kernel: #1 0xffff0000004ec038 at _sx_slock_int+0x70
+Aug 17 15:05:24 ifpair kernel: #2 0xffff0000006643a4 at vnet_destroy+0x130
+Aug 17 15:05:24 ifpair kernel: #3 0xffff000000498a98 at prison_deref+0xcd0
+Aug 17 15:05:24 ifpair kernel: #4 0xffff00000049a06c at sys_jail_remove+0x1a4
+Aug 17 15:05:24 ifpair kernel: #5 0xffff0000008c9c54 at do_el0_sync+0x600
+Aug 17 15:05:24 ifpair kernel: #6 0xffff00000089d1ac at handle_el0_sync+0x4c
+Aug 17 15:05:28 ifpair kernel: Limiting icmp ping response from 273 to 196 packets/sec
+Aug 17 15:05:29 ifpair kernel: Limiting icmp ping response from 274 to 199 packets/sec

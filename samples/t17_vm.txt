@@ -1,0 +1,19 @@
+==> t_17_throughput.sh
+t_17_throughput: created pair0a + pair0b
+t_17_throughput: ok: create jail ifp_17_throughput_1
+t_17_throughput: ok: create jail ifp_17_throughput_2
+t_17_throughput: ok: move pair0a into ifp_17_throughput_1
+t_17_throughput: ok: move pair0b into ifp_17_throughput_2
+t_17_throughput: ok: address side a
+t_17_throughput: ok: address side b
+t_17_throughput: ok: baseline ping
+t_17_throughput: conns  Gbits/sec (receiver average, 5s each)
+t_17_throughput:     1  58.6
+t_17_throughput:     2  93.3
+t_17_throughput:     4  120
+t_17_throughput:     8  122
+t_17_throughput:    16  118
+t_17_throughput:    32  102
+t_17_throughput:    64  92.2
+t_17_throughput:   128  67.9
+t_17_throughput: PASS
