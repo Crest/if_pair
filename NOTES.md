@@ -2917,7 +2917,11 @@ provable safety needs four pieces:
 
 3. BRIDGE DATAPATH (missing): (a) the bridge forward/flood path
    needs the same CSUM_TSO exemption at its member-MTU check
-   that epair_transmit() got; (b) FLOODING makes safety a GLOBAL
+   that epair_transmit() got [CORRECTED 2026-09-07: no such
+   check exists - bridge_enqueue() never looks at frame length;
+   the only size site is bridge_pfil's fragment call, see the
+   bridged-TSO verification block below]; (b) FLOODING makes
+   safety a GLOBAL
    condition - a flooded frame exits every member at once, so
    either bridge_mutecaps() keeps LRO on ix0 only while ALL
    members grant TSO (revoking on a non-capable join), or the
@@ -3210,3 +3214,180 @@ Readings from the pairing:
 - Only if_pair 16384+tso P=1 moved meaningfully between runs
   (29.0 -> 36.9, the known cwnd-coupled variance); every run-1
   conclusion stands in run 2.
+
+Bridged epair-TSO datapath, verified from releng/15.1 source
+(2026-09-07; question: does patched epair work as a bridge
+member, and will if_bridge forward larger-than-MTU TSO chains?).
+Answer to both: yes, and by design rather than by accident - the
+bridge is the ONE topology where TSO auto-negotiates instead of
+depending on operator judgment.
+
+- if_bridge FORWARDS OVERSIZED FRAMES UNCONDITIONALLY:
+  bridge_enqueue() (if_bridge.c:2388-2465) does VLAN filtering
+  and tag handling, then hands the frame straight to the egress
+  member's if_transmit() - there is NO length check anywhere in
+  the forward/flood/output paths.  A TSO chain crosses the
+  bridge untouched; length policing is entirely the egress
+  driver's business (which is exactly why epair-tso.patch's
+  E2BIG gate needed its CSUM_TSO exemption - t_25's 80 Oerrs
+  were epair policing what the bridge would not).  This corrects
+  the 2026-08-28 gap-list item 3(a).
+- SAFETY IS THE CAPABILITY INTERSECTION, with a join-time
+  wrinkle: bridge_mutecaps() (:1152-1175) forces every member's
+  TOE/TSO/TXCSUM/TXCSUM6/MEXTPG to the AND over all members'
+  bif_savedcaps, and savedcaps is if_capenable AT JOIN TIME
+  (:1507), recomputed only on member add/delete (:1538/:1288).
+  Consequences: (a) JOIN ORDER MATTERS - a patched epair joining
+  with its default-off TSO mutes TSO on EVERY member, including
+  a physical NIC that had it (the stock-epair behavior operators
+  already know, now avoidable): ifconfig epairNa tso4 tso6
+  BEFORE addm keeps TSO bridge-wide when all other members have
+  it; (b) enabling TSO on a member AFTER it joined is never
+  re-intersected - the bridge won't stop a mismatch, that hole
+  is the operator's to not dig.
+- THE PEER-SYNC CLOSES THE LOOP: when mutecaps disables TSO on
+  the member epair (via SIOCSIFCAP, :1188), the patch's
+  peer-sync propagates it to the jail side, so the jail's TCP
+  stops building chains.  No stall mode exists in the bridged
+  topology - the routed stall arises because the stack can't
+  know the egress at segment-build time; mutecaps IS that
+  knowledge, negotiated up front.
+- WIRE CORRECTNESS FALLS OUT: member MTUs are forced uniform at
+  addm (:1479-1498, EINVAL on failure), so TSO chains are the
+  only >MTU frames; a NIC-member egress splits in hardware at
+  tso_segsz = the MSS the jail negotiated END-TO-END with the
+  real remote peer (bridging doesn't touch the MSS exchange, so
+  the split segments are exactly wire-sized); an epair-member
+  egress delivers whole under the E2BIG exemption; local
+  delivery up bridge0 consumes whole (endpoint semantics).
+- TWO LIMITS: (a) bridge0 itself advertises only
+  IFCAP_VLAN_HWTAGGING (:876) - HOST-originated traffic sent
+  from an address on bridge0 never gets TSO regardless of
+  members (only member-originated, i.e. jail-via-epair, traffic
+  benefits); (b) the pfil path is the one remaining stall trap:
+  with net.link.bridge.pfil_member=1 (default 0 on releng/15.1,
+  :483) and pf/ipfw hooked, bridge_pfil's size check
+  (:4117-4123) sends >MTU frames to bridge_fragment() ->
+  ip_fragment(:4380) with NO CSUM_TSO exemption; DF TCP chains
+  come back EMSGSIZE and are dropped without ICMP - the routed
+  stall reborn at L2.  Candidate fourth one-line exemption for
+  the patch series; until then: bridged TSO and pfil_member=1
+  are mutually exclusive, a documentation item.
+- THIRD LIMIT, THE UNRECONCILED if_hw_tso* FIELDS (addendum
+  2026-09-07; question: chain needs more segments than the
+  egress member's hardware can take, e.g. 63K at MTU 1500 into a
+  32-segment NIC?).  The TSO contract is stack-side: tcp_output
+  clamps every chain to the EGRESS ROUTE interface's advertised
+  if_hw_tsomax (tcp_output.c:906-935) and tcp_m_copym packs to
+  its segcount/segsize (:1094-1095) - but in the bridged
+  topology the route interface is the EPAIR (65518/35/2048
+  stack defaults), and NOTHING reconciles the three limit
+  fields across members: mutecaps intersects capability bits
+  only, bridge_enqueue forwards blind.  Two distinct "segment"
+  limits at the NIC:
+  (a) DMA descriptors - the one FreeBSD models
+      (isc_tx_tso_segments_max).  iflib rescues overflow:
+      EFBIG -> m_collapse to budget -> m_defrag copy -> retry
+      (iflib.c:3598-3617); 63K defrags to ~31 2K clusters +
+      header, squeaking under a 32-descriptor budget at the
+      cost of a full-chain copy per chain.  Below the budget:
+      SILENT drop, visible only in mbuf_defrag_failed /
+      ift_map_failed sysctl counters (:6875-6893).
+  (b) produced WIRE FRAMES (63K/1448 = 44 > 32) - NO FreeBSD
+      field exists; such hardware must fold the limit into
+      if_hw_tsomax conservatively, and a driver that doesn't is
+      handing the engine more than it can express
+      (driver-specific misbehavior, nothing upstream protects).
+  Failure mode on drops is a sawtooth, not the t_25 zero: RTO
+  collapses cwnd, sub-MSS retransmits are non-TSO and pass,
+  slow-start regrows into the limit, repeat - degraded + lossy
+  and invisible (if_hw_tsomax has no ifconfig/sysctl surface to
+  audit).  Exposure is narrow in practice (epair's 35x2048
+  shape is below nearly every modern NIC's budget; sub-65518
+  tsomax or tiny descriptor budgets are the risk), but the
+  principled fix is again gap-list item 3(b): the software chop
+  at bridge egress (tcp_tso_chop, l2hlen=14) turns every limit
+  mismatch from correctness into performance; a
+  mutecaps-analog rewriting members' if_hw_tso* to the fleet
+  minimum has no KPI, goes stale on removal, and cannot
+  express a frame-count limit anyway.  [CORRECTED 2026-09-07:
+  the first two objections are wrong - the KPI exists
+  (if_hw_tsomax_common/update) and the savedcaps idiom solves
+  restore; see the limit-clamp design block below.  The
+  frame-count point and the tcpcb-caching window stand.]
+- STATUS: source-verified only; no test exercises the
+  epair-member-in-bridge topology yet (t_25/t_28 are direct
+  jail-to-jail).  A bridged variant of t_25 (two epairs + bridge,
+  assert deliver-whole and the join-order muting both ways)
+  would make this block's claims executable.
+
+Bridge TSO-limit clamp, design assessment (2026-09-07; question:
+could if_bridge close the unreconciled-limits corner by clamping
+all members' if_hw_tso* to the fleet minimum while joined and
+restoring the saved values on removal/destroy?).  Verdict: YES -
+every ingredient exists in-tree, and the earlier dismissal of
+this shape is corrected above.  Design walk-through:
+
+- THE KPI IS PURPOSE-BUILT: if_hw_tsomax_common() accumulates
+  the "least common TSO limit" (its own comment) across
+  interfaces into a struct ifnet_hw_tsomax, and
+  if_hw_tsomax_update() applies one to an ifnet, returning
+  nonzero on change (if.c:774-819).  Two in-tree users prove the
+  pattern: if_lagg computes the min over its ports
+  (if_lagg.c:700-721, in lagg_capabilities right next to its
+  capability intersection - the exact mutecaps analog) and
+  if_vlan mirrors its parent (if_vlan.c:2121-2123).
+- SAVE/RESTORE IS THE EXISTING IDIOM: bif_savedcaps is
+  snapshotted at join (if_bridge.c:1507), restored to the
+  departing member at delete (:1321), and mutecaps recomputes
+  the fleet at every membership change (:1538/:1288).  The clamp
+  adds three saved fields to struct bridge_iflist, snapshots at
+  join, and a bridge_mutelimits() beside bridge_mutecaps():
+  accumulate if_hw_tsomax_common over members' SAVED values,
+  if_hw_tsomax_update each member with the fleet min.
+  Recomputing from saved values makes the min RISE correctly
+  when the narrowest member leaves; destroy is per-member
+  delete; the "gone" (departed-ifnet) path skips restore
+  harmlessly.  ~60-80 lines.
+- IT ONLY EVER LOWERS: the min over saved advertisements can
+  never exceed any member's own attach-time claim, and the
+  fields are read by the STACK's chain builder only (iflib
+  enforces DMA shape from its scctx copy, not the ifnet fields
+  - iflib.c:3556 vs :5213), so the write changes what gets
+  built, never what a driver thinks it can do.
+- COMPLICATION 1, THE CONSUMER IS ACROSS THE PAIR: lagg and
+  vlan clamp THEMSELVES because they are the route egress their
+  consumers consult.  The bridge's TSO consumers are the
+  members' far sides - the bridge writes epair0a's fields but
+  the jail TCP reads epair0b's (bridge0 itself advertises no
+  TSO, :876).  So the clamp needs a propagation hook in virtual
+  member drivers: epair mirroring if_hw_tso* to its peer the
+  way the patch already mirrors capenable.  No notification
+  exists for "limits changed" (VLAN_CAPABILITIES() is the
+  closest precedent, but it only reaches vlans stacked on the
+  interface); upstreamable shape: an ifnet eventhandler (an
+  iflladdr_event analog) fired by the bridge when
+  if_hw_tsomax_update returns nonzero, subscribed by epair for
+  the peer mirror (~15 lines + ~10 in epair).
+- COMPLICATION 2, PROSPECTIVE ONLY: TCP snapshots the limits
+  into the tcpcb at connection setup and MTU re-probe
+  (tcp_maxmtu, tcp_subr.c:3660-3662/3702-3704, stored at
+  tcp_input.c:3975-3977) - connections predating the join keep
+  building chains to the OLD limits until they re-probe.  Same
+  epoch problem mutecaps already has with cached TF_TSO; the
+  clamp closes the steady state, not the transition window.
+- WHICH MEMBERS COUNT: by the time chains exist bridge-wide,
+  mutecaps has already required every member TSO-enabled, so
+  "min over TSO-capable members" and "min over all members"
+  coincide whenever it matters; compute over all, and the KPI's
+  zero-skipping guards (:783-793) handle non-TSO hardware that
+  never filled the fields.
+- WHAT IT CANNOT FIX: hardware limited in produced WIRE FRAMES
+  rather than bytes/descriptors stays inexpressible (no field
+  to clamp), and the transition window above.  Verdict stands
+  that clamp and egress chop COMPOSE rather than compete:
+  clamp = negotiation, makes overflow rare and the common case
+  copy-free; chop = datapath fallback, makes the remainder
+  harmless.  Upstream framing: bridge_mutelimits is a
+  self-contained if_bridge improvement with lagg as precedent,
+  worth proposing independently of the TSO patch series.
