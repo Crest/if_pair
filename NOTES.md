@@ -117,7 +117,10 @@ Port builds (`ports/net/if_pair-kmod`) stage everything in their own
    the vnet teardown lock order, an unload-vs-jail-removal
    deadlock - see the locking audit) plus the routed-TSO
    tryforward gap that transit offload would need - ideally by
-   landing those fixes independently.
+   landing those fixes independently.  [2026-09-07: sequencing
+   and dependencies consolidated into the "Consolidated
+   upstreaming plan" block at the end of this file, which
+   supersedes the ordering implied here.]
 
 ## Design notes / status
 
@@ -2084,6 +2087,44 @@ unconditionally queueing (this section describes the corrected
 design).  The captured backtrace from that panic is preserved as
 `samples/crash.txt`.
 
+Addendum (2026-09-07): why Linux veth "gets away with"
+synchronous delivery while this attempt could not.  It doesn't -
+veth never makes the call we made.  veth_xmit ends in
+__netif_rx(), which only ENQUEUES onto the per-CPU softnet
+backlog and raises NET_RX_SOFTIRQ; the peer's stack runs when the
+sender's innermost local_bh_enable() services the softirq - same
+CPU, warm cache, but the call graph is severed at every hop, so
+sender-held locks are released before peer processing and
+recursion becomes iteration through a queue.  Three further
+layers each cut a reentry cycle: the per-socket backlog (softirq
+input finding a process-owned socket queues the skb, drained at
+release_sock - Linux's answer to "socket code entering socket
+code"), the dev_queue_xmit per-CPU recursion counter, and
+ksoftirqd (softirq budget exhaustion punts to a thread - their
+built-in equivalent of our batch/tick yield governor).  Our
+failed variant was a genuinely inline call into the peer's
+tcp_input while tcp_output held the sender's inpcb WRITE lock
+across the whole if_output chain; INP_LOCK_INIT passes
+RW_RECURSE|RW_DUPOK (in_pcb.h:430), so the ACK path's reentry
+into the SAME inpcb recursed silently instead of panicking at
+the lock, and non-reentrant connection state was mutated mid-
+mutation.  netisr.c's opening comment (:35-48) names both
+hazards ("entering the socket code from the socket code",
+recursive decapsulation) as the reasons deferred dispatch
+exists; lo(4)'s if_simloop unconditionally netisr_queue()s
+(if_loop.c:357) for the same reason - the "legacy" always-queue
+we initially misread.  The structural difference is historical:
+4.4BSD's netisr WAS a softirq (splnet soft interrupt run on the
+return path); SMPng turned deferral into full SWI threads,
+gaining priority/preemption semantics but making FreeBSD's
+cheapest same-CPU deferral a scheduler transaction where
+Linux's is a bit-set serviced before the syscall returns.
+if_pair's design answers that cost differently: the
+doorbell/batch machinery amortizes the wakeup, and flow
+steering spends the mandatory queue crossing on a DIFFERENT
+CPU, buying the parallelism veth's same-CPU model forgoes
+(veth needs opt-in RPS for any spreading at all).
+
 #### Runtime test log
 
 - 2026-08-14, NAS: ping OK; iperf3 panicked (see postmortem above).
@@ -3391,3 +3432,189 @@ this shape is corrected above.  Design walk-through:
   harmless.  Upstream framing: bridge_mutelimits is a
   self-contained if_bridge improvement with lagg as precedent,
   worth proposing independently of the TSO patch series.
+
+Consolidated upstreaming plan (2026-09-07; supersedes the
+sequencing implicit in Roadmap item 2 and CHOPPER P7 - those
+were written in layers and never merged with the September
+findings).  Organized as tracks by DEPENDENCY, not by size;
+tracks 0-2 have no ordering constraints between them and can
+run concurrently.
+
+TRACK 0 - THE PORT (net/if_pair-kmod).  No kernel dependency
+whatsoever: the 479 Gbit/s headline was measured on a stock
+patched-releng kernel plus one RW sysctl.  Blockers are purely
+logistical (public repo/tarball, WWW, makesum, poudriere
+testport - Roadmap item 1).  Ship first; everything after gains
+credibility from a driver people can install.
+
+TRACK 1 - STANDALONE BUG FIXES, the goodwill channel.  Four
+fixes that stand entirely on epair(4)/in-tree merit, no if_pair
+context needed, small diffs, each already designed in NOTES:
+  a) cloner create-return window (root-triggerable epair panic;
+     fix = take ifnet_detach_sxlock at the create entry points,
+     mirroring the destroy side - see audit finding 2 block);
+  b) vnet teardown lock order (kldunload-vs-jail-r deadlock;
+     one-line ordering fix in vnet_deregister_sysuninit);
+  c) libalias in-kernel NAT vs delayed checksums (repair gate);
+  d) divert_packet() CSUM_IP completion.
+Send these FIRST and individually (Bugzilla + phabricator or
+freebsd-net): they fix today's in-tree bugs, they are how the
+submitter earns the track record that makes track 3 reviewable,
+and (a)+(b) de-risk if_pair-in-base later.  No performance
+claims needed.
+
+TRACK 2 - MEASUREMENT-BACKED DEFAULTS/REPORTS, no new code.
+  a) net.inet.tcp.per_cpu_timers: non-RSS default serializes
+     every TCP timer on CPU 0's callout wheel (tcp_timer.c:250);
+     A/B on 128 cores: 2.15x peak (223->479).  Proposal ladder:
+     flip the default for mp_ncpus above a threshold, else
+     document in tuning(7).  Evidence: samples/t20_*,
+     t17_ampere_retest.
+  b) ipsec.ko hook tax (~52% with the module merely loaded):
+     report with profiles; fix shape (pfil/hhook fast-path
+     gating) is upstream's call.
+Both are freebsd-net threads with the samples attached; they
+cost review goodwill nothing and each helps EVERY FreeBSD
+network user, if_pair or not.
+
+TRACK 3 - THE TSO SERIES (rfc/0000-0004, CHOPPER P7).  Drafted,
+measured, compile+runtime verified on releng/15.1.  Remaining
+mechanical work: rebase onto main, operator review of the cover
+letter, send.  Two September amendments before sending:
+  - Patch 2 scope: the cover letter's balk-site list should
+    mention bridge_pfil's fragment site (if_bridge.c:4117-4123)
+    as a KNOWN FIFTH SITE deliberately left out (L2, only
+    reachable with non-default pfil_member=1) - reviewers grep;
+    finding it unmentioned reads as unnoticed.
+  - Numbers refresh: cover letter cites the t_22/t_24 grids;
+    add the t_25/t_28 side-by-side (epair-tso vs if_pair) since
+    patch 3's reviewers will ask what epair gains: 37.8 vs 5.45
+    Gbit/s at 1500+tso P=1.
+  Fallback ladder stays: patches 1+3+4 stand without patch 2's
+  balk->handler semantics change.
+TRACK 3B - BRIDGE FOLLOW-UPS (new since the series was frozen;
+send as follow-up patches once track 3's fate is clear, or fold
+into a v2 if review drags past them):
+  a) bridge_pfil fragment-site CSUM_TSO handling (the routed
+     stall reborn at L2 under pfil_member=1) - one hunk, same
+     shape as patch 2's sites;
+  b) bridge_mutelimits(): clamp members' if_hw_tso* to the
+     fleet minimum via if_hw_tsomax_common/update with
+     savedcaps-style restore (lagg precedent, ~60-80 lines,
+     design block above) - self-contained, proposable even
+     before track 3 lands since epair-tso makes the limit
+     mismatch reachable;
+  c) the limits-changed ifnet eventhandler + epair peer mirror
+     (needed for (b) to reach the jail-side consumer);
+  d) LATER, separate RFCs: bridged LRO->TSO re-split (movement
+     three) and router-safe LRO (Phases B/C) - both gated on
+     track 3's KPI landing.
+
+TRACK 4 - IF_PAIR INTO BASE (Roadmap item 2, last).  Hard
+prerequisites: track 1a+1b landed (the two crash/deadlock
+classes a base driver must not import) and track 0 aged enough
+to show field use.  Soft prerequisite: track 3 (without it,
+base-if_pair ships with TSO default-off and the TUNING caveat;
+WITH it, tso-on becomes unconditionally safe and the man-page
+warning shrinks to a sentence).  Work items unchanged: ATF
+conversion of tests/, base build glue, man page install.
+Explicitly NOT prerequisites: tracks 2 (sysctls, orthogonal)
+and 3b.
+
+WHAT "FULL PERFORMANCE" ACTUALLY REQUIRES, for scope honesty:
+per_cpu_timers=1 (track 2a - sysctl, no code) + the TSO series
+(track 3 - recovers the small-MTU/wire cases) is the complete
+list.  The residual ceilings past those are the mbuf zone's
+single per-domain lock and the working-set/DRAM wall (t_19,
+t_21 pending) - hardware and allocator architecture, not
+patchable stack defaults; BUCKET_MAX-as-tunable is the only
+conceivable upstream ask there and stays parked until t_21
+settles the attribution.
+
+Symmetric flow hashing research (2026-09-07; question: should
+both directions of a TCP connection get the SAME flowid, e.g. by
+sorting addresses/ports before hashing?  What do NICs and Linux
+do?).  Headline finding: for jail-to-jail TCP over if_pair the
+symmetry ALREADY EMERGES through stack learning - the sorted
+hash would only canonicalize corners.
+
+- THE CONVERGENCE CHAIN (all links verified): client SYN leaves
+  flowid-less (hash_outbound default 0) -> pair_select_queue
+  hashes and WRITES BACK (if_pair.c, M_HASHTYPE_OPAQUE_HASH) ->
+  server syncache captures the mbuf flowid into the accepted inp
+  (tcp_syncache.c:813) -> every server reply is stamped with it
+  (ip_output.c:347 copies inp_flowid to the mbuf) ->
+  pair_select_queue HONORS existing flowids (hashes only
+  M_HASHTYPE_NONE) -> the client inp learns the same value from
+  the first reply (tcp_input.c:927-931, guarded flowtype==NONE).
+  Steady state: ONE flowid, both directions, both inps - which
+  is why the man page's "a single flow is served by a single
+  worker" holds per CONNECTION, and why per_cpu_timers=1
+  (timer CPU = inp_flowid % ncpu) aligned both endpoints'
+  timers with the worker so cleanly.  This is the software
+  analog of Intel Flow Director ATR / Linux aRFS: symmetry by
+  LEARNING, not by hash construction.
+- WHERE SYMMETRY DOES NOT EMERGE: (a) simultaneous open -
+  crossing SYNs hash independently before either side learns,
+  and the flowtype==NONE guard means neither inp ever corrects
+  (rare, persistent, harmless); (b) UDP - each socket carries
+  its own synthetic per-socket flowid from udp_attach, so
+  directions differ BY STACK DESIGN and the pair never hashes
+  those packets at all; (c) portless protocols the pair does
+  hash (ICMP echo): request and reply land on different
+  workers; (d) TRANSIT flows routed through the host: both
+  directions arrive pre-stamped by the NICs' RSS (asymmetric
+  Microsoft-key Toeplitz), the pair honors them - sorting has
+  no reach here, and OVERRIDING pre-stamped flowids is off the
+  table (only the NONE->hash transition is ordering-safe, per
+  the 2026-08-25 steering analysis; a mid-flow flowid change
+  reorders, and it would discard the NIC's own queue affinity).
+- VERDICT ON SORT-BEFORE-HASH: cheap (a few compares in
+  pair_hash_mbuf, only on flowid-less packets), harmless
+  (sorting preserves the same-tuple-same-hash property
+  M_HASHTYPE_OPAQUE_HASH claims; Jenkins keeps its full secret
+  seed - unlike Toeplitz, where symmetry must be baked into a
+  low-entropy repeating KEY, weakening hash-flood resistance),
+  and NEARLY REDUNDANT: it fixes (a) and (c) only.  Expected
+  iperf3 delta: zero.  Worth folding in for canonical
+  first-flight determinism if the hash function is ever touched
+  again; not worth a patch on its own.
+- ARGUMENTS CATALOG (general, beyond if_pair): FOR same-flowid:
+  shared-state locality (endpoint tcpcb is touched by both
+  directions via ACK-clocking; middlebox pf/NAT state entries
+  are shared by definition - state row locks stop bouncing);
+  self-enqueue elision (ACK-triggered tcp_output enqueues to
+  the SAME worker's peer-side queue while it is RUNNING - no
+  doorbell); timer alignment under per_cpu_timers; profiling
+  determinism.  AGAINST: caps one connection at one worker CPU
+  (no direction pipelining - but epair serializes both
+  directions too and WINS at P=1, so on this hardware handoff
+  cost dominates pipelining at low load; the deficit is not
+  parallelism); coarser load quanta (connection = indivisible
+  2-direction lump); ULE wakeup affinity pulls BOTH endpoint
+  processes toward one core's neighborhood.  The unexplored
+  frontier is the OPPOSITE question - deliberately splitting
+  directions to pipeline single flows - blocked by the same
+  ordering-safety constraint.
+- ECOSYSTEM SURVEY: NICs default ASYMMETRIC (Microsoft RSS
+  spec key - FreeBSD ships it verbatim, rss_config.c:151-159,
+  "also the Chelsio T5 firmware default").  Symmetry is a
+  MIDDLEBOX opt-in: the repeating 0x6D5A key trick (Woo & Park,
+  Suricata's standard advice) or hardware symmetric-Toeplitz
+  modes (DPDK RTE_ETH_HASH_FUNCTION_SYMMETRIC_TOEPLITZ on
+  Intel/Mellanox).  Endpoints co-locate by LEARNING instead
+  (aRFS, Flow Director ATR: TX programs the return direction's
+  RX steering).  Linux: veth does NO hashing or steering at all
+  - default delivery is synchronous __netif_rx on the
+  TRANSMITTING CPU, rxq = txq mapping (verified from veth.c
+  master); spreading needs opt-in RPS.  Linux's generic
+  software hash IS sort-symmetric (__flow_hash_consistentify
+  swaps addrs/ports inside __flow_hash_from_keys, verified from
+  flow_dissector.c master) - but standard keys include the
+  IPv6 flow label (per-direction), and locally-originated TCP
+  carries sk_txhash (random PER SOCKET, survives the netns
+  crossing), so in practice container-to-container veth
+  traffic is steered by two unrelated per-socket random values
+  - Linux does NOT deliver direction symmetry on veth either.
+  A strict symmetric variant (__skb_get_hash_symmetric, flow
+  label excluded) exists for AF_PACKET fanout.
