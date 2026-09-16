@@ -361,6 +361,11 @@ semantics; the Linux GRO+veth container pattern).  The in-tree
 stance on LRO-plus-forwarding is exactly one data point: if_bridge
 strips IFCAP_LRO from members unconditionally (BRIDGE_IFCAPS_STRIP,
 if_bridge.c:204); no driver gates LRO on ipforwarding (tree-wide
+[CORRECTED 2026-09-15: true of DRIVERS, but the ENGINE gates -
+tcp_lro_rx_common returns TCP_LRO_CANNOT whenever the vnet has
+V_ipforwarding/V_ip6_forwarding set, so the base system has a
+SECOND, much stronger data point: software LRO refuses to merge
+AT ALL on a forwarding host; see the merge-conditions block]
 grep: zero hits) and ifconfig(8)'s lro text carries no forwarding
 warning - so the endpoint-semantics safety argument is ours to
 document, not the base system's.  Caveat: any OTHER transit through
@@ -2124,6 +2129,147 @@ doorbell/batch machinery amortizes the wakeup, and flow
 steering spends the mandatory queue crossing on a DIFFERENT
 CPU, buying the parallelism veth's same-CPU model forgoes
 (veth needs opt-in RPS for any spreading at all).
+
+Second addendum (2026-09-07): does tcp_output HAVE to hold the
+inpcb lock across if_output?  Mostly yes, by three ties, and
+Linux is no different at its layer.  (1) KPI contract:
+ip_output(inp != NULL) asserts the lock (ip_output.c:344) and
+dereferences the inp throughout - FIB (:345), flowid (:347),
+inp_options (:1383).  (2) The connection's ROUTE CACHE lives
+inside the inpcb: tcp_output passes &inp->inp_route
+(tcp_output.c:1508) and ip_output both reads and REFILLS it;
+after an error the EMSGSIZE retry reads the new nexthop MTU
+straight out of that cache (:1511-1512) - only coherent under
+the lock.  (3) Error-feedback atomicity: the send result
+mutates connection state (EMSGSIZE -> tcp_mss_update -> goto
+again rebuilds from current state; ENOBUFS -> cwnd collapse),
+and snd_nxt/snd_max/timer updates bracket the call - a
+drop/reacquire design would need snapshot+unwind plus
+INP_DROPPED revalidation, a historically bug-rich pattern.
+What makes holding it ACCEPTABLE is the ecosystem contract the
+first if_pair design broke: if_transmit is a non-sleeping LEAF
+that never re-enters the stack synchronously.  Linux holds
+lock_sock across tcp_write_xmit -> ip_queue_xmit ->
+dev_queue_xmit exactly the same way; it differs only in that
+its lock is an owner-flag sleeping lock whose contenders queue
+(socket backlog) instead of spinning, and its device layer
+ENFORCES the leaf contract structurally (qdisc/backlog).
+Neither OS drops the connection lock to transmit.  Cost of the
+FreeBSD shape, measured: the t_20 tcpinp rw-spin/rw-block
+seconds are input and sosend contending against inp holds that
+span tcp_m_copym + the enqueue; UDP shows the latitude exists
+(udp_send takes only INP_RLOCK for the common connected case,
+udp_usrreq.c:1171-1173).
+
+Third addendum (2026-09-13): could the SOCKET BACKLOG pattern be
+adopted by FreeBSD?  Yes - and the DATA-PLANE HALF ALREADY
+SHIPS: every tcpcb carries t_inqueue ("HPTS input packets
+queue", tcp_var.h:322, STAILQ_INIT for all connections at
+tcp_subr.c:2288, drained-on-discard at :2436), fed by
+tcp_queue_pkts() (tcp_lro_hpts.c:465) and consumed via the
+tfb_do_queued_segments stack method (ctf_process_inbound_raw) -
+but implemented ONLY by rack and bbr (rack.c:23947,
+bbr.c:14143; default stack: none), and with a DIFFERENT
+trigger: LRO/hpts queues to bypass netisr and batch input in
+hpts context, taking INP_WLOCK to enqueue - it is not
+contention-driven.  Missing for Linux parity, in rough review-
+risk order: (1) trylock-else-queue at tcp_input's INP_WLOCK,
+(2) drain-at-unlock - INP_WUNLOCK becomes a drain point, one
+branch when the queue is empty but every unlock site funnels
+through it, (3) deferred-action flags for timers (Linux
+tcp_release_cb/tsq_flags; FreeBSD callouts take INP_WLOCK
+directly - could stay blocking initially, timers are rare),
+(4) a byte cap with drop accounting (Linux caps near
+rcvbuf+sndbuf, TCPBacklogDrop) - a SEMANTIC change: FreeBSD
+lock contention never drops today, and an unbounded backlog is
+an ACK-flood memory DoS.  Read-side friction is mostly gone
+already: the SMR pcb lookup removed the big INP_RLOCK need, so
+a TCP-only owner-flag layered on the existing rwlock is
+plausible.  Payoff calibrated to t_20 (timers=1): tcpinp
+rw-spin+rw-block ~37s/10s at P=128 = ~3.7 CPU-equivalents -
+real, not the bottleneck; but the qualitative win is bigger for
+if_pair: deliver-whole TSO LENGTHENS inp holds (tcp_m_copym of
+43K chains under the lock), and a worker spinning on tcpinp is
+head-of-line-blocking every other flow in its queues - backlog
+would convert that to an enqueue and move on.  Incremental
+FreeBSD-native path: teach the default stack
+tfb_do_queued_segments, then trylock-else-queue with a wake
+fallback, then the cap; each step independently testable.
+freebsd-transport-scale project, to be raised with the t_20
+evidence, not a sideline patch series.
+  GENERIC-relevance footnote (2026-09-13): rack/bbr/hpts ship as
+  stock loadable modules on 15.x (tcp_rack.ko, tcp_bbr.ko,
+  tcphpts.ko in /boot/kernel; functions_available grows on
+  kldload, switch via net.inet.tcp.functions_default) - so the
+  ONLY in-tree t_inqueue consumers are runtime-reachable on
+  GENERIC.  But the mechanism still never engages for if_pair
+  traffic: its only producer is tcp_lro_flush_tcphpts, i.e. the
+  NIC LRO path, and pair packets never pass through tcp_lro.
+  Loading rack changes pacing/hpts behavior, not the lock
+  contention this addendum is about.
+
+Stock tcp_lro merge conditions, verified from releng/15.1
+(2026-09-15; the exact eligibility rules two TCP segments must
+meet to be merged by the software engine - the rules the
+router/bridge LRO plans must preserve or deliberately relax).
+Merging is decided in two stages plus a gate:
+
+- GATE (tcp_lro_rx_common): the engine SELF-DISABLES on
+  forwarding hosts - V_ipforwarding or V_ip6_forwarding set in
+  the receiving vnet returns TCP_LRO_CANNOT before any parsing.
+  Two consequences: (1) the base system's LRO-vs-forwarding
+  stance is not just if_bridge's capability strip, the engine
+  itself refuses (corrects the "exactly one data point" claim,
+  see Claim provenance); (2) OPERATIONALLY: a typical if_pair
+  host that routes for its jails (forwarding=1) silently loses
+  ALL software LRO merging on its physical NICs, even for
+  host-terminated connections - the routed twin of the bridged
+  LRO forfeit, and the blanket policy the record-and-convert
+  plan (Phase A-C) would replace with something precise.
+- ADMISSION (per packet, tcp_lro_rx_common + parser +
+  tcp_lro_rx_ipv4): NIC-VERIFIED TCP CHECKSUM required
+  (CSUM_DATA_VALID|CSUM_PSEUDO_HDR with csum_data == 0xffff -
+  no hardware checksum, no LRO, counted in tcp_bad_csums);
+  contiguous parseable headers, plain or VXLAN-encapsulated
+  IPv4/IPv6 TCP only; IPv4: NO IP OPTIONS (ip_hl must be 20,
+  :276), NOT FRAGMENTED (IP_MF|IP_OFFMASK, :279), no INADDR_ANY
+  src/dst (:282), valid header checksum (:644-662); no trailing
+  padding (trim or reject); NOT A SYN (:1345); 4-tuple must
+  match an active entry (outer AND inner parser addresses) or a
+  free entry must exist; a pure ACK older than the entry's
+  cumulative ack is FREED at admission (:1387-1391).  Both
+  segments must sit in the SAME FLUSH WINDOW - one driver RX
+  batch (tcp_lro_flush_all at batch end) or the driver's
+  lro_timeout if it sets one.
+- CONDENSE (pairwise vs the accumulated head,
+  tcp_lro_condense :963-1106): TCP options either ABSENT or
+  exactly the 12-byte appendix-A timestamp (NOP,NOP,TS,10 ==
+  TCP_LRO_TS_OPTION; anything else - SACK above all - pushes
+  the segment out separately); flags limited to TH_ACK|TH_PUSH
+  (FIN/RST/URG push; ECE/CWR TOO - TCP-level ECN echo is
+  never merged away); tsval MONOTONE non-decreasing (merged
+  header keeps the LATEST tsval/tsecr - the known
+  RTT-coarsening lossy merge); EXACT sequence continuity
+  (th_seq == next_seq - any gap, overlap or reorder pushes);
+  ACK-bit polarity must match the head; duplicate pure ACKs
+  (same ack, same window, no data) push out separately;
+  cumulative caps lro_ackcnt_lim (default 65535 = unlimited)
+  and lro_length_lim (default 65280 = 65535-255; both
+  per-driver tunables on hn/mana only).  An appended data
+  segment contributes PAYLOAD ONLY (m_adj + m_demote_pkthdr,
+  :1101-1104); pure ACKs are consumed entirely (freed after
+  updating ack/window, :1088-1091).
+- NOT CHECKED between merged segments (code-verified absent):
+  TTL, TOS/DSCP, IP-level ECN - a CE mark on an appended
+  segment is ERASED with its discarded IP header (stronger
+  than the earlier "CE smearing" wording: the receiver never
+  sees the mark, never echoes ECE; Linux GRO flushes on
+  tos/TTL mismatch, FreeBSD's condense never compares IP
+  headers at all) - and IPv4 ID continuity (contrast Linux
+  GRO's atomic-datagram ID check; the RFC 6864 stance recorded
+  earlier).  These absences ARE the merge-hygiene items the
+  router-safe LRO plan adds; for endpoint-terminating LRO they
+  are warts (CE erasure arguably a real one), not corruption.
 
 #### Runtime test log
 

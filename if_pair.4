@@ -1,5 +1,5 @@
 .\" SPDX-License-Identifier: BSD-2-Clause
-.Dd August 15, 2026
+.Dd September 15, 2026
 .Dt IF_PAIR 4
 .Os
 .Sh NAME
@@ -179,6 +179,26 @@ traffic over
 .Nm
 interfaces, and is not virtualized: it can only be set on the host,
 where it covers all vnet jails.
+.Pp
+A host that routes between its jails and the outside world runs
+with
+.Va net.inet.ip.forwarding
+or
+.Va net.inet6.ip6.forwarding
+enabled, and while either is set the kernel's software LRO engine
+declines to aggregate any TCP segments received in that vnet: the
+.Cm lro
+capability of the physical interfaces stops merging incoming
+segments even for connections that terminate on the host itself,
+raising the per-packet receive cost of the host's own bulk TCP.
+This forfeit is a property of the shared in-kernel engine, which
+must not aggregate what the host might forward, and not of
+.Nm ;
+it is mentioned here because almost every
+.Nm
+deployment enables forwarding.
+Interfaces whose hardware performs the aggregation itself are not
+affected.
 .Pp
 TCP segmentation offloading
 .Pq Cm tso
