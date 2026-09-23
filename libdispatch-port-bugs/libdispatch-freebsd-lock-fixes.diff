@@ -1,0 +1,79 @@
+--- src/shims/lock.h	2026-09-19 04:34:45.720474000 +0200
++++ src/shims/lock.h	2026-09-21 13:22:01.932098000 +0200
+@@ -114,7 +114,16 @@
+ #define DLOCK_WAITERS_BIT   ((dispatch_lock)0x00000001)
+ #define DLOCK_FAILED_TRYLOCK_BIT  ((dispatch_lock)0x00000002)
+ 
+-#define _dispatch_tid_self()        ((dispatch_tid)(_dispatch_get_tsd_base()->tid))
++/*
++ * The kernel tid (a signed lwpid_t) is shifted clear of the two flag bits.
++ * Convert to the unsigned lock type BEFORE shifting: a left shift of a
++ * signed int is undefined once the result no longer fits, and nothing here
++ * may depend on the tid's magnitude.  libdispatch_tsd_init() rejects tids
++ * above DLOCK_TID_MAX, so the shift never discards bits in practice.
++ */
++#define DLOCK_TID_MAX               ((dispatch_tid)(DLOCK_OWNER_MASK >> 2))
++#define _dispatch_tid_self() \
++		(((dispatch_tid)_dispatch_get_tsd_base()->tid) << 2)
+ 
+ DISPATCH_ALWAYS_INLINE
+ static inline dispatch_tid
+--- src/shims/lock.c	2026-09-19 04:34:45.718228000 +0200
++++ src/shims/lock.c	2026-09-22 14:28:47.002207000 +0200
+@@ -544,18 +544,36 @@
+ 	if (dwMilliseconds == 0) return ETIMEDOUT;
+ 	return WaitOnAddress(address, &value, sizeof(value), dwMilliseconds) == TRUE;
+ #elif defined(__FreeBSD__)
+-	uint64_t usecs = 0;
++	/*
++	 * _umtx_op(2) returns -1 and sets errno; this function's contract
++	 * (see the futex branch) is 0 or an errno value, and callers test
++	 * for ETIMEDOUT.
++	 *
++	 * The timeout is passed as a struct _umtx_time so that the clock can
++	 * be named: a bare struct timespec makes the kernel measure the
++	 * relative wait on CLOCK_REALTIME, which a wall-clock step would
++	 * shorten or lengthen, whereas libdispatch's deadlines (and the
++	 * Linux futex branch) are monotonic.  The kernel learns the layout
++	 * from the size passed in the uaddr slot; this integer-to-pointer
++	 * cast is the _umtx_op(2) ABI and is what libthr does too.
++	 */
+ 	int rc;
+-	if (nsecs == DISPATCH_TIME_FOREVER) {
+-		return _dispatch_ulock_wait(address, value, 0, flags);
++	(void)flags;
++	if (nsecs != DISPATCH_TIME_FOREVER) {
++		struct _umtx_time tm = {
++			._timeout = {
++				.tv_sec = (__typeof__(tm._timeout.tv_sec))(nsecs / NSEC_PER_SEC),
++				.tv_nsec = (__typeof__(tm._timeout.tv_nsec))(nsecs % NSEC_PER_SEC),
++			},
++			._flags = 0,			/* relative */
++			._clockid = CLOCK_MONOTONIC,
++		};
++		rc = _umtx_op(address, UMTX_OP_WAIT_UINT_PRIVATE, value,
++		    (void *)(uintptr_t)sizeof(tm), &tm);
++	} else {
++		rc = _umtx_op(address, UMTX_OP_WAIT_UINT_PRIVATE, value, NULL, NULL);
+ 	}
+-	do {
+-		usecs = howmany(nsecs, NSEC_PER_USEC);
+-		if (usecs > UINT32_MAX) usecs = UINT32_MAX;
+-		rc = _dispatch_ulock_wait(address, value, (uint32_t)usecs, flags);
+-	} while (usecs == UINT32_MAX && rc == ETIMEDOUT &&
+-			(nsecs = _dispatch_timeout(timeout)) != 0);
+-	return rc;
++	return rc == 0 ? 0 : errno;
+ #else
+ #error _dispatch_wait_on_address unimplemented for this platform
+ #endif
+@@ -570,6 +588,9 @@
+ 	_dispatch_futex_wake((uint32_t *)address, INT_MAX, FUTEX_PRIVATE_FLAG);
+ #elif defined(_WIN32)
+ 	WakeByAddressAll((uint32_t *)address);
++#elif defined(__FreeBSD__)
++	(void)_umtx_op(__DEVOLATILE(void *, address), UMTX_OP_WAKE_PRIVATE,
++	    INT_MAX, NULL, NULL);
+ #else
+ 	(void)address;
+ #endif

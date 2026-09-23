@@ -1,0 +1,133 @@
+Product:    Ports & Packages
+Component:  Individual Port(s)
+Version:    Latest
+Hardware:   Any
+Severity:   Affects Some People
+Keywords:   crash, patch
+Summary:    devel/libdispatch: thread IDs alias as the same lock owner; legal dispatch_sync()/dispatch_once() abort with SIGILL
+Attachments: 01-tid-alias.patch (fix), 01-tid-alias-guard.patch (optional),
+             repro_min.c
+Fixed by port update: YES - updating devel/libdispatch to 6.3.1 and
+             dropping the FreeBSD shim patches resolves this; upstream's
+             own FreeBSD code (shipped since swift-6.3-RELEASE,
+             2026-02-19) shifts the tid.  The attached patch is the fix
+             for the current 6.1.1 port; the guard remains optional in
+             either case (upstream has none).
+
+libdispatch-6.1.1_1,1 on FreeBSD 15.0-RELEASE-p12 amd64.  The bug is in
+files/patch-src_shims_lock.h (port-added code; the release tarball has no
+FreeBSD support) and has been there since the port's reintroduction in
+2022.
+
+What happens
+------------
+Threads whose kernel thread IDs only differ in the lowest two bits
+are treated as the SAME lock owner.  When they contend, libdispatch's
+deadlock detection fires on a legal call and traps the process (SIGILL,
+no message):
+
+  - dispatch_sync() onto a queue held by an aliased thread
+    -> "dispatch_sync called on queue already owned by current thread"
+  - contended dispatch_once() or internal unfair lock
+    -> "trying to lock recursively"
+
+FreeBSD hands out thread IDs sequentially, so threads created back to back
+(any thread pool) alias almost by construction.
+
+Why
+---
+The lock word keeps two flag bits in bits 0-1 and the owner in bits 2-31,
+but the port stores the tid unshifted:
+
+    #define DLOCK_OWNER_MASK      ((dispatch_lock)0xfffffffc)
+    #define _dispatch_tid_self()  ((dispatch_tid)(_dispatch_get_tsd_base()->tid))
+
+Owner comparisons mask bits 0-1 away, so tids 100004..100007 all compare
+equal.  Upstream's FreeBSD branch (main since b55398e, 2025-01-21) shifts
+the tid left by two, as the Windows branch does; the port's copy lacks
+the shift.
+
+Reproduce
+---------
+    cc -O1 -fuse-ld=lld repro_min.c -I/usr/local/include -L/usr/local/lib \
+        -ldispatch -lpthread -o repro_min && ./repro_min
+
+    expected:  waiter tid N ran after the holder released the queue: OK
+    actual:    Illegal instruction (core dumped)
+
+(-fuse-ld=lld because GNU ld refuses to link the shipped library at all;
+that is the undefined _dispatch_ulock_wait bug, filed separately.)
+
+Fix
+---
+01-tid-alias.patch: convert the tid to the unsigned lock type, then
+shift.
+Shifting the signed pid_t itself is undefined behaviour for tid >= 2^29.
+Upstream ignores this undefined behavior whis is not reachable yet,
+because FreeBSD has limits the thread id range for now.
+Rebuilt with the port's CMAKE_ARGS, repro_min, an 8-thread
+dispatch_sync stress test and a contended dispatch_once() all pass; the
+shipped library fails all three.
+
+01-tid-alias-guard.patch (optional): the encoding holds 30 bits, and
+kern.maxthread is not clamped by the kernel (tids range up to INT32_MAX,
+sys/umtx.h), so a one-time check in libdispatch_tsd_init() (first use of
+libdispatch by a thread, never on a hot path) aborts if a tid ever
+exceeds it.  It writes a fixed message to stderr with write(2) and then
+_dispatch_hardware_crash() rather than using DISPATCH_INTERNAL_CRASH:
+on non-Darwin the macro's message argument expands to nothing
+(src/internal.h, _dispatch_set_crash_log_cause_and_message), which is
+why every libdispatch trap on FreeBSD is a silent SIGILL, and
+_dispatch_log() defaults to syslog after a lazy initialisation that is
+inappropriate in a crash path.
+
+Notes
+-----
+- Likely already seen in the field: ports commit 5802e9ec58ca
+  (2026-02-05) disabled the workqueue monitor because of "random crashes
+  in telegram-desktop".  The monitor adds worker threads with consecutive
+  IDs; that is exactly the case in which this bug triggers.  Disabling
+  it lowered the rate, not the cause.
+- The FreeBSD branch in src/event/workqueue.c compares kinfo_proc.ki_tid
+  against the encoded tid and must shift by two as well (upstream commit
+  0c50788). It is compiled out today.
+- Preferred alternative: update the port to 6.3.1 and drop the FreeBSD
+  shim patches (see below).
+
+Why upstream's fix has not reached the port
+--------------------------------------------
+Two unrelated implementations exist.  The port's FreeBSD support is its
+own, written in 2022 (files/patch-src_shims_lock.{h,c}, workqueue.c,
+private.h) and applied to a tarball that has none.  Upstream's FreeBSD
+support is michael-yuji's, merged to main in 2025 and shipped in
+swift-6.3-RELEASE (2026-02-19) and 6.3.1; it is not in 6.1.1 or 6.2.
+The port was updated to 6.1.1 in January 2026, a month before 6.3, so
+it still builds the pre-FreeBSD tarball plus its 2022 patches, and
+upstream fixing its own code never touched the port's.  Updating the
+port to 6.3.1 and dropping the FreeBSD shim patches fixes this PR and
+the undefined-symbol and run-loop-handle PRs at once; only the
+workqueue-loop PR still needs a patch, because that upstream fix
+(2026-09-02) is in no release yet.
+  https://github.com/swiftlang/swift-corelibs-libdispatch/blob/swift-6.3-RELEASE/src/shims/lock.h   (FreeBSD block, tid << 2)
+  https://github.com/swiftlang/swift-corelibs-libdispatch/releases/tag/swift-6.3-RELEASE
+
+References
+----------
+tid allocation (sequential, + NO_PID=100000, int32):
+  https://github.com/freebsd/freebsd-src/blob/af58d0db156a4036624d7f8a0bdd4b739a5418d2/sys/kern/kern_thread.c#L234-L257
+  https://github.com/freebsd/freebsd-src/blob/af58d0db156a4036624d7f8a0bdd4b739a5418d2/sys/sys/proc.h#L957-L958
+  https://github.com/freebsd/freebsd-src/blob/af58d0db156a4036624d7f8a0bdd4b739a5418d2/sys/sys/_types.h#L124
+  https://github.com/freebsd/freebsd-src/blob/af58d0db156a4036624d7f8a0bdd4b739a5418d2/lib/libthr/thread/thr_getthreadid_np.c#L48
+tid range guaranteed by the kernel (PID_MAX+2 .. INT32_MAX):
+  https://github.com/freebsd/freebsd-src/blob/af58d0db156a4036624d7f8a0bdd4b739a5418d2/sys/sys/umtx.h#L48-L56
+kern.maxthread default and (unclamped) tunable:
+  https://github.com/freebsd/freebsd-src/blob/af58d0db156a4036624d7f8a0bdd4b739a5418d2/sys/kern/kern_thread.c#L554-L560
+  https://github.com/freebsd/freebsd-src/blob/af58d0db156a4036624d7f8a0bdd4b739a5418d2/sys/kern/kern_thread.c#L162-L163
+port's encoding (unshifted) and its history:
+  https://github.com/freebsd/freebsd-ports/blob/01b09545a3a590187687201d238c8cbf3135e140/devel/libdispatch/files/patch-src_shims_lock.h#L17-L21
+  https://github.com/freebsd/freebsd-ports/commit/b9662312dff8f05fb241525a2fda6adc33183dbb   (2022 reintroduction)
+  https://github.com/freebsd/freebsd-ports/commit/5802e9ec58cadcab823527e55d66c658c1f010a6   (monitor disabled, telegram crashes)
+upstream encodings (Darwin / Linux / Windows blocks; FreeBSD shift):
+  https://github.com/swiftlang/swift-corelibs-libdispatch/blob/swift-6.1.1-RELEASE/src/shims/lock.h#L37-L102
+  https://github.com/swiftlang/swift-corelibs-libdispatch/commit/b55398e   (FreeBSD support with tid << 2)
+  https://github.com/swiftlang/swift-corelibs-libdispatch/commit/0c50788   (workqueue comparison shifted to match)

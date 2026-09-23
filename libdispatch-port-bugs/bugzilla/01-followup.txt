@@ -1,0 +1,13 @@
+Follow-up comment for the thread-aliasing PR (only needed if the earlier
+repro_tid_ctl.c was attached; otherwise nothing has changed in this PR):
+
+  Attaching a revised repro_tid_ctl.c (the control that restricts the
+  workload to threads in distinct ID blocks).  The earlier version read a
+  candidate thread's verdict before the thread had necessarily produced it,
+  so the worker count it printed could be off by the threads it
+  mis-classified.  Its pass/fail result was not affected - it still ran only
+  non-aliasing threads and still completed - but the new version hands the
+  verdict over with a semaphore, so the bookkeeping is exact.  Re-run against
+  the shipped package: PASS (8 workers, 28 threads created); against a build
+  with 01-tid-alias.patch applied: PASS.  The patches attached to this PR are
+  unchanged.

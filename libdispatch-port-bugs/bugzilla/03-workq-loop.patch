@@ -1,0 +1,14 @@
+--- src/event/workqueue.c	2026-09-19 04:34:45.704170000 +0200
++++ src/event/workqueue.c	2026-09-21 12:39:03.044275000 +0200
+@@ -281,8 +281,9 @@
+ 
+     for (int i = 0; i < mon->num_registered_tids; ++i) {
+ 	dispatch_tid tid = mon->registered_tids[i];
+-	for (int j = 0; i < count; ++i) {
+-	    if ((dispatch_tid)kp[j].ki_tid != tid) { continue; }
++	for (int j = 0; j < count; ++j) {
++	    /* _dispatch_tid_self() is the kernel tid shifted left by two (lock.h). */
++	    if (((dispatch_tid)kp[j].ki_tid << 2) != tid) { continue; }
+ 	    if (kp[j].ki_stat == SRUN || kp[j].ki_stat == SIDL) {
+ 		++runners;
+ 		break;

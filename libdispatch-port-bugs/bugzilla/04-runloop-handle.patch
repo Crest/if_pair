@@ -1,0 +1,11 @@
+--- private/private.h	2026-09-19 04:34:45.691864000 +0200
++++ private/private.h	2026-09-21 13:27:36.508141000 +0200
+@@ -189,7 +189,7 @@
+ 
+ #if TARGET_OS_MAC
+ typedef mach_port_t dispatch_runloop_handle_t;
+-#elif defined(__linux__) || defined(__FreeBSD__)
++#elif defined(__linux__)
+ typedef int dispatch_runloop_handle_t;
+ #elif defined(__unix__)
+ typedef uint64_t dispatch_runloop_handle_t;

@@ -1,0 +1,77 @@
+Product:    Ports & Packages
+Component:  Individual Port(s)
+Version:    Latest
+Hardware:   Any
+Severity:   Affects Some People
+Keywords:   patch
+Summary:    devel/libdispatch: main-queue run-loop handle truncated to the pipe's write end; run loops never wake
+Attachments: 04-runloop-handle.patch (fix), repro_runloop.c
+Fixed by port update: YES - 6.3.1's private.h types the FreeBSD handle
+             as uint64_t, matching the packing code; no patch needed
+             after an update.  The attached patch is the fix for the
+             current 6.1.1 port.
+
+libdispatch-6.1.1_1,1 on FreeBSD 15.0-RELEASE-p12 amd64.  Affects the
+run-loop SPI (_dispatch_get_main_queue_handle_4CF() and friends) used by
+CoreFoundation-style run loops.
+
+What happens
+------------
+The port's queue.c builds the __unix__ variant, which creates a pipe and
+packs both descriptors into a 64-bit handle ((rfd << 32) | wfd), but the
+shipped private/private.h declares the handle type for FreeBSD as int:
+
+    #elif defined(__linux__) || defined(__FreeBSD__)
+    typedef int dispatch_runloop_handle_t;
+    #elif defined(__unix__)
+    typedef uint64_t dispatch_runloop_handle_t;
+
+So the handle is truncated to the WRITE end.  A run loop polling it for
+readability never wakes, because pokes write to that same end.  On
+dispose, (int)(handle >> 32) on an int is a shift by the type width
+(undefined behaviour; clang warns "shift count >= width of type"), which
+on amd64 yields the write end again: closed twice, read end leaked.  The
+port build already prints the three relevant warnings for queue.c.
+
+Reproduce
+---------
+    cc -O1 -fuse-ld=lld repro_runloop.c -I/usr/local/include -L/usr/local/lib \
+        -ldispatch -lpthread -o repro_runloop && ./repro_runloop
+
+    expected:  handle 0x300000004: read end 3, write end 4
+               read end became readable after dispatch_async: OK
+    actual:    handle 0x4: read end 0, write end 4
+               read end is 0: the handle was truncated to the write end (WRONG)
+
+Fix
+---
+04-runloop-handle.patch drops __FreeBSD__ from the int typedef so FreeBSD
+falls through to the uint64_t typedef the packing code was written for -
+exactly upstream main's private.h.  Rebuilt, the warnings disappear and
+repro_runloop passes.
+
+Notes
+-----
+- ABI change: the SPI's return type becomes uint64_t; consumers must be
+  rebuilt and take the read end as (int)(handle >> 32).
+- swift-6.3-RELEASE already has the fixed typedef chain (int only for
+  Linux, uint64_t for __unix__); updating the port to 6.3.1 resolves this
+  PR without a patch.
+- Upstream is switching FreeBSD to eventfd(2) instead (libdispatch PR
+  #957 with Foundation PR #5539, opened 2026-09-04), giving a single int
+  handle as on Linux; FreeBSD >= 13 has eventfd in libc.  That also avoids
+  the remaining 32-bit-platform problem (the 64-bit handle is stored via
+  uintptr_t).  Either way, the current int-truncated packing is wrong.
+
+References
+----------
+port's __unix__ packing code (pipe2, PACK/RFD/WFD):
+  https://github.com/freebsd/freebsd-ports/blob/01b09545a3a590187687201d238c8cbf3135e140/devel/libdispatch/files/patch-src_queue.c#L35-L54
+handle type: FreeBSD grouped with Linux as int at the tag:
+  https://github.com/swiftlang/swift-corelibs-libdispatch/blob/swift-6.1.1-RELEASE/private/private.h#L190-L199
+upstream main: int only for Linux, uint64_t for __unix__:
+  https://github.com/swiftlang/swift-corelibs-libdispatch/blob/main/private/private.h
+upstream direction (eventfd, single int handle):
+  https://github.com/swiftlang/swift-corelibs-libdispatch/pull/957
+  https://github.com/swiftlang/swift-corelibs-foundation/pull/5539
+FreeBSD eventfd(2): https://man.freebsd.org/cgi/man.cgi?query=eventfd&sektion=2

@@ -1,0 +1,25 @@
+libdispatch: /usr/local/lib/libdispatch.so.1
+
+== Issue 1: thread-ID aliasing in the lock owner encoding
+repro_min       (2 aliased threads, dispatch_sync)   FAIL (SIGILL: DISPATCH_CLIENT_CRASH trap)
+repro_tid_alias (8 threads x 20000 dispatch_sync)    FAIL (SIGILL: DISPATCH_CLIENT_CRASH trap)
+repro_once      (4 threads, contended dispatch_once) FAIL (SIGILL: DISPATCH_CLIENT_CRASH trap)
+repro_tid_ctl   (control: distinct ID blocks)        PASS
+
+== Issue 2: undefined _dispatch_ulock_wait / no-op wake
+repro_group     (dispatch_group_wait)                FAIL (exit 1)
+    ld-elf.so.1: /usr/local/lib/libdispatch.so.1: Undefined symbol "_dispatch_ulock_wait"
+LD_BIND_NOW=1   (immediate binding, any program)     FAIL (exit 1)
+    ld-elf.so.1: /usr/local/lib/libdispatch.so.1: Undefined symbol "_dispatch_ulock_wait"
+nm              (undefined _dispatch_* symbols)      FAIL
+    _dispatch_ulock_wait
+
+== Issue 4: main-queue run-loop handle truncated to the pipe's write end
+repro_runloop   (4CF handle: read end readable?)     FAIL (exit 1)
+    handle 0x4: read end 0, write end 4
+    read end is 0: the handle was truncated to the write end (WRONG)
+
+== Issue 3: workqueue monitor loop (standalone harness, no libdispatch)
+    registered workers: 3, all runnable
+    port loop  counts 0 runnable
+    fixed loop counts 3 runnable

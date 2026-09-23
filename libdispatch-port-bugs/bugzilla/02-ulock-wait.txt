@@ -1,0 +1,102 @@
+Product:    Ports & Packages
+Component:  Individual Port(s)
+Version:    Latest
+Hardware:   Any
+Severity:   Affects Some People
+Keywords:   crash, patch
+Summary:    devel/libdispatch: undefined symbol _dispatch_ulock_wait in libdispatch.so; dispatch_group_wait() and -z now binaries fail
+Attachments: 02-ulock-wait.patch (fix), repro_group.c
+Fixed by port update: YES - 6.3.1 ships upstream's _umtx_op(2) wait/wake
+             for FreeBSD; no undefined symbol, working wake.  The attached
+             patch fixes the current 6.1.1 port and additionally corrects
+             two flaws that upstream's version still has (see Fix).
+
+libdispatch-6.1.1_1,1 on FreeBSD 15.0-RELEASE-p12 amd64.  The bug is in
+files/patch-src_shims_lock.c (port-added code).
+
+What happens
+------------
+    $ nm -D --undefined-only /usr/local/lib/libdispatch.so.1.3 | grep _dispatch
+                     U _dispatch_ulock_wait
+
+  - GNU ld (devel/binutils) refuses to link anything against the library.
+    Base lld does not check undefined symbols inside shared libraries,
+    which is why the port builds.
+  - Any program run with LD_BIND_NOW=1 or linked with -z now fails to
+    start:  ld-elf.so.1: Undefined symbol "_dispatch_ulock_wait"
+  - Otherwise the process dies the first time it reaches
+    dispatch_group_wait() or dispatch_source_cancel_and_wait().
+
+Why
+---
+The port's FreeBSD branch of _dispatch_wait_on_address() calls
+_dispatch_ulock_wait(), which exists only under HAVE_UL_COMPARE_AND_WAIT
+(Darwin).  The matching _dispatch_wake_by_address() has no FreeBSD branch
+and is a no-op, so waiters would never be woken even if the symbol
+resolved.
+
+Reproduce
+---------
+    cc -O1 -fuse-ld=lld repro_group.c -I/usr/local/include -L/usr/local/lib \
+        -ldispatch -lpthread -o repro_group && ./repro_group
+
+    expected:  group wait returned 0            (after ~1 s)
+    actual:    ld-elf.so.1: /usr/local/lib/libdispatch.so.1: Undefined symbol "_dispatch_ulock_wait"
+
+Fix
+---
+02-ulock-wait.patch implements wait and wake with _umtx_op(2)
+(UMTX_OP_WAIT_UINT_PRIVATE / UMTX_OP_WAKE_PRIVATE), as upstream does since
+6.3, with two corrections over upstream's version:
+
+  - Return value: _umtx_op(2) returns -1 and sets errno, but this
+    function's contract is 0 or an errno value (callers test
+    rc == ETIMEDOUT).  The patch returns "rc == 0 ? 0 : errno".
+  - Timeout clock: upstream passes a bare struct timespec, which the
+    kernel takes as a RELATIVE timeout measured on CLOCK_REALTIME
+    (kern_umtx.c: umtx_copyin_umtx_time sets _clockid = CLOCK_REALTIME
+    for that layout; umtx_abs_timeout_init adds the interval to that
+    clock), so a wall-clock step during a timed dispatch_group_wait()
+    fires it early or late.  libdispatch's deadlines are monotonic
+    (CLOCK_UPTIME on FreeBSD, shims/time.h) and the Linux futex branch
+    waits on CLOCK_MONOTONIC.  The patch passes a struct _umtx_time with
+    _clockid = CLOCK_MONOTONIC and _flags = 0 (relative), as libthr's
+    timed waits do; selecting that layout requires sizeof(struct
+    _umtx_time) in the uaddr slot, an integer-to-pointer cast that is
+    the _umtx_op(2) ABI (libthr does the same).
+
+Verified: no undefined _dispatch_* symbols; repro_group passes; a 200 ms
+timed dispatch_group_wait() returns non-zero after 200 ms; programs start
+under LD_BIND_NOW=1.
+
+Notes
+-----
+- The port does not run libdispatch's test suite; nothing catches this at
+  build time.
+- Independent of the lock-owner aliasing PR, but both are in the same two
+  port-added shim files.  Upstream ships its own FreeBSD versions since
+  swift-6.3-RELEASE (2026-02-19; the port is at 6.1.1, which predates
+  upstream FreeBSD support): updating the port and dropping these
+  patches fixes both.  Upstream's wait still returns the raw _umtx_op
+  result and measures timeouts on CLOCK_REALTIME, so both corrections in
+  this patch are worth sending upstream as well.
+  https://github.com/swiftlang/swift-corelibs-libdispatch/blob/swift-6.3-RELEASE/src/shims/lock.c
+
+References
+----------
+port's FreeBSD wait branch calling the Darwin-only helper:
+  https://github.com/freebsd/freebsd-ports/blob/01b09545a3a590187687201d238c8cbf3135e140/devel/libdispatch/files/patch-src_shims_lock.c#L88-L97
+the helper, defined only under HAVE_UL_COMPARE_AND_WAIT:
+  https://github.com/swiftlang/swift-corelibs-libdispatch/blob/swift-6.1.1-RELEASE/src/shims/lock.c#L361-L376
+caller that depends on the 0-or-errno contract (rc == ETIMEDOUT):
+  https://github.com/swiftlang/swift-corelibs-libdispatch/blob/swift-6.1.1-RELEASE/src/semaphore.c#L210-L220
+kernel: size 0 in uaddr means a relative struct timespec:
+  https://github.com/freebsd/freebsd-src/blob/af58d0db156a4036624d7f8a0bdd4b739a5418d2/sys/kern/kern_umtx.c#L3849-L3861
+  https://github.com/freebsd/freebsd-src/blob/af58d0db156a4036624d7f8a0bdd4b739a5418d2/sys/kern/kern_umtx.c#L3975-L3989
+libthr's equivalent call (NULL size, relative timespec):
+  https://github.com/freebsd/freebsd-src/blob/af58d0db156a4036624d7f8a0bdd4b739a5418d2/lib/libthr/thread/thr_umtx.c#L193-L203
+_umtx_op_err() is a libthr-private syscall stub, not in libc:
+  https://github.com/freebsd/freebsd-src/blob/af58d0db156a4036624d7f8a0bdd4b739a5418d2/lib/libthr/Makefile#L82-L87
+_umtx_op(2): https://man.freebsd.org/cgi/man.cgi?query=_umtx_op&sektion=2
+upstream's FreeBSD umtx implementation (main):
+  https://github.com/swiftlang/swift-corelibs-libdispatch/blob/main/src/shims/lock.c

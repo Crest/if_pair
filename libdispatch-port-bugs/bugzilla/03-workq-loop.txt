@@ -1,0 +1,77 @@
+Product:    Ports & Packages
+Component:  Individual Port(s)
+Version:    Latest
+Hardware:   Any
+Severity:   Affects Only Me
+Keywords:   patch
+Summary:    devel/libdispatch: FreeBSD workqueue monitor loop tests the wrong variable (dead code since monitor was disabled)
+Attachments: 03-workq-loop.patch (fix), repro_workq_loop.c
+Depends on:  the lock-owner aliasing PR (its << 2)
+Fixed by port update: NO - swift-6.3-RELEASE and 6.3.1 contain the
+             same loop typo and unshifted comparison, with the monitor
+             ENABLED for FreeBSD; the upstream fixes (2026-09-02) are in
+             no release.  A port at 6.3.x needs this patch just as 6.1.1
+             does, and there the bug is live rather than latent.
+
+libdispatch-6.1.1_1,1.  The code is in files/patch-src_event_workqueue.c.
+
+What happens
+------------
+In the FreeBSD _dispatch_workq_count_runnable_workers() the inner loop
+increments and tests the outer index:
+
+    for (int i = 0; i < mon->num_registered_tids; ++i) {
+        dispatch_tid tid = mon->registered_tids[i];
+        for (int j = 0; i < count; ++i) {          /* should be j */
+            if ((dispatch_tid)kp[j].ki_tid != tid) { continue; }
+
+Only kp[0] is ever compared and the outer loop exits after one pass, so
+the runnable-worker count is almost always 0.  repro_workq_loop.c runs the
+loop as shipped and as corrected on the same data: 0 versus 3.
+
+Latent today: 5802e9ec58ca (2026-02-05) turned the monitor off on FreeBSD
+after "random crashes in telegram-desktop", so this code is compiled out.
+Those crashes were very likely the lock-owner aliasing bug: with the count
+stuck at 0 the monitor adds one worker thread per second, producing the
+consecutive-ID thread population in which that bug fires.  With the
+monitor off, the port also has no pool-size monitor at all, so a root
+queue whose workers all block never gets a replacement thread.
+
+Fix
+---
+03-workq-loop.patch applies upstream's two corrections (565b739: j < count;
+++j, and 0c50788: compare (ki_tid << 2) against the encoded tid, both
+2026-09-02).  The shift matches the lock-owner aliasing fix and must be
+applied together with it.
+
+Once both are in, the monitor can be re-enabled for FreeBSD (restore the
+workqueue_internal.h patch, as upstream has it): with a correct count it
+adds threads only when workers are actually blocked.
+
+Note for a port update: swift-6.3-RELEASE and 6.3.1 ship upstream's own
+FreeBSD monitor, ENABLED, with this same loop typo and the unshifted
+comparison (the upstream fixes of 2026-09-02 are in no release yet).  An
+update to 6.3.x therefore still needs this patch, and with the monitor
+enabled the bug is live there, not latent.
+
+Notes
+-----
+Minor, same function: struct kinfo_proc kp[255] is a ~280 KB stack frame on
+the manager thread; counting SIDL (fork-in-progress) as runnable is
+meaningless but harmless.
+
+References
+----------
+the loop as shipped by the port:
+  https://github.com/freebsd/freebsd-ports/blob/01b09545a3a590187687201d238c8cbf3135e140/devel/libdispatch/files/patch-src_event_workqueue.c#L41
+monitor enabled only for Linux/Windows at the tag (port no longer patches it):
+  https://github.com/swiftlang/swift-corelibs-libdispatch/blob/swift-6.1.1-RELEASE/src/event/workqueue_internal.h#L33-L37
+what the monitor is for ("create new threads when too many ... block"):
+  https://github.com/swiftlang/swift-corelibs-libdispatch/blob/swift-6.1.1-RELEASE/dispatch/queue.h#L84-L90
+ports history: enabled in the 6.1.1 update, disabled after telegram crashes:
+  https://github.com/freebsd/freebsd-ports/commit/3ebf8d930fabe3c64048ede0f3187c07e4754ba2
+  https://github.com/freebsd/freebsd-ports/commit/5802e9ec58cadcab823527e55d66c658c1f010a6
+upstream: FreeBSD monitor landed with the typo, then fixed:
+  https://github.com/swiftlang/swift-corelibs-libdispatch/commit/b55398e   (2025-01-21, adds the FreeBSD monitor)
+  https://github.com/swiftlang/swift-corelibs-libdispatch/commit/565b739   (2026-09-02, j < count; ++j)
+  https://github.com/swiftlang/swift-corelibs-libdispatch/commit/0c50788   (2026-09-02, ki_tid << 2 to match lock.h)
