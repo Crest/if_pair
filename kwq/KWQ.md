@@ -1,10 +1,10 @@
 # kwq(9): a FreeBSD-native kernel work queue - design proposal
 
-Draft 2026-09-23.  Synthesis of NOTES.md (the if_pair pool, its governor
-and the big-iron measurements), DISPATCH.md (libdispatch) and POOLS.md
+Draft 2026-09-23.  Synthesis of ../NOTES.md (the if_pair pool, its governor
+and the big-iron measurements), ../DISPATCH.md (libdispatch) and ../POOLS.md
 (cross-OS survey and its ten lessons).  Names are illustrative; the
 contracts are the point.  Where a rule is a direct consequence of a
-lesson in POOLS.md S4, the lesson number is given as [L#].
+lesson in ../POOLS.md S4, the lesson number is given as [L#].
 
 ## 0. One-paragraph summary
 
@@ -27,7 +27,7 @@ thread, a priority, or a lock of the service.
   service creates, for each online CPU, one NET worker and one BULK
   worker, pinned with `taskqueue_start_threads_cpuset`-style cpusets
   (`kthread_add` + `sched_bind` in the thread itself; never `sched_bind`
-  the creating thread - the preload-boot hang in NOTES.md).  BLOCKING is
+  the creating thread - the preload-boot hang in ../NOTES.md).  BLOCKING is
   a managed pool (S1.3), not one-per-CPU.  Thread names are
   `kwq_net/N`, `kwq_bulk/N`, `kwq_blk/N` so `top` and `ps` attribute time
   to the class; per-client attribution comes from the accounting, not
@@ -35,7 +35,7 @@ thread, a priority, or a lock of the service.
 - **Priorities are fixed per class and not exposed.**  NET runs at
   `PI_NET` (`PRI_MIN_ITHD + 1`, the priority of NIC ithreads and netisr,
   deliberately equal so a worker running a peer's protocol input shares
-  round-robin with them - NOTES.md priority audit).  BULK runs at
+  round-robin with them - ../NOTES.md priority audit).  BULK runs at
   `PI_SOFT` (`PRI_MIN_ITHD + 2`, with softclock and `qgroup_softirq`).
   BLOCKING runs at `PRI_MIN_KERN` (40), the top of the timeshare-adjacent
   kernel band, preemptible by every ithread.  No API takes a priority
@@ -50,10 +50,10 @@ thread, a priority, or a lock of the service.
   (`WITNESS_WARN(WARN_PANIC, NULL, ...)` at handler entry in debug
   kernels).  This is what lets the class be exactly one thread per CPU:
   a worker that cannot block never strands its queue [L1].
-- **BLOCKING is a concurrency-managed pool** (cmwq's lesson, POOLS.md
+- **BLOCKING is a concurrency-managed pool** (cmwq's lesson, ../POOLS.md
   S3): a small number of threads per CPU that may grow, bounded by a
   ceiling, when a worker blocks; idle threads exit after a timeout.  The
-  blocked-worker signal is the open question named in POOLS.md S5; the
+  blocked-worker signal is the open question named in ../POOLS.md S5; the
   design reserves two mechanisms: a `sched_switch` hook counting
   runnable BLOCKING workers per CPU (the exact analog of cmwq's
   `wq_worker_sleeping`), or, initially, a 1 Hz callout comparing
@@ -116,7 +116,7 @@ context that may sleep; it registers the label under
 unpublished queue.  `kwq_activate()` publishes it (a single store under
 the per-CPU queue locks) - the create-then-activate split is the cloner
 create-return-window lesson: nothing can be enqueued before the handler
-and storage exist [DISPATCH.md S10].  A queue created without
+and storage exist [../DISPATCH.md S10].  A queue created without
 `KWQ_F_INACTIVE` is activated by `kwq_create()` itself before returning.
 Nothing is allocated on the data path: items are embedded in client
 objects, the drain uses the per-CPU list heads, and the handler receives
@@ -138,7 +138,7 @@ recursion check].
 state word.  `kwq_enqueue()` takes it, appends, and if the state is IDLE
 sets WAKING and signals the CPU's class worker; one lock hold covers both
 (the if_pair invariant: doorbell before publication, so a wakeup can
-never be lost, NOTES.md).  The worker takes the same lock once per slice
+never be lost, ../NOTES.md).  The worker takes the same lock once per slice
 to swap the list out (`mbufq_flush` shape), releases it, and runs the
 handler with NO service lock held.  The handler may therefore call
 `kwq_enqueue()` on any queue, including its own (self-enqueue lands in
@@ -231,7 +231,7 @@ sequence and panic on misuse under INVARIANTS.
   enters it once per batch, not per item.  Epoch reclamation callbacks
   keep their own `qgroup_softirq` context (BULK-priority, un-stealable)
   and the NET worker's end-of-round yield is what guarantees they run
-  (S5); this answers POOLS.md's open question by keeping reclamation OUT
+  (S5); this answers ../POOLS.md's open question by keeping reclamation OUT
   of the NET class.
 - **callout(9)**: kwq does not schedule time; a client that needs a
   timer arms a callout whose function enqueues.  The service's own use of
@@ -255,7 +255,7 @@ sequence and panic on misuse under INVARIANTS.
   `rcvif`), as if_pair does today.  `kwq_drain()` is the vnet-teardown
   contract: a cloner's `destroy` drains its queues before detaching, so
   no item outlives the interface it references (the if_pair teardown
-  argument, NOTES.md).
+  argument, ../NOTES.md).
 - **Module unload**: `kwq_destroy()` in the module's SYSUNINIT at
   `SI_SUB_TASKQ` order AFTER cloner teardown, the ordering if_pair
   adopted because `MOD_UNLOAD` events fire before file SYSUNINITs.
@@ -271,7 +271,7 @@ sequence and panic on misuse under INVARIANTS.
   `kwq:::enqueue(q, cpu, n)`, `kwq:::reject(q, cpu)`, `kwq:::slice-start(q,
   cpu, n)`, `kwq:::slice-end(q, cpu, ns)`, `kwq:::expire(q, cpu, ns)`,
   `kwq:::yield(cpu, round_ns)`, `kwq:::steal(q, from, to, n)`.  This is the
-  observability that every system in POOLS.md eventually rebuilt its
+  observability that every system in ../POOLS.md eventually rebuilt its
   deferral mechanism to obtain [L3].
 - **Panic and debugger**: `show kwq` in DDB lists queues, per-CPU depths,
   states and the last handler run; the worker's `td_name` and the queue
@@ -306,7 +306,7 @@ the worker performs the demote-yield: `kern_yield(PRI_USER)` then restore
 the class priority, giving softclock, epoch callbacks, BULK, BLOCKING and
 userland a turn.  Without this a saturated NET worker starves its own
 CPU's timers - the callout-starvation the 128-core measurements exposed
-(NOTES.md 2026-08-20).  Per-item queueing latency is sampled (enqueue
+(../NOTES.md 2026-08-20).  Per-item queueing latency is sampled (enqueue
 timestamp in the item is NOT stored - items are the client's - but the
 per-slice `maxlat_ns` records the age of the oldest item at slice start,
 using the timestamp of the first enqueue into an empty list, kept in the
@@ -412,7 +412,7 @@ threads, synchronous completion, and unbounded batches.
 
 ## 8. Migration and proof
 
-Order, from POOLS.md L10 (infrastructure ships with consumers):
+Order, from ../POOLS.md L10 (infrastructure ships with consumers):
 
 1. Land kwq with **if_pair and epair** converted together (identical
    shape; epair is in-tree, and its RSS-only pool becomes unconditional
@@ -430,7 +430,7 @@ Order, from POOLS.md L10 (infrastructure ships with consumers):
 Non-goals for the first version: queue hierarchies or target queues,
 priority inheritance, synchronous execution APIs, per-item priorities,
 automatic quantum tuning, filter-context enqueue.  Each was either the
-source of a documented mistake elsewhere (DISPATCH.md S6, POOLS.md L4,
+source of a documented mistake elsewhere (../DISPATCH.md S6, ../POOLS.md L4,
 L8) or is addable without changing a contract above.
 
 ## 9. Locks or Concurrency Kit lock-free structures for the per-CPU queues?
@@ -453,7 +453,7 @@ kernel-specific and mostly not about speed.
    publish, which costs about what the uncontended lock does.
 2. **Observability.**  Everything the big-iron investigation learned came
    from the `lockstat` provider, WITNESS and turnstile accounting
-   (NOTES.md, t_20).  A lock-free structure is invisible to all three
+   (../NOTES.md, t_20).  A lock-free structure is invisible to all three
    unless it grows its own probes; contention shows up as unexplained
    cycles.
 3. **The doorbell protocol.**  The lost-wakeup proof with a lock is two
@@ -561,3 +561,336 @@ added later behind the same `kwq_enqueue()`, justified by a `lockstat`
 profile of a specific queue.  Complexity budget spent instead on the
 things no client can do without: the class model, DRR in CPU time, the
 yield, drain semantics, accounting.
+
+## 10. DTrace visibility
+
+The goal is that an operator can answer "who is loading this CPU, how
+long do items wait, who is being throttled, and why" with one-liners,
+without reading kernel headers.  FreeBSD's own `io`, `sched`, `ip` and
+`tcp` providers show the pattern: statically defined tracing (SDT) probes
+in the kernel with translated argument types in `/usr/lib/dtrace/*.d`, so
+scripts name fields, not struct offsets.  kwq follows it exactly.
+
+### 10.1 Provider and probes
+
+`SDT_PROVIDER_DEFINE(kwq)`; module and function fields left empty as the
+in-tree providers do, so probes read `kwq:::name`.  Probes are defined
+with `SDT_PROBE_DEFINEn_XLATE` (the mechanism `ip`/`tcp` use) so that
+`args[0]` is a translated `kwqinfo_t`, never a raw `struct kwq *`.
+
+| probe | when | args (after translation) | cost class |
+|---|---|---|---|
+| `kwq:::create`, `activate`, `drain-start`, `drain-end`, `destroy` | lifecycle | `kwqinfo_t *` | negligible |
+| `kwq:::enqueue` | every accepted item | `kwqinfo_t *`, `int cpu`, `int depth_after`, `int woke` (1 if this enqueue rang the doorbell) | per item: hot, see 10.3 |
+| `kwq:::reject` | `kwq_enqueue` returned ENOBUFS/ENXIO | `kwqinfo_t *`, `int cpu`, `int errno` | per event |
+| `kwq:::slice-start` | worker swapped a list and is about to run the handler | `kwqinfo_t *`, `int cpu`, `int n`, `uint64_t oldest_age_ns` | per slice |
+| `kwq:::slice-end` | handler returned | `kwqinfo_t *`, `int cpu`, `int n`, `uint64_t ns`, `int remaining_reenqueued` | per slice |
+| `kwq:::expire` | a slice overran its quantum | `kwqinfo_t *`, `int cpu`, `uint64_t over_ns` | per event |
+| `kwq:::park` | queue parked with negative deficit | `kwqinfo_t *`, `int cpu`, `int64_t deficit_ns` | per event |
+| `kwq:::round-end` | worker finished a DRR round | `int class`, `int cpu`, `int nqueues`, `uint64_t round_ns` | per round |
+| `kwq:::yield` | the demote-yield taken | `int class`, `int cpu`, `int reason` (round / tick) | per round |
+| `kwq:::idle` | worker found nothing and went to sleep | `int class`, `int cpu`, `uint64_t busy_ns` | per burst |
+| `kwq:::steal` | BULK batch moved between CPUs | `kwqinfo_t *`, `int from`, `int to`, `int n` | per event |
+| `kwq:::worker-block`, `worker-spawn`, `worker-exit` | BLOCKING pool management | `int cpu`, `int nworkers`, `int nrunnable` | per event |
+| `kwq:::budget-hit` | a handler asked `kwq_budget_left()` and received 0 | `kwqinfo_t *`, `int cpu` | per event |
+
+Everything an operator would otherwise compute is exposed as an
+argument: the age of the oldest item at slice start (queueing latency
+without per-item timestamps), whether an enqueue caused a wakeup (the
+doorbell coalescing ratio), the deficit at park time, the remaining
+items a cooperative handler re-enqueued.
+
+### 10.2 Translator (`/usr/lib/dtrace/kwq.d`)
+
+    typedef struct kwqinfo {
+        string   kwq_label;        /* "pair", "netisr/ip", "wg/crypto" */
+        string   kwq_class;        /* "net", "bulk", "blocking" */
+        int      kwq_weight;
+        uint32_t kwq_limit;        /* per-CPU bound */
+        uint32_t kwq_flags;
+        uintptr_t kwq_addr;        /* for correlating with lockstat/fbt */
+    } kwqinfo_t;
+
+    translator kwqinfo_t < struct kwq *Q > {
+        kwq_label  = stringof(Q->kwq_label);
+        kwq_class  = Q->kwq_class == 0 ? "net" : Q->kwq_class == 1 ? "bulk" : "blocking";
+        kwq_weight = Q->kwq_weight;
+        kwq_limit  = Q->kwq_limit;
+        kwq_flags  = Q->kwq_flags;
+        kwq_addr   = (uintptr_t)Q;
+    };
+
+The label is a fixed-size array in `struct kwq` (not a pointer to client
+memory) so `stringof` is always safe, including during drain/destroy.
+A `dtrace_kwq(4)` manual page documents probes and types alongside the
+existing `dtrace_io(4)`, `dtrace_sched(4)`, `dtrace_tcp(4)`.
+
+### 10.3 Cost control
+
+- The per-slice, per-round and per-event probes are cheap by
+  construction and always compiled in.
+- The per-item `kwq:::enqueue` probe sits on the hottest path in the
+  system.  A disabled SDT probe costs a predicted-not-taken branch on
+  `sdt_probes_enabled`; argument computation is guarded with
+  `SDT_PROBES_ENABLED()` (as `tcp_input` does) so `depth_after`/`woke`
+  are only evaluated when someone is tracing.  When enabled, at ~1M
+  items/s per CPU the probe is expensive and the scripts below are
+  written so the common questions never need it: slice-level data
+  answers them.
+- No probe takes a lock; all arguments are read from the per-CPU queue
+  state the worker or enqueuer already holds or just published.
+
+### 10.4 What the workers look like to other providers
+
+- Threads are named `kwq_net/N`, `kwq_bulk/N`, `kwq_blk/N`, so
+  `sched:::on-cpu`, `sched:::off-cpu` and the `profile` provider
+  attribute CPU time per worker with `curthread->td_name` and per class
+  with a prefix match; per-client attribution comes from `kwq:::slice-*`.
+- The (queue, CPU) mutexes carry the label in their lock name
+  (`"kwq pair"`), so the `lockstat` provider reports contention per
+  queue - the tool that found the callout-wheel and mbuf-zone hot spots
+  keeps working unchanged.
+- `fbt::kwq_enqueue:entry` with `stack()` answers "who is feeding this
+  queue"; `fbt` on the handler symbol answers "what does this client do
+  per slice".
+
+### 10.5 Always-on counters and DDB
+
+DTrace is for investigation; steady-state health needs no probe enabled.
+Every (queue, CPU) exports `counter(9)` cells under
+`kern.kwq.<class>.<label>.cpu<N>.{items,slices,cycles,expiries,parks,
+rejected,steals,maxlat_ns}` plus class-level `kern.kwq.<class>.cpu<N>.
+{rounds,yields,idle_ns}`; `sysctl kern.kwq` is the first thing to look
+at, and `dtrace` the second.  `show kwq` in DDB prints every queue's
+per-CPU depth, state (IDLE/WAKING/RUNNING/PARKED) and the last handler
+run, for the post-mortem case.
+
+### 10.6 One-liners the design is built to support
+
+Queueing latency per client (age of the oldest item when its slice began):
+
+    dtrace -n 'kwq:::slice-start { @[args[0]->kwq_label] = quantize(arg3 / 1000); }'
+
+Which clients overrun their quantum, and from where:
+
+    dtrace -n 'kwq:::expire { @[args[0]->kwq_label, args[0]->kwq_class] = count(); }'
+    dtrace -n 'kwq:::expire /args[0]->kwq_label == "pair"/ { @[stack()] = count(); }'
+
+Doorbell efficiency (wakeups per enqueue; near 0 = good batching):
+
+    dtrace -n 'kwq:::enqueue { @e[args[0]->kwq_label] = count(); @w[args[0]->kwq_label] = sum(arg3); }'
+
+Per-CPU imbalance of a client's work:
+
+    dtrace -n 'kwq:::slice-end /args[0]->kwq_label == "netisr/ip"/ { @[arg1] = sum(arg3); }'
+
+Who is dropping, and who feeds the queue that drops:
+
+    dtrace -n 'kwq:::reject { @[args[0]->kwq_label, arg1, arg2] = count(); }'
+    dtrace -n 'fbt::kwq_enqueue:return /arg1 != 0/ { @[stack()] = count(); }'
+
+Is the yield doing its job (rounds that hit the tick guard instead of
+finishing naturally):
+
+    dtrace -n 'kwq:::yield { @[arg1, arg2 == 1 ? "tick" : "round"] = count(); }'
+
+CPU time by class versus everything else on a CPU:
+
+    dtrace -n 'profile-997 { @[curthread->td_name] = count(); }'
+
+Where a BLOCKING worker blocks, when the pool spawns:
+
+    dtrace -n 'kwq:::worker-block { @[stack()] = count(); } kwq:::worker-spawn { printf("cpu %d -> %d workers", arg0, arg1); }'
+
+Each of these replaces a step of the DTrace archaeology that the 128-core
+investigation had to do by hand against unnamed taskqueue threads and
+unlabelled mutexes; the probes exist so that the next operator does not.
+
+## 11. What FreeBSD already provides, and what is missing
+
+Checked against the `releng/15.0` tree (2026-09-23).  Almost everything
+exists; three things do not, and one of them changes a claim this project
+has been making about its own driver.
+
+### Present and sufficient
+
+| need | facility |
+|---|---|
+| pinned per-CPU worker threads at a fixed priority | `kthread_add(9)` + `sched_bind()`/cpuset, as `taskqueue_start_threads_cpuset()` does |
+| non-sleeping enforcement in NET/BULK handlers | `THREAD_NO_SLEEPING()` / `THREAD_SLEEPING_OK()` (`sys/proc.h`, the epoch(9) mechanism); `WITNESS_WARN(WARN_PANIC, ...)` for lock-leak checks |
+| doorbell-safe queue lock, filter-context variant | sleep mutex; `MTX_SPIN` for filter producers (the `gtaskqueue_create_fast()` precedent) |
+| priority lending under contention | turnstiles, adaptive mutexes |
+| per-slice CPU time | `cpu_ticks()` (TSC-backed, what ULE charges `td_runtime` with) |
+| tick guard | `ticks` |
+| per-CPU state without atomics | DPCPU, `critical_enter()` |
+| counters | `counter(9)`, `SYSCTL_ADD_COUNTER_U64`, dynamic sysctl nodes per label |
+| network epoch per slice | `NET_EPOCH_ENTER()`; `NET_TASK_INIT` shows the convention |
+| vnet context | `CURVNET_SET()` |
+| cache topology for BULK stealing | `smp_topo()` / `struct cpu_group` (what ULE itself uses) |
+| DTrace with typed, translated arguments | `SDT_PROBE_DEFINEn_XLATE`, translators in `cddl/lib/libdtrace/*.d` (`ip.d`, `io.d`) |
+| lock contention per queue | `lockstat` provider keyed by the `mtx_init` name |
+| post-mortem | `DB_SHOW_COMMAND` |
+| lifecycle ordering | `SYSINIT/SYSUNINIT(SI_SUB_TASKQ)`, cloner destroy ordering (if_pair's) |
+
+Two design cautions that need no new feature: worker wait channels
+should live in cache-line-padded per-worker structures, because sleep
+channels hash into 256 chains by address (`SC_HASH`, `subr_sleepqueue.c`)
+and t_20 already showed `sleepq_chain` contention with ~130 workers; and
+`kern_yield()` must be followed by `sched_prio()` back to the class
+priority, as if_pair does.
+
+### Missing 1: bounded deference to lower priority classes (the yield)
+
+The design's latency and fairness story rests on the end-of-round
+demote-yield, `kern_yield(PRI_USER)` then restore.  Reading `kern_yield()`
+shows what it actually does for a kernel thread:
+
+    if (prio == PRI_USER) prio = td->td_user_pri;
+    sched_prio(td, prio); mi_switch(SW_VOL | SWT_RELINQUISH);
+
+and `td_user_pri` of a kernel thread is inherited from thread0, `PUSER`
+= 56 = `PRI_MIN_TIMESHARE` - the BEST timeshare priority.  So the worker
+drops below every ithread, softclock (`PI_SOFT`) and the kernel band
+(40-55), which is what it was built for and does achieve (the callout
+starvation fix holds), but it stays above every user thread except those
+ULE scores as maximally interactive (also 56); CPU-bound "batch" user
+threads sit at `PRI_MIN_BATCH` and higher and never get the CPU from a
+saturated worker on that CPU.  ULE's balancer will migrate them to other
+CPUs on an SMP machine, so this is starvation of a CPU, not of a process,
+and it is why the 128-core runs never showed it; on a uniprocessor or a
+fully saturated machine it is real.  Mogul and LRP's requirement, that
+protocol processing "guarantee some progress for user-level code", is
+therefore NOT met by `kern_yield(PRI_USER)`, and FreeBSD has no primitive
+that meets it: nothing lets an ithread-class thread say "run anyone lower
+than me for at most N microseconds".  Dropping to `PRI_MAX_TIMESHARE`
+instead would let all user threads run but with no bound (they would run
+full slices, tens of ms), destroying NET latency.
+
+Options, in order of preference:
+(a) **Emulate with existing primitives** (Mogul's "limit on CPU usage"
+    feedback): each worker tracks its busy fraction over a short window;
+    when it exceeds a class cap (say 90 %) and the CPU has runnable
+    timeshare threads, it sleeps for a fixed short interval with
+    `pause_sbt(..., C_PREL(1))` at its normal priority instead of the
+    plain yield.  Bounded (the interval), tunable, no scheduler change;
+    cost is one callout arm per cap event and added jitter equal to the
+    interval.  Good enough for a first version.
+(b) **A scheduler primitive**: `sched_relinquish_to(prio, sbintime_t
+    max)` - demote to `prio`, switch, and have ULE restore the base
+    priority and requeue the thread when `max` elapses or when the
+    lower-priority queue empties.  ~50 lines in `sched_ule.c` plus 4BSD
+    parity; the honest fix, and the one worth proposing on
+    freebsd-arch because netisr, iflib and every pinned taskqueue at
+    `PI_NET` have the same unstated gap today.
+
+### Missing 2: a "worker is about to sleep" hook for the BLOCKING class
+
+cmwq's concurrency management (../POOLS.md S3) relies on the scheduler
+calling into the workqueue when a worker thread blocks.  FreeBSD has the
+natural hook point - `sched_sleep(td, prio)` is called from
+`sleepq_switch()` with the thread lock held - but no callback mechanism.
+Adding one is small (a `TDP_`-style per-thread flag and a function
+pointer, ~20 lines in `sched_ule.c`/`sched_4bsd.c`), and the hook body
+must be spin-lock-only (it runs under `thread_lock`), which is exactly
+the case S9 identified as needing CPU-local state under
+`critical_enter()` rather than the queue mutex.  Interim: the 1 Hz
+runnability poll over the pool's threads (libdispatch's monitor, in
+kernel), which needs no change and is adequate until GELI joins.
+
+### Missing 3: CPU online/offline notifications
+
+FreeBSD has no CPU hot-plug events to subscribe to; CPUs are enumerated
+once (`CPU_FOREACH`, `hlt_cpus_mask` for administratively idle ones).
+Workers are therefore created for all CPUs at boot; a halted CPU still
+runs bound threads when an IPI wakes it, so items enqueued there are
+delayed, not lost.  Acceptable for a first version; if real hot-plug
+arrives, the pool needs a drain-to-neighbour path and an event.
+
+### Consequence for if_pair today
+
+`if_pair(4)`'s description of `net.link.pair.batch` ("so that timers and
+user processes keep running under sustained load") overstates the user
+half: the yield restores timers and kernel threads; user processes keep
+running only if interactive or migrated by ULE.  The manual page is
+corrected to say so, and ../NOTES.md records the finding.  The driver's
+behaviour is unchanged; the gap is FreeBSD's, and the same wording
+applies to every `PI_NET` worker pool in the tree.
+
+## 12. Module-first implementation
+
+Yes: the pool itself, its first clients, its DTrace provider and its
+tests can all live in loadable modules, and the absence of CPU hot-plug
+makes that simpler, not harder.  What cannot be a module is the two
+scheduler additions of S11 and the in-tree integrations (netisr,
+taskqueue shim), which are patches against `/usr/src` developed
+alongside.  This is how gtaskqueue itself arrived: inside iflib, then
+moved to `kern/subr_gtaskqueue.c` (commit 23ac9029f96b).
+
+**Everything the pool needs is exported KPI.**  `kthread_add`,
+`sched_bind`, `sched_prio`, `kern_yield`, `mtx_init` (both flavours),
+turnstiles, `THREAD_NO_SLEEPING()` (a macro on `curthread`, the field is
+part of the KBI modules already compile against), `WITNESS_WARN`,
+`NET_EPOCH_ENTER`, `counter(9)`, dynamic sysctl, `cpu_ticks`, `smp_topo()`,
+`pause_sbt`.  SDT providers are routinely defined in modules
+(`netpfil/pf/pf.c`, `dev/random/fortuna.c`, `dev/ice`): the `sdt`
+framework registers them at load and tears them down at unload.  DDB
+commands from modules are supported (`ddb/db_command.c` registers a
+module's `db_show_cmd_set` on load).  The translator is a file in
+`cddl/lib/libdtrace/`, which for a module lives in the module's
+distribution and is installed to `/usr/lib/dtrace/kwq.d`.
+
+**Shape.**
+
+    kwq.ko          the service: workers, queues, DRR, yield, sysctl,
+                    SDT provider, DDB command.  MODULE_VERSION(kwq, 1).
+    kwq_test.ko     synthetic clients: N queues with handlers of known
+                    cost, counters checked by an ATF test in tests/
+                    (fairness: two queues, equal weight, cycles within
+                    5 %; latency: oldest-item age never exceeds
+                    quantum x active queues; yield: softclock keeps
+                    firing under saturation; drain: no item lost or run
+                    twice across 1000 load/unload cycles).
+    if_pair.ko      first real client: MODULE_DEPEND(if_pair, kwq, 1, 1, 1),
+                    pool code removed, t_17/t_19/t_20/t_21 as the
+                    regression suite on the Ampere.
+    if_epair.ko     patched copy of the in-tree driver as the second
+                    client, built out of tree (the epair TSO patches
+                    already use this workflow).
+
+**No hot-plug is a simplification.**  `mp_ncpus`/`CPU_FOREACH` are fixed
+after boot, so a module loaded at runtime sizes every per-CPU array once
+at load and never revisits it; there is no online/offline path to test.
+The one boot-time subtlety is the preloaded case (`kwq_load="YES"`):
+SYSINITs of a preloaded module run at their subsystem order, before the
+APs are released, so workers must not bind until `smp_started` - GELI's
+pattern, each worker sleeping on `smp_started` before `sched_bind`
+(`geom/eli/g_eli.c`), rather than binding the loading thread (the boot
+hang if_pair hit).  A runtime `kldload` never sees this.
+
+**What the module gives testing that an in-tree implementation would not.**
+`kldload`/`kldunload` cycles exercise `kwq_drain`/`kwq_destroy` and worker
+teardown thousands of times an hour, the lifecycle area that produced
+epair's unload-vs-jail-removal deadlock and the create-return panic; the
+service can be swapped under a running if_pair to A/B the mutex versus a
+later ring backend without rebooting the Ampere (the `LD_LIBRARY_PATH`
+trick of the libdispatch work, in kernel form); DTrace probes register
+and unregister with the module, so the provider is tested as a unit; and
+clients declare `MODULE_DEPEND`, so the linker refuses to unload the pool
+while any client holds queues, which is the correct contract and free.
+
+**Limits of the module form.**  (1) The bounded relinquish and the
+`sched_sleep` hook need kernel patches; the module uses the `pause_sbt`
+cap and the polling monitor until they land, and both fallbacks stay as
+the module's behaviour on unpatched kernels.  (2) netisr, the taskqueue
+compatibility constructor and epoch-callback placement are in-tree
+changes and are developed as patches to the same tree the module is
+built against, exactly as the TSO series was.  (3) A module cannot claim
+`SI_SUB_TASKQ` ordering relative to in-tree consumers that start earlier;
+irrelevant while all clients are modules that `MODULE_DEPEND` on it.
+(4) Unload must be refused while queues exist (`EBUSY` from
+`MOD_UNLOAD`), and all workers must be joined before the module text is
+unmapped - taskqueue's `taskqueue_free` teardown is the template.
+
+Graduation path: once if_pair, epair and wg run on `kwq.ko` and the two
+scheduler patches are in review, the module moves to `kern/subr_kwq.c`
+with the netisr conversion as its first in-tree client.
