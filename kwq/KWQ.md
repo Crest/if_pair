@@ -121,6 +121,17 @@ defined in GLOSSARY.md.
                                  struct kwq_item *tail, int n);
     void        kwq_requeue(struct kwq *q, struct kwq_item *head,
                             struct kwq_item *tail, int n);  /* handler only */
+
+    /* Idempotent signals: taskqueue_enqueue(9)'s contract, cannot fail. */
+    struct kwq_notifier { struct kwq_item kn_item; int kn_cpu; u_int kn_state; };
+    void        kwq_notifier_init(struct kwq_notifier *nf, int cpu);
+                /* the notifier's CPU is fixed for its lifetime so that one
+                   (queue, CPU) lock protects kn_state; not KWQ_CPU_ANY */
+    bool        kwq_notify(struct kwq *q, struct kwq_notifier *nf);
+                /* true = was idle and is now queued; false = already
+                   pending, coalesced.  Exempt from the limit. */
+    void        kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf);
+                /* sleepable; returns with nf neither queued nor running */
     uint64_t    kwq_budget_left(struct kwq *q);       /* handler only, ns */
     int         kwq_cpu_for_hash(uint32_t hash);       /* hash -> online CPU */
     #define KWQ_CPU_ANY      (-1)   /* BULK only: least loaded in caller's domain */
@@ -137,7 +148,8 @@ defined in GLOSSARY.md.
         int     domain;     /* NUMA domain for internal memory, or -1 */
     };
     #define KWQ_F_INACTIVE   0x01   /* create inactive; kwq_activate() later */
-    #define KWQ_F_STEALABLE  0x02   /* BULK: idle workers may take batches */
+    #define KWQ_F_STEALABLE  0x02   /* BULK: idle workers may take batches;
+                                       no kwq_notify() on such a queue */
     #define KWQ_F_DISCARD    0x04   /* on drain, hand pending items to the
                                        handler with n < 0 to release, not run
                                        (a NET queue frees its mbufs) */
@@ -251,16 +263,29 @@ deferred work is usually a third case, *idempotent*: one "TX completion",
 "link change" or "refill" item per device queue, so depth is bounded by
 construction (the Windows "queue it only if the list was empty" rule).
 
-kwq therefore keeps the per-CPU limit for every queue, because it is
-free, but its meaning differs by client type: for open clients (NET
-carrying packets) it is flow control and rejects are expected under
-overload; for closed and idempotent clients (GELI notifiers, driver
-completions, wg's delivery notifiers) it is set to the maximum possible
-population and a reject is a FAULT - a leak, a loop or a runaway producer
-- which is why `rejected` is a counter and `kwq:::reject` a probe rather
-than a silent drop.  The memory-pinning, queueing-delay and drain-time
-arguments hold for all three; only the overload-signal argument is
-specific to open arrivals, and there it is the whole point.
+The limit is therefore flow control for open producers and nothing
+else.  For the other two kinds a reject would be a failure with no
+legitimate handler, and the first version of this section left exactly
+that hole: it called driver signals "idempotent", said the client should
+size the limit to its population, and called a reject "a fault".  That
+is not good enough, for the reason interrupt controllers exist.  A level
+signal that is refused will re-assert itself only if something keeps
+asserting it; an edge signal (a TX completion that has already been
+written to the ring, a link change the PHY reported once) will not, and
+nobody is in a position to retry it: the interrupt has been acknowledged,
+the hardware has moved on, and the driver has no timer whose period
+would be both timely and not a busy poll.  Signals therefore travel by
+`kwq_notify()`, which cannot fail and coalesces (S2), turning any edge
+into a software level that is cleared only by service - the same
+conversion an ithread's `it_need` flag performs for hardware interrupts,
+and what `taskqueue_enqueue()` has always offered.  Closed producers with
+one item per outstanding request (a bio each) declare `KWQ_LIMIT_NONE`:
+their population is bounded by the admission control they already have,
+and a guessed finite limit would only add a failure path.  With those two
+rules, `ENOBUFS` is a code only open producers ever see, and `rejected`
+counts drops of droppable things.  The memory-pinning, queueing-delay
+and drain-time arguments still hold for every kind; the overload-signal
+argument is specific to open arrivals, and there it is the whole point.
 
 Classification of the clients discussed so far:
 
@@ -270,10 +295,11 @@ Classification of the clients discussed so far:
 | netisr protocols | mbufs from NIC ithreads (open) and loopback (closed-ish) | open | flow control (today's `net.isr.maxqlimit`) | drop, `qdrops` |
 | if_wg crypto (BULK) | packets to encrypt/decrypt | open on RX; TX inherits the socket's flow control but is dropped, not held, on overload | flow control | drop (wg already drops on its ring limits) |
 | if_wg delivery (NET, CPU keyed by peer) | decrypted packets | open | flow control | drop |
-| iflib RX/TX tasks | one task per hardware queue | idempotent | population = number of queues; a reject is a fault | assert/counter |
-| GELI (BLOCKING, notifier) | one notifier per (provider, CPU); bios stay in GELI's list | closed | population = ncpu per provider; a reject is a fault | cannot happen |
+| iflib RX/TX tasks | one notifier per hardware queue, `kwq_notify()` from the filter (`KWQ_F_SPIN`) | idempotent | not applicable, notifiers are limit-exempt | cannot happen |
+| GELI (BLOCKING, notifier) | one notifier per (provider, CPU); bios stay in GELI's list | closed, carried by notifiers | not applicable | cannot happen |
 | netisr `NETISR_POLICY_SOURCE` protocols with a single source | mbufs | closed-ish (one producer, self-paced) | flow control | drop |
-| callout- or event-driven maintenance (link state, statistics, refill) | one item per device or object | idempotent | population = objects | fault |
+| callout- or event-driven maintenance (link state, statistics, refill) | one notifier per device or object, `kwq_notify()` | idempotent | not applicable | cannot happen |
+| a driver's per-request completions (one bio, one command each) | one item per outstanding request | closed | `KWQ_LIMIT_NONE`; `maxdepth` is the health signal | cannot happen |
 | epoch callbacks, deferred frees, resource reclamation | one item per object awaiting release | **none of the three**: internally generated, not flow-controlled, and undroppable because dropping leaks the resource | must not reject: either kept out of kwq (the design's choice for epoch callbacks, S4) or carried by a notifier over a client-owned list | cannot happen |
 
 So the answer to "can every conceivable client be classified as one of
@@ -292,27 +318,22 @@ the pressure that created it.  The practical test when classifying a new
 client is three questions in order: does the producer wait for
 completion (closed)?  Is the item a signal that can be coalesced
 (idempotent)?  Would dropping the item leak a resource (reclamation)?
-Only if all three are "no" is the client open, and only then is the
-limit flow control rather than a fault detector.
+Only if all three are "no" is the client open, and only then does the
+limit apply: signals travel by `kwq_notify()`, closed and reclamation
+items under `KWQ_LIMIT_NONE`, so neither ever sees `ENOBUFS`.
 
 **Three follow-up questions about the limit, answered.**
 
 *What if a client's population outgrows a limit it cannot know in
 advance - say GELI notifiers with more providers than the limit?*  It
-must not be allowed to arise, and the structure that prevents it is the
-one the design already wants for other reasons: one kwq queue PER
-PROVIDER, so each (queue, CPU) list holds at most one notifier and the
-number of providers never meets any limit; per-provider queues are also
-what gives per-provider accounting and a per-provider `kwq_drain()` on
-detach.  The cost is O(ncpu) per queue (per-CPU state, roughly 32 KB per
-queue on 128 CPUs), fine for hundreds of providers; a system with
-thousands would instead use one GELI queue whose per-CPU lists hold one
-notifier per provider and declare `KWQ_LIMIT_NONE` (next paragraph),
-keeping per-provider counters on the GELI side.  The general rule: a
-closed or idempotent client sizes its limit from a population it
-controls; if it cannot bound the population, it must restructure so that
-the queue depth is bounded by construction, or declare the queue
-unbounded on purpose.
+cannot arise: notifiers are exempt from the limit (`kwq_notify()`, S2),
+so a GELI queue shared by thousands of providers holds one notifier per
+provider per CPU and never refuses one.  GELI still gets one queue PER
+PROVIDER in the design, for per-provider accounting and a per-provider
+`kwq_drain()` on detach, at O(ncpu) per queue (roughly 32 KB per queue
+on 128 CPUs); a system with thousands of providers may use one queue and
+keep per-provider counters on the GELI side, and loses nothing in
+reliability by doing so.
 
 *What do epoch callbacks, deferred frees and resource release do instead
 of rejecting?*  They never have a per-object kwq item in the first
@@ -383,6 +404,90 @@ they computed; the service treats it as an ordering key and nothing more.
 **kwq_enqueue_list(q, cpu, head, tail, n)**: as above for a pre-linked
 list; all-or-nothing against the bound.
 
+**kwq_notify(q, nf)**: the primitive for signals ("TX completions
+are in the ring", "the link changed", "my request list is non-empty").
+A notifier is a preallocated, client-owned item with a pending state
+that kwq maintains and a CPU fixed at `kwq_notifier_init()`, so that the
+pending state is always protected by that one (queue, CPU) lock and
+never needs atomics or a fence.  If the notifier is not pending it is
+appended to its CPU's list, exempt from the limit (depth from notifiers is
+bounded by the number of notifiers that exist, which the client
+allocated); if it is already pending the call is a no-op and returns
+`false`.  It cannot fail, exactly as `taskqueue_enqueue(9)` cannot
+(`subr_taskqueue.c`, `ta_pending`): there is nobody who could retry a
+refused signal.  Ordering contract: kwq clears the pending state when it
+removes the notifier from the list, before the handler runs, under the
+same lock the producer used, so a producer that updates its state and
+then calls `kwq_notify()` is guaranteed one of two things: the handler
+that is about to run will see the state, or a new pass will be scheduled.
+The handler treats the notifier as a level: it processes everything the
+client's state says is outstanding, never "one event"; a notifier is
+allowed to be pending again while its previous instance is being
+handled (the handler's `n` items may include it once; the live list may
+hold it once more).  Callable from every context `kwq_enqueue()` is,
+including interrupt filters on `KWQ_F_SPIN` queues.
+
+*Signalled again while its handler is running.*  The pending state was
+cleared when the notifier left the list, so the new `kwq_notify()` finds
+it idle, appends it to its CPU's live list and returns `true`; the
+handler currently running is not interrupted and does not see the new
+signal.  When it returns, the worker finishes the pass and the notifier
+is in the next pass on that CPU.  Two outcomes are possible and both are
+correct: if the running handler already consumed the new state (the TX
+completions had landed in the ring before it read the ring; the link
+register already showed the final state), the second run finds nothing
+to do and returns - a spurious run costing one ring or register read;
+if the running handler had already passed the point where it read the
+state, the second run does the work.  Nothing is lost in either case,
+and a burst of signals during one run produces exactly one further run,
+not one per signal (`coalesced` counts the rest).  What the level model
+does not preserve is intermediate states: a link that went down and up
+between two runs is seen as "up"; a driver that needs every transition
+records them in its own state (a counter or log the handler drains),
+which is what carries information - the notifier never does.  Runs of
+one notifier never overlap: its CPU is fixed and one worker serves that
+(class, CPU), so the second run starts after the first returns.  This is
+`taskqueue_enqueue()`'s behaviour during `ta_func` (`ta_pending` is zeroed
+before the call, a re-enqueue runs the task again afterwards) and
+Linux's non-reentrant workqueues since 3.7.  The one place the
+no-overlap guarantee would break is a `KWQ_F_STEALABLE` queue, where a
+stolen batch runs on another CPU while the re-armed notifier may run on
+its own: `kwq_notify()` on a stealable queue is therefore a bug,
+asserted under INVARIANTS and returning `false` otherwise; signals are
+not bulk work and have no reason to be stolen.
+`kwq_notify_cancel()` is the detach-time counterpart: it marks the
+notifier cancelled under the lock, unlinks it if queued (O(depth), once
+per detach), and waits for a pass that holds it to finish; after it
+returns the client may free the notifier.  A notifier belongs to one
+queue for its lifetime.
+
+*Pending when `kwq_drain()` runs.*  A notifier on a list at drain time
+is treated as an item: on a queue without `KWQ_F_DISCARD` the drain runs
+the handler on it once more, on this CPU's worker, as a normal pass (a
+final level check - a TX-completion handler reaps what is left in the
+ring, GELI's handler drains what remains of its list); with
+`KWQ_F_DISCARD` the handler receives it with `n < 0` and, since a
+notifier owns no resource, simply ignores it.  In both cases its pending
+state is cleared as it leaves the list, so when `kwq_drain()` returns
+every notifier of the queue is idle and not running, and the client may
+free it without `kwq_notify_cancel()`.  Two rules follow.  First, the
+drain does not re-arm: a `kwq_notify()` issued after the drain began -
+including one from the handler's own final run saying "work remains" -
+is not queued, returns `false`, and is counted in `rejected` with
+`kwq:::reject` firing with `ENXIO`, exactly as a late `kwq_enqueue()`
+is.  A client whose handler processes a client-owned list must therefore
+empty or cancel that list BEFORE `kwq_drain()` (S14's detach order:
+`g_eli_cancel()`, then `kwq_drain()`, then `kwq_destroy()`), or the
+remainder would sit unprocessed with nobody to signal for it.  Second,
+because the final run may touch hardware, a driver drains the queue
+before it releases the device (bus_teardown_intr, bus_release_resource),
+not after; a driver that has already stopped the hardware and wants no
+final run creates the queue `KWQ_F_DISCARD`.  The `false` return of
+`kwq_notify()` thus means "not newly queued" for two reasons the caller
+cannot tell apart and never needs to: already pending (counted in
+`coalesced`) or draining (counted in `rejected`); in neither case is
+there anything for the producer to do.
+
 **kwq_scatter(q, list, n, done, arg)** (BULK only): distributes `n` items
 over the CPUs of the caller's cache domain, in chunks sized to the class's
 idle capacity, and calls `done(arg)` from the worker that finishes last.
@@ -433,6 +538,8 @@ infallible so that no client needs an error path there.
 | `kwq_activate()` | no | `void`; activating twice or after drain is a bug, asserted |
 | `kwq_enqueue()` | yes, by design | `ENOBUFS`: the (queue, CPU) list for the chosen CPU already holds `limit` items (the limit is per CPU, not per queue, so one hot CPU rejects while others are empty - a steering symptom); `ENXIO`: `kwq_drain()` has begun, or the queue was created `KWQ_F_INACTIVE` and not yet activated (the latter is a bug, asserted under INVARIANTS); `EINVAL`: `KWQ_CPU_ANY` on a NET queue.  Never for contention, a busy worker, memory pressure or interrupt context.  The item is untouched and remains the caller's; the caller drops and counts, or applies backpressure upstream |
 | `kwq_enqueue_list()` | yes, all-or-nothing | same codes; either every item is queued or none is |
+| `kwq_notify()` | **no** | returns `true` if the notifier was idle and is now queued, `false` if it was already pending (`coalesced`) or the queue is draining (`rejected`, `kwq:::reject` with `ENXIO`); exempt from the limit; a notifier pending when the drain begins is run or discarded by the drain like any item and is idle when `kwq_drain()` returns |
+| `kwq_notify_cancel()` | no | `void`; may sleep; detach only |
 | `kwq_scatter()` | yes, all-or-nothing | `EINVAL` for a non-BULK queue; `ENOBUFS` if the chunks do not all fit, in which case nothing is queued and `done` is never called; on success `done` is called exactly once |
 | `kwq_budget_left()` | no | returns 0 when the quantum is exhausted; never an error |
 | `kwq_requeue()` | no | `void`; handler-only, prepends already-admitted items, never counts against the limit |
@@ -453,8 +560,8 @@ misuse rather than returning a code a caller would ignore.
 | caller context | allowed | not allowed |
 |---|---|---|
 | thread (syscall, kernel thread, sleepable) | everything | - |
-| interrupt thread (ithread), SWI, callout, netisr, another kwq handler | `kwq_enqueue`, `kwq_enqueue_list`, `kwq_scatter`; inside a handler also `kwq_budget_left`, `kwq_requeue` | `kwq_create`, `kwq_drain`, `kwq_destroy` (they sleep); `kwq_activate` (configuration-time only, asserted) |
-| interrupt filter (primary interrupt context) | `kwq_enqueue`, `kwq_enqueue_list`, `kwq_scatter` **on a `KWQ_F_SPIN` queue only** | the same calls on a sleep-mutex queue (WITNESS panics: blockable lock in filter context); everything else |
+| interrupt thread (ithread), SWI, callout, netisr, another kwq handler | `kwq_enqueue`, `kwq_enqueue_list`, `kwq_notify`, `kwq_scatter`; inside a handler also `kwq_budget_left`, `kwq_requeue` | `kwq_create`, `kwq_drain`, `kwq_destroy` (they sleep); `kwq_activate` (configuration-time only, asserted) |
+| interrupt filter (primary interrupt context) | `kwq_enqueue`, `kwq_enqueue_list`, `kwq_notify`, `kwq_scatter` **on a `KWQ_F_SPIN` queue only** | the same calls on a sleep-mutex queue (WITNESS panics: blockable lock in filter context); everything else |
 | inside `critical_enter()` or holding a spin mutex | as for a filter: `KWQ_F_SPIN` queues only | sleep-mutex queues |
 | NMI, `SCHEDULER_STOPPED()`, KDB | nothing | everything (the mutexes degrade to no-ops after panic, so `kwq_drain` at shutdown needs no special case, but no new work may be submitted) |
 
@@ -474,6 +581,7 @@ re-entrant from it; the class decides the rest.
 |---|---|---|---|
 | `kwq_enqueue`, `kwq_enqueue_list` to another queue | yes | yes | any class, any CPU; ordinary reject rules |
 | `kwq_enqueue`, `kwq_enqueue_list` to the SAME queue | yes | yes | lands in the chosen CPU's list as NEW work (behind items already there); use for genuinely new items, not for leftovers |
+| `kwq_notify` to any queue, including this one and for the notifier being handled | yes | yes | re-arms the signal; the usual way a notifier handler says "my list is still non-empty" (S14) |
 | `kwq_requeue` (leftovers of this pass) | yes | yes | prepends to the current CPU's list of this queue; FIFO preserved; only for items received in this pass |
 | `kwq_budget_left` | yes | yes (informational) | 0 means: requeue and return |
 | `kwq_scatter` | yes | yes | to a BULK queue; completion runs later on some BULK worker |
@@ -545,8 +653,9 @@ re-entrant from it; the class decides the rest.
   handler")` at entry and a check at exit that no locks were leaked
   (`witness_warn` with the entry lock count).
 - **sysctl(9) and DTrace**: `kern.kwq.<class>.<name>.cpu<N>.{items,
-  cycles, passes, overruns, rejected, maxlat_ns}` as `counter(9)`
-  where possible; a `kern.kwq.<class>.quantum_us` per class (RWTUN,
+  cycles, passes, overruns, rejected, coalesced, maxlat_ns}` (per-CPU
+  cells, S17); per class `kern.kwq.<class>.yield_prio` (RW, default
+  `PUSER`, S11) and `kern.kwq.<class>.quantum_us` (RWTUN,
   default 200 us NET, 1 ms BULK, 5 ms BLOCKING - the quantum shares one
   worker between queues, which ULE's time slice does not do); SDT probes
   `kwq:::enqueue(q, cpu, n)`, `kwq:::reject(q, cpu)`, `kwq:::pass-start(q,
@@ -947,7 +1056,8 @@ existing `dtrace_io(4)`, `dtrace_sched(4)`, `dtrace_tcp(4)`.
 DTrace is for investigation; steady-state health needs no probe enabled.
 Every (queue, CPU) exports `counter(9)` cells under
 `kern.kwq.<class>.<name>.cpu<N>.` (items, rejected, passes, cycles,
-overruns, parks, requeued, steals_in, depth/maxdepth, maxlat_ns) plus
+overruns, parks, requeued, steals_in, coalesced, depth/maxdepth,
+maxlat_ns) plus
 class-level `kern.kwq.<class>.cpu<N>.` (rounds, yields, tick_yields,
 cap_sleeps, idle_ns, busy_ns, steals_out); the full list with types and
 defaults is S10.7.  `sysctl kern.kwq` is the first thing to look at, and
@@ -1045,7 +1155,8 @@ Per queue: `kern.kwq.<class>.<name>.`
 | `cpu<N>.depth` | int | RD (sampled) | items currently queued on this CPU |
 | `cpu<N>.maxdepth` | int | RD, reset via `reset` | high-water mark of `depth`; the health signal for `KWQ_LIMIT_NONE` queues |
 | `cpu<N>.items` | counter | RD | items accepted |
-| `cpu<N>.rejected` | counter | RD | enqueues refused with `ENOBUFS` |
+| `cpu<N>.rejected` | counter | RD | enqueues refused with `ENOBUFS`, and enqueues or notifies after drain began (`ENXIO`) |
+| `cpu<N>.coalesced` | counter | RD | `kwq_notify()` calls that found the notifier already pending (signal coalescing ratio) |
 | `cpu<N>.passes` | counter | RD | handler invocations |
 | `cpu<N>.cycles` | counter | RD | `cpu_ticks()` consumed by passes; divide by `kern.kwq.<class>.cpu<N>.busy_ns` for the queue's share of its worker |
 | `cpu<N>.overruns` | counter | RD | passes that exceeded the remaining quantum |
@@ -1367,14 +1478,14 @@ because of three facts about GEOM and GELI as they are today
 not put the requests themselves into kwq.  It keeps its own unbounded
 request list (GELI's `sc_queue` bioq, as now) and uses kwq only as the
 execution context: one preallocated item per (provider, CPU) - the
-*notifier* - enqueued when the client's list goes from empty to
-non-empty, exactly the idempotent-requeue rule the Windows work-item
-documentation prescribes and the doorbell already implements one level
-down.  With at most one notifier per CPU ever in flight, the (queue, CPU)
-list never reaches its limit and `kwq_enqueue()` can never return
-`ENOBUFS`; the handler drains the client's list under the client's lock
-with `kwq_budget_left()` as its batch bound, requeues its notifier when
-work remains, and admission control stays where GEOM already does it.
+*notifier* - signalled with `kwq_notify()` when the client's list goes
+from empty to non-empty, exactly the idempotent-requeue rule the Windows
+work-item documentation prescribes and the doorbell already implements
+one level down.  `kwq_notify()` cannot fail and is exempt from the limit
+(S2, S3), so no bio is ever refused by kwq; the handler drains the
+client's list under the client's lock with `kwq_budget_left()` as its
+batch bound, calls `kwq_notify()` on its own notifier when work remains,
+and admission control stays where GEOM already does it.
 kwq becomes "give me a bound worker on this CPU with this priority and
 this accounting", which is all GELI ever wanted from its per-provider
 kprocs.  The pattern is the recommended shape for every reliable client;
@@ -1629,6 +1740,7 @@ consumer writes without the lock into that line.
         u_int           kc_state;       /* IDLE/WAKING/RUNNING/PARKED */
         uint64_t        kc_empty_since; /* first enqueue into empty list */
         uint64_t        kc_rejected;    /* producer writes, holds the lock */
+        uint64_t        kc_coalesced;   /* likewise (kwq_notify no-ops) */
         /* line 1..: consumer-private, written only by the owning CPU */
         int64_t         kc_deficit    __aligned(CACHE_LINE_SIZE);
         TAILQ_ENTRY(kwq_cpu) kc_ring;
@@ -1776,3 +1888,30 @@ checked by the load-time assertion of Rule 5.  Record the numbers in
   fields, read-mostly header, per-CPU domain allocation with
   malloc_domainset_aligned, sleepqueue chain spreading, no per-item
   touch); PLAN P0 gained the layout bullets.
+- 2026-09-25: idempotent signals get their own primitive.  Driver
+  signals (TX completion, link change, "my list is non-empty") were
+  classed idempotent with "a reject is a fault"; an edge event that is
+  refused has nobody to retry it.  Added `struct kwq_notifier`,
+  `kwq_notify()` (cannot fail, coalesces, limit-exempt, pending cleared
+  before the handler runs) and `kwq_notify_cancel()`; closed per-request
+  producers use `KWQ_LIMIT_NONE`; `ENOBUFS` is now only for open
+  producers.  S2, S3 (rule, table, follow-ups, reject table), S6 handler
+  table, S10.7 (`coalesced`), S14, GLOSSARY and PLAN P0/P3 updated.
+- 2026-09-25 (later): consistency pass after the day's changes.  A
+  notifier's CPU is fixed at `kwq_notifier_init(nf, cpu)` and
+  `kwq_notify(q, nf)` takes no CPU: a per-call CPU would have let two
+  producers race on the pending state under two different (queue, CPU)
+  locks.  Context table, S4 sysctl prose, S10.5 counter list and the S17
+  struct now include `kwq_notify`, `yield_prio` and `coalesced`; the
+  "fault detector" wording for the limit is gone from S3 and the glossary;
+  README lists the new sections.
+- 2026-09-25 (later): S3 spells out what a `kwq_notify()` during the
+  notifier's own handler does (queued again, one further non-overlapping
+  run, possibly spurious, intermediate states not preserved) and forbids
+  notifiers on `KWQ_F_STEALABLE` queues, where stealing could run one
+  notifier on two CPUs at once.
+- 2026-09-25 (later): S3 defines a pending notifier's fate at
+  `kwq_drain()` (run or discarded like an item, idle afterwards, no
+  cancel needed), that the drain never re-arms (a late `kwq_notify()`
+  counts as `ENXIO` in `rejected`), and the resulting detach order for
+  clients with their own lists and for drivers that touch hardware.

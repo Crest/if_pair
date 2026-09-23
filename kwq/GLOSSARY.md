@@ -111,15 +111,19 @@ more.  "kwq:" marks terms this project defines.
   kernel *wakeup* primitive (`wakeup_one(9)`).  A *requeue* never rings
   it (the worker is already running that queue).  Aliases: *poke*
   (libdispatch), *kick*.  Inherited from if_pair (../NOTES.md).
+- **notifier** (kwq) - `struct kwq_notifier`: a preallocated, client-owned
+  item with a pending state kept by kwq and a CPU fixed at init (so one
+  (queue, CPU) lock protects the state).  `kwq_notify()` queues it if
+  idle and is a no-op if pending; it cannot fail and is exempt from the
+  limit.  kwq clears the pending state before the handler runs, so a
+  signal arriving during handling causes another pass.  Aliases: *task*
+  (taskqueue(9), `ta_pending`), *work item* (Windows), *work_struct*
+  (Linux, `WORK_STRUCT_PENDING`).  KWQ.md S2, S3.
 - **notifier pattern** (kwq) - using kwq only as the execution context:
-  the client keeps its own request list and enqueues one preallocated
-  item per (client, CPU) when that list goes from empty to non-empty; the
-  handler drains the client's list within `kwq_budget_left()` and
-  requeues the notifier if work remains.  At most one notifier per CPU is
-  ever queued, so `kwq_enqueue()` cannot reject.  The shape for clients
-  whose requests may not be dropped (GELI, KWQ.md S14).  Alias: the
-  "queue the work item only if the task list was previously empty" rule
-  (Windows System Worker Threads documentation).
+  the client keeps its own request list and signals a notifier when the
+  list goes from empty to non-empty; the handler drains the list within
+  its budget and re-notifies if work remains.  Requests are never kwq
+  items, so they are never refused.  KWQ.md S14 (GELI).
 - **queue state** (kwq) - per (queue, CPU): IDLE (no worker will look
   until a doorbell), WAKING (doorbell rung, worker not yet running the
   queue), RUNNING (worker holds a batch from it), PARKED (deficit
@@ -300,8 +304,9 @@ more.  "kwq:" marks terms this project defines.
   whose items are the very memory they pin (one intrusive item per object
   awaiting release) may be declared unbounded with `KWQ_LIMIT_NONE`; its
   health signal is then `maxdepth` instead of `rejected`.  The kwq
-  *limit* is flow control for open clients and a fault detector for the
-  others.
+  *limit* is flow control for open clients only: signals travel by
+  `kwq_notify()` (limit-exempt) and closed or reclamation items under
+  `KWQ_LIMIT_NONE`, so only open producers ever see `ENOBUFS`.
 - **backpressure** - refusing new work at the source (the NIC ring, the
   socket buffer) when a queue is at its limit, so that queues stay
   bounded; the client's response to a *reject*.

@@ -68,6 +68,14 @@ Phases
       on the CPU's domain; wait channel is a field of it; INVARIANTS
       check at load that no two workers of a class hash to the same
       sleepqueue chain (SC_HASH), printf if they do.
+    - kwq_notifier_init(nf, cpu)/kwq_notify(q, nf)/kwq_notify_cancel:
+      pending state under the notifier's fixed (queue, CPU) mutex,
+      limit-exempt, cleared at swap-out
+      before the handler runs; cancel unlinks and waits for a pass
+      holding it (KWQ.md S3).  Test: a notifier signalled 1e6 times from
+      two CPUs while the handler counts runs -> runs <= signals, every
+      state change observed, zero rejects, `coalesced` accounts for the
+      difference.
     - Enqueue: lock, limit check -> ENOBUFS (KWQ_LIMIT_NONE skips it),
       append, IDLE->WAKING + wakeup of the class worker on that CPU (one
       hold), unlock.  kwq_enqueue_list as STAILQ_CONCAT.  ENXIO after
@@ -151,6 +159,11 @@ Phases
       repeated activate/drain), reject (bound hit -> ENOBUFS counted),
       steal (BULK, KWQ_F_STEALABLE, work created on one CPU appears on
       siblings first), scatter (completion called once after all chunks),
+      notify (edge-to-level: producer flips a state word then
+      kwq_notify()s from a callout on another CPU; handler must observe
+      every final state, zero signals lost, run only when pending; a
+      variant signals from inside the handler and checks that runs never
+      overlap and that exactly one further run follows a burst),
       sleep_in_handler (expects panic; run only with
       kern.kwq_test.allow_panic=1 in a VM).
     - ATF sh tests load kwq.ko + kwq_test.ko, set knobs, poll result

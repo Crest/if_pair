@@ -3,10 +3,15 @@
 Everything kwq lives under this directory; nothing here is built by the
 if_pair Makefile in the parent directory.
 
-    KWQ.md        design: threading model, API contracts, lifecycle and
-                  locking, integration, accounting, callback rules,
-                  locks-vs-lock-free decision, DTrace, gap analysis,
-                  module-first rationale
+    KWQ.md        design: threading model, API contracts (including
+                  the kwq_notify signal primitive), lifecycle and
+                  locking, integration, accounting (DRR with the
+                  fq_codel new-list rule), callback rules,
+                  locks-vs-lock-free decision, DTrace and sysctl
+                  reference, gap analysis (S11), module-first rationale
+                  and trade-offs (S12), GELI (S14), scheduler literature
+                  since DRR (S15), pseudo-interface batching (S16),
+                  memory layout (S17); revision log last
     GLOSSARY.md   canonical terms (FreeBSD's where they exist), aliases
                   from other systems, and the words deliberately avoided
     PLAN.txt      phased implementation plan with exit criteria
