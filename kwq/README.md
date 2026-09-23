@@ -7,6 +7,8 @@ if_pair Makefile in the parent directory.
                   locking, integration, accounting, callback rules,
                   locks-vs-lock-free decision, DTrace, gap analysis,
                   module-first rationale
+    GLOSSARY.md   canonical terms (FreeBSD's where they exist), aliases
+                  from other systems, and the words deliberately avoided
     PLAN.txt      phased implementation plan with exit criteria
     kwq/          kwq.ko - the service (kwq.h public KPI, kwq.c,
                   kwq_worker.c, kwq_sdt.c, kwq_ddb.c, kwq.d translator)
