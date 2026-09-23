@@ -2241,6 +2241,21 @@ Merging is decided in two stages plus a gate:
   segments must sit in the SAME FLUSH WINDOW - one driver RX
   batch (tcp_lro_flush_all at batch end) or the driver's
   lro_timeout if it sets one.
+  Interleaving footnote (2026-09-16): packets of OTHER
+  connections between two mergeable segments do not prevent
+  merging in either front end.  Queued/sorted mode (iflib,
+  mlx5): tcp_lro_flush_all SORTS the batch by stream first
+  (:1226; key = hash | arrival-index low 24 bits, :1237,
+  order-preserving within a flow) and flushes entries at each
+  stream boundary (:1240-1245) - interleaving is undone before
+  the engine runs and the 8-entry pool never binds.  Direct
+  per-packet mode (tcp_lro_rx): concurrent hash-table entries
+  absorb interleaving, BUT (a) TCP_LRO_ENTRIES defaults to 8
+  per RX queue - flows beyond that pass unmerged
+  (TCP_LRO_NO_ENTRIES, :1403); (b) any UNMERGEABLE packet
+  (fragment, options, SYN, bad csum, pool exhausted) flushes
+  ALL accumulated aggregates to preserve delivery order
+  (:1435-1442), cutting every flow's merge run at that point.
 - CONDENSE (pairwise vs the accumulated head,
   tcp_lro_condense :963-1106): TCP options either ABSENT or
   exactly the 12-byte appendix-A timestamp (NOP,NOP,TS,10 ==
@@ -3764,3 +3779,221 @@ hash would only canonicalize corners.
   - Linux does NOT deliver direction symmetry on veth either.
   A strict symmetric variant (__skb_get_hash_symmetric, flow
   label excluded) exists for AF_PACKET fanout.
+
+Shared kernel worker pool, design sketch (2026-09-19; question:
+what would a pool usable by if_pair/epair/wg/GELI/iflib-class
+consumers have to look like, and how are latency, jitter,
+throughput and fairness balanced?).  Grounded in the survey
+above (why every driver rolls its own), if_pair's measured
+governor experience, and four precedents: Linux NAPI/softirq
+(count AND time budgets, netdev_budget=300 / 2 ms, punt to
+ksoftirqd on exhaustion - and Linux now also ships threaded
+NAPI, per-queue kthreads, i.e. it is moving TOWARD threads);
+Solaris squeues (per-CPU serialization queues owning TCP
+connections, drained with a time bound - the closest ancestor);
+DragonFly's per-CPU protocol threads (flow-owned, message
+passed, lockless); FreeBSD's own netisr workstreams and
+gtaskqueue groups (the primitive, minus the service).
+
+STRUCTURE (what it must have):
+1. Threads per CPU per CLASS, not per consumer.  Two or three
+   fixed classes: NET (non-sleeping, epoch-wrapped, PI_NET -
+   packet delivery, protocol input, epoch-safe callbacks), BULK
+   (non-sleeping, CPU-heavy, PI_SOFT-ish - crypto, compression,
+   checksumming), BLOCKING (may sleep, timeshare-class kproc -
+   GELI-shaped work).  Consumers pick a CLASS, never a priority
+   - per-consumer priority choice is the tragedy of the commons
+   that produced today's landscape (everyone picks the top).
+2. Per-CPU, per-consumer queues, never one shared queue: a
+   consumer registers a "client" and receives a queue on every
+   CPU; enqueue(client, cpu, item) is the API, MPSC with the
+   IDLE/WAKING/RUNNING doorbell-coalescing state machine
+   (epair/if_pair's, generalized) so wakeups cost once per
+   burst.  Steering is the CONSUMER's job (flow hash, rxq id,
+   or "current CPU"); the pool only offers "this CPU" plus an
+   optional stealable mode for BULK, where locality is worth
+   less than filling idle cores.  Per-queue FIFO is the only
+   ordering promise (exactly what per-flow steering needs, and
+   all wg's serial grouptasks need).
+3. Per-CPU scheduler inside the worker: deficit round robin
+   across that CPU's client queues with TIME quanta, not item
+   counts.  Item cost varies 1000x (a 64-byte ACK vs a 64K TSO
+   chain); if_pair's count budget failed on exactly this and
+   grew the tick check as a patch.  Charge each client the
+   cycles its items actually consumed (TSC/vtimestamp delta per
+   drain slice - cheap, and DTrace already does it under load);
+   a client that overruns its deficit is parked until the next
+   round.  This is where FAIRNESS lives, and it is what no
+   private pool can provide, because fairness is a property
+   BETWEEN consumers.
+4. Bounded queues with a return value: enqueue fails when full
+   (ENOBUFS-style) and the consumer decides drop/backpressure,
+   as mbufq does today.  Depth watermarks exposed per queue so
+   consumers can implement flow control.
+5. Lifecycle: SI_SUB_TASKQ registration, per-client drain (all
+   CPUs) as the unload contract, CPU hot-plug/halted-CPU
+   handling (GELI's hlt_cpus_mask check, generalized), and no
+   sched_bind of the registering thread (the preload-boot hang).
+6. Observability as a first-class feature: per-client per-CPU
+   counters (items, cycles, drain slices, budget expiries,
+   enqueue failures, max queue latency) under one sysctl tree
+   plus SDT probes at enqueue/dequeue/expiry.  Today each pool
+   invents its own or has none; the callout-starvation diagnosis
+   took DTrace archaeology that a shared pool would have printed.
+
+BALANCING THE FOUR (the knobs and what each trades):
+- LATENCY = the per-slice budget and the yield discipline.  A
+  worker drains at most one time quantum per client, then moves
+  on; at the end of a full round (or a tick, whichever first) it
+  performs if_pair's demote-yield (kern_yield(PRI_USER) then
+  restore) so PI_SOFT residents - softclock, epoch reclamation -
+  and userland get the CPU.  That yield is the load-bearing
+  answer to the big-iron callout starvation: a pool at PI_NET
+  that never dips below itself starves its own CPU's timers.
+  Quantum size is the latency/throughput dial: smaller = lower
+  queueing delay for other clients, more switching overhead.
+- JITTER = time-based budgets (bounds the worst slice), keeping
+  latency-class work PINNED (no stealing; stealing trades tail
+  latency for throughput and belongs to BULK only), and never
+  punting NET work to a lower-priority thread on expiry (Linux's
+  ksoftirqd punt is its known tail-latency cliff) - instead the
+  parked client simply resumes in the next round at the same
+  priority.  Jitter also argues for the class split itself: a
+  20 us crypto item never sits ahead of a 200 ns ACK.
+- THROUGHPUT = batching (drain slices, doorbell coalescing,
+  per-CPU queues without cross-CPU locks) and letting the
+  quantum be large when nobody else is waiting: DRR with a
+  single active client degenerates to "drain until budget or
+  empty", i.e. today's behavior - the fairness machinery costs
+  nothing until there is someone to be fair to.  BULK's
+  stealable mode fills idle cores for CPU-bound work.
+- FAIRNESS = the DRR weights: equal by default, with a bounded
+  weight range (say 1-8) a class may request, so a consumer can
+  declare "I am background" but no consumer can declare "I am
+  more important than protocol input".  Strict priority BETWEEN
+  classes, proportional share WITHIN a class: the classic
+  hierarchical shape (CBQ/HFSC do the same for packets).
+
+WHAT IT DOES NOT FIX, honestly: the per-connection lock model
+and mbuf zone contention are untouched (a pool schedules work,
+it does not shorten critical sections); the flow-hash birthday
+imbalance across CPUs is the consumer's steering problem, not
+the pool's; and the class split leaves the old question "is
+epoch reclamation NET or BULK" as a policy decision with
+consequences (NET, so a saturated pool cannot starve it - but
+then it competes under DRR with packet work).
+
+WHY IT HAS NOT HAPPENED / HOW IT COULD: gtaskqueue is 90% of
+the mechanism (per-CPU pinned groups, attach/detach, drain)
+and is missing only the class model, the DRR drain loop, the
+time accounting, the yield, and the sysctl/SDT surface - an
+extension, not a rewrite.  The historical failure mode is the
+RSS one recorded above: infrastructure without consumers
+calcifies.  The credible path is consumers first: if_pair and
+epair converted together (identical shape, one is in-tree) as
+the proof, wg as the BULK-class proof, iflib last (its
+if_io_tqg is the biggest existing user and the most conservative
+reviewer base).  Effort: the DRR/time core is a few hundred
+lines; the conversions are mechanical; the design argument is
+the work.
+
+Precedent study: DISPATCH.md (2026-09-19; API synthesis and a kernel
+API sketch added 2026-09-23 as its section 10) mines libdispatch/GCD;
+POOLS.md (2026-09-23) widens it to the literature and to Linux cmwq/
+softirq/BH-workqueue history, illumos taskq and squeues, NetBSD
+softint/threadpool, OpenBSD taskq, Windows DPC/work items, DragonFly
+LWKT, and FreeBSD's own taskqueue/netisr/gtaskqueue commits, ending
+in ten mistakes to learn from and the resulting changes to the sketch;
+KWQ.md (2026-09-23) is the resulting design proposal: threading model,
+API and contracts, lifecycle and locking, integration with taskqueue/
+gtaskqueue/netisr/epoch/callout/ithreads/cpuset/VNET/WITNESS/sysctl/
+DTrace, DRR-in-CPU-time accounting, the per-class table of what a
+handler may do, the programming model and a migration order -
+the one deployed many-clients-one-pool system - for what
+transfers (class word, lock-free MPSC doorbell, overcommit as a
+class property, request coalescing) and what does not (GCD has
+no time budget and no inter-queue fairness because the kernel
+scheduler arbitrates its threads; a kernel pool at interrupt
+priority must supply both itself).
+
+Cost of a redundant wakeup, and what the pairq lock + state
+machine actually buy (2026-09-19; verified in releng/15.1
+subr_taskqueue.c / kern_synch.c / subr_sleepqueue.c).
+
+- taskqueue_enqueue() on a taskqueue whose thread is RUNNING:
+  TQ_LOCK (per-taskqueue sleep mutex, also taken by the worker
+  around every task fetch and again after every task for
+  wakeup(task)), then one of two cases.  (A) task already
+  pending: ta_pending++, unlock - one mutex round trip.  (B) task
+  NOT pending - the common "worker is inside ta_func" case,
+  because taskqueue_run_locked clears ta_pending before calling
+  the function: insert into tq_queue, then tq_enqueue ->
+  taskqueue_thread_enqueue -> wakeup_any(tq) -> sleepq_lock:
+  hash into the GLOBAL 256-entry sleepqueue chain table
+  (SC_TABLESIZE, subr_sleepqueue.c:98) and mtx_lock_spin the
+  chain (spinlock_enter = interrupts off + critical section),
+  sleepq_lookup walks the chain list (every sleep channel in the
+  kernel hashes into these 256 chains), finds no sleeper,
+  releases; TQ_UNLOCK.  Side effect: the task is queued again, so
+  the worker runs one SPURIOUS extra pass after the current one.
+  Per burst without a state machine: one global spin-lock
+  round trip + one empty pass; per packet: one tq_mutex
+  (case A), on top of whatever lock the mbuf queue itself needs.
+- When the thread IS asleep the doorbell is the expensive part:
+  sleepq_resume_thread -> setrunnable -> sched_add -> IPI to the
+  pinned CPU (possibly in a deep idle state) -> context switch:
+  microseconds, not nanoseconds.  Everything above is about
+  keeping THAT to once per burst; taskqueue's ta_pending already
+  coalesces the second and later enqueues of a pass, so the
+  state machine's marginal saving on the wake path is the one
+  case-B global spin lock + spurious pass per burst - measurable
+  (t_20: sleepq_chain 134 ms, 17k spins per 10 s at P=128 with
+  the machine in place; it would be one per pass without it) but
+  not dominant.
+- What the pq_mtx + IDLE/WAKING/RUNNING machine buy, in order of
+  weight: (1) ONE lock per packet instead of two - the mbufq
+  (STAILQ) needs a lock regardless, and folding the wake
+  decision under that same lock makes taskqueue_enqueue's own
+  tq_mutex disappear from the per-packet path entirely (only
+  IDLE->WAKING touches it); (2) a trivially correct lost-wakeup
+  protocol: "enqueue task before mbuf, both under one hold" plus
+  the worker's emptiness re-check under the lock before
+  declaring IDLE - the lockless equivalent is libdispatch's
+  DIRTY-bit three-step drainer exit (queue_internal.h:183-295,
+  the longest comment in that file, with its own documented
+  race) - ~100 lines of memory-ordering subtlety replaced by a
+  mutex whose measured cost at P=128 is ~0.17 CPU-equivalents
+  (pairq adaptive-block 1617 ms + spin 126 ms per 10 s, t_20); (3)
+  a bounded queue with drop accounting for free (mbufq limit
+  4096 under the same lock; a lock-free MPSC has no cheap
+  length); (4) the worker takes pq_mtx ONCE per pass
+  (mbufq_flush), so producer/consumer contention is bounded by
+  pass count, not packet count.
+- What a GCD-style lock-free MPSC would change: the per-packet
+  RMW moves from a mutex to an xchg on the tail - the same
+  cacheline transfer, minus the hold window, adaptive spin and
+  turnstile fallback.  Against 0.17 CPU-equivalents of measured
+  pairq contention on 128 cores, the win is real but small; the
+  cost is the DIRTY-bit protocol and losing the cheap bound.
+  Verdict: keep the lock in if_pair; the lockless design earns
+  its complexity only in a SHARED pool where the queue count and
+  producer fan-in are no longer the driver's to bound.
+- Double/triple buffering (game-engine frame buffers) considered
+  (2026-09-19): the producer-vs-consumer separation it provides is
+  ALREADY what mbufq_flush() gives - one swap per pass, private
+  batch thereafter.  What remains per packet is producer-vs-
+  PRODUCER serialization on the shared tail, which frame buffers
+  never had (SPSC: one renderer, one display) and which extra
+  buffers do not remove - all producers still append to the
+  current one.  The honest multi-producer generalization, one
+  SPSC lane per producer CPU with a dirty bitmap, kills the
+  contention but REORDERS a flow whenever its sender migrates
+  between two packets (two lanes, consumer scan order decides);
+  restoring order needs sequence numbers + a merge, costing more
+  than the lock.  Linux RPS made the same call (locked per-CPU
+  backlog, not per-source lanes).  Triple buffering's
+  "producer never waits" is moot: the consumer's hold is one
+  swap and the bounded mbufq returns ENOBUFS by design.  What
+  DOES transfer is the frame BUDGET: fixed time per pass, degrade
+  by yielding rather than by lengthening the pass - i.e. the
+  tick/batch governor already in place.
