@@ -299,9 +299,13 @@ more.  "kwq:" marks terms this project defines.
   rule*).  Not a synonym for *quantum* (the per-round refill) and
   unrelated to if_pair's count-based `net.link.pair.batch`.  Alias:
   *budget* (BFQ, NAPI).
-- **penalty cap** (kwq) - the deficit may not fall below minus two quanta
-  after a pass is charged, so one overrun costs at most two rounds of
-  *park*.  SCHED.md S4.3, S13.
+- **penalty cap** (kwq) - the deficit may not fall below minus
+  `penalty_rounds` (32) quanta after a pass is charged, so one overrun
+  costs at most 32 rounds of *park* and a repeat offender is held to
+  `pass / (32 Qw)` of a cooperative queue's share.  SCHED.md S4.3, S13.
+- **overrun** (kwq) - a pass that exceeded its *budget* by more than one
+  quantum x weight; counted per (queue, CPU).  A cooperative handler's
+  one-item overshoot is not one.  SCHED.md S4.3.
 - **progress rule** (kwq) - a handler processes at least one item per
   call before honouring a zero *budget*, so a tiny or pre-consumed budget
   cannot leave a list untouched forever.  SCHED.md S5.

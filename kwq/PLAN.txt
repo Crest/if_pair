@@ -155,7 +155,7 @@ Phases
     path (a deliberate tsleep in a test handler must panic under
     INVARIANTS).
 
-[TODO] P1a Scheduler core and simulator (2 days) - SCHED.md made executable
+[DONE 2026-09-28] P1a Scheduler core and simulator - SCHED.md made executable
     Files: kwq/kwq/kwq_sched.h, kwq_sched.c (the scheduler proper, no
     kernel calls of its own); kwq/sim/{sim.c,models.c,check.c,Makefile}.
     Written and passing BEFORE any P1b kernel code; decided 2026-09-28.
@@ -196,6 +196,15 @@ Phases
     bounds hold with the measured constants recorded in SCHED.md S7; all
     S13 wrap runs pass; the S12 questions are answered with numbers; the
     simulator runs under `make -C kwq/sim test` in under a minute.
+    Status 2026-09-28: done.  kwq/kwq/kwq_sched.{h,c} (~280 lines) and
+    kwq/sim/{sim.c,kwq_sched_env.h,Makefile} (~1000 lines); `make test`
+    runs 13 scenarios and 100 random seeds x 36 s of simulated time, about
+    1e7 scheduler steps, in about 25 s (the step count is printed).  Findings, all folded into SCHED.md: penalty cap
+    raised from 2 to 32 quanta as a knob (overrunner share 13.4 -> 1.22);
+    hand-back only after a pass (BULK was starved completely); overrun =
+    more than one quantum over budget; ks_next() marks the handed-over
+    queue RUNNING (I2).  S12 answered: GRACE_ROUNDS 1, boost Qw.  Results
+    table: SCHED.md S10.1.
 
 [TODO] P1b DRR in CPU time, quantum, yield in the kernel (2 days)
     Files: kwq_worker.c (uses kwq_sched.c), kwq.c (knobs, budget),
@@ -207,7 +216,13 @@ Phases
     SCHED.md S4.6 (grace rule), S9 (boosts/grace counters), S10 (gaming
     and overrun scenarios) and S14 (alternation, hand-back, progress
     rule) are what the specification and its review added.
-    - Kernel glue: kc_pad0 becomes kc_onlist/kc_warm/kc_idle_round;
+    - Kernel glue (kwq_worker.c calls ks_doorbell/ks_next/ks_pass_begin/
+      ks_budget_left/ks_pass_end/ks_round_end under its locks; kwq_sched.c
+      joins SRCS; kwq/kwq/kwq_sched_env.h maps the core onto
+      kwq_internal.h): kc_pad0 becomes kc_onlist/kc_warm/kc_idle_round;
+      the worker struct gains kw_served and the kwq_sched_knobs per class
+      (quantum_ns, grace_rounds, cap_*, boost_weighted, penalty_rounds)
+      fed from the sysctls;
       kc_empty_since becomes an sbinuptime() stamp; worker struct gains
       the new list, ring counter, pass budget fields, cap window and
       counters; passes charged in the worker's own CPU time (td_runtime
@@ -332,12 +347,41 @@ Phases
     (ping under load) not worse.
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
+    P7a Design and simulate first (the P1a pattern; nothing in the kernel
+      before the simulator agrees with the specification):
+      - Write the BLOCKING addendum to SCHED.md: the multi-server variant
+        of the core - several workers per (class, CPU) serving one ring;
+        what a round means with two passes in flight; who refills and
+        when; whether a worker asleep mid-pass keeps its place in the
+        round or gives it up (S12); how hand-back applies to a sleeping
+        worker; reserved workers (KWQ_F_RESERVE) that serve one queue
+        only; worker replacement driven by the monitor (1 Hz
+        TD_IS_RUNNING scan) now and by the sched_sleep hook later, with
+        its detection latency as a parameter; CPU-time charging that
+        excludes the sleep (S1a.4); the growth ceiling and idle reaper.
+      - Extend kwq_sched.c to the multi-server case behind the same
+        function set, so NET and BULK keep one worker and BLOCKING gets
+        k, and the P1a suite still passes unchanged.
+      - Add a `blocking` scenario family to kwq/sim: k workers on one
+        CPU; handlers that sleep for modelled durations (fixed, heavy
+        tailed, one that never wakes); a reserved queue that must keep
+        progressing while every unreserved worker is blocked; monitor
+        detection latency swept from 1 ms to 1 s; the GELI notifier
+        pattern over a client-owned list under a request flood; the
+        BLOCKING worker's interaction with NET and BULK yields and
+        hand-back on the same CPU; the S12 place-in-round question
+        answered by measurement; counters and clocks through their
+        wraps as in `wrap`.
+      Exit: the addendum's invariants hold over 100 seeds; the reserve,
+      sleep and notifier bounds hold with the constants recorded in
+      SCHED.md; the S12 question is closed with numbers.
+    P7b Kernel:
     - Polling monitor first (1 Hz TD_IS_RUNNING scan per CPU pool),
       growth to a ceiling, idle reaper; KWQ_F_RESERVE reserved workers.
     - In parallel: the sched_sleep hook patch for /usr/src (KWQ.md S11
       Missing 2) and the sched_relinquish_to patch (Missing 1), posted to
       freebsd-arch with the P1 cap measurements as motivation.
-    Exit: kwq_test "blocking": handlers that tsleep 10 ms keep the pool's
+    Exit (P7b): kwq_test "blocking": handlers that tsleep 10 ms keep the pool's
     other queues progressing; a "reserve" scenario shows a KWQ_F_RESERVE
     queue progressing while the unreserved BLOCKING workers are all blocked;
     a "notifier" scenario (KWQ.md S14) shows no request lost and no late

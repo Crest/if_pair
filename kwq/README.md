@@ -20,9 +20,11 @@ if_pair Makefile in the parent directory.
     PLAN.txt      phased implementation plan with exit criteria
     kwq/          kwq.ko - the service (kwq.h public KPI, kwq.c,
                   kwq_worker.c; P2 adds kwq_sdt.c, kwq_ddb.c, kwq.d)
-    sim/          (P1a) userspace simulator of the scheduler: links
-                  kwq_sched.c against mock clocks; runs SCHED.md's
-                  invariants, bounds and wrap-around cases in seconds
+    sim/          userspace simulator of the scheduler: links
+                  kwq/kwq_sched.c against mock clocks; `make -C sim test`
+                  runs SCHED.md's invariants, bounds, corner cases and
+                  wrap-around runs in about a second (13 scenarios, 100
+                  random seeds); `./kwqsim <scenario> -s seed -v` for one
     kwq_test/     kwq_test.ko - synthetic clients driven by sysctl
     tests/        kwqvm.sh, which builds and runs the disposable
                   15.1/amd64 GENERIC-DEBUG bhyve guest the module tests
@@ -40,4 +42,4 @@ grew out of, and its measurements, are in ../if_pair.c and ../NOTES.md.
 Build: make (both modules, against /usr/src/sys); for the test guest's
 kernel, tests/kwqvm.sh mods.  Load: kldload ./kwq/kwq.ko
 ./kwq_test/kwq_test.ko; drive kwq_test through sysctl kern.kwq_test
-(scenario, items, reps, run, result_*).  Status: P0 done, P1 specified; P1a (simulator) is next.
+(scenario, items, reps, run, result_*).  Status: P0 and P1a done; P1b (kernel scheduler glue) is next.

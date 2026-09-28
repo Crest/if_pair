@@ -1178,6 +1178,7 @@ Per class: `kern.kwq.<class>.`
 |---|---|---|---|---|
 | `yield_prio` | int | RW | `PUSER` (56) | priority the worker yields at after each round; `PRI_MAX_TIMESHARE` (223) lets every user thread run a full slice per round |
 | `quantum_us` | int | RWTUN | net 200, bulk 1000, blocking 5000 | CPU time a queue of weight 1 may consume per round (BLOCKING too: the quantum shares a worker between queues, which ULE's slice does not) |
+| `penalty_rounds` | uint | RW | 32 | debt clamp in quanta: the most rounds an overrunning queue is parked (P1; SCHED.md S4.3) |
 | `limit` | uint | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards |
 | `cap_pct` | uint | RW | 100 (off) | CPU-share cap: worker busy fraction above which it sleeps when other threads are runnable (S11 Missing 1); 100 or more = off |
 | `cap_sleep_us` | int | RW | 100 | length of that sleep |
@@ -1212,7 +1213,7 @@ Per queue: `kern.kwq.<class>.<name>.`
 | `cpu<N>.coalesced` | counter | RD | `kwq_notify()` calls that found the notifier already pending (signal coalescing ratio) |
 | `cpu<N>.passes` | counter | RD | handler invocations |
 | `cpu<N>.cycles` | counter | RD | `cpu_ticks()` consumed by passes; divide by `kern.kwq.<class>.cpu<N>.busy_ns` for the queue's share of its worker |
-| `cpu<N>.overruns` | counter | RD | passes that exceeded the remaining quantum (P1) |
+| `cpu<N>.overruns` | counter | RD | passes that exceeded their budget by more than one quantum x weight (P1; SCHED.md S4.3) |
 | `cpu<N>.parks` | counter | RD | times the queue was skipped for a negative deficit (P1) |
 | `cpu<N>.boosts` | counter | RD | passes served from the new list (P1) |
 | `cpu<N>.grace` | counter | RD | doorbells sent to the ring instead of the new list by the grace rule (P1) |
@@ -2074,3 +2075,21 @@ checked by the load-time assertion of Rule 5.  Record the numbers in
   wrap-around and tick-rate cases a live kernel cannot run safely, and
   settles SCHED.md S12 by measurement; P1b adds the kernel glue and the
   kwq_test scenarios.  SCHED.md S10 and README updated.
+- 2026-09-28 (later): P1a done.  kwq/kwq/kwq_sched.{h,c} hold the
+  scheduler proper (SCHED.md S4/S6 as pure functions, no kernel calls);
+  kwq/sim/kwqsim links it against mock clocks and runs 13 scenarios and
+  100 random seeds in about a second, checking I1-I6 after every step
+  and B1-B9 per run, including every counter and clock through its wrap.
+  Three specification changes came out of it: the debt clamp is
+  penalty_rounds (32) quanta instead of two (an 8 ms budget-ignoring
+  handler took 13.4x a cooperative queue's share under the old cap, 1.22x
+  now); the class hand-back applies only after at least one pass in the
+  round (BULK was otherwise starved completely under a saturated NET);
+  an overrun is a pass more than one quantum over budget (a cooperative
+  handler's one-item overshoot no longer counts).  S12's two open
+  questions are answered by sweeps: GRACE_ROUNDS 1, boost Qw.  SCHED.md
+  S10.1 has the numbers.
+- 2026-09-28 (later): PLAN.txt P7 split into P7a (BLOCKING addendum to
+  SCHED.md, multi-server extension of kwq_sched.c, `blocking` scenario
+  family in the simulator, S12 place-in-round question answered by
+  measurement) and P7b (kernel), mirroring P1a/P1b.
