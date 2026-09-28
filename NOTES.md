@@ -3904,11 +3904,32 @@ softirq/BH-workqueue history, illumos taskq and squeues, NetBSD
 softint/threadpool, OpenBSD taskq, Windows DPC/work items, DragonFly
 LWKT, and FreeBSD's own taskqueue/netisr/gtaskqueue commits, ending
 in ten mistakes to learn from and the resulting changes to the sketch;
-KWQ.md (2026-09-23) is the resulting design proposal: threading model,
+kwq/KWQ.md (2026-09-23) is the resulting design proposal: threading model,
 API and contracts, lifecycle and locking, integration with taskqueue/
 gtaskqueue/netisr/epoch/callout/ithreads/cpuset/VNET/WITNESS/sysctl/
 DTrace, DRR-in-CPU-time accounting, the per-class table of what a
-handler may do, the programming model and a migration order -
+handler may do, the programming model, a migration order, the
+locks-vs-Concurrency-Kit decision (locked only, two mutex flavours)
+and the DTrace design (kwq provider, kwqinfo_t translator, one-liners);
+its section 11 audits what FreeBSD provides and finds three gaps, one of
+which corrects a claim of ours: kern_yield(PRI_USER) demotes a kernel
+thread only to td_user_pri = PUSER (56, the best timeshare priority), so
+pair_yield() lets softclock, epoch callbacks and interactive user threads
+run but never CPU-bound (batch-priority) user threads on the same CPU -
+starvation of a CPU, not a process, on SMP thanks to ULE's balancer; the
+man page wording was corrected 2026-09-23; section 12 lays out the
+module-first implementation (kwq.ko + kwq_test.ko + if_pair as first
+client, GELI's wait-for-smp_started binding pattern for preload);
+kwq/PLAN.txt (2026-09-23) is the phased implementation plan in
+CHOPPER.txt style: P0 lifecycle, P1 DRR/quantum/yield/cap, P2
+observability, P3 kwq_test + ATF, P4 if_pair, P5 epair, P6 wg on BULK,
+P7 BLOCKING + scheduler patches, P8 docs/graduation, with exit
+criteria, the test scenario list and three usage examples; kwq/GLOSSARY.md
+(2026-09-24) fixes the terminology - FreeBSD's terms where they exist (bound,
+sleep/spin mutex, SWI, interrupt filter, scheduling class), kwq's own
+(item, queue, handler, work class, pass, round, quantum, overrun, park,
+doorbell, reserved worker, worker replacement) and the aliases from Linux,
+illumos, NetBSD, Windows and libdispatch they replace -
 the one deployed many-clients-one-pool system - for what
 transfers (class word, lock-free MPSC doorbell, overcommit as a
 class property, request coalescing) and what does not (GCD has
@@ -3997,3 +4018,49 @@ subr_taskqueue.c / kern_synch.c / subr_sleepqueue.c).
   DOES transfer is the frame BUDGET: fixed time per pass, degrade
   by yielding rather than by lengthening the pass - i.e. the
   tick/batch governor already in place.
+
+2026-09-25 - CORRECTION to the 2026-09-23 kern_yield(PRI_USER) finding
+(above, and kwq/KWQ.md S11 Missing 1).  td_user_pri of a kernel worker is
+NOT a constant PUSER.  kthread_add() inherits the creator's scheduling
+class via sched_fork_thread(), which is PRI_TIMESHARE (proc0,
+init_main.c:515; or the kldload thread), and taskqueue_start_threads()
+calls sched_prio() but never sched_class() (subr_taskqueue.c:760).  ULE's
+sched_clock() therefore runs sched_interact_update() + sched_priority()
+for the worker on every tick it consumes, rewriting td_user_pri from its
+own run/sleep history: interactive (56..119) while the worker mostly
+sleeps, PRI_MIN_BATCH + CPU offset + 20 (~180-200) once it is saturated
+over ULE's ~5 s window.  pair_yield()'s kern_yield(PRI_USER) is thus a
+regime flip, not a fixed demotion: lightly loaded, it yields to kernel
+threads and interactive processes only; saturated, it parks the worker
+behind the CPU-bound user threads of its CPU, each of which then runs a
+slice (sched_slice ~94 ms / load, min ~16 ms, tdq_slice()) - tens of ms
+of delivery latency per yield.  The 128-core runs never showed this
+because CPU-bound iperf3 threads were rarely runnable on a worker's CPU
+at yield time.  if_pair.4's net.link.pair.batch text corrected again
+(the 2026-09-23 wording was wrong in the other direction); the driver
+code is unchanged, kwq PLAN P4 replaces the yield.  kwq decision: yield
+to a fixed per-class priority (kern.kwq.<class>.yield_prio, default
+PUSER), never PRI_USER; CPU-bound users get their share from the
+pause_sbt cap.  kwq/KWQ.md S12 now carries a consolidated table of what
+running kwq as a module on an unpatched GENERIC costs versus the two
+scheduler patches.
+
+2026-09-28 - kwq P0 bring-up on the bhyve test guest (kwq/tests/kwqvm.sh:
+15.1-RELEASE-p3 GENERIC-DEBUG, WITNESS + INVARIANTS, 4 vCPUs, 4 GB, on
+nas).  First kldload panicked in kwq_workers_start(): thread_unlock()
+after sched_add(), which releases the thread lock itself (as
+_taskqueue_start_threads() and kthread_add() rely on).  With that
+removed, kwq_test's scenarios all pass and WITNESS logs nothing:
+lifecycle 1000 x 1000 items in == out (6.7 s), fifo 3 x 100000 over 4
+CPUs with 0 reorders, notify 1e6 signals -> 5 runs / 999995 coalesced
+with the final state observed, reject (limit 8, 20 us/item) 30 of 15000
+refused, discard 18 handed back with n < 0, kwq.ko load/unload 1000x in
+4 s, and a deliberate pause() in a handler panics with "sleepq_add: ...
+with sleeping prohibited" and dumps (vmcore.0, 370 MB).  The INVARIANTS
+sleepqueue-chain check reported one collision among the 4-CPU workers;
+per-domain arrays with a 256-byte stride are the P1 fix.  Two false
+alarms cost an hour: after every guest reboot the host lost its address
+on tap100 (a tap drops addresses when bhyve reopens it; now vmnet100
+plus a re-add in the run loop), and the guest console was silent to me
+because a cu session already held the nmdm B side.  pmcstat baseline
+still open: bhyve exposes no PMCs.
