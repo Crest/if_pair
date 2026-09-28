@@ -204,7 +204,11 @@ ks_budget_left(const struct kwq_worker *kw, uint64_t cpu_now)
 {
 	int64_t left;
 
-	left = kw->kw_pass_budget - (int64_t)(cpu_now - kw->kw_pass_start);
+	int64_t el = (int64_t)(cpu_now - kw->kw_pass_start);
+
+	if (el < 0 || el > (int64_t)KS_GLITCH_NS)	/* clock glitch: stop */
+		return (0);
+	left = kw->kw_pass_budget - el;
 	return (left > 0 ? (uint64_t)left : 0);
 }
 
@@ -221,6 +225,10 @@ ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 
 	dt = (int64_t)(cpu_now - kw->kw_pass_start);
 	q = ks_quantum(kw, kc);
+	if (dt < 0 || dt > (int64_t)KS_GLITCH_NS) {	/* S13: ticker glitch */
+		kc->kc_glitches++;
+		dt = q;
+	}
 	kc->kc_passes++;
 	kw->kw_passes++;
 	kw->kw_busy_ns += (uint64_t)dt;

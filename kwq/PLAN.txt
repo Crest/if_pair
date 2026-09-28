@@ -206,7 +206,7 @@ Phases
     queue RUNNING (I2).  S12 answered: GRACE_ROUNDS 1, boost Qw.  Results
     table: SCHED.md S10.1.
 
-[TODO] P1b DRR in CPU time, quantum, yield in the kernel (2 days)
+[DONE 2026-09-28] P1b DRR in CPU time, quantum, yield in the kernel
     Files: kwq_worker.c (uses kwq_sched.c), kwq.c (knobs, budget),
     kwq_internal.h, kwq_test.c.
     Specification: SCHED.md is normative and kwq_sched.c is its tested
@@ -260,6 +260,36 @@ Phases
     "switch_baseline" on the GENERIC kernel, numbers into NOTES.md and
     SCHED.md S15.  The simulator's constants and the guest's agree within
     the simulator's stated model error.
+    Status 2026-09-28: done.  SCHED.md S10.2 has the table for both the
+    GENERIC-DEBUG guest kernel and the stock GENERIC kernel (nextboot -k
+    kernel; kwqvm.sh mods generic; MODDIR=/root/kwq-generic
+    tests/run_p1b.sh).  kwq_worker.c is now glue around kwq_sched.c; the
+    knobs have validating sysctl handlers; workers sleep on an 8-byte
+    channel array with a 256-byte-aligned base instead of per-domain
+    worker arrays (same chain-spreading effect, simpler).  Met on both
+    kernels: fairness 1.00 and 2.00, gaming 0.89, overrun 1.22 (=
+    simulator), light-queue latency 220-550 us (bound 420 us, simulator
+    399 us), WITNESS silent.  Costs on GENERIC: 96 ns worker / 80 ns
+    producer / 211 ns wall per item vs taskqueue 58 producer / 193 wall,
+    524 ns per thread switch (DEBUG: 175/158/393, 155/363, 1008).  The
+    light queue first measured 1.9-3.4 ms (DEBUG) and 6-56 ms (GENERIC):
+    the test producers' kern_yield spin loop was starving the callout
+    thread's migration on a scheduler spin lock (S10.2 "The GENERIC
+    stall"); producers now sleep on the pool.  Open: a residual 24-37 ms
+    callout stall in about one run in six on both kernels (scheduler lock
+    convoy in the guest; host DTrace rules out vCPU descheduling);
+    re-measured on a07 the same day (SCHED.md S10.3): no stalls in 12
+    runs, callout lateness 66-69 us, light queue 214-221 us, shares as
+    simulated, costs 285-337 / 282-335 / 470-515 ns worker / producer /
+    wall per item vs taskqueue 391 / 514.  a07 exposed non-monotonic
+    cpu_ticks() (+2^32-tick jumps); the S13 clock glitch guard came out
+    of it.  Not run: pmcstat.
+    Follow-ups for P2: (a) a simulator scenario that injects a ticker
+    jump at a pass start and checks kc_glitches and the pass bound;
+    (b) kc_maxlat_ns is the age of the current backlog (time since the
+    queue last became non-empty), not of the oldest item: a flood that
+    never drains reports the run length (3 s on a07); either rename it
+    or restamp at each list swap.
 
 [TODO] P2  Observability (2 days)
     Files: kwq_sdt.c, kwq.d, kwq_ddb.c, sysctl in kwq.c.  The sysctl tree

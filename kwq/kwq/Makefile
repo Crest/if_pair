@@ -6,8 +6,10 @@
 # KERNBUILDDIR=/usr/obj/.../sys/GENERIC-DEBUG so its opt_global.h is used.
 
 KMOD=	kwq
-SRCS=	kwq.c kwq_worker.c
-SRCS+=	kwq.h kwq_internal.h
+SRCS=	kwq.c kwq_worker.c kwq_sched.c
+SRCS+=	kwq.h kwq_internal.h kwq_sched.h kwq_sched_env.h
+# kwq_sched.h includes <kwq_sched_env.h>; the kernel one lives here.
+CFLAGS+=	-I${.CURDIR}
 
 # kmod.mk localises every symbol unless told otherwise; export the public
 # KPI (kwq.h) and nothing else.

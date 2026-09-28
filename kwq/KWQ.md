@@ -1193,6 +1193,9 @@ Per class: `kern.kwq.<class>.`
 | `cpu<N>.yields` | counter | RD | | end-of-round yields taken (P1) |
 | `cpu<N>.tick_yields` | counter | RD | | yields forced by the tick guard (a pass outlived a tick) (P1) |
 | `cpu<N>.cap_sleeps` | counter | RD | | CPU-share cap sleeps taken (P1) |
+| `cpu<N>.handbacks` | counter | RD | | rounds ended early because a higher class waited (P1) |
+| `<queue>.cpu<N>.glitches` | counter | RD | | passes whose CPU-time delta was negative or over 1 s: a ticker fault, charged one quantum (SCHED.md S13) |
+| `cpu<N>.round` | uint64 | RD | | current round number (P1) |
 | `cpu<N>.idle_ns` | counter | RD | | time the worker spent asleep with nothing queued (P1) |
 | `cpu<N>.busy_ns` | counter | RD | | CPU time spent in passes (P1) |
 | `cpu<N>.steals_out` | counter | RD | | bulk only: batches taken from this CPU by others (P6) |
@@ -2093,3 +2096,25 @@ checked by the load-time assertion of Rule 5.  Record the numbers in
   SCHED.md, multi-server extension of kwq_sched.c, `blocking` scenario
   family in the simulator, S12 place-in-round question answered by
   measurement) and P7b (kernel), mirroring P1a/P1b.
+- 2026-09-28 (later): P1b done.  kwq_worker.c is glue around
+  kwq_sched.c (kwq_sched_env.h maps the core onto kwq_internal.h);
+  kwq.c gained validating sysctl handlers for quantum_us, cap_*,
+  penalty_rounds and yield_prio, the real kwq_budget_left() (CPU time,
+  hand-back aware) and the P1 counters; workers sleep on an 8-byte
+  channel array with a 256-byte-aligned base (distinct sleepqueue chains
+  for 256 workers) instead of per-domain worker arrays; the tick guard
+  is unconditional (S6.1).  kwq_test gained fairness, latency, gaming,
+  overrun, yield, cost, tq_baseline and switch_baseline.  Guest results
+  in SCHED.md S10.2 match the simulator on shares; the light queue's
+  latency in the VM does not and is deferred to hardware (P4).
+- 2026-09-28 (evening): GENERIC vs GENERIC-DEBUG comparison via
+  nextboot (SCHED.md S10.2).  The "GENERIC stall" traced to the test
+  producers, not kwq; kwq_test producers now sleep on an empty pool.
+  Recorded that 15.1's softclock threads are unpinned by default, so
+  B7 is moot there and the callout thread migrates instead (S6.1).
+- 2026-09-28 (night): P1b scenarios on a07 (128-core Ampere, GENERIC,
+  hz=1000): all met, no callout stalls, light queue 218 us (SCHED.md
+  S10.3).  a07's cpu_ticks() jumps by 2^32 ticks on backwards timer
+  reads; added the S13 clock glitch guard (KS_GLITCH_NS, per-queue
+  glitches counter) to the scheduler core and a glitch filter to the
+  test module's cost sums.  tests/run_p1b.sh takes KWQ_SSH/MODDIR.

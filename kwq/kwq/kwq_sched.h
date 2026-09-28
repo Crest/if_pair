@@ -15,7 +15,7 @@
  *
  *   struct kwq_cpu:    kc_active (TAILQ_ENTRY), kc_state, kc_onlist,
  *                      kc_warm, kc_idle_round (u_int), kc_src, kc_deficit
- *                      (int64_t ns), kc_passes, kc_overruns, kc_parks,
+ *                      (int64_t ns), kc_passes, kc_overruns, kc_parks, kc_glitches,
  *                      kc_boosts, kc_grace
  *   struct kwq_worker: kw_new, kw_active (TAILQ_HEAD of kwq_cpu),
  *                      kw_nactive, kw_round (uint64_t), kw_phase,
@@ -146,6 +146,15 @@ ks_ticked(unsigned int ticks_now, unsigned int swvoltick)
  * 32.32.  Exact for any t: the product is split so nothing overflows
  * 64 bits (hi x scale < 2^32 x 2^32).
  */
+/*
+ * Clock glitch guard (SCHED.md S13): a pass whose CPU-time delta is
+ * negative or longer than this is a ticker fault, not work.  cpu_ticks()
+ * on Ampere Altra reads a few ticks backwards now and then and
+ * tc_cpu_ticks() takes that for a 32-bit wrap (+2^32 ticks = 171.8 s at
+ * 25 MHz).  Such a pass is charged one quantum and counted.
+ */
+#define	KS_GLITCH_NS	1000000000ULL
+
 static inline uint64_t
 ks_ns_scale(uint64_t rate_hz)
 {
@@ -161,5 +170,9 @@ ks_ticks2ns(uint64_t t, uint64_t scale)
 
 	return (hi * scale + ((lo * scale) >> 32));
 }
+
+#ifdef _KERNEL
+extern struct kwq_sched_knobs kwq_knobs[KWQ_NCLASS];	/* kwq.c, from sysctl */
+#endif
 
 #endif /* !_KWQ_SCHED_H_ */

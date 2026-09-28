@@ -27,7 +27,7 @@
 
 #include <net/vnet.h>
 
-#include "kwq_internal.h"
+#include "kwq_sched.h"
 
 MALLOC_DEFINE(M_KWQ, "kwq", "kernel work queues");
 
@@ -71,6 +71,113 @@ SYSCTL_INT(_kern_kwq_blocking, OID_AUTO, priority, CTLFLAG_RD,
     "scheduler priority of the class's workers");
 
 static struct sysctl_oid_list *kwq_class_oids[KWQ_NCLASS];
+
+/*
+ * Scheduler knobs (../SCHED.md S8).  The sysctl handlers validate a write
+ * and re-derive the class's struct kwq_sched_knobs, which the workers read
+ * directly (plain stores of independent fields; a worker sees each new
+ * value at its next round).
+ */
+struct kwq_sched_knobs kwq_knobs[KWQ_NCLASS];
+int kwq_yield_prio[KWQ_NCLASS] = { PUSER, PUSER, PUSER };
+static u_int kwq_quantum_us[KWQ_NCLASS] = { 200, 1000, 5000 };
+static u_int kwq_cap_pct[KWQ_NCLASS] = { 100, 100, 100 };
+static u_int kwq_cap_sleep_us[KWQ_NCLASS] = { 100, 100, 100 };
+static u_int kwq_cap_window_us[KWQ_NCLASS] = { 10000, 10000, 10000 };
+static u_int kwq_penalty_rounds[KWQ_NCLASS] = { 32, 32, 32 };
+static struct sysctl_ctx_list kwq_knob_sysctl;
+
+struct kwq_knob {
+	u_int		*var;
+	u_int		lo, hi;
+	int		cls;
+	const char	*name, *descr;
+};
+
+static void
+kwq_knobs_apply(int cls)
+{
+	struct kwq_sched_knobs *k = &kwq_knobs[cls];
+
+	k->quantum_ns = (uint64_t)kwq_quantum_us[cls] * 1000;
+	k->grace_rounds = 1;
+	k->cap_pct = kwq_cap_pct[cls];
+	k->cap_window_ns = (uint64_t)kwq_cap_window_us[cls] * 1000;
+	k->cap_sleep_ns = (uint64_t)kwq_cap_sleep_us[cls] * 1000;
+	k->boost_weighted = true;
+	k->penalty_rounds = kwq_penalty_rounds[cls];
+}
+
+static int
+kwq_sysctl_knob(SYSCTL_HANDLER_ARGS)
+{
+	struct kwq_knob *kn = arg1;
+	u_int val;
+	int error;
+
+	val = *kn->var;
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (val < kn->lo || val > kn->hi)
+		return (EINVAL);
+	*kn->var = val;
+	kwq_knobs_apply(kn->cls);
+	return (0);
+}
+
+static int
+kwq_sysctl_yield_prio(SYSCTL_HANDLER_ARGS)
+{
+	int cls = (int)(intptr_t)arg1, val, error;
+
+	val = kwq_yield_prio[cls];
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	/* Anything from the class's own priority down to the last timeshare. */
+	if (val < kwq_class_priority(cls) || val > PRI_MAX_TIMESHARE)
+		return (EINVAL);
+	kwq_yield_prio[cls] = val;
+	return (0);
+}
+
+static struct kwq_knob kwq_knob_desc[KWQ_NCLASS][5];
+
+static void
+kwq_knobs_register(void)
+{
+	static const struct { const char *name, *descr; u_int lo, hi; } d[5] = {
+		{ "quantum_us", "CPU time a queue of weight 1 may consume per round", 10, 1000000 },
+		{ "cap_pct", "CPU-share cap in percent of a window; 100 or more = off", 1, 1000 },
+		{ "cap_sleep_us", "sleep when over the cap", 1, 1000000 },
+		{ "cap_window_us", "busy-fraction window for the cap", 100, 10000000 },
+		{ "penalty_rounds", "debt clamp in quanta: rounds an overrunning queue is parked at most", 1, 1024 },
+	};
+	u_int *vars[5];
+	int cls, i;
+
+	sysctl_ctx_init(&kwq_knob_sysctl);
+	for (cls = 0; cls < KWQ_NCLASS; cls++) {
+		vars[0] = &kwq_quantum_us[cls]; vars[1] = &kwq_cap_pct[cls];
+		vars[2] = &kwq_cap_sleep_us[cls]; vars[3] = &kwq_cap_window_us[cls];
+		vars[4] = &kwq_penalty_rounds[cls];
+		for (i = 0; i < 5; i++) {
+			struct kwq_knob *kn = &kwq_knob_desc[cls][i];
+
+			kn->var = vars[i]; kn->lo = d[i].lo; kn->hi = d[i].hi;
+			kn->cls = cls; kn->name = d[i].name; kn->descr = d[i].descr;
+			SYSCTL_ADD_PROC(&kwq_knob_sysctl, kwq_class_oids[cls], OID_AUTO,
+			    kn->name, CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE,
+			    kn, 0, kwq_sysctl_knob, "IU", kn->descr);
+		}
+		SYSCTL_ADD_PROC(&kwq_knob_sysctl, kwq_class_oids[cls], OID_AUTO,
+		    "yield_prio", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
+		    (void *)(intptr_t)cls, 0, kwq_sysctl_yield_prio, "I",
+		    "priority the worker yields at after each round (PUSER=56; 223 lets every user thread run a full slice)");
+		kwq_knobs_apply(cls);
+	}
+}
 
 int
 kwq_class_priority(enum kwq_class cls)
@@ -159,7 +266,7 @@ static inline void
 kwq_kc_added(struct kwq_cpu *kc, u_int added)
 {
 	if (kc->kc_depth + kc->kc_nnotify == added)
-		kc->kc_empty_since = cpu_ticks();
+		kc->kc_empty_since = sbinuptime();
 	if (kc->kc_state == KWQ_CPU_IDLE) {
 		kc->kc_state = KWQ_CPU_WAKING;
 		kwq_doorbell(kc);
@@ -268,13 +375,22 @@ kwq_requeue(struct kwq *q, struct kwq_item *head, struct kwq_item *tail,
 }
 
 /*
- * P0 stub: no quantum yet, so the budget is never exhausted.  P1 replaces
- * this with the DRR deficit in nanoseconds.
+ * Handler only: nanoseconds of this pass's budget still unspent, 0 when
+ * the quantum is exhausted or a higher class waits for the CPU (SCHED.md
+ * S4.4, S6.4), telling the handler to requeue its remainder.
  */
 uint64_t
-kwq_budget_left(struct kwq *q __unused)
+kwq_budget_left(struct kwq *q)
 {
-	return (1000000);
+	struct kwq_worker *kw;
+
+	kw = kwq_workers[q->kwq_class][curcpu];
+	KASSERT(kw != NULL && kw->kw_td == curthread && kw->kw_cur != NULL &&
+	    kw->kw_cur->kc_q == q,
+	    ("kwq_budget_left: not called from a handler of %s", q->kwq_name));
+	if (kwq_higher_waiting(q->kwq_class))
+		return (0);
+	return (ks_budget_left(kw, kwq_cputime_ns(kw)));
 }
 
 int
@@ -430,6 +546,12 @@ kwq_sysctl_register(struct kwq *q)
 		    "kwq_notify() calls that found the notifier pending");
 		KC_U64(kc_requeued, "requeued", "items requeued by the handler");
 		KC_U64(kc_maxdepth, "maxdepth", "high-water mark of depth at pass start");
+		KC_U64(kc_maxlat_ns, "maxlat_ns", "largest oldest-item age seen at pass start");
+		KC_U64(kc_overruns, "overruns", "passes that exceeded their budget by more than one quantum x weight");
+		KC_U64(kc_parks, "parks", "rounds skipped for a deficit <= 0");
+		KC_U64(kc_glitches, "glitches", "passes whose CPU-time delta was negative or > 1 s (ticker fault; charged one quantum)");
+		KC_U64(kc_boosts, "boosts", "passes served from the new list");
+		KC_U64(kc_grace, "grace", "doorbells sent to the ring by the grace rule");
 #undef KC_U64
 	}
 }
@@ -493,7 +615,7 @@ kwq_create(const char *name, enum kwq_class cls, uint32_t flags,
 		    (flags & KWQ_F_SPIN) ? MTX_SPIN : MTX_DEF);
 		STAILQ_INIT(&kc->kc_list);
 		STAILQ_INIT(&kc->kc_notify);
-		kc->kc_state = KWQ_CPU_IDLE;
+		ks_queue_init(kc);
 		if (flags & KWQ_F_SPIN)
 			kc->kc_flags |= KWQ_KC_SPIN;
 		kc->kc_q = q;
@@ -627,7 +749,10 @@ kwq_modevent(module_t mod __unused, int type, void *data __unused)
 		    SYSCTL_STATIC_CHILDREN(_kern_kwq_bulk);
 		kwq_class_oids[KWQ_BLOCKING] =
 		    SYSCTL_STATIC_CHILDREN(_kern_kwq_blocking);
-		error = kwq_workers_start();
+		kwq_knobs_register();
+		error = kwq_workers_start(kwq_class_oids);
+		if (error != 0)
+			sysctl_ctx_free(&kwq_knob_sysctl);
 		return (error);
 	case MOD_UNLOAD:
 		sx_xlock(&kwq_sx);
@@ -637,6 +762,7 @@ kwq_modevent(module_t mod __unused, int type, void *data __unused)
 		}
 		sx_xunlock(&kwq_sx);
 		kwq_workers_stop();
+		sysctl_ctx_free(&kwq_knob_sysctl);
 		return (0);
 	case MOD_QUIESCE:
 		sx_slock(&kwq_sx);

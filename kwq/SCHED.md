@@ -421,11 +421,18 @@ Unchanged from KWQ.md S3/S6, restated with the scheduler's terms:
   ../NOTES.md 2026-08-20), and covers hz=100 guests where a round can be
   many ticks.
 
-Both yields are skipped when `sched_runnable()` is false: nothing else
-is runnable on the CPU, so the switch would return immediately, and at
-one round per item under light load the saved `mi_switch()` is a few
-percent of throughput.  `td_swvoltick` is then not refreshed, so the tick
-guard keeps asking, which costs one `sched_runnable()` read per pass.
+On FreeBSD 15.1 the softclock thread is not pinned by default
+(`kern.pin_pcpu_swi=0`), so under a saturated NET worker ULE runs it on
+another CPU and this bound is rarely exercised; with `pin_pcpu_swi=1`
+the worker yields once per callout as intended (S10.2).
+
+The end-of-round yield is skipped when `sched_runnable()` is false:
+nothing else is runnable on the CPU, so the switch would return
+immediately, and at one round per item under light load the saved
+`mi_switch()` is a few percent of throughput.  The tick guard is
+unconditional: it costs at most `hz` switches per second and makes B7
+hold by construction rather than by what the run-queue load happens to
+report, as if_pair's `pair_ticked()` did.
 
 ### 6.2 How
 
@@ -557,7 +564,7 @@ client's `c_max`; `Y` the time the yielded-to threads run at a yield
 | `kern.kwq.<class>.cap_window_us` | class, RW | 10000 | cap measurement window |
 | `kern.kwq.<class>.cap_sleep_us` | class, RW | 100 | cap sleep, the jitter it adds |
 | `GRACE_ROUNDS` | compile-time | 1 | anti-gaming window; the P1a sweep found 1 and 2 indistinguishable (S12) |
-| `kern.kwq.<class>.penalty_rounds` | class, RW | 32 | debt clamp in quanta: how many rounds an overrunning queue can be parked at most (S4.3) |
+| `kern.kwq.<class>.penalty_rounds` | class, RW | 32 | debt clamp in quanta: how many rounds an overrunning queue can be parked at most (S4.3).  Validated to `[1, 1024]` by the sysctl handler: 0 would make overruns free, since the deficit could never go negative |
 
 Choosing `Q`: one to two orders of magnitude above the heaviest common
 item (a TSO chain through `ip_input` ~10 us -> 200 us is ~20 chains), at
@@ -639,6 +646,125 @@ over, is I2's wording made precise (S3).  Two simulator defects were
 found by the invariants themselves (a snapshot taken after parks, a
 streak counter that skipped hand-back rounds) and are recorded in
 `sim/sim.c`.
+
+### 10.2 Kernel results (P1b, 2026-09-28)
+
+The same scenarios in `kwq_test.ko` on the guest: a bhyve guest with 4
+vCPUs on an 8-thread host, `hz` = 100 (bhyve guests default to 100),
+target CPU 1, producers on CPUs 2 and 3, 3 s runs, three runs each.
+Two kernels: 15.1-RELEASE-p3 GENERIC-DEBUG (WITNESS, INVARIANTS) and the
+stock 15.1-RELEASE GENERIC (`nextboot -k kernel`, modules built with
+`kwqvm.sh mods generic`).  Shares are handler CPU time (`cpu_ticks()`
+around the work) as the test module measures them.  `tests/run_p1b.sh`
+reproduces the table.
+
+| scenario | GENERIC | GENERIC-DEBUG | simulator |
+|---|---|---|---|
+| fairness, equal weight, 50 vs 500 us items | 1.000 | 0.999 | 0.999 |
+| fairness, weights 2:1 | 1.999 | 2.000 | 1.998 |
+| latency, light 1 kHz queue vs a 20 us flood: light queue worst | 273, 383, 434 us | 228, 336 us; one run 4.6 ms (see below) | 399 us |
+| gaming | share 0.886, 1 boost, ~1960 grace hits | 0.895 | 0.80, 1 boost, 2081 grace |
+| overrun, budget-ignoring 8 ms passes | 1.22, `overruns == passes` | 1.22 | 1.22 |
+| yield, 1 kHz callout pinned to the saturated CPU | 5 of 6 runs worst 0.4-1.3 ms; 1 run 35 ms (see below) | 5 of 6 runs 0.7-2.5 ms; 1 run 37 ms | n/a |
+| cost, empty handler: worker CPU / producer CPU / wall per item | 96 / 80 / 211 ns (14.2 M items in 3 s) | 175 / 158 / 393 ns (7.6 M) | ~20 ns bookkeeping |
+| tq_baseline, taskqueue of epair's shape: producer / wall per item | 58 / 193 ns (15.8 M) | 155 / 363 ns (8.2 M) | |
+| switch_baseline, two bound threads passing a token | 524 ns per switch | 1008 ns | 1-2 us estimate |
+
+Shares match the simulator on both kernels.  WITNESS roughly doubles
+every cost figure; the ratio between kwq and a taskqueue does not move
+(wall per item 1.09x on GENERIC, 1.08x on DEBUG; kwq's producer pays
+more per enqueue than a taskqueue's list append, its consumer less).
+The worker's 96 ns per item on GENERIC include the test handler's own
+sleep mutex and pool return, so the scheduler bookkeeping itself is well
+under the S15 estimate's order of magnitude.
+
+**The GENERIC stall.**  The first GENERIC runs showed the light queue's
+worst latency at 6-56 ms and the callout late by 40-500 ms once per run,
+where GENERIC-DEBUG had shown 1.7-3.4 ms and at most one tick.  DTrace
+on the guest found the chain (2026-09-28, notes in NOTES.md):
+
+1. In 15.1 the per-CPU softclock is a thread ("clock (N)") that is only
+   cpuset-affine unless `kern.pin_pcpu_swi=1`, and PI_SOFTCLOCK (2) is
+   below PI_NET (1).  When CPU 1's timer interrupt wakes clock (1)
+   while a NET worker saturates CPU 1, ULE's interrupt-affinity path
+   picks the least loaded CPU that can run it *now*, so the callout
+   thread runs on another CPU (CPU 0 or 3 in ~99.8 % of wakeups, CPU 2
+   in ~0.2 %).  B7's "same CPU, one tick plus one pass" bound therefore
+   never applies on a default 15.1 kernel; the callout simply moves.
+2. The migration takes the target CPU's scheduler lock ("sched lock N")
+   from the interrupt on CPU 1.  The test's flood producers, bound to
+   CPU 2, spun on an empty pool with `kern_yield(PRI_UNCHANGED)`: about
+   a million `mi_switch()` per second, each taking and releasing sched
+   lock 2.  Spin mutexes are unfair, and in a bhyve guest every
+   `cpu_spinwait()` is a VM exit (bhyve -P), so the remote acquirer lost
+   for 40 ms .. 1.1 s (`_mtx_lock_spin_cookie` waits traced at 74, 539,
+   839 and 1115 ms, owner kwq_test_prod0), with interrupts disabled on
+   CPU 1 for the duration.  GENERIC-DEBUG hid it because WITNESS slows
+   each switch by an order of magnitude.  Fix: the producers now sleep on
+   the pool (`kt_pool_wait()`); nothing in kwq itself spins like this.
+3. With sleeping producers the light queue meets the 420 us bound on
+   both kernels and the callout is on time in 5 of 6 runs.  A residual
+   stall of 24-37 ms remains in about one run in six on both kernels,
+   also with `kern.pin_pcpu_swi=1`: idle CPUs then wait 4-35 ms for
+   their own scheduler lock inside the preemption IPI handler while CPU
+   1 performs cross-CPU wakeups.  The host was checked with DTrace: no
+   vCPU thread was involuntarily descheduled for more than 1.1 ms during
+   a 17 ms guest stall, so the 4-core/8-thread host is not the cause.
+   The residual is a scheduler spin-lock convoy of the guest kernel under
+   a saturated ithread-priority CPU; whether bhyve's PAUSE exits are
+   necessary for it is untested.  It is not kwq's bookkeeping: the same
+   wakeup pattern would come from any driver ithread or taskqueue thread
+   at PI_NET.  P4's Ampere runs settle it on hardware.
+
+### 10.3 Hardware results: a07 (Ampere Altra Max, 2026-09-28)
+
+a07: 128 x Neoverse-N1 at 3.0 GHz, FreeBSD 15.1-RELEASE-p3 GENERIC
+(the operator's kernel, hz = 1000, `kern.pin_pcpu_swi` 0, ULE), modules
+built against its `/usr/obj` tree (`KWQ_SSH="ssh a07 doas -n"
+MODDIR=/home/crest/kwq-mods tests/run_p1b.sh`).  Same scenarios, same
+CPUs (target 1, producers 2 and 3), three or more runs each.
+
+| scenario | a07 | bhyve GENERIC (S10.2) | simulator |
+|---|---|---|---|
+| fairness, equal / 2:1 | 0.999 / 2.000 | 1.000 / 1.999 | 0.999 / 1.998 |
+| latency, light queue worst | 214-221 us in 9 of 9 runs | 273-434 us | 399 us |
+| gaming | 0.874 | 0.886 | 0.80 |
+| overrun | 1.27 | 1.22 | 1.22 |
+| yield, 1 kHz callout on the saturated CPU | worst lateness 66-69 us in 12 of 12 runs, no stalls; the callout thread runs on CPUs 5..126 (S10.2 point 1) | 0.4-1.3 ms, one 35 ms stall in six | n/a |
+| cost: worker / producer / wall per item | 285-337 / 282-335 / 470-515 ns (6-6.8 M items in 3 s) | 96 / 80 / 211 ns | ~20 ns bookkeeping |
+| tq_baseline: producer / wall per item | 391 / 514 ns (5.8 M) | 58 / 193 ns | |
+| switch_baseline | 257 ns per switch | 524 ns | |
+
+The shares and the light queue's latency match the simulator and the
+guest; the callout is 15x closer to its deadline than in the VM and the
+cross-CPU stalls of S10.2 do not occur on hardware.  Per-item costs are
+2-3x the x86 guest's, as expected for the part: the N1 is an efficiency
+core built for 128-way density, not per-core speed (a narrow pipeline,
+small per-core caches, and the kernel's mutex and atomic paths pay for
+its memory ordering), so the 3.0 GHz clock says little against a 2.2 GHz
+Xeon D core.  The ratio between kwq and the taskqueue is what carries
+across machines, and it holds.  kwq and the taskqueue are again within 10 % of
+each other in wall time per item, with kwq's producer cheaper (282-335
+vs 391 ns) and its consumer paying for that.
+
+**The a07 ticker.**  The first a07 run reported 88 us of worker CPU per
+item and 30 us per enqueue against 460-530 ns of wall time.  DTrace on
+`fbt::tc_cpu_ticks:return` showed the cause: on this machine
+`cpu_ticks()` is `tc_cpu_ticks()` over the 25 MHz generic timer with a
+32-bit mask, the counter reads 5-9 ticks *backwards* on the same CPU a
+few times per minute per busy CPU (with `isb()` already in
+`get_cntxct()`), and `tc_cpu_ticks()` takes each such read for a wrap
+and adds 2^32 ticks = 171.8 s.  Every `cpu_ticks()` difference on a07
+is exposed to it, `td_runtime` included.  For kwq a pass stamped inside
+the jump had a negative elapsed time, so `kwq_budget_left()` never
+reached zero and the pass ran the heavy queue's whole 256-item pool:
+the two 4.9-5.2 ms light-queue outliers seen before the guard.  The
+S13 clock glitch guard (`KS_GLITCH_NS`, `kc_glitches`) was added for
+it: with the guard the light queue is at 218 us in every run and
+`glitches` counts 1-2 per 3 s run.  The kernel side (a
+`tc_cpu_ticks()` wrap heuristic that a backwards read can trigger, on
+a counter that does read backwards) is reported to the operator, not
+fixed here.
 
 ## 11. Alternatives considered and rejected for the first version
 
@@ -729,7 +855,8 @@ true difference is far below half the type's range.
 
 | quantity | type | range or rate | hazard | rule |
 |---|---|---|---|---|
-| `cpu_ticks()`, `td_runtime`, `pc_switchtime` | `uint64_t` ticks | up to ~5 GHz: 2^64 lasts 117 years; the TSC counts from CPU reset | wrap; cross-CPU skew | wrap-safe; only same-CPU differences are taken (the worker is bound), never a difference between two CPUs' ticks |
+| `cpu_ticks()`, `td_runtime`, `pc_switchtime` | `uint64_t` ticks | up to ~5 GHz: 2^64 lasts 117 years; the TSC counts from CPU reset | wrap; cross-CPU skew; **non-monotonic reads** | wrap-safe; only same-CPU differences are taken (the worker is bound), never a difference between two CPUs' ticks.  Found on a07 (Ampere Altra, 2026-09-28): the 25 MHz generic timer reads a few ticks backwards now and then and `tc_cpu_ticks()` takes that for a 32-bit wrap, adding 2^32 ticks (171.8 s) to one delta a few times per minute per busy CPU.  A pass stamped inside such a jump has a negative or absurd elapsed time |
+| pass elapsed time (`cpu_now - kw_pass_start`) | `int64_t` ns | one pass: at most the budget plus one item, never a second of CPU time | a ticker glitch (above) makes it negative (budget never runs out: the 5 ms light-queue outliers on a07) or 171.8 s (32 rounds parked for nothing) | **glitch guard** `KS_GLITCH_NS` = 1 s: `kwq_budget_left()` returns 0 for a negative or over-long elapsed time (the pass stops), `ks_pass_end()` charges one quantum instead of the delta and counts `kc_glitches`; the counter is the fault signal for a broken ticker |
 | `cpu_tickrate()` | `uint64_t` Hz | recalibrated once a second when the ticker is variable (`cpu_tick_variable`, non-invariant TSC) | division by zero before calibration; rate change inside a pass | `kwq_ticks2ns()` treats a zero rate as 1 GHz; a rate change mis-scales one pass by at most the P-state ratio, which only the deficit sees and the clamps bound.  Workers do not run before `smp_started`, by which time the ticker is calibrated |
 | `kwq_ticks2ns(t)` | `uint64_t` ns | `t x 1e9` overflows above 18 s of ticks at 1 GHz | multiplication overflow; a 64-bit division per call costs 20-40 cycles | a 32.32 fixed-point scale `ns_per_tick = (1e9 << 32) / rate`, computed at load and re-derived at each round end when `cpu_tickrate()` differs from the cached rate (there is no change notification), so the hot path is one multiply and shift (`(t x scale) >> 32`); exact to 1 ns for `t < 2^32` ticks (about 1.4 s at 3 GHz, far above any pass), and the S13 split-division form is used for longer intervals (the idle time counter) |
 | `kc_deficit`, `kw_pass_budget` | `int64_t` ns | clamped to `[-penalty_rounds x Qw, +2Qw]`, `Qw <= 8 s` | unbounded debt (S4.3), overflow | the clamp; with the largest legal `Q` (1 s), `w = 8` and `penalty_rounds` 32, `32 Qw = 2.6e11`, nowhere near 2^63 |
@@ -748,7 +875,7 @@ true difference is far below half the type's range.
 
 What this adds to the algorithm: the lower deficit clamp (S4.3), the
 `kc_warm` flag (S3, S4.1), `sbinuptime()` for cross-CPU stamps (S3), the
-zero-rate guard in `kwq_ticks2ns()`, sysctl validation of `quantum_us`,
+zero-rate guard in `kwq_ticks2ns()`, the clock glitch guard, sysctl validation of `quantum_us`,
 `limit` capped at `INT_MAX`, and the overflow-safe depth check (the last
 two are already in the P0 code).  None of them changes a bound in S7;
 the lower clamp weakens B3 for non-cooperative handlers to "bounded per

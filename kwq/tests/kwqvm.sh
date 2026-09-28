@@ -28,7 +28,9 @@
 #            by hand also pauses the logger - use 'console')
 #   ssh      ssh root@$GUESTIP [command]  (as your user, with $VMKEY)
 #   mods     build kwq.ko + kwq_test.ko against the guest kernel (objects
-#            in $MODOBJ) and copy them to root@$GUESTIP:/root/kwq/
+#            in $MODOBJ) and copy them to root@$GUESTIP:/root/kwq/;
+#            'mods generic' builds them for the stock GENERIC kernel
+#            (/root/kwq-generic; boot it with nextboot -k kernel)
 #            (as your user; runs itself as $DOAS_USER/$SUDO_USER if invoked
 #            through doas or sudo, since root on the host has no key)
 #   status   show what is running
@@ -334,9 +336,19 @@ cmd__run() {
 
 # Console logger: the only reader of the nmdm B side, so it is stopped
 # while 'console' has cu attached and restarted afterwards.
+# The B side must be raw with echo off: a tty in its default mode echoes
+# every byte the guest prints back to the guest as input, and login(1)
+# then loops on its own prompt at 99 % CPU on both sides (seen 2026-09-28).
+# The B side must never echo: with echo on, everything the guest prints
+# comes straight back as keyboard input (the loader menu then "types" its
+# own escape codes and once picked Boot Options -> Single user; a login
+# prompt loops on itself at 99 % CPU).  A tty comes back cooked on every
+# first open and nmdm(4) has no .init node to change that, so the logger
+# is started before bhyveload: the loader then never meets a freshly
+# opened, still-cooked B side.
 conlog_start() {
 	conlog_running && return 0
-	daemon -f -p "$CONPID" sh -c "exec cat ${CON}B >> $CONLOG"
+	daemon -f -p "$CONPID" sh -c "exec < ${CON}B; stty raw -echo -echonl -isig -ixon speed 115200 >/dev/null; exec cat >> $CONLOG"
 }
 conlog_running() {
 	[ -f "$CONPID" ] && kill -0 "$(cat "$CONPID")" 2>/dev/null
@@ -353,8 +365,8 @@ cmd_start() {
 	ensure_net
 	bhyvectl --destroy --vm="$VM" 2>/dev/null || true
 	log "starting $VM: $CPUS vCPUs, $MEM, disk $DISK, net $TAP -> $GUESTIP"
-	daemon -f -p "$PIDFILE" -o "$LOG" sh "$SELF" _run
 	conlog_start
+	daemon -f -p "$PIDFILE" -o "$LOG" sh "$SELF" _run
 	log "console: $0 console    ssh: $0 ssh    logs: $LOG $CONLOG"
 }
 
@@ -402,23 +414,34 @@ cmd_ssh() {
 	exec ssh $SSHOPTS "root@$GUESTIP" "$@"
 }
 
+# mods [generic]: without "generic" the modules take their kernel options
+# (INVARIANTS, WITNESS, ...) from $KERNOBJ's opt_*.h and go to /root/kwq;
+# with it they are built standalone (kmod.opts.mk: GENERIC's options, no
+# debugging) for the stock /boot/kernel and go to /root/kwq-generic.
 cmd_mods() {
-	as_user mods
-	[ -d "$KERNOBJ" ] || die "$KERNOBJ missing; run 'kernel'"
+	as_user mods "$@"
 	[ -f "$VMKEY" ] || die "$VMKEY missing; run 'doas $0 keys'"
-	log "building kwq.ko and kwq_test.ko against $KERNCONF ($KERNOBJ)"
+	if [ "${1:-}" = generic ]; then
+		kbd=""; dest=/root/kwq-generic; objdir=$MODOBJ-generic
+		log "building kwq.ko and kwq_test.ko with GENERIC options (no debugging)"
+	else
+		[ -d "$KERNOBJ" ] || die "$KERNOBJ missing; run 'kernel'"
+		kbd="KERNBUILDDIR=$KERNOBJ"; dest=/root/kwq; objdir=$MODOBJ
+		log "building kwq.ko and kwq_test.ko against $KERNCONF ($KERNOBJ)"
+	fi
 	# Module objects go under $MODOBJ, which the user can write (the kernel
 	# object tree is root's); make obj creates the directories, without
 	# them make would build in the source tree and clobber the host build.
-	export MAKEOBJDIRPREFIX=$MODOBJ
-	mkdir -p "$MODOBJ"
+	export MAKEOBJDIRPREFIX=$objdir
+	mkdir -p "$objdir"
 	make -C "$KWQSRC" -s obj
-	make -C "$KWQSRC" -s clean all SYSDIR="$SRC/sys" KERNBUILDDIR="$KERNOBJ"
+	make -C "$KWQSRC" -s clean all SYSDIR="$SRC/sys" $kbd
 	mods="$(make -C "$KWQSRC/kwq" -V .OBJDIR)/kwq.ko $(make -C "$KWQSRC/kwq_test" -V .OBJDIR)/kwq_test.ko"
 	for m in $mods; do [ -f "$m" ] || die "$m not built"; done
-	log "copying to root@$GUESTIP:/root/kwq/"
-	scp -q $SSHOPTS $mods "root@$GUESTIP:/root/kwq/"
-	log "in the guest: kldload /root/kwq/kwq.ko /root/kwq/kwq_test.ko; sysctl kern.kwq_test"
+	log "copying to root@$GUESTIP:$dest/"
+	ssh $SSHOPTS "root@$GUESTIP" "mkdir -p $dest"
+	scp -q $SSHOPTS $mods "root@$GUESTIP:$dest/"
+	log "in the guest: kldload $dest/kwq.ko $dest/kwq_test.ko; sysctl kern.kwq_test"
 }
 
 cmd_status() {

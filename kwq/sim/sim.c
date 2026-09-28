@@ -584,7 +584,7 @@ run_pass(int c, struct kwq_cpu *kc)
 	}
 	check_invariants(c);
 	S.ticks = S.ticks0 + (u_int)((S.now - S.wall0) / TICK_NS);
-	if (ks_ticked(S.ticks, S.swvoltick[c]) && runnable_below(c)) {
+	if (ks_ticked(S.ticks, S.swvoltick[c])) {	/* unconditional, S6.1 */
 		S.w[c].kw_yields++;	/* counted as tick yield in the kernel */
 		do_yield(c);
 	}

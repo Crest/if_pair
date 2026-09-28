@@ -27,6 +27,7 @@ struct kwq_cpu {
 	u_int			kc_idle_round;
 	u_int			kc_src;
 	int64_t			kc_deficit;
+	uint64_t		kc_glitches;
 	uint64_t		kc_passes, kc_overruns, kc_parks, kc_boosts,
 				kc_grace;
 	u_int			kc_weight;
