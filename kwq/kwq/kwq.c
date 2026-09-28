@@ -224,8 +224,8 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 		kwq_kc_unlock(kc);
 		return (ENXIO);
 	}
-	if (__predict_false(q->kwq_limit != KWQ_LIMIT_NONE &&
-	    kc->kc_depth + (u_int)n > q->kwq_limit)) {
+	/* Overflow-safe form of depth + n > limit; also guards LIMIT_NONE. */
+	if (__predict_false((u_int)n > q->kwq_limit - kc->kc_depth)) {
 		kc->kc_rejected += n;
 		kwq_kc_unlock(kc);
 		return (ENOBUFS);
@@ -399,7 +399,7 @@ kwq_sysctl_register(struct kwq *q)
 		return;
 	SYSCTL_ADD_UINT(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,
 	    "limit", CTLFLAG_RD, &q->kwq_limit, 0,
-	    "per-CPU item limit (UINT_MAX = none)");
+	    "per-CPU item limit in effect (INT_MAX for KWQ_LIMIT_NONE)");
 	SYSCTL_ADD_UINT(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,
 	    "weight", CTLFLAG_RD, &q->kwq_weight, 0, "DRR weight");
 	SYSCTL_ADD_U32(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,
@@ -474,6 +474,8 @@ kwq_create(const char *name, enum kwq_class cls, uint32_t flags,
 	q->kwq_class = cls;
 	q->kwq_flags = flags;
 	q->kwq_limit = p->limit != 0 ? p->limit : kwq_limit[cls];
+	if (q->kwq_limit > INT_MAX)	/* a batch's n must fit an int */
+		q->kwq_limit = INT_MAX;
 	q->kwq_weight = p->weight != 0 ? p->weight : 1;
 	q->kwq_fn = fn;
 	q->kwq_ctx = ctx;

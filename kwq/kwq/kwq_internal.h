@@ -31,9 +31,9 @@ MALLOC_DECLARE(M_KWQ);
 /* (queue, CPU) states; the doorbell rings only on IDLE -> WAKING. */
 enum kwq_cpu_state {
 	KWQ_CPU_IDLE = 0,	/* list empty, worker not scheduled for it */
-	KWQ_CPU_WAKING,		/* on the worker's active list */
+	KWQ_CPU_WAKING,		/* on the worker's active list (P1: new or ring) */
 	KWQ_CPU_RUNNING,	/* worker holds a batch from it */
-	KWQ_CPU_PARKED,		/* negative deficit (P1) */
+	KWQ_CPU_PARKED,		/* backlog but deficit <= 0 (P1, SCHED.md S4) */
 };
 
 /* Notifier states, protected by the notifier's (queue, CPU) mutex. */
@@ -61,8 +61,12 @@ struct kwq_cpu {
 	u_int			kc_flags;	/* ---- 64 bytes up to here ---- */
 	STAILQ_HEAD(, kwq_item)	kc_notify;	/* pending notifiers */
 	u_int			kc_waiters;	/* drain/cancel sleepers on kc */
-	u_int			kc_pad0;
-	uint64_t		kc_empty_since;	/* cpu_ticks at empty -> non-empty */
+	u_int			kc_pad0;	/* P1: kc_onlist/kc_warm/kc_idle_round
+						   (SCHED.md S3) */
+	uint64_t		kc_empty_since;	/* cpu_ticks at empty -> non-empty;
+						   P0 stamps but never reads it; P1
+						   switches to sbinuptime() (SCHED.md
+						   S13) */
 	TAILQ_ENTRY(kwq_cpu)	kc_active;	/* worker's active list */
 	uint64_t		kc_rejected;	/* ENOBUFS/ENXIO, producer under lock */
 	uint64_t		kc_coalesced;	/* kwq_notify() no-ops */
@@ -109,7 +113,8 @@ CTASSERT(__offsetof(struct kwq, kwq_active) == KWQ_LINE);
 
 struct kwq_worker {
 	/* Shared with producers (doorbell) under kw_mtx, a spin mutex so that
-	   KWQ_F_SPIN producers may ring it. */
+	   KWQ_F_SPIN producers may ring it.  P1 adds the new list and the
+	   ring here (SCHED.md S3). */
 	struct mtx		kw_mtx;
 	TAILQ_HEAD(, kwq_cpu)	kw_active;
 	bool			kw_sleeping;

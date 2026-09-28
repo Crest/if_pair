@@ -42,7 +42,7 @@ more.  "kwq:" marks terms this project defines.
   (below).  Aliases: *QoS class* (libdispatch), *bound/unbound/BH
   workqueue* (Linux, roughly).
 - **worker** (kwq) - one kernel thread of the service, bound to one CPU,
-  serving one work class: `kwq_net/N`, `kwq_bulk/N`, `kwq_blk/N`.
+  serving one work class: `kwq_net/N`, `kwq_bulk/N`, `kwq_blocking/N`.
   Aliases: *taskqueue thread*, *kworker* (Linux), *squeue worker*
   (illumos).  See kthread(9).
 - **worker pool** (kwq) - all workers of one work class.  For NET and
@@ -146,7 +146,8 @@ more.  "kwq:" marks terms this project defines.
 
 - **kernel thread** - a thread with no user address space, created with
   `kthread_add(9)` (in a kernel process) or `kproc_create(9)`.  kwq
-  workers are kernel threads in one kernel process per class.  Aliases:
+  workers are threads of proc0 (`kernel`), created with `kthread_add(9)`,
+  as taskqueue threads are.  Aliases:
   *kthread*, *system thread* (Windows).
 - **interrupt thread (ithread)** - the thread context in which most
   interrupt handlers run under SMPng; may block on sleep mutexes, must
@@ -177,8 +178,9 @@ more.  "kwq:" marks terms this project defines.
 - **taskqueue / gtaskqueue** - FreeBSD's existing deferred-work
   facilities: taskqueue(9) (one queue, its own threads, sleep or spin
   mutex) and gtaskqueue (`TASKQGROUP_DEFINE`, per-CPU groups of
-  *grouptasks*, used by iflib and if_wg).  kwq is built as an extension of
-  the latter.
+  *grouptasks*, used by iflib and if_wg).  kwq is a standalone service
+  (KWQ.md S12); a taskqueue compatibility shim is planned for the in-tree
+  move.
 
 ## C. Scheduling and priority (FreeBSD terms)
 
@@ -186,8 +188,8 @@ more.  "kwq:" marks terms this project defines.
   `td_pri_class`: `PRI_ITHD`, `PRI_REALTIME`, `PRI_TIMESHARE`, `PRI_IDLE`.
   Not a kwq *work class*; kwq workers are `PRI_ITHD` (NET, BULK) or
   `PRI_TIMESHARE` at `PUSER` (BLOCKING, where GELI's workers run today).
-- **priority range** - a numeric band of `td_priority`: interrupt threads
-  0-47 (`PI_*`, e.g. `PI_NET` = 1, `PI_SOFT` = 2), real-time 8-39 as
+- **priority range** - a numeric range of `td_priority`: interrupt threads
+  0-7 (`PI_*`, e.g. `PI_NET` = 1, `PI_SOFT` = 2; `PRI_MAX_ITHD` = 7), real-time 8-39 as
   rtprio, kernel 40-55 (`PRI_MIN_KERN`..`PRI_MAX_KERN`), timeshare 56-223
   (`PUSER` = 56 is the best), idle 224-255.  See `sys/priority.h`.  The
   word *band* is avoided.
@@ -200,9 +202,11 @@ more.  "kwq:" marks terms this project defines.
   the running one; ULE preempts immediately only for interrupt-thread
   priorities (`preempt_thresh`).  A NET worker is preempted by nothing
   but other ithreads and real-time threads.
-- **yield** (kwq) - the worker's voluntary switch at the end of a round:
-  `kern_yield()` to the class's fixed `yield_prio` (default `PUSER`),
-  then `sched_prio()` back to the class priority.  Never
+- **yield** (kwq) - the worker's voluntary switch at the end of a round
+  and, by the *tick guard*, between passes; skipped when nothing else is
+  runnable on the CPU: `kern_yield()` to the class's fixed `yield_prio`
+  (default `PUSER`), then `sched_prio()` back to the class priority
+  (SCHED.md S6).  Never
   `kern_yield(PRI_USER)`: that resolves to `td_user_pri`, which ULE
   recomputes every tick from the worker's own run/sleep history, so it
   yields to nobody useful when lightly loaded and to every CPU-bound
@@ -210,14 +214,16 @@ more.  "kwq:" marks terms this project defines.
   no-demotion variant), *demote-yield* (earlier project text),
   *cond_resched* (Linux).
 - **CPU-share cap** (kwq) - the substitute for a bounded yield: a worker
-  that has been busy more than `cap_pct` of a window while user threads
-  are runnable on its CPU sleeps for `cap_sleep_us` with `pause_sbt(9)`.
+  that has been busy more than `cap_pct` of a window (`cap_window_us`)
+  while other threads are runnable on its CPU (`sched_runnable()`) sleeps
+  for `cap_sleep_us` with `pause_sbt(9)`; off by default (`cap_pct` 100).
   From Mogul & Ramakrishnan's "limit on CPU usage" feedback (../POOLS.md).
 - **tick** - one `hz` clock interrupt; `ticks` counts them.  kwq's *tick
   guard* forces a yield when a tick has elapsed since the last one, the
   safety net for over-long passes (inherited from if_pair's governor).
 - **time slice** - ULE's allotment for a *timeshare* thread before
-  `sched_slice` forces a switch (~10 ms at hz=1000).  Not a kwq term;
+  `sched_slice` forces a switch: `stathz/10`, about 94 ms, divided by the
+  CPU's load down to about 16 ms.  Not a kwq term;
   kwq's unit is the *pass* and its allotment the *quantum*.
 
 ## D. Locking and synchronization (FreeBSD terms, locking(9))
@@ -250,41 +256,77 @@ more.  "kwq:" marks terms this project defines.
   CPU) list, handed whole to one *pass*.  Not the count budget: if_pair's
   `net.link.pair.batch` sysctl (a packet count) is superseded by the
   *quantum*.
-- **pass** (kwq) - one handler invocation on one batch by one worker;
-  bracketed by `cpu_ticks()` and charged to the queue.  Alias: *slice*
+- **pass** (kwq) - one swap-out of a (queue, CPU) list and the handler
+  calls on it (one per notifier, one for the item list) by one worker;
+  charged to the queue in the worker's own CPU time (`td_runtime` plus
+  the time since its last switch-in, SCHED.md S1a.4).  Alias: *slice*
   (earlier project text; avoided because ULE's *time slice* is unrelated),
   *drain* (illumos squeue).  Probes: `kwq:::pass-start`, `kwq:::pass-end`.
-- **round** (kwq) - one traversal by a worker of its CPU's active queues
-  of its class, each receiving up to its *quantum*; ends with the *yield*.
+- **round** (kwq) - one traversal by a worker of its ring, with *new
+  list* passes interleaved; each ring entry is refilled by its quantum x
+  weight (to at most two, the *carry cap*) and gets one pass or one
+  *park*; ends with the *yield* when anything else is runnable.  Rounds
+  advance only while the worker has work (SCHED.md S4.6).
 - **quantum** (kwq) - the CPU time a queue may consume per round, per
   class sysctl (`kern.kwq.<class>.quantum_us`), multiplied by the queue's
   *weight*.  Alias: *budget* is the remaining quantum within a pass
   (`kwq_budget_left()`), not a synonym.
-- **budget** (kwq) - the part of a queue's quantum not yet consumed in
-  the current pass, as returned by `kwq_budget_left()` in nanoseconds; 0
-  tells a handler to requeue its leftovers and return.  Not a synonym
-  for *quantum* (the per-round allotment) and unrelated to if_pair's
-  count-based `net.link.pair.batch`.
 - **deficit round robin (DRR)** - the fair scheduler kwq's workers run:
-  each active queue's *deficit* grows by one quantum per round and shrinks
-  by the CPU time its passes consume; a queue is served while its deficit
-  is positive.  Shreedhar & Varghese, SIGCOMM 1995.  In kwq the resource
-  is CPU time, not bytes.
+  each active queue's *deficit* grows by quantum x weight per round and
+  shrinks by the CPU time its passes consume; a queue is served while its
+  deficit is positive.  Shreedhar & Varghese, SIGCOMM 1995.  kwq's
+  variant (SCHED.md S4) adds the *new list*, the *grace period*, the
+  *carry cap* and the *penalty cap*, and its resource is CPU time, not
+  bytes.
 - **overrun** (kwq) - a pass that consumed more than the queue's
   remaining quantum; counted per (queue, CPU) as `overruns`, probe
   `kwq:::overrun`.  Alias: *expiry* (earlier project text).  A persistent
   overrunner should requeue its remainder when `kwq_budget_left()`
   reaches 0.
+- **boost** (kwq) - the fresh quantum x weight of deficit a queue receives
+  when it enters the *new list*.  Alias: *sparse boost* (CAKE).  SCHED.md
+  S2, S4.
+- **grace period** (kwq) - the rounds after a queue leaves the ring during
+  which a re-arrival returns it to the ring without a *boost*; kwq's
+  version of fq_codel's move-to-old and CAKE's *decaying* set.  SCHED.md
+  S4.6.
+- **carry cap** (kwq) - the deficit may not exceed two quanta after a
+  refill, so unused service carries over for at most one round.  SCHED.md
+  S4.2.
+- **budget** (kwq) - the deficit at the start of a pass, in nanoseconds;
+  what `kwq_budget_left()` counts down to 0, at which a handler requeues
+  its leftovers and returns (after at least one item: the *progress
+  rule*).  Not a synonym for *quantum* (the per-round refill) and
+  unrelated to if_pair's count-based `net.link.pair.batch`.  Alias:
+  *budget* (BFQ, NAPI).
+- **penalty cap** (kwq) - the deficit may not fall below minus two quanta
+  after a pass is charged, so one overrun costs at most two rounds of
+  *park*.  SCHED.md S4.3, S13.
+- **progress rule** (kwq) - a handler processes at least one item per
+  call before honouring a zero *budget*, so a tiny or pre-consumed budget
+  cannot leave a list untouched forever.  SCHED.md S5.
+- **warm** (kwq) - a queue that left the ring within the *grace period*
+  (`kc_warm` set); a re-arrival returns it to the ring without a *boost*.
+- **hand-back** (kwq) - a per-CPU flag a class's worker sets around its
+  yield so that a lower class's worker on that CPU ends its round after
+  the current pass; makes the strict priority between classes hold across
+  yields.  SCHED.md S6.4.
+- **`c_max`** (kwq) - the longest single item a client's handler runs
+  without checking its *budget*; a client property the quantum should
+  exceed.  SCHED.md S2, S8.
 - **new list** (kwq) - the worker's list of queues that just went from
-  empty to non-empty; served before the ring for one quantum, after which
-  the queue joins the ring.  Alias: *sparse flow* / *new flows* (fq_codel,
-  RFC 8290; dummynet `dn_sched_fq_codel.c`).  KWQ.md S15.
+  empty to non-empty and are not *warm*; served in alternation with ring
+  passes, each with a *boost*, after which the queue joins the ring if
+  work remains.  Alias: *sparse flow* / *new flows* (fq_codel, RFC 8290;
+  dummynet `dn_sched_fq_codel.c`).  SCHED.md S4.2, KWQ.md S15.
 - **park** (kwq) - skipping a queue whose deficit went negative until
   later rounds restore it; state PARKED, probe `kwq:::park`.
-- **weight** (kwq) - integer 1..8 scaling a queue's quantum within its
-  class; may only be set below other queues' default share.
+- **weight** (kwq) - integer 1..8 (default 1) scaling a queue's refill
+  within its class: `w` quanta per round.  A declaration by reviewed
+  kernel code, not a privilege kwq enforces (KWQ.md S1, SCHED.md S8).
 - **queueing delay** (kwq) - the age of the oldest item at the start of a
-  pass; reported as `oldest_age_ns`/`maxlat_ns`.  Alias: *latency* (the
+  pass; the `maxlat_ns` sysctl keeps the maximum, the `kwq:::pass-start`
+  probe carries each sample as `oldest_age_ns`.  Alias: *latency* (the
   general word; kept for end-to-end statements).
 - **producer / consumer** - the thread that enqueues an item / the
   worker that runs the pass.  Multi-producer, single-consumer per
@@ -321,8 +363,11 @@ more.  "kwq:" marks terms this project defines.
   provider is `kwq`.  See dtrace_sdt(4), sdt(9).
 - **translator** - a D definition (`/usr/lib/dtrace/kwq.d`) mapping a
   kernel struct to a stable script-facing type; kwq's is `kwqinfo_t`.
-- **counter(9)** - per-CPU 64-bit counters; kwq's per-(queue, CPU) and
-  per-(class, CPU) statistics under `kern.kwq`.
+- **counter(9)** - the kernel's per-CPU 64-bit counter allocator.  kwq's
+  per-(queue, CPU) and per-(class, CPU) statistics under `kern.kwq` have
+  counter(9) semantics (64-bit, per CPU, monotonic) but are plain fields
+  in the per-CPU structs, because only the owning CPU writes them
+  (KWQ.md S17 Rule 2).
 - **lockstat** - the DTrace provider for lock contention; sees kwq's
   mutexes by name (`"kwq <name>"`).
 
@@ -364,4 +409,5 @@ more.  "kwq:" marks terms this project defines.
 (for drain).  When one of these appears in a citation of an external
 document it is kept verbatim and the kwq term follows in parentheses.
 
-Last revised 2026-09-24 together with KWQ.md S13 (revision log).
+Last revised 2026-09-28 together with KWQ.md S18 (revision log) and
+SCHED.md.

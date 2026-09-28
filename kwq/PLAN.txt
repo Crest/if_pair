@@ -24,19 +24,29 @@ if_pair module in the parent directory:
     kwq.h                  public KPI (KWQ.md S2), kwq_item, kwq_params
     kwq_internal.h         struct kwq, struct kwq_cpu, struct kwq_worker
     kwq.c                  create/activate/enqueue/drain/destroy, sysctl
-    kwq_worker.c           workers, DRR drain loop, yield, monitor
-    kwq_sdt.c              SDT provider + probe definitions
-    kwq_ddb.c              show kwq
-    kwq.d                  D translator (installed to /usr/lib/dtrace)
-    Makefile               bsd.kmod.mk, KMOD=kwq
+    kwq_worker.c           workers and the pass (P0); kernel glue for the
+                           scheduler (P1b); BLOCKING monitor (P7)
+    kwq_sched.h, kwq_sched.c  the scheduler proper, SCHED.md S4/S6 as
+                           pure functions shared with the simulator (P1a)
+    kwq_sdt.c              SDT provider + probe definitions (P2, not yet)
+    kwq_ddb.c              show kwq (P2, not yet)
+    kwq.d                  D translator, installed to /usr/lib/dtrace (P2)
+    Makefile               bsd.kmod.mk, KMOD=kwq, EXPORT_SYMS = the KPI
+  kwq/SCHED.md             worker scheduler specification (normative for P1)
+  kwq/GLOSSARY.md          terminology
+  kwq/sim/                 userspace discrete-event simulator linking
+                           kwq_sched.c against mock clocks and threads;
+                           invariant, bound and wrap-around checks (P1a)
   kwq/kwq_test/            kwq_test.ko: synthetic clients driven by sysctl
     kwq_test.c, Makefile
-  kwq/tests/               ATF sh tests (Kyuafile) + kwq_lib.sh
-  kwq/examples/            compilable examples (build against ../kwq/kwq.h)
+  kwq/tests/               kwqvm.sh: the bhyve test guest (build, install
+                           GENERIC-DEBUG, start/stop, mods, ssh); ATF sh
+                           tests (Kyuafile, kwq_lib.sh, t_*.sh) are P3
+  kwq/examples/            compilable examples, P8 (build against ../kwq/kwq.h)
     deferred.c             minimal deferred-work client
     scatter.c              BULK fan-out with completion callback
     pair_client.c          the if_pair conversion, as a diff description
-  kwq/man/                 kwq.9, dtrace_kwq.4 (mdoc, mandoc -T lint clean)
+  kwq/man/                 kwq.9, dtrace_kwq.4 (mdoc, mandoc -T lint clean), P8
 
 The if_pair conversion (P4) adds MODULE_DEPEND(if_pair, kwq, 1, 1, 1) to
 ../Makefile and includes ../kwq/kwq/kwq.h; until then the two trees build
@@ -56,12 +66,12 @@ Phases
     - Queue objects: kwq_create(name, class, flags, params, fn, ctx)
       allocates struct kwq (read-mostly header in its own cache line,
       runtime-written fields at the end) + one struct kwq_cpu per CPU
-      via malloc_domainset_aligned(CACHE_LINE_SIZE, the CPU's domain),
-      pointers in a read-mostly array; kwq_cpu layout per KWQ.md S17:
-      line 0 = mtx + list + depth + state + empty_since + rejected,
-      consumer-private line(s) = deficit, ring link, plain uint64
-      counters; whole struct __aligned(CACHE_LINE_SIZE) with a CTASSERT
-      that the shared part fits one line.  Registers
+      via malloc_domainset_aligned(KWQ_LINE, the CPU's domain), pointers
+      in a read-mostly array; kwq_cpu layout as built and documented in
+      KWQ.md S17: one KWQ_LINE (128-byte) shared block with the
+      per-enqueue fields in its first 64 bytes, then consumer-private
+      blocks with plain uint64 counters; CTASSERTs on both boundaries.
+      Registers
       kern.kwq.<class>.<name>; KWQ_F_INACTIVE and kwq_activate();
       KWQ_F_SPIN selects MTX_SPIN.
     - Workers: struct kwq_worker per (class, CPU), aligned and allocated
@@ -76,13 +86,14 @@ Phases
       two CPUs while the handler counts runs -> runs <= signals, every
       state change observed, zero rejects, `coalesced` accounts for the
       difference.
-    - Enqueue: lock, limit check -> ENOBUFS (KWQ_LIMIT_NONE skips it),
+    - Enqueue: lock, overflow-safe limit check -> ENOBUFS (the limit is
+      capped at INT_MAX at create, so KWQ_LIMIT_NONE is checked too),
       append, IDLE->WAKING + wakeup of the class worker on that CPU (one
       hold), unlock.  kwq_enqueue_list as STAILQ_CONCAT.  ENXIO after
       drain began or before activation.  kwq_cpu_for_hash(): hash %
       (mp_maxid + 1), offline id -> caller's CPU; KWQ_CPU_ANY (BULK) picks
-      the least loaded CPU in the caller's cache domain; offline/invalid
-      cpu arguments map to the caller's CPU.
+      the shallowest list in the caller's NUMA domain (cache domain: P6);
+      offline/invalid cpu arguments map to the caller's CPU.
     - Drain loop v0: no DRR yet - swap list, run handler under
       NET_EPOCH (NET) with THREAD_NO_SLEEPING(), re-check emptiness under
       lock before IDLE (the if_pair protocol verbatim).
@@ -90,15 +101,16 @@ Phases
       in-flight passes), kwq_destroy (asserts drained), MOD_UNLOAD
       returns EBUSY while queues exist, joins all workers (taskqueue_free
       as template).
-    Status 2026-09-25: kwq/kwq/{kwq.h,kwq_internal.h,kwq.c,kwq_worker.c,
-    Makefile} written and building on 15.0-RELEASE-p12 amd64; not yet
-    loaded anywhere.  tests/kwqvm.sh creates the test guest: 15.1-RELEASE
-    UFS VM image on a 20 GB file under /bhyve/guests/kwqvm, releng/15.1
-    GENERIC-DEBUG built on the host into /bhyve/obj-15.1 and installed as
-    /boot/kernel.debug, serial console on /dev/nmdm-kwqvm.1B, isolated
-    tap100 (10.0.99.1 host, 10.0.99.2 guest), root ssh by key, crash
-    dumps on; 'mods' builds both modules against that kernel and copies
-    them in.  Deviations from the bullets above:
+    History 2026-09-25: kwq/kwq/{kwq.h,kwq_internal.h,kwq.c,kwq_worker.c,
+    Makefile} written and building on 15.0-RELEASE-p12 amd64.
+    tests/kwqvm.sh creates the test guest: 15.1-RELEASE UFS VM image on
+    a 20 GB file under /bhyve/guests/kwqvm, releng/15.1 GENERIC-DEBUG
+    built on the host into /bhyve/obj-15.1 and installed as
+    /boot/kernel.debug, serial console on /dev/nmdm-kwqvm.1B (logged to
+    console.log), isolated vmnet100 (10.0.99.1 host, 10.0.99.2 guest),
+    root ssh by a dedicated key, crash dumps on; 'mods' builds both
+    modules against that kernel and copies them in.  Deviations from the
+    bullets above:
     notifiers are handed to the handler one per call (n == 1), items as
     one list; the shared block is KWQ_LINE = max(CACHE_LINE_SIZE, 128)
     with the per-enqueue fields in its first 64 bytes; KWQ_CPU_ANY picks
@@ -123,9 +135,10 @@ Phases
     Observed: the INVARIANTS chain check reports "1 sleepqueue chain
     collisions between workers" on 4 CPUs - the per-CPU worker structs
     are allocated one by one, so their low address bytes are random.
-    Refinement for P1: allocate the workers of a class as one array per
-    NUMA domain with a 256-byte stride (sizeof(struct kwq_worker)), which
-    keeps up to 256 workers on distinct chains by construction.
+    Refinement for P1 (in P1's bullets below): allocate the workers of a
+    class as one array per NUMA domain with a 256-byte stride
+    (sizeof(struct kwq_worker)), which keeps up to 256 workers on
+    distinct chains by construction.
     Not yet: the pmcstat baseline (bhyve exposes no PMCs; needs the
     Ampere or bare amd64).  Test-guest lessons folded into
     tests/kwqvm.sh: a plain tap loses its host address when bhyve
@@ -133,49 +146,105 @@ Phases
     re-add in the run loop), 'stop' asks the guest to power off before
     destroying it (the image was mounted dirty once), and the serial
     console is logged to console.log while nobody has cu attached.
-    Exit: pmcstat remote-HITM / L2 writeback counts recorded on the
-    Ampere and amd64 for a two-producer, one-consumer kwq_test load as
-    the baseline for P1 (KWQ.md S17); kldload/kldunload 1000x in a loop with no queues; create/
+    Exit (all met 2026-09-28 except the first): pmcstat remote-HITM / L2
+    writeback counts recorded on the Ampere and amd64 for a two-producer,
+    one-consumer kwq_test load as the baseline for P1 (KWQ.md S17);
+    kldload/kldunload 1000x in a loop with no queues; create/
     activate/enqueue/drain/destroy 1000x from kwq_test with items
     counted in == items handled; WITNESS clean; no sleeping-in-handler
     path (a deliberate tsleep in a test handler must panic under
     INVARIANTS).
 
-[TODO] P1  DRR in CPU time, quantum, yield (2-3 days)
-    Files: kwq_worker.c.
-    - Per-CPU ring of active queues per class plus a "new" list: a
-      queue going empty->non-empty is served from the new list before
-      the ring for one quantum, then joins the ring (fq_codel rule,
-      KWQ.md S15); deficit accounting with cpu_ticks() around each pass;
-      quantum per class as sysctl (kern.kwq.net.quantum_us=200,
-      kern.kwq.bulk.quantum_us=1000); weights 1..8; PARKED state with
-      negative deficit; unused deficit capped at one quantum.
-    - kwq_budget_left(q) and kwq_requeue(q, head, tail, n) for cooperative
-      handlers; requeue PREPENDS to the current CPU's list so FIFO holds
+[TODO] P1a Scheduler core and simulator (2 days) - SCHED.md made executable
+    Files: kwq/kwq/kwq_sched.h, kwq_sched.c (the scheduler proper, no
+    kernel calls of its own); kwq/sim/{sim.c,models.c,check.c,Makefile}.
+    Written and passing BEFORE any P1b kernel code; decided 2026-09-28.
+    - kwq_sched.c implements SCHED.md S4 and S6 as pure functions over
+      struct kwq_worker / struct kwq_cpu and the class knobs, taking the
+      clock values and the sched_runnable / hand-back inputs as
+      arguments and returning decisions (which list to serve next, the
+      budget for the pass, charge and clamp, park, whether to yield,
+      pause or hand back).  kwq_worker.c (P1b) supplies locks, clocks,
+      the epoch and the real yield; the simulator supplies mocks.  The
+      file compiles in both worlds with one small shim header.
+    - kwq/sim: a discrete-event simulator in portable C (builds on the
+      host with cc, no kernel headers): simulated CPUs with one worker
+      per class each, virtual time, mock td_runtime/switchtime and
+      sbinuptime, an external-load model for what a yield hands the CPU
+      to (idle / interactive / CPU-bound / a lower kwq class), producers
+      (Poisson, bursty, burst-and-pause timed to rounds, one-shot storms
+      of many queues, self-enqueue chains, notifier storms), handlers
+      with cost models (fixed, heavy-tailed, cooperative, budget-ignoring,
+      requeue-everything, first-item-only), weights 1..8, seeded and
+      replayable, with a trace dump for a failing seed.
+    - check.c evaluates after every step the invariants I1-I6 (SCHED.md
+      S4.7) and per run the bounds B1-B9 (S7) and the S14 corner cases
+      1-10, plus fairness ratios and latency histograms as CSV.
+    - Corner cases that only a simulator can run safely: the round
+      counter, kc_idle_round, `ticks`, cpu_ticks, sbinuptime and every
+      64-bit counter started just below their wrap points (SCHED.md S13)
+      and run through the wrap; cpu_tickrate changing mid-run and read as
+      zero; quantum_us at both ends of its range and weights at 1 and 8;
+      thousands of queues on one CPU; a deficit driven to the clamp by
+      hour-long passes; drains and notifier cancels racing with rounds;
+      a hand-back arriving at every point of a round.
+    - Use the simulator to settle SCHED.md S12: GRACE_ROUNDS 1 vs 2 and
+      boost Qw vs Q, by sweeping producer patterns and recording the
+      light queues' latency and the heavy queues' share.  Record the
+      choice in SCHED.md.
+    Exit: every invariant holds for 10^7 random steps over 100 seeds; all
+    bounds hold with the measured constants recorded in SCHED.md S7; all
+    S13 wrap runs pass; the S12 questions are answered with numbers; the
+    simulator runs under `make -C kwq/sim test` in under a minute.
+
+[TODO] P1b DRR in CPU time, quantum, yield in the kernel (2 days)
+    Files: kwq_worker.c (uses kwq_sched.c), kwq.c (knobs, budget),
+    kwq_internal.h, kwq_test.c.
+    Specification: SCHED.md is normative and kwq_sched.c is its tested
+    implementation; P1b adds only the kernel glue.  A first cut of the
+    worker (ring + new list, no grace rule) was written on 2026-09-28
+    and reverted unbuilt so that the specification could come first;
+    SCHED.md S4.6 (grace rule), S9 (boosts/grace counters), S10 (gaming
+    and overrun scenarios) and S14 (alternation, hand-back, progress
+    rule) are what the specification and its review added.
+    - Kernel glue: kc_pad0 becomes kc_onlist/kc_warm/kc_idle_round;
+      kc_empty_since becomes an sbinuptime() stamp; worker struct gains
+      the new list, ring counter, pass budget fields, cap window and
+      counters; passes charged in the worker's own CPU time (td_runtime
+      + cpu_ticks() - PCPU switchtime) with a fixed-point tick-to-ns
+      scale re-derived per round (SCHED.md S13); quantum_us per class
+      RWTUN, validated to [10, 1000000] by a sysctl handler; weights 1..8;
+      per-CPU hand-back flags (SCHED.md S6.4); workers of a class as one
+      array per NUMA domain, 256-byte stride (chain collisions).
+    - kwq_budget_left(q) real, kwq_requeue(q, head, tail, n) as in P0
       (test: items enqueued during a pass never overtake requeued ones).
     - End-of-round and tick-guard yield: kern_yield(yield_prio) then
       sched_prio(class), with kern.kwq.<class>.yield_prio RW, default
-      PUSER; never PRI_USER (KWQ.md S11 Missing 1: td_user_pri of a
-      timeshare-class kthread is recomputed by ULE every tick, so
-      PRI_USER flips between yielding to nobody and yielding whole
-      slices to CPU-bound users).  Implement the CPU-share cap as the
-      Mogul feedback: per-worker
-      busy fraction over a 10 ms window; above kern.kwq.<class>.cap_pct
-      (default 90) with sched_runnable() true -> pause_sbt(cap_sleep_us,
-      C_PREL(1)) instead of the plain yield.  Both knobs RW.
+      PUSER; never PRI_USER (KWQ.md S11 Missing 1).  Both yields skipped
+      when sched_runnable() is false.  CPU-share cap: busy fraction over
+      cap_window_us (default 10 ms); above cap_pct (default 100 = off)
+      with sched_runnable() true -> pause_sbt(cap_sleep_us, C_PREL(1))
+      instead of the yield.  All knobs RW.
+    - Counters per SCHED.md S9: per queue overruns, parks, boosts, grace,
+      maxlat_ns; per worker rounds, passes, wakeups, yields, tick_yields,
+      cap_sleeps, handbacks, busy_ns, idle_ns.
+    - kwq_test scenarios per SCHED.md S10 and S15.6: fairness, latency,
+      gaming, overrun, yield, cost, tq_baseline, switch_baseline, with
+      knobs secs, weight_a/b, cost_a/b.
     Exit: kwq_test "fairness": two NET queues, handlers burning 50 us
     and 500 us per item, saturating one CPU -> cycles within 5 % at equal
-    weight, 2:1 within 10 % at weights 2:1.  "latency": oldest-item age
-    at pass start never exceeds 2 x quantum x active queues for a
-    backlogged queue, and 2 x quantum regardless of active count for a
-    queue that was empty (the new-list rule).  "yield":
-    a callout at 1 kHz on the saturated CPU keeps its rate within 1 %;
-    with the default yield_prio and the cap off, a CPU-bound user process
-    bound to that CPU gets ~0 % of it (proves the yield is deterministic;
-    compare the same test with kern_yield(PRI_USER) in kwq_test, which
-    must show the regime flip after a few seconds of saturation); with
-    cap enabled it gets >= (100 - cap) % (measured with ps -o cputime);
-    with yield_prio=223 it gets whole slices and maxlat_ns shows it.
+    weight, 2:1 within 10 % at weights 2:1.  "latency": a newly active
+    queue's maxlat_ns <= 2 Q + c_A, a backlogged one's <= 2 x the longest
+    round.  "gaming" and "overrun" per SCHED.md S10.  "yield": a callout
+    at 1 kHz on the saturated CPU keeps its rate within 1 %; with the
+    default yield_prio and the cap off, a CPU-bound user process bound to
+    that CPU gets ~0 % of it (compare kern_yield(PRI_USER) in kwq_test,
+    which must show the regime flip after a few seconds); with cap
+    enabled it gets >= (100 - cap) % (ps -o cputime); with yield_prio=223
+    it gets whole slices and maxlat_ns shows it.  "cost", "tq_baseline",
+    "switch_baseline" on the GENERIC kernel, numbers into NOTES.md and
+    SCHED.md S15.  The simulator's constants and the guest's agree within
+    the simulator's stated model error.
 
 [TODO] P2  Observability (2 days)
     Files: kwq_sdt.c, kwq.d, kwq_ddb.c, sysctl in kwq.c.  The sysctl tree
@@ -184,7 +253,8 @@ Phases
     - SDT provider kwq with the probe set of KWQ.md S10.1, XLATE args,
       kwqinfo_t translator; per-item enqueue probe args under
       SDT_PROBES_ENABLED().
-    - counter(9) cells per (queue, CPU) and per (class, CPU) exactly as
+    - plain per-CPU 64-bit counter fields (KWQ.md S17 Rule 2) per
+      (queue, CPU) and per (class, CPU) exactly as
       KWQ.md S10.7 lists them, including depth/maxdepth for KWQ_LIMIT_NONE
       queues; lock names "kwq <name>" for lockstat.
     - show kwq in DDB.
@@ -195,11 +265,14 @@ Phases
 
 [TODO] P3  kwq_test.ko and the ATF harness (2-3 days, overlaps P1/P2)
     Files: kwq/kwq_test/kwq_test.c, kwq/tests/*.
-    - Module exposes kern.kwq_test.{scenario,nqueues,cpu,items,cost_us,
-      weight_a,weight_b,run,result_*}; "run" starts a scenario from a
-      kernel thread and results land in sysctls.  Scenarios: lifecycle,
-      fairness, latency, yield, drain (items in == out, none twice, over
-      repeated activate/drain), reject (bound hit -> ENOBUFS counted),
+    - Module exposes kern.kwq_test.{scenario,items,reps,cost_us,limit,
+      cpu,allow_panic,run,result_*} (P0, as built) plus, for P1,
+      {secs,weight_a,weight_b,cost_a,cost_b}; "run" starts a scenario
+      from a kernel thread and results land in sysctls.  Scenarios (P0,
+      done): lifecycle, fifo, notify, reject, discard, sleep.  P1 (per
+      SCHED.md S10 and S15.6): fairness, latency, gaming, overrun, yield,
+      cost, tq_baseline, switch_baseline.  Later: drain (items in == out,
+      none twice, over repeated activate/drain),
       steal (BULK, KWQ_F_STEALABLE, work created on one CPU appears on
       siblings first), scatter (completion called once after all chunks),
       notify (edge-to-level: producer flips a state word then
@@ -207,8 +280,8 @@ Phases
       every final state, zero signals lost, run only when pending; a
       variant signals from inside the handler and checks that runs never
       overlap and that exactly one further run follows a burst),
-      sleep_in_handler (expects panic; run only with
-      kern.kwq_test.allow_panic=1 in a VM).
+      sleep (expects panic; run only with kern.kwq_test.allow_panic=1
+      in the guest).
     - ATF sh tests load kwq.ko + kwq_test.ko, set knobs, poll result
       sysctls, assert; require root and a >= 4 CPU machine (skip
       otherwise); run under kyua; clean up modules in body/cleanup.
@@ -221,7 +294,8 @@ Phases
       queue per pair side, named "pair<N><a|b>" (KWQ_F_INACTIVE; activated
       at the end of clone create; KWQ_F_DISCARD so drain frees mbufs);
       pair_output: kwq_enqueue(q, kwq_cpu_for_hash(hash), KWQ_MBUF_ITEM(m)) with
-      ENOBUFS -> OQDROPS; handler = pair_input loop with budget check and
+      ENOBUFS -> OQDROPS; handler = pair_input loop with budget check
+      after every packet, at least one packet per call (SCHED.md S5), and
       remainder requeue; clone destroy: clear IFF_DRV_RUNNING on both
       sides, NET_EPOCH_WAIT(), kwq_drain + kwq_destroy of both sides'
       queues before if_detach - the same order the driver keeps today for
@@ -266,8 +340,9 @@ Phases
     Exit: kwq_test "blocking": handlers that tsleep 10 ms keep the pool's
     other queues progressing; a "reserve" scenario shows a KWQ_F_RESERVE
     queue progressing while the unreserved BLOCKING workers are all blocked;
-    a "notifier" scenario (KWQ.md S14) shows zero rejects under a request
-    flood.  GELI conversion only after this phase, as a separate plan.
+    a "notifier" scenario (KWQ.md S14) shows no request lost and no late
+    notify (ENXIO in `rejected`) under a request flood.  GELI conversion
+    only after this phase, as a separate plan.
 
 [TODO] P8  Documentation and graduation
     - kwq(9) and dtrace_kwq(4) man pages; examples/kwq compiled in CI;
@@ -286,9 +361,17 @@ kwq_test scenarios (what each proves)
               (vmstat -m kwq stable).
   fairness    two queues, unequal per-item cost, one saturated CPU;
               cycles ratio == weight ratio within 5-10 %.
-  latency     oldest-item age at pass start bounded by quantum x active
-              queues (read from kwq:::pass-start via a dtrace -c wrapper
-              or from the queue's maxlat_ns counter).
+  fifo        (P0) per-CPU sequence numbers never observed out of order.
+  discard     (P0) KWQ_F_DISCARD drain hands the backlog back with n < 0.
+  latency     oldest-item age at pass start (maxlat_ns): a newly active
+              queue <= 2 Q + c_A, a backlogged one <= 2 x the longest
+              round (SCHED.md S10).
+  gaming      a burst-and-pause producer collects no boosts (SCHED.md B6).
+  overrun     a budget-ignoring handler is parked, others keep their share.
+  cost        items/s and ns per item with empty and 1 us handlers, on a
+              non-WITNESS kernel (SCHED.md S15.6).
+  tq_baseline the same producer pattern into a taskqueue (epair's shape).
+  switch_baseline  two threads passing a token: ns per thread switch.
   yield       callout rate and CPU-bound user process share under saturation.
   drain       no item lost or run twice across 100 activate/drain cycles
               under load (each item carries a sequence number and a
@@ -306,8 +389,8 @@ kwq_test scenarios (what each proves)
               high-water mark; the same load on a limited queue rejects.
   reserve     (P7) a KWQ_F_RESERVE queue progresses while all unreserved
               BLOCKING workers are blocked.
-  notifier    (P7) one notifier per CPU over a client-owned list: zero
-              rejects under a request flood, all requests completed.
+  notifier    (P7) one notifier per CPU over a client-owned list: no
+              request lost, no late notify, under a request flood.
   sleep       a handler that sleeps panics with the expected message
               (INVARIANTS kernel in a VM only).
 
@@ -380,7 +463,7 @@ Risks and decisions to take early
 ---------------------------------
 
 - Item type: generic struct kwq_item embedded vs mbuf-native (m_stailqpkt).
-  Decision: generic item; KWQ_MBUF_ITEM()/KWQ_ITEM_TO_MBUF() macros map an
+  Decision: generic item; KWQ_MBUF_ITEM()/KWQ_ITEM_MBUF() macros map an
   mbuf's m_stailqpkt to a kwq_item so network clients pay no extra field.
   Verify offsets with CTASSERT.
 - One queue per pair side (decided): matches the driver's per-side queues,
@@ -389,13 +472,14 @@ Risks and decisions to take early
   (~32 KB on 128 CPUs); a host with thousands of pairs pays tens of MB,
   acceptable.  A shared queue would need a purge-by-predicate operation
   the API deliberately lacks.
-- Quantum defaults: measure, do not guess - P1 exit criteria include a
-  sweep of 50/100/200/500 us on the Ampere with t_17.
-- Scheduler: DRR plus the new-list rule (decided, KWQ.md S15).  If P1's
-  maxlat_ns numbers show light queues still starving behind heavy ones,
-  swap the ring for virtual time (WF2Q+/EEVDF over cpu_ticks) behind the
-  same API and counters; dummynet's dn_sched_qfq.c is the in-tree
-  reference.
+- Quantum defaults: measure, do not guess - the sweep of 50/100/200/500
+  us on the Ampere with t_17 needs if_pair on kwq and is therefore a P4
+  exit item, not P1's.
+- Scheduler: DRR with new list, grace rule and deficit clamps (decided,
+  SCHED.md; alternatives in its S11).  If P1's maxlat_ns numbers show
+  light queues still starving behind heavy ones, swap the ring for
+  virtual time (WF2Q+/EEVDF over CPU time) behind the same API and
+  counters; dummynet's dn_sched_qfq.c is the in-tree reference.
 - The pause_sbt cap adds jitter equal to cap_sleep_us; default off until
   P1 measurements say what it costs at the 479 Gbit/s peak.
 - Preload path (kwq_load in loader.conf): test explicitly on the arm64

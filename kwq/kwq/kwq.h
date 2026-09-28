@@ -6,8 +6,9 @@
  * Design: ../KWQ.md (S2 objects and lifecycle, S3 contracts, S6 what a
  * handler may do).  Terminology: ../GLOSSARY.md.
  *
- * A queue belongs to one work class (NET, BULK, BLOCKING) and has one
- * intrusive FIFO list per CPU, served by that CPU's class worker.  The
+ * A queue belongs to one work class (NET, BULK, BLOCKING) and has, per
+ * CPU, one intrusive FIFO list of items and one of pending notifiers,
+ * served by that CPU's class worker.  The
  * client embeds struct kwq_item in its own objects, chooses the CPU per
  * item (its ordering domain), and supplies one handler that receives
  * whole batches.  Nothing is allocated on the data path.
@@ -17,6 +18,7 @@
 #define	_KWQ_H_
 
 #include <sys/param.h>
+#include <sys/limits.h>
 #include <sys/queue.h>
 
 struct kwq;
@@ -44,7 +46,7 @@ typedef void kwq_handler_t(struct kwq *q, struct kwq_item *head, int n,
 
 enum kwq_class {
 	KWQ_NET = 0,		/* PI_NET, never sleeps, one worker per CPU */
-	KWQ_BULK = 1,		/* PI_SOFT, never sleeps, stealable */
+	KWQ_BULK = 1,		/* PI_SOFT, never sleeps, stealable (P6) */
 	KWQ_BLOCKING = 2,	/* PUSER, may sleep (P7, not yet available) */
 };
 #define	KWQ_NCLASS	3
@@ -55,7 +57,9 @@ struct kwq_params {
 	u_int	nreserve;	/* BLOCKING + KWQ_F_RESERVE only */
 	int	domain;		/* NUMA domain for internal memory; -1 = CPU's own */
 };
-#define	KWQ_LIMIT_NONE	UINT_MAX	/* unbounded: closed/reclamation only */
+#define	KWQ_LIMIT_NONE	UINT_MAX	/* unbounded: closed/reclamation only;
+					   the effective limit is INT_MAX so a
+					   batch's n fits an int */
 
 #define	KWQ_F_INACTIVE	0x01	/* create inactive; kwq_activate() later */
 #define	KWQ_F_STEALABLE	0x02	/* BULK: idle workers may take batches; no
@@ -68,7 +72,8 @@ struct kwq_params {
 				   be interrupt filters or hold spin locks */
 #define	KWQ_F_ALL	0x3f
 
-#define	KWQ_CPU_ANY	(-1)	/* BULK only: least loaded CPU near the caller */
+#define	KWQ_CPU_ANY	(-1)	/* BULK only: shallowest list in the caller's
+				   NUMA domain (cache domain: P6) */
 #define	KWQ_NAMELEN	32
 
 /*
@@ -101,7 +106,13 @@ void		 kwq_notifier_init(struct kwq_notifier *nf, int cpu);
 bool		 kwq_notify(struct kwq *q, struct kwq_notifier *nf);
 void		 kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf);
 
-/* Handler only. */
+/*
+ * Handler only.  kwq_requeue() prepends already-admitted leftovers to the
+ * current (queue, CPU) list (FIFO kept, no limit check).  kwq_budget_left()
+ * returns the nanoseconds of this pass's budget still unspent, 0 when the
+ * handler should requeue and return; P0 returns a constant, P1 implements
+ * SCHED.md S4.4.  A handler processes at least one item per call.
+ */
 void		 kwq_requeue(struct kwq *q, struct kwq_item *head,
 		    struct kwq_item *tail, int n);
 uint64_t	 kwq_budget_left(struct kwq *q);

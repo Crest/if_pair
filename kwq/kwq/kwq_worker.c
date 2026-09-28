@@ -11,7 +11,8 @@
  * with no service lock held, re-check emptiness under the lock before
  * going IDLE (if_pair's protocol, ../NOTES.md).
  *
- * P0: no DRR, no quantum, no yield (P1).
+ * P0: FIFO over the active list, whole batch per pass, no quantum, no
+ * yield.  P1 replaces this loop with the scheduler of ../SCHED.md.
  */
 
 #include <sys/param.h>

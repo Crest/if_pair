@@ -7,7 +7,10 @@
 #   fetch    download the official 15.1-RELEASE UFS VM image and verify it
 #   image    unpack it into $DISK and grow the file to $DISKSIZE
 #   src      clone releng/15.1 into $SRC (objects borrowed from /usr/src)
-#   kernel   build kernel-toolchain + $KERNCONF into $OBJ (~30 min on 8 cores)
+#   kernel   build kernel-toolchain + $KERNCONF into $OBJ (~30 min on 8 cores);
+#            for a second, non-debug kernel beside kernel.debug run
+#            KERNCONF=GENERIC INSTKERNNAME=kernel.generic $0 kernel install
+#            and pick it at the loader menu (it is in the kernels list)
 #   install  mount the image, installkernel as /boot/$INSTKERNNAME, set the
 #            loader to boot it, configure serial console, static IP on an
 #            isolated tap, root ssh (see keys), crash dumps
@@ -18,7 +21,7 @@
 # and then, as often as needed:
 #   start    create the tap and run the guest in the background (bhyveload
 #            + bhyve, restarting on guest reboot); log in $VMDIR/bhyve.log
-#   stop     power the guest off (bhyvectl --destroy)
+#   stop     ask the guest to power off over ssh, destroy it after 60 s
 #   console  attach to the serial console (cu; ~. to leave); while nobody
 #            is attached the console is logged to $VMDIR/console.log
 #            (only one reader of the nmdm B side at a time: a cu started
@@ -260,7 +263,7 @@ cmd_install() {
 	log "loader.conf: boot $INSTKERNNAME on the serial console"
 	set_block "$MNT/boot/loader.conf" kwqvm <<EOF
 kernel="$INSTKERNNAME"
-kernels="$INSTKERNNAME kernel"
+kernels="$INSTKERNNAME kernel.generic kernel"
 console="comconsole"
 boot_serial="YES"
 comconsole_speed="115200"

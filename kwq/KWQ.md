@@ -1,7 +1,10 @@
 # kwq(9): a FreeBSD-native kernel work queue - design proposal
 
 Draft 2026-09-23; terminology normalised 2026-09-24 - see GLOSSARY.md for
-every defined term and the aliases it replaces.  Synthesis of ../NOTES.md (the if_pair pool, its governor
+every defined term and the aliases it replaces.  P0 (lifecycle and data
+path) implemented and tested 2026-09-28 under `kwq/`; the worker
+scheduler is specified in SCHED.md, to which S5 defers.  `kwq/kwq.h` is
+the reference for names and signatures; the S2 listing is a summary.  Synthesis of ../NOTES.md (the if_pair pool, its governor
 and the big-iron measurements), ../DISPATCH.md (libdispatch) and ../POOLS.md
 (cross-OS survey and its ten lessons).  Names are illustrative; the
 contracts are the point.  Where a rule is a direct consequence of a
@@ -15,9 +18,11 @@ attach QUEUES.  A queue fixes, at creation, its class, its handler, its
 ordering domain and its bound; an item is an intrusive link the client
 owns.  Enqueue names a CPU and never allocates, never sleeps, and may
 fail with ENOBUFS.  Each worker drains its CPU's queues in deficit
-round robin measured in CPU time, with a hard quantum per queue and a
-demote-yield at the end of every round so that softclock, epoch
-reclamation and userland always run.  Every queue is accounted per CPU
+round robin measured in CPU time, with a cooperative quantum per queue
+and a fixed-priority yield at the end of every round so that softclock,
+epoch reclamation and other kernel threads run; userland gets its share
+through that yield (interactive threads) and the optional CPU-share cap
+(SCHED.md S6).  Every queue is accounted per CPU
 (items, cycles, passes, quantum overruns, rejections, max queueing
 delay) under sysctl and DTrace, by its name.  Clients never see a
 thread, a priority, or a lock of the service.  Failure exists only at
@@ -32,11 +37,11 @@ defined in GLOSSARY.md.
 
 - **Threads per (work class, CPU), not per client.**  At `SI_SUB_TASKQ` the
   service creates, for each online CPU, one NET worker and one BULK
-  worker, bound to its CPU with `taskqueue_start_threads_cpuset`-style cpusets
-  (`kthread_add` + `sched_bind` in the thread itself; never `sched_bind`
-  the creating thread - the preload-boot hang in ../NOTES.md).  BLOCKING is
+  worker, bound to its CPU by itself (`kthread_add`, then `sched_bind`
+  in the new thread once `smp_started`; never `sched_bind` the creating
+  thread - the preload-boot hang in ../NOTES.md).  BLOCKING is
   a replaced-worker pool (the BLOCKING bullet below), not one-per-CPU.  Thread names are
-  `kwq_net/N`, `kwq_bulk/N`, `kwq_blk/N` so `top` and `ps` attribute time
+  `kwq_net/N`, `kwq_bulk/N`, `kwq_blocking/N` so `top` and `ps` attribute time
   to the class; per-client attribution comes from the accounting, not
   from thread names [L3].
 - **How workers are shared.**  A queue never owns a thread and never
@@ -69,9 +74,12 @@ defined in GLOSSARY.md.
   starve user processes, and blocking work does not need to beat them.
   No API takes a priority
   [L4].  A queue may declare a WEIGHT in 1..8 (default 1) that only
-  affects its share within its class on its CPU, and can only be lowered
-  by the client below the default share of others (declaring "I am
-  background"), never raised above other clients' default.
+  affects its share within its class on its CPU: `w` quanta per round.
+  Clients are reviewed kernel code, not tenants, so a weight above 1 is
+  a declaration that is reviewed with the client, not a privilege kwq
+  enforces (an earlier version of this sentence said weights could only
+  be lowered, which the 1..8 range with default 1 contradicted;
+  corrected 2026-09-28 with SCHED.md S8).
 - **NET and BULK never sleep.**  Their workers run every handler with
   `THREAD_NO_SLEEPING()` in effect (the `td_no_sleeping` counter that
   `epoch_enter_preempt` uses, `sys/proc.h`), so a sleep attempt panics
@@ -109,7 +117,12 @@ defined in GLOSSARY.md.
     typedef void kwq_handler_t(struct kwq *q, struct kwq_item *head,
                                int n, void *ctx);
 
-    enum kwq_class { KWQ_NET, KWQ_BULK, KWQ_BLOCKING };
+    enum kwq_class { KWQ_NET = 0, KWQ_BULK = 1, KWQ_BLOCKING = 2 };
+    #define KWQ_NCLASS 3
+    #define KWQ_NAMELEN 32
+    #define KWQ_ITEM_NEXT(it)  STAILQ_NEXT((it), kwi_link)   /* walk a batch */
+    #define KWQ_ITEM_INIT(it)  /* link = NULL: required before re-enqueue */
+    /* KWQ_MBUF_ITEM(m) / KWQ_ITEM_MBUF(it): mbuf <-> item via m_stailqpkt */
 
     struct kwq *kwq_create(const char *name, enum kwq_class cls,
                            uint32_t flags, const struct kwq_params *p,
@@ -128,21 +141,30 @@ defined in GLOSSARY.md.
                 /* the notifier's CPU is fixed for its lifetime so that one
                    (queue, CPU) lock protects kn_state; not KWQ_CPU_ANY */
     bool        kwq_notify(struct kwq *q, struct kwq_notifier *nf);
-                /* true = was idle and is now queued; false = already
-                   pending, coalesced.  Exempt from the limit. */
+                /* true = was idle and is now queued; false = not newly
+                   queued: already pending (coalesced) or the queue is
+                   draining (counted as ENXIO in `rejected`).  Exempt from
+                   the limit. */
     void        kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf);
                 /* sleepable; returns with nf neither queued nor running */
-    uint64_t    kwq_budget_left(struct kwq *q);       /* handler only, ns */
+    uint64_t    kwq_budget_left(struct kwq *q);       /* handler only, ns;
+                                                          P0: a constant, P1: SCHED.md */
     int         kwq_cpu_for_hash(uint32_t hash);       /* hash -> online CPU */
-    #define KWQ_CPU_ANY      (-1)   /* BULK only: least loaded in caller's domain */
+    #define KWQ_CPU_ANY      (-1)   /* BULK only: least loaded CPU in the caller's
+                                       NUMA domain (P0, by queue depth); cache
+                                       domain refinement is P6 */
     int         kwq_scatter(struct kwq *q, struct kwq_item *list, int n,
-                            void (*done)(void *), void *arg);  /* BULK */
+                            void (*done)(void *), void *arg);  /* BULK; EOPNOTSUPP until P6 */
     void        kwq_drain(struct kwq *q);             /* run or discard all */
     void        kwq_destroy(struct kwq *q);
+    const char *kwq_name(const struct kwq *q);
+    enum kwq_class kwq_class(const struct kwq *q);
 
     struct kwq_params {
         u_int   limit;      /* items per CPU queue; 0 = class default;
-                               KWQ_LIMIT_NONE = unbounded (see S3) */
+                               KWQ_LIMIT_NONE (UINT_MAX) = unbounded (S3);
+                               capped at INT_MAX internally so a batch's n
+                               fits an int (SCHED.md S13) */
         u_int   weight;     /* 1..8, default 1 */
         u_int   nreserve;   /* BLOCKING + KWQ_F_RESERVE only */
         int     domain;     /* NUMA domain for internal memory, or -1 */
@@ -162,8 +184,8 @@ defined in GLOSSARY.md.
 `kwq_create()` allocates the queue object and its per-CPU state (heads,
 tails, counters, a `struct mtx` per CPU queue) with `M_WAITOK` in a
 context that may sleep; it registers the name under
-`kern.kwq.<class>.<name>`, allocates `counter(9)` cells, and returns an
-inactive queue.  `kwq_activate()` activates it (a single store under
+`kern.kwq.<class>.<name>` (with `/` and `.` in the name replaced by `_`
+for the sysctl node), and returns an inactive queue.  `kwq_activate()` activates it (a single store under
 the per-CPU queue locks) - the create-then-activate split is the cloner
 create-return-window lesson: nothing can be enqueued before the handler
 and storage exist [../DISPATCH.md S10].  A queue created without
@@ -199,20 +221,23 @@ fine, because enqueue never sleeps and never calls out.  A caller holding
 a SPIN mutex, or in an interrupt filter, may enqueue only to a
 `KWQ_F_SPIN` queue, whose per-CPU lists are protected by spin mutexes
 (taking a sleep mutex while holding a spin mutex is illegal, and WITNESS
-says so).  Stealing takes the victim CPU's queue mutex, the only
-cross-CPU lock in the design.
+says so).  Stealing (P6) takes the victim CPU's queue mutex, the only
+cross-CPU *sleep* mutex in the design; the doorbell takes the target
+worker's spin mutex from the producer's CPU (S17).
 
 ## 3. API contracts for the client developer
 
 **kwq_enqueue(q, cpu, item)**
 - Preconditions: `q` activated; `item` not currently queued anywhere
-  (the item's link is the client's proof; double-enqueue is a bug and is
-  caught under INVARIANTS by a poisoned link, Windows' "corruption of
-  system data structures" made impossible rather than documented).
+  (the item's link is the client's proof; the link must be NULL -
+  `KWQ_ITEM_INIT()` after the handler takes an item off a batch - and a
+  non-NULL link is asserted under INVARIANTS, Windows' "corruption of
+  system data structures" made a panic rather than documented).
 - `cpu` is the CPU whose worker should run the item: the client's
   steering decision (flow hash, receive queue, or `curcpu` for "here").
-  `KWQ_CPU_ANY` lets BULK pick the least loaded CPU in the caller's
-  cache domain; it is invalid for NET (ordering).  An offline or
+  `KWQ_CPU_ANY` lets BULK pick the least loaded CPU near the caller (P0:
+  shallowest list in the caller's NUMA domain; cache domain in P6); it
+  is invalid for NET (ordering).  An offline or
   non-existent CPU maps to the caller's CPU.
 - Never sleeps, never allocates, never calls the handler.  Safe from any
   context that may take a sleep mutex: threads, ithreads, callouts,
@@ -241,10 +266,11 @@ receives that the consumer is not keeping up.  Without the reject, an
 overloaded system fails late and globally - the mbuf zone empties and
 every interface suffers - instead of early and locally at the queue that
 is behind, which is Mogul and Ramakrishnan's "discard early" argument
-(../POOLS.md L6).  A queue may be unbounded only where something upstream
-already limits it; that is exactly the notifier pattern (S14), where the
-client's own list is bounded by GEOM's pacing and the buffer cache, and
-kwq carries one item per CPU.
+(../POOLS.md L6).  A queue may be unbounded (`KWQ_LIMIT_NONE`) only for
+closed and reclamation producers, whose population something upstream
+already limits; signals travel as limit-exempt notifiers (S14: GEOM's
+pacing and the buffer cache bound GELI's own list, and kwq carries one
+notifier per provider per CPU).
 
 The argument generalises beyond packets, but the RESPONSE to a full
 queue does not.  Queueing theory's distinction is the useful one: in an
@@ -349,7 +375,7 @@ number of objects that exist, and draining relieves the pressure that
 filled it.  For that case, and only that case, the queue should be
 declared unbounded rather than given a guessed limit.
 
-*Would an effectively infinite limit (`SIZE_MAX`) solve anything?*  As a
+*Would an effectively infinite limit (`UINT_MAX`) solve anything?*  As a
 number, no; as a declared policy, one thing.  It cannot restore the
 properties the limit protects - queueing delay, drain time and the
 overload signal are unbounded exactly when depth is - so for open
@@ -391,9 +417,10 @@ four ways to pick, in descending order of how often they are right:
    maintenance) or when the producer is bound.  For ordered flows produced
    by migrating threads it silently splits the flow across CPUs; the
    2026-08-25 steering analysis in ../NOTES.md is the cautionary case.
-4. **`KWQ_CPU_ANY`** (BULK only): the least loaded CPU in the caller's
-   cache domain, for unordered CPU-heavy work such as bulk crypto; the
-   item may then also be stolen.  Invalid for NET, which must name its
+4. **`KWQ_CPU_ANY`** (BULK only): the least loaded CPU near the caller
+   (P0 by queue depth within the NUMA domain, cache domain in P6), for
+   unordered CPU-heavy work such as bulk crypto; the item may then also
+   be stolen.  Invalid for NET, which must name its
    CPU.
 
 An offline or nonexistent CPU number is mapped to the caller's CPU
@@ -505,6 +532,9 @@ waits [L8].
   may process, enqueue elsewhere, requeue, free, or hand them on.  It must consume every
   item (the service keeps no reference).  `n < 0` on `KWQ_F_DISCARD`
   queues means "release these without processing" during drain.
+  Notifiers arrive one per call with `n == 1` (or `-1`), before the
+  item list of the same pass (S3 `kwq_notify`).  A handler processes at
+  least one item per call before honouring a zero budget (SCHED.md S5).
 - Runs on the worker of the CPU the items were enqueued to (NET, and BULK
   unless stolen), with the class's priority, inside the network epoch for
   NET (the `NET_TASK_INIT` convention), with `CURVNET_SET` to the queue's
@@ -529,8 +559,8 @@ waits [L8].
   cannot: none is passed).
 
 **kwq_drain / kwq_destroy**: sleepable contexts only; `kwq_destroy`
-asserts drained; both are idempotent for the destroy-after-drain
-sequence and panic on misuse under INVARIANTS.
+asserts drained; misuse (destroy before drain, drain from a handler)
+panics under INVARIANTS.
 
 **Which operations can fail.**  Failure is confined to two moments,
 configuration and admission; everything on the teardown side is
@@ -539,13 +569,13 @@ infallible so that no client needs an error path there.
 | operation | can fail? | how, and what the caller does |
 |---|---|---|
 | module load | yes | worker thread creation fails -> `kldload` fails; nothing is half-created |
-| `kwq_create()` | only on caller error | `M_WAITOK` allocations cannot fail; returns `NULL` for an invalid class, flags, weight or limit, a name that is too long or already registered, or `KWQ_BLOCKING` before P7 (`EOPNOTSUPP` semantics); under INVARIANTS these are assertions, not return values |
+| `kwq_create()` | only on caller error | `M_WAITOK` allocations cannot fail; returns `NULL` for an invalid class, flags, weight or limit (asserted under INVARIANTS), for a name that is too long or already registered, and for `KWQ_BLOCKING` before P7 (a console message, not an assertion: the class is legitimately absent) |
 | `kwq_activate()` | no | `void`; activating twice or after drain is a bug, asserted |
-| `kwq_enqueue()` | yes, by design | `ENOBUFS`: the (queue, CPU) list for the chosen CPU already holds `limit` items (the limit is per CPU, not per queue, so one hot CPU rejects while others are empty - a steering symptom); `ENXIO`: `kwq_drain()` has begun, or the queue was created `KWQ_F_INACTIVE` and not yet activated (the latter is a bug, asserted under INVARIANTS); `EINVAL`: `KWQ_CPU_ANY` on a NET queue.  Never for contention, a busy worker, memory pressure or interrupt context.  The item is untouched and remains the caller's; the caller drops and counts, or applies backpressure upstream |
+| `kwq_enqueue()` | yes, by design | `ENOBUFS`: the (queue, CPU) list for the chosen CPU already holds `limit` items (the limit is per CPU, not per queue, so one hot CPU rejects while others are empty - a steering symptom); `ENXIO`: `kwq_drain()` has begun, or the queue was created `KWQ_F_INACTIVE` and not yet activated (not asserted: kwq_test relies on it); `EINVAL`: `KWQ_CPU_ANY` on a NET queue.  Never for contention, a busy worker, memory pressure or interrupt context.  The item is untouched and remains the caller's; the caller drops and counts, or applies backpressure upstream |
 | `kwq_enqueue_list()` | yes, all-or-nothing | same codes; either every item is queued or none is |
 | `kwq_notify()` | **no** | returns `true` if the notifier was idle and is now queued, `false` if it was already pending (`coalesced`) or the queue is draining (`rejected`, `kwq:::reject` with `ENXIO`); exempt from the limit; a notifier pending when the drain begins is run or discarded by the drain like any item and is idle when `kwq_drain()` returns |
 | `kwq_notify_cancel()` | no | `void`; may sleep; detach only |
-| `kwq_scatter()` | yes, all-or-nothing | `EINVAL` for a non-BULK queue; `ENOBUFS` if the chunks do not all fit, in which case nothing is queued and `done` is never called; on success `done` is called exactly once |
+| `kwq_scatter()` | yes, all-or-nothing | `EOPNOTSUPP` until P6; then `EINVAL` for a non-BULK queue; `ENOBUFS` if the chunks do not all fit, in which case nothing is queued and `done` is never called; on success `done` is called exactly once |
 | `kwq_budget_left()` | no | returns 0 when the quantum is exhausted; never an error |
 | `kwq_requeue()` | no | `void`; handler-only, prepends already-admitted items, never counts against the limit |
 | the handler | no | has no return value and owns every item it is given; it cannot refuse work, only requeue it |
@@ -574,8 +604,8 @@ Why the filter row works: a `KWQ_F_SPIN` queue's per-CPU lock is a spin
 mutex, and the doorbell is `wakeup_one(9)`, which takes only spin locks
 (sleepqueue chain and thread locks) and is what `taskqueue_create_fast()`
 queues already call from filters via `taskqueue_thread_enqueue()`.  The
-SDT probes and `counter(9)` updates on the enqueue path are safe in every
-context.  Nothing on the enqueue path allocates, so there is no `M_NOWAIT`
+SDT probes and the per-CPU counter fields on the enqueue path are safe in
+every context.  Nothing on the enqueue path allocates, so there is no `M_NOWAIT`
 failure to handle in any context; the only failure is a *reject*.
 
 **Which operations are safe from inside a kwq handler.**  The handler runs
@@ -604,10 +634,9 @@ re-entrant from it; the class decides the rest.
 
 ## 4. Integration with existing kernel services
 
-- **taskqueue(9) / gtaskqueue(9)**: kwq is implemented as an extension
-  of gtaskqueue's per-CPU group machinery (its attach/detach/drain and
-  boot-time reattachment are reused), and `taskqueue(9)` gains a
-  compatibility shim: `taskqueue_create_kwq(class)` returns a taskqueue
+- **taskqueue(9) / gtaskqueue(9)**: kwq is a standalone service with its
+  own workers (S12, module-first); when it moves in-tree,
+  `taskqueue(9)` gains a compatibility shim: `taskqueue_create_kwq(class)` returns a taskqueue
   whose `taskqueue_enqueue` maps to `kwq_enqueue(q, curcpu, ...)` with
   one item per task, so existing single-task drivers migrate by
   changing the create call.  The `TASK_IS_NET` flag becomes the NET
@@ -649,52 +678,60 @@ re-entrant from it; the class decides the rest.
   contract: a cloner's `destroy` drains its queues before detaching, so
   no item outlives the interface it references (the if_pair teardown
   argument, ../NOTES.md).
-- **Module unload**: `kwq_destroy()` in the module's SYSUNINIT at
-  `SI_SUB_TASKQ` order AFTER cloner teardown, the ordering if_pair
+- **Module unload**: a client module calls `kwq_destroy()` in its
+  SYSUNINIT at `SI_SUB_TASKQ` order AFTER cloner teardown, the ordering if_pair
   adopted because `MOD_UNLOAD` events fire before file SYSUNINITs.
 - **WITNESS / INVARIANTS**: the queue mutexes are registered as leaf
   locks; handlers run under `THREAD_NO_SLEEPING` (NET/BULK) and, in
   debug kernels, `WITNESS_WARN(WARN_PANIC | WARN_GIANTOK, NULL, "kwq
   handler")` at entry and a check at exit that no locks were leaked
   (`witness_warn` with the entry lock count).
-- **sysctl(9) and DTrace**: `kern.kwq.<class>.<name>.cpu<N>.{items,
-  cycles, passes, overruns, rejected, coalesced, maxlat_ns}` (per-CPU
-  cells, S17); per class `kern.kwq.<class>.yield_prio` (RW, default
-  `PUSER`, S11) and `kern.kwq.<class>.quantum_us` (RWTUN,
-  default 200 us NET, 1 ms BULK, 5 ms BLOCKING - the quantum shares one
-  worker between queues, which ULE's time slice does not do); SDT probes
-  `kwq:::enqueue(q, cpu, n)`, `kwq:::reject(q, cpu)`, `kwq:::pass-start(q,
-  cpu, n)`, `kwq:::pass-end(q, cpu, ns)`, `kwq:::overrun(q, cpu, ns)`,
-  `kwq:::yield(cpu, round_ns)`, `kwq:::steal(q, from, to, n)`.  This is the
+- **sysctl(9) and DTrace**: every (queue, CPU) and every (class, CPU)
+  exports 64-bit per-CPU counter fields and every class its knobs
+  (`quantum_us`, `yield_prio`, `cap_*`, `limit`, `priority`) under
+  `kern.kwq`, listed with types and defaults in S10.7; the SDT provider
+  `kwq` and its probes are listed in S10.1 (P2).  This is the
   observability that every system in ../POOLS.md eventually rebuilt its
   deferral mechanism to obtain [L3].
-- **Panic and debugger**: `show kwq` in DDB lists queues, per-CPU depths,
-  states and the last handler run; the worker's `td_name` and the queue
-  name appear in backtraces.
+- **Panic and debugger**: `show kwq` in DDB (P2) lists queues, per-CPU
+  depths, states and the last handler run; the worker's `td_name` and
+  the queue name appear in backtraces.
 
 ## 5. Accounting: fairness, latency, throughput
 
+*Normative detail is in SCHED.md (2026-09-28): the exact round and pass
+algorithm, the grace rule against boost abuse, invariants, bounds and
+the P1 test plan.  This section states the goals; where they differ,
+SCHED.md wins.*
+
 **Unit of account: CPU time, not items** [L5].  Every pass is bracketed
-by `cpu_ticks()`/TSC reads; the difference is charged to the queue's
-per-CPU `cycles` counter and to its DRR deficit.
+by two readings of the worker's own CPU time, `td_runtime +
+(cpu_ticks() - PCPU_GET(switchtime))`, which excludes time preempted or
+asleep; the difference is charged to the queue's DRR deficit (SCHED.md
+S1a.4).  The wall-time `cpu_ticks()` difference goes to the `cycles`
+counter for latency diagnosis.
 
 **Fairness: deficit round robin per (class, CPU).**  A worker keeps the
 CPU's active queues of its class in a ring.  Each round, each queue's
-deficit is increased by `quantum * weight`; the worker swaps out the
-queue's list and runs the handler while the deficit is positive, charging
-consumed time; a queue whose list empties keeps its unused deficit up to
-one quantum (so bursty clients are not penalised) and one whose handler
-overran is parked with a negative deficit and skipped until it recovers.
-A queue whose list goes from empty to non-empty is placed on the worker's
-*new* list and served before the ring for its first quantum, then joins
-the ring (fq_codel's new/old flow rule, S15), so a light queue is not
-made to wait a whole round behind heavy ones.
-With one active queue this degenerates to "drain until empty or
-quantum", i.e. today's behaviour at zero extra cost (the libdispatch
-observation that fairness machinery costs nothing until there is someone
-to be fair to).  Between classes there is no scheduling at all: NET and
-BULK are different threads at different fixed priorities, arbitrated by
-ULE exactly as ithreads and softclock are today.
+deficit is increased by `quantum * weight` and capped at two quanta;
+the worker swaps out the queue's list and runs the handler, which
+cooperatively stops when `kwq_budget_left()` reads 0; the pass is charged
+afterwards, a queue whose handler overran is parked with a negative
+deficit (clamped at minus two quanta, so at most two rounds of penalty)
+and skipped until refills make it positive, and a queue whose list
+empties resets to zero.  A queue whose list goes from empty to non-empty
+is placed on the worker's *new* list and served in alternation with
+ring passes with a fresh quantum, then joins the ring (fq_codel's
+new/old rule with CAKE's grace against boost abuse, SCHED.md S4), so a
+light queue does not wait a whole round behind heavy ones and a stream
+of new queues cannot starve the ring.  With one active queue this
+degenerates to "drain until empty or quantum", i.e. today's behaviour at
+zero extra cost (the libdispatch observation that fairness machinery
+costs nothing until there is someone to be fair to).  Between classes
+there is strict priority: NET and BULK are different threads at
+different fixed priorities, arbitrated by ULE, plus a per-CPU hand-back
+flag so that a BULK round ends as soon as a yielded NET worker wants its
+CPU back (SCHED.md S6.4).
 
 **Latency: the quantum and the round.**  A NET quantum of 200 us bounds
 how long any one queue can hold the worker; a round over k active queues
@@ -712,8 +749,9 @@ CPU's timers - the callout-starvation the 128-core measurements exposed
 (../NOTES.md 2026-08-20).  Per-item queueing latency is sampled (enqueue
 timestamp in the item is NOT stored - items are the client's - but the
 per-pass `maxlat_ns` records the age of the oldest item at pass start,
-using the timestamp of the first enqueue into an empty list, kept in the
-per-CPU queue state).
+using an `sbinuptime()` stamp taken at the first enqueue into an empty
+list, kept in the per-CPU queue state - a global clock, because producer
+and worker are on different CPUs).
 
 **Jitter: no punting, time-based budgets, bound NET workers.**  A parked queue
 resumes in the next round at the same priority; there is no
@@ -777,11 +815,15 @@ A component that today creates a taskqueue or a thread does this:
     pair_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
     {
         struct mbuf *m, *next;                 /* items are mbufs here */
-        for (m = KWQ_ITEM_TO_MBUF(head); m != NULL; m = next) {
-            next = KWQ_NEXT_MBUF(m);
-            pair_input(ifp_of(m), m);          /* runs in net epoch */
-            if (next != NULL && kwq_budget_left(q) == 0) {
-                kwq_requeue(q, KWQ_MBUF_ITEM(next), KWQ_MBUF_ITEM(last), n_left);
+        struct kwq_item *it, *nx;
+        int left = n;
+        for (it = head; it != NULL; it = nx, left--) {
+            nx = KWQ_ITEM_NEXT(it);
+            KWQ_ITEM_INIT(it);                   /* link must be NULL again */
+            pair_input(ifp_of(KWQ_ITEM_MBUF(it)), KWQ_ITEM_MBUF(it));
+            if (nx != NULL && kwq_budget_left(q) == 0) {
+                /* at least one item done (progress rule); tail found by walking */
+                kwq_requeue(q, nx, kwq_item_tail(nx), left - 1);
                 return;                          /* FIFO kept: prepended */
             }
         }
@@ -985,7 +1027,7 @@ with `SDT_PROBE_DEFINEn_XLATE` (the mechanism `ip`/`tcp` use) so that
 | `kwq:::create`, `activate`, `drain-start`, `drain-end`, `destroy` | lifecycle | `kwqinfo_t *` | negligible |
 | `kwq:::enqueue` | every accepted item | `kwqinfo_t *`, `int cpu`, `int depth_after`, `int woke` (1 if this enqueue rang the doorbell) | per item: hot, see 10.3 |
 | `kwq:::reject` | `kwq_enqueue` returned ENOBUFS/ENXIO | `kwqinfo_t *`, `int cpu`, `int errno` | per event |
-| `kwq:::pass-start` | worker swapped a list and is about to run the handler | `kwqinfo_t *`, `int cpu`, `int n`, `uint64_t oldest_age_ns` | per pass |
+| `kwq:::pass-start` | worker swapped a list and is about to run the handler | `kwqinfo_t *`, `int cpu`, `int n` (items in the list call; notifiers are delivered in separate handler calls and counted in `items`), `uint64_t oldest_age_ns` | per pass |
 | `kwq:::pass-end` | handler returned | `kwqinfo_t *`, `int cpu`, `int n`, `uint64_t ns`, `int remaining_requeued` | per pass |
 | `kwq:::overrun` | a pass overran its quantum | `kwqinfo_t *`, `int cpu`, `uint64_t over_ns` | per event |
 | `kwq:::park` | queue parked with negative deficit | `kwqinfo_t *`, `int cpu`, `int64_t deficit_ns` | per event |
@@ -1044,12 +1086,12 @@ existing `dtrace_io(4)`, `dtrace_sched(4)`, `dtrace_tcp(4)`.
 
 ### 10.4 What the workers look like to other providers
 
-- Threads are named `kwq_net/N`, `kwq_bulk/N`, `kwq_blk/N`, so
+- Threads are named `kwq_net/N`, `kwq_bulk/N`, `kwq_blocking/N`, so
   `sched:::on-cpu`, `sched:::off-cpu` and the `profile` provider
   attribute CPU time per worker with `curthread->td_name` and per class
   with a prefix match; per-client attribution comes from `kwq:::pass-*`.
 - The (queue, CPU) mutexes carry the queue name in their lock name
-  (`"kwq pair"`), so the `lockstat` provider reports contention per
+  (`"kwq pair0a"`), so the `lockstat` provider reports contention per
   queue - the tool that found the callout-wheel and mbuf-zone hot spots
   keeps working unchanged.
 - `fbt::kwq_enqueue:entry` with `stack()` answers "who is feeding this
@@ -1059,7 +1101,8 @@ existing `dtrace_io(4)`, `dtrace_sched(4)`, `dtrace_tcp(4)`.
 ### 10.5 Always-on counters and DDB
 
 DTrace is for investigation; steady-state health needs no probe enabled.
-Every (queue, CPU) exports `counter(9)` cells under
+Every (queue, CPU) exports per-CPU 64-bit counter fields (plain fields,
+S17 Rule 2) under
 `kern.kwq.<class>.<name>.cpu<N>.` (items, rejected, passes, cycles,
 overruns, parks, requeued, steals_in, coalesced, depth/maxdepth,
 maxlat_ns) plus
@@ -1114,18 +1157,20 @@ unnamed mutexes; the probes exist so that the next operator does not.
 ### 10.7 sysctl reference
 
 All nodes live under `kern.kwq`.  `<class>` is `net`, `bulk` or
-`blocking`; `<name>` is the queue name given to `kwq_create()`; `<N>` a
-CPU id.  Counters are `counter(9)` cells (64-bit, per-CPU internally,
-read with `sysctl` as totals) unless marked otherwise.  RW knobs take
-effect at the next round; RDTUN knobs are read at module load.
+`blocking`; `<name>` is the queue name given to `kwq_create()` with `/`
+and `.` replaced by `_`; `<N>` a CPU id.  Counters are 64-bit per-CPU
+fields (S17 Rule 2), one per (queue, CPU) node, read individually.  RW
+knobs take effect at the next round; RWTUN knobs are also read from
+`loader.conf` when the module is preloaded.  Rows marked P1/P2/P7 are
+specified but not yet exported by the P0 code.
 
 Service-wide
 
 | node | type | access | default | meaning |
 |---|---|---|---|---|
-| `kern.kwq.version` | int | RD | 1 | KPI version, matches `MODULE_VERSION(kwq)` |
-| `kern.kwq.ncpu` | int | RD | `mp_ncpus` | CPUs with workers |
-| `kern.kwq.nqueues` | int | RD | - | queues currently created (active or not) |
+| `kern.kwq.version` | int | RD | 1 | KPI version, matches `MODULE_VERSION(kwq)` (P2) |
+| `kern.kwq.ncpu` | int | RD | `mp_ncpus` | CPUs with workers (P2) |
+| `kern.kwq.nqueues` | int | RD | - | queues currently created (active or not) (P2) |
 
 Per class: `kern.kwq.<class>.`
 
@@ -1133,43 +1178,48 @@ Per class: `kern.kwq.<class>.`
 |---|---|---|---|---|
 | `yield_prio` | int | RW | `PUSER` (56) | priority the worker yields at after each round; `PRI_MAX_TIMESHARE` (223) lets every user thread run a full slice per round |
 | `quantum_us` | int | RWTUN | net 200, bulk 1000, blocking 5000 | CPU time a queue of weight 1 may consume per round (BLOCKING too: the quantum shares a worker between queues, which ULE's slice does not) |
-| `limit` | int | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards |
-| `cap_pct` | int | RW | 0 (off) | CPU-share cap: worker busy fraction above which it sleeps when user threads are runnable (S11 Missing 1) |
+| `limit` | uint | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards |
+| `cap_pct` | uint | RW | 100 (off) | CPU-share cap: worker busy fraction above which it sleeps when other threads are runnable (S11 Missing 1); 100 or more = off |
 | `cap_sleep_us` | int | RW | 100 | length of that sleep |
 | `cap_window_us` | int | RW | 10000 | window over which the busy fraction is measured |
 | `priority` | int | RD | `PI_NET` / `PI_SOFT` / `PUSER` | scheduler priority of the class's workers |
-| `nworkers` | int | RD | ncpu (blocking: current) | worker threads in the class |
-| `max_workers` | int | RW | blocking only, 4 x ncpu | ceiling for worker replacement |
-| `idle_timeout_s` | int | RW | blocking only, 30 | reap an idle replacement worker after this long |
-| `cpu<N>.rounds` | counter | RD | | DRR rounds completed by this CPU's worker |
-| `cpu<N>.yields` | counter | RD | | end-of-round yields taken |
-| `cpu<N>.tick_yields` | counter | RD | | yields forced by the tick guard (a pass outlived a tick) |
-| `cpu<N>.cap_sleeps` | counter | RD | | CPU-share cap sleeps taken |
-| `cpu<N>.idle_ns` | counter | RD | | time the worker spent asleep with nothing queued |
-| `cpu<N>.busy_ns` | counter | RD | | time spent in passes |
-| `cpu<N>.steals_out` | counter | RD | | bulk only: batches taken from this CPU by others |
+| `nworkers` | int | RD | ncpu (blocking: current) | worker threads in the class (P7) |
+| `max_workers` | int | RW | blocking only, 4 x ncpu | ceiling for worker replacement (P7) |
+| `idle_timeout_s` | int | RW | blocking only, 30 | reap an idle replacement worker after this long (P7) |
+| `cpu<N>.rounds` | counter | RD | | DRR rounds completed by this CPU's worker (P1) |
+| `cpu<N>.passes` | counter | RD | | handler invocations by this worker (P1) |
+| `cpu<N>.wakeups` | counter | RD | | times the worker was woken from idle (P1) |
+| `cpu<N>.yields` | counter | RD | | end-of-round yields taken (P1) |
+| `cpu<N>.tick_yields` | counter | RD | | yields forced by the tick guard (a pass outlived a tick) (P1) |
+| `cpu<N>.cap_sleeps` | counter | RD | | CPU-share cap sleeps taken (P1) |
+| `cpu<N>.idle_ns` | counter | RD | | time the worker spent asleep with nothing queued (P1) |
+| `cpu<N>.busy_ns` | counter | RD | | CPU time spent in passes (P1) |
+| `cpu<N>.steals_out` | counter | RD | | bulk only: batches taken from this CPU by others (P6) |
 
 Per queue: `kern.kwq.<class>.<name>.`
 
 | node | type | access | meaning |
 |---|---|---|---|
-| `weight` | int | RD | as created (1..8) |
-| `limit` | int | RD | per-CPU item limit in effect |
+| `weight` | uint | RD | as created (1..8) |
+| `limit` | uint | RD | per-CPU item limit in effect (`INT_MAX` for `KWQ_LIMIT_NONE`) |
 | `flags` | uint | RD | `KWQ_F_*` as created |
-| `state` | string | RD | `inactive`, `active`, `draining`, `drained` |
-| `cpu<N>.depth` | int | RD (sampled) | items currently queued on this CPU |
-| `cpu<N>.maxdepth` | int | RD, reset via `reset` | high-water mark of `depth`; the health signal for `KWQ_LIMIT_NONE` queues |
+| `state` | string | RD | `inactive`, `active`, `draining`, `drained` (P2) |
+| `cpu<N>.depth` | uint | RD (sampled) | items currently queued on this CPU |
+| `cpu<N>.state` | uint | RD (sampled) | 0 idle, 1 waking, 2 running, 3 parked |
+| `cpu<N>.maxdepth` | uint64 | RD, reset via `reset` | high-water mark of `depth` at pass start; the health signal for `KWQ_LIMIT_NONE` queues |
 | `cpu<N>.items` | counter | RD | items accepted |
 | `cpu<N>.rejected` | counter | RD | enqueues refused with `ENOBUFS`, and enqueues or notifies after drain began (`ENXIO`) |
 | `cpu<N>.coalesced` | counter | RD | `kwq_notify()` calls that found the notifier already pending (signal coalescing ratio) |
 | `cpu<N>.passes` | counter | RD | handler invocations |
 | `cpu<N>.cycles` | counter | RD | `cpu_ticks()` consumed by passes; divide by `kern.kwq.<class>.cpu<N>.busy_ns` for the queue's share of its worker |
-| `cpu<N>.overruns` | counter | RD | passes that exceeded the remaining quantum |
-| `cpu<N>.parks` | counter | RD | times the queue was skipped for a negative deficit |
+| `cpu<N>.overruns` | counter | RD | passes that exceeded the remaining quantum (P1) |
+| `cpu<N>.parks` | counter | RD | times the queue was skipped for a negative deficit (P1) |
+| `cpu<N>.boosts` | counter | RD | passes served from the new list (P1) |
+| `cpu<N>.grace` | counter | RD | doorbells sent to the ring instead of the new list by the grace rule (P1) |
 | `cpu<N>.requeued` | counter | RD | items handed back with `kwq_requeue()` |
 | `cpu<N>.steals_in` | counter | RD | bulk only: batches this CPU's worker took from others for this queue |
-| `cpu<N>.maxlat_ns` | uint64 | RD, reset via `reset` | largest oldest-item age seen at pass start since last reset |
-| `cpu<N>.reset` | int | WR | write 1 to zero `maxlat_ns` and `maxdepth` |
+| `cpu<N>.maxlat_ns` | uint64 | RD, reset via `reset` | largest oldest-item age seen at pass start since last reset (P1) |
+| `cpu<N>.reset` | int | WR | write 1 to zero `maxlat_ns` and `maxdepth` (P2) |
 
 Only `kern.kwq.<class>.limit` and `quantum_us` are loader tunables
 (RWTUN), for the preloaded case; everything else is runtime only.  The test module's knobs
@@ -1199,10 +1249,10 @@ has been making about its own driver.
 | non-sleeping enforcement in NET/BULK handlers | `THREAD_NO_SLEEPING()` / `THREAD_SLEEPING_OK()` (`sys/proc.h`, the epoch(9) mechanism); `WITNESS_WARN(WARN_PANIC, ...)` for lock-leak checks |
 | doorbell-safe queue lock, filter-context variant | sleep mutex; `MTX_SPIN` for filter producers (the `gtaskqueue_create_fast()` precedent) |
 | priority lending under contention | turnstiles, adaptive mutexes |
-| per-pass CPU time | `cpu_ticks()` (TSC-backed, what ULE charges `td_runtime` with) |
+| per-pass CPU time | `td_runtime + (cpu_ticks() - PCPU_GET(switchtime))`, the worker's own run time as `mi_switch()` accounts it; `cpu_ticks()` alone for wall time |
 | tick guard | `ticks` |
 | per-CPU state without atomics | DPCPU, `critical_enter()` |
-| counters | `counter(9)`, `SYSCTL_ADD_COUNTER_U64`, dynamic sysctl nodes per name |
+| counters | plain per-CPU `uint64_t` fields (S17 Rule 2) exported with `SYSCTL_ADD_U64`, dynamic sysctl nodes per name |
 | network epoch per pass | `NET_EPOCH_ENTER()`; `NET_TASK_INIT` shows the convention |
 | vnet context | `CURVNET_SET()` |
 | cache topology for BULK stealing | `smp_topo()` / `struct cpu_group` (what ULE itself uses) |
@@ -1280,7 +1330,8 @@ Options, in order of preference:
     latency cost is small in practice though not bounded by
     construction.  CPU-bound user threads get their share from Mogul's
     "limit on CPU usage" feedback instead: each worker tracks its busy
-    fraction over a short window and, above a class cap (say 90 %) with
+    fraction over a short window and, above a class cap (`cap_pct`,
+    default 100 = off) with
     runnable timeshare threads on the CPU (`sched_runnable()`), sleeps
     for a fixed short interval with `pause_sbt(..., C_PREL(1))` at its
     normal priority.  Bounded by the interval, tunable, and the cost is
@@ -1373,11 +1424,10 @@ distribution and is installed to `/usr/lib/dtrace/kwq.d`.
                     SDT provider, DDB command.  MODULE_VERSION(kwq, 1).
     kwq_test.ko     synthetic clients: N queues with handlers of known
                     cost, counters checked by an ATF test in tests/
-                    (fairness: two queues, equal weight, cycles within
-                    5 %; latency: oldest-item age never exceeds
-                    2 x quantum x active queues; yield: softclock keeps
-                    firing under saturation; drain: no item lost or run
-                    twice across 1000 load/unload cycles).
+                    (P0 done: lifecycle, fifo, notify, reject, discard,
+                    sleep; P1 per SCHED.md S10: fairness, latency,
+                    gaming, overrun, yield, cost, tq_baseline,
+                    switch_baseline).
     if_pair.ko      first real client: MODULE_DEPEND(if_pair, kwq, 1, 1, 1),
                     pool code removed, t_17/t_19/t_20/t_21 as the
                     regression suite on the Ampere.
@@ -1408,8 +1458,9 @@ while any client holds queues, which is the correct contract and free.
 
 **Limits of the module form.**  (1) The bounded relinquish and the
 `sched_sleep` hook need kernel patches; the module uses the `pause_sbt`
-cap and the polling monitor until they land, and both fallbacks stay as
-the module's behaviour on unpatched kernels.  (2) netisr, the taskqueue
+cap, the per-CPU class hand-back flags (SCHED.md S6.4) and the polling
+monitor until they land, and the fallbacks stay as the module's
+behaviour on unpatched kernels.  (2) netisr, the taskqueue
 compatibility constructor and epoch-callback placement are in-tree
 changes and are developed as patches to the same tree the module is
 built against, exactly as the TSO series was.  (3) A module cannot claim
@@ -1429,7 +1480,7 @@ right-hand column is what the two scheduler patches (S11 Missing 1 and
 | deference to user threads (S11 Missing 1) | fixed-priority yield (`yield_prio`, default `PUSER`): timers, epoch callbacks, kernel range and the most interactive threads run; CPU-bound users get a share only through the `pause_sbt` cap, which adds jitter equal to `cap_sleep_us` and sleeps for the whole interval even if the user thread finishes early | `sched_relinquish_to(prio, max)`: every lower thread may run, for at most `max`; no cap, no jitter beyond `max` |
 | a BLOCKING worker blocks (S11 Missing 2) | the 1 Hz monitor notices within up to a second; queues on that CPU stall that long unless the queue has reserved workers (`KWQ_F_RESERVE`) | `sched_sleep` hook starts a replacement within microseconds; fewer reserved workers needed |
 | a NET or BULK worker hogs the CPU | cooperative only: quantum via `kwq_budget_left()` and the tick guard; ULE's slice-end for a timeshare-class kernel thread sets an AST the thread never services | unchanged (the patches do not add preemption; a hog is a client bug either way) |
-| CPU choice for `KWQ_CPU_ANY` | kwq's own per-CPU depth and `sched_runnable()`; ULE's per-CPU load (`tdq_load`) is not exported, `sched_load()` is global | unchanged unless a per-CPU load accessor is added, which neither patch does |
+| CPU choice for `KWQ_CPU_ANY` | kwq's own per-CPU queue depth; ULE's per-CPU load (`tdq_load`) is not exported, `sched_load()` is global | unchanged unless a per-CPU load accessor is added, which neither patch does |
 | CPU hot-plug (S11 Missing 3) | none exists; arrays sized once at load | unchanged |
 | in-tree clients (netisr, epoch callbacks, taskqueue shim) | cannot use a module: they start before it and cannot `MODULE_DEPEND` | unchanged; these need the in-tree move, not the scheduler patches |
 | KBI | built per kernel like any module; `THREAD_NO_SLEEPING()` touches `struct thread`, so a kernel rebuild means a module rebuild (normal) | unchanged |
@@ -1608,11 +1659,15 @@ scheduler chose the queue).  The fq_codel refinement, however, is nearly
 free and removes the case that hurts most, a light queue (a GELI
 notifier, one quiet pair among busy ones) waiting behind heavy ones, so
 it is adopted: a (queue, CPU) list going empty->non-empty enters the
-worker's *new* list and is served ahead of the ring for its first
-quantum, then joins the ring.  With it the latency bound for a newly
-active queue is about one quantum plus the pass in progress, independent
-of the active count; the `active queues x quantum` bound remains for
-continuously backlogged queues, which is what fairness means.
+worker's *new* list and is served with a fresh quantum, then joins the
+ring.  SCHED.md refined this twice (S4.2, S14 cases 1-2): new-list
+passes alternate with ring passes so a stream of new queues cannot
+starve the ring, and a grace rule denies the boost to a queue that left
+the ring within the last round.  The latency bound for a newly active
+queue is then two passes per new entry ahead of it plus the pass in
+progress, independent of the ring's length; the `active queues x
+quantum` bound remains for continuously backlogged queues, which is
+what fairness means.
 
 Upgrade path, if `maxlat_ns` measurements contradict this: replace the
 ring by virtual time in `cpu_ticks()` (WF2Q+/EEVDF; with fewer than
@@ -1721,8 +1776,8 @@ contention is the visible half.
 
 **Constants.**  `CACHE_LINE_SIZE` is 64 on amd64 (`CACHE_LINE_SHIFT` 6,
 `amd64/include/param.h:86`) and 128 on arm64 (shift 7,
-`arm64/include/param.h:82`).  Always use the macro, never a number; the
-Ampere is the 128-byte case.  Sleep channels hash into 256 chains by
+`arm64/include/param.h:82`).  kwq uses `KWQ_LINE` = max(`CACHE_LINE_SIZE`,
+128) (Rule 1) and never a bare number; the Ampere is the 128-byte case.  Sleep channels hash into 256 chains by
 `SC_HASH(wc) = ((wc >> 8) ^ wc) & 255` (`subr_sleepqueue.c:98-103`):
 only the low two bytes of the address matter, so two wait channels a
 multiple of 65536 bytes apart always share a chain, while a stride of
@@ -1754,8 +1809,10 @@ implements, with `CTASSERT`s on both boundaries:
         u_int           kc_depth, kc_state, kc_nnotify, kc_flags;
         /* block 0, second 64 bytes: burst start, signals, rare paths */
         STAILQ_HEAD(, kwq_item) kc_notify;
-        u_int           kc_waiters, kc_pad0;
-        uint64_t        kc_empty_since;
+        u_short         kc_waiters; u_char kc_onlist, kc_warm;   /* P1 */
+        u_int           kc_idle_round;   /* P1, 32-bit: only the difference
+                                            to kw_round matters (SCHED.md S13) */
+        sbintime_t      kc_empty_since;  /* P0 code still stamps cpu_ticks */
         TAILQ_ENTRY(kwq_cpu) kc_active;
         uint64_t        kc_rejected, kc_coalesced;
         /* block 1..: consumer-private, written only by the owning CPU */
@@ -1800,26 +1857,27 @@ still enqueueing.
 memory from the CPU's own domain.  A single contiguous array of `struct
 kwq_cpu` lives in one domain; on a two-socket machine half the CPUs then
 take their lock across the interconnect on every pass.  Allocate one
-`struct kwq_cpu` per CPU with `malloc_domainset_aligned(sizeof, 
-CACHE_LINE_SIZE, M_KWQ, DOMAINSET_PREF(pcpu_find(cpu)->pc_domain),
+`struct kwq_cpu` per CPU with `malloc_domainset_aligned(sizeof,
+KWQ_LINE, M_KWQ, DOMAINSET_PREF(pcpu_find(cpu)->pc_domain),
 M_WAITOK | M_ZERO)` (`kern_malloc.c:823`; plain `malloc()` gives only
 pointer alignment, so the aligned variant is required, not optional),
 and keep the `mp_maxid + 1` pointers in a read-mostly array inside
 `struct kwq`.  The cost is one dependent load per enqueue from a line
 that never changes after create; the alternative, `DPCPU`, is for
 module-static data sized at load and cannot back a per-queue allocation.
-The per-(class, CPU) worker structs are static in number and are
-`DPCPU_DEFINE_STATIC` candidates, or the same per-CPU aligned allocation
-at module load; either keeps each worker's ring, deficits and wait
-channel on its own CPU's domain.
+The per-(class, CPU) worker structs are allocated the same way at
+module load (P0), which keeps each worker's ring, deficits and wait
+channel on its own CPU's domain; P1 changes this to one array per
+(class, NUMA domain) with a 256-byte stride, for Rule 5.
 
 **Rule 5: wait channels spread over sleepqueue chains.**  Each worker
 sleeps on the address of a field in its own `struct kwq_worker`.  With
 per-CPU allocation those addresses are effectively random in the low
-two bytes, which is what the hash wants but does not guarantee; with
-one static array the stride is `sizeof(struct kwq_worker)`, and a stride
-of 64, 128 or 256 bytes keeps up to 256 workers of a class on distinct
-chains (above).  Either way, verify at load under INVARIANTS that no two
+two bytes, which is what the hash wants but does not guarantee (P0
+reported one collision among 4 CPUs on the test guest); with one array
+per (class, domain) the stride is `sizeof(struct kwq_worker)` = 256
+bytes, which keeps up to 256 workers of a class on distinct chains
+(above) - the P1 layout.  Either way, verify at load under INVARIANTS that no two
 workers of a class hash to the same chain and `printf` if they do; on a
 128-CPU machine a collision costs a shared chain lock on every doorbell
 of both workers.  Producers never sleep on these
@@ -1842,7 +1900,10 @@ transfer); `sysctl debug.sleepq` does not exist, so chain collisions are
 checked by the load-time assertion of Rule 5.  Record the numbers in
 ../NOTES.md next to the t_20 contention data.
 
-## 13. Revision log
+## 18. Revision log
+
+(Numbered last: sections were appended as the design grew - 0-12, then
+14-17 - and this log always stays at the end.)
 
 - 2026-09-23: first draft (S0-S8); S9 locks vs Concurrency Kit, locked-only
   first version; S10 DTrace; S11 FreeBSD facility audit and the three
@@ -1869,7 +1930,6 @@ checked by the load-time assertion of Rule 5.  Record the numbers in
   `kwq_cpu_for_hash()` (the TCP per-CPU-timer mapping) and `KWQ_CPU_ANY`
   in the API listing; S1 gained the explicit worker-sharing paragraph.
   Examples switched from `% mp_ncpus` to `kwq_cpu_for_hash()`.
-
 
 - 2026-09-25: contradiction pass over the whole text.  Decided and
   aligned: `KWQ_F_SPIN` queues are in the first version and are the only
@@ -1944,3 +2004,73 @@ checked by the load-time assertion of Rule 5.  Record the numbers in
   bytes (S17); the worker's doorbell lock is a spin mutex.  P0 stubs:
   `kwq_budget_left()` returns a constant, `kwq_scatter()` EOPNOTSUPP,
   `KWQ_CPU_ANY` picks by queue depth within the NUMA domain.
+- 2026-09-28: P0 verified on the bhyve guest (PLAN.txt P0 status); P1
+  implementation started, then stopped at the user's request in favour
+  of a specification first: SCHED.md surveys the deployed schedulers
+  (DRR, dummynet WRR, fq_codel, CAKE DRR++, NAPI, illumos squeues,
+  netisr, iflib, ULE, taskqueue, if_pair, EEVDF, BFQ) and specifies the
+  kwq worker scheduler: DRR in CPU time with a new list, a grace rule
+  taken from CAKE's decaying set so a bursty bulk queue cannot collect a
+  boost per burst, carry cap, parking, cooperative budget, fixed-priority
+  yield with tick guard, optional CPU-share cap, bounds B1-B9 and a test
+  plan.  S5 now defers to it.
+- 2026-09-28 (later): SCHED.md S1a added after the observation that the
+  survey was mostly link schedulers: eight ways CPU work differs from
+  packets on a link (cost unknown until run, shared CPU, strict priority
+  between classes, charge CPU time not wall time via td_runtime +
+  switchtime, producer-chosen CPU, queues are clients not flows,
+  signals, no preemption) each tied to the part of the specification that
+  accounts for it; Xen credit, CFS bandwidth control and CFS->EEVDF
+  sleeper fairness added to the survey; passes and kwq_budget_left() now
+  charge the worker's own CPU time.
+- 2026-09-28 (later): SCHED.md S13, numeric robustness: every stored
+  quantity with width, rate and wrap rule.  One design flaw found and
+  fixed: an unbounded negative deficit would park a queue for
+  ceil(-D/Qw) rounds after a single long pass; the deficit is now
+  clamped to [-2Qw, +2Qw].  Also: 64-bit round counters with a validity
+  flag instead of a sentinel, sbinuptime() for the cross-CPU
+  empty-since stamp (a cpu_ticks() stamp would compare two CPUs' TSCs),
+  quantum_us validated to [10 us, 1 s], limit capped at INT_MAX and an
+  overflow-safe depth check (both applied to the P0 code), and a
+  zero-tickrate guard.
+- 2026-09-28 (later): SCHED.md S14, pathological corner cases (18),
+  three of which changed the algorithm: the new list is now served in
+  alternation with ring passes (a new queue no longer waits for the rest
+  of the round, and a stream of new queues cannot starve the ring); a
+  per-CPU hand-back flag makes BULK end its round when the NET worker
+  has yielded (a NET yield would otherwise cost a whole BULK round);
+  and handlers must process at least one item per pass (a notifier
+  eating the budget could otherwise requeue the item list untouched
+  forever).  Yields are skipped when nothing else is runnable.  S1's
+  weight sentence corrected (weights 1..8 are declarations, not a
+  lower-only privilege).
+- 2026-09-28 (later): SCHED.md S15, cost model: ~20 ns per item (the
+  budget check; enqueue is the lock and insert if_pair already pays),
+  ~200-300 ns per pass, a yield per round only when something else is
+  runnable, one doorbell per burst; five to ten times cheaper per turn
+  than a thread switch and the only one of the two with a policy at
+  PI_NET.  Tick-to-ns conversion changed to a fixed-point multiply (a
+  64-bit division per budget check was 20-40 cycles).  Four measurement
+  scenarios (cost, tq_baseline, switch_baseline) added to P1's exit.
+- 2026-09-28 (later): full consistency pass over KWQ.md, SCHED.md,
+  PLAN.txt, GLOSSARY.md, README.md and the P0 code by three independent
+  readers, about 170 findings applied.  Notable: kwq is a standalone
+  service, not a gtaskqueue extension (S4); counters are plain per-CPU
+  fields everywhere the text said counter(9); `cap_pct` default is 100
+  (off) in every document; the S5 algorithm summary, the S15 assessment
+  and the S7 example follow SCHED.md (alternation, clamps, grace,
+  progress rule, CPU-time charging); S10.7 rows are marked P1/P2/P6/P7
+  where the P0 code does not export them and gained `state`, `passes`,
+  `wakeups`, `boosts`, `grace`; thread names are `kwq_blocking/N`; the
+  revision log is S18; SCHED.md's S4.2 checks the hand-back flag after
+  every pass and bounds the new-only tail, B4/B8/B9 match the algorithm,
+  `kc_idle_round` is 32-bit to fit block 0, the prior-art provenance
+  note is honest about which rows were read in source; GLOSSARY gained
+  penalty cap, progress rule, warm, hand-back and `c_max`.
+- 2026-09-28 (later): PLAN.txt P1 split into P1a and P1b.  P1a writes
+  the scheduler proper as kwq_sched.c (SCHED.md S4/S6 as pure functions)
+  and a userspace discrete-event simulator that links it, checks the
+  invariants, bounds and corner cases over seeded workloads, runs the
+  wrap-around and tick-rate cases a live kernel cannot run safely, and
+  settles SCHED.md S12 by measurement; P1b adds the kernel glue and the
+  kwq_test scenarios.  SCHED.md S10 and README updated.
