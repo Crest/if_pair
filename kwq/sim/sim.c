@@ -15,8 +15,8 @@
  *   kwqsim <scenario> [-s seed] [-t seconds] [-v]
  *   kwqsim suite                     run every scenario over its seeds
  *
- * Scenarios: fairness latency gaming overrun handback storm manyq wrap
- * ratechange badhandler random sweep_grace sweep_boost.
+ * Scenarios: fairness latency gaming overrun handback storm nnew manyq
+ * wrap ratechange badhandler random sweep_grace sweep_boost.
  */
 
 #include <sys/types.h>
@@ -197,6 +197,17 @@ fail(const char *fmt, ...)
 	}
 }
 
+/* KS_ASSERT() in the core (kwq_sched.h) reports here. */
+void
+ks_env_fail(const char *fmt, ...)
+{
+	va_list ap;
+	char buf[256];
+
+	va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
+	fail("core assertion: %s", buf);
+}
+
 /* ---------------------------------------------------------------- setup */
 static void
 sim_reset(uint64_t wall0, uint64_t cpu0, uint64_t round0, u_int ticks0)
@@ -256,7 +267,7 @@ check_invariants(int c)
 	struct kwq_cpu *kc;
 	static unsigned char *mark;
 	static int mark_sz;
-	int n = 0;
+	int n = 0, m = 0;
 
 	check_calls++;
 	if (S.nq > 16 && (check_calls % (uint64_t)(S.nq / 16)) != 0)
@@ -266,10 +277,13 @@ check_invariants(int c)
 	}
 	memset(mark, 0, S.nq);
 	TAILQ_FOREACH(kc, &kw->kw_new, kc_active) {
+		m++;
 		if (kc->kc_onlist != KWQ_ON_NEW)
 			fail("q%d on new list with onlist %u", kc->kc_sq->id, kc->kc_onlist);
 		mark[kc->kc_sq->id]++;
 	}
+	if ((u_int)m != kw->kw_nnew)
+		fail("class %d new list has %d entries, kw_nnew %u", c, m, kw->kw_nnew);
 	TAILQ_FOREACH(kc, &kw->kw_active, kc_active) {
 		n++;
 		if (kc->kc_onlist != KWQ_ON_ACTIVE)
@@ -855,6 +869,55 @@ sc_storm(uint64_t secs)
 	return (S.violations);
 }
 
+/*
+ * nnew: the new-list length counter against every way an entry gets on or
+ * off the list.  512 queues wake in the same instant every 2 ms (a burst
+ * that arrives partly while the previous burst's tail is still being
+ * served), 64 queues at 5 kHz stay warm and take the grace path (ring,
+ * not new), 8 heavy queues keep the ring long so tails and rings
+ * interleave, and one budget-ignoring queue parks.  The core's KS_ASSERT
+ * compares the counter with a count at every tail, the checker after
+ * every step.
+ */
+static int
+sc_nnew(uint64_t secs)
+{
+	struct simq *a;
+	uint64_t boosts = 0, passes = 0;
+
+	sim_reset(0, 0, 0, 0);
+	for (int i = 0; i < 8; i++)
+		a = addq(C_NET, 1 + i % 8, P_FLOOD, H_COOP, 20 * NS_PER_US), a->flood_depth = 64;
+	for (int i = 0; i < 512; i++) {
+		struct simq *s = addq(C_NET, 1, P_PERIODIC, H_COOP, 3 * NS_PER_US);
+		s->rate = 500; s->burst = 1; s->next_t = 0;	/* all at once, every 2 ms */
+	}
+	for (int i = 0; i < 64; i++) {
+		struct simq *s = addq(C_NET, 1, P_PERIODIC, H_COOP, 5 * NS_PER_US);
+		s->rate = 5000; s->burst = 1; s->next_t = (uint64_t)i * 3 * NS_PER_US;
+	}
+	a = addq(C_NET, 1, P_FLOOD, H_IGNORE, 2 * NS_PER_MS); a->flood_depth = 4;
+	run_for(secs * NS_PER_S);
+	for (int i = 0; i < S.nq; i++) {
+		boosts += S.qs[i]->kc.kc_boosts;
+		passes += S.qs[i]->kc.kc_passes;
+	}
+	report("nnew: 512 queues bursting together, 64 warm, 8 floods, 1 overrunner");
+	printf("  info boosts %" PRIu64 " of %" PRIu64 " passes, kw_nnew at end %u\n",
+	    boosts, passes, S.w[C_NET].kw_nnew);
+	if (boosts == 0) fail("nnew: no boosted pass at all");
+	{	/* the list may well be non-empty when time stops; the count must match */
+		struct kwq_cpu *kc;
+		u_int m = 0;
+
+		TAILQ_FOREACH(kc, &S.w[C_NET].kw_new, kc_active)
+			m++;
+		if (m != S.w[C_NET].kw_nnew)
+			fail("nnew: %u entries on the new list, kw_nnew %u", m, S.w[C_NET].kw_nnew);
+	}
+	return (S.violations);
+}
+
 static int
 sc_manyq(uint64_t secs)
 {
@@ -1061,6 +1124,7 @@ static struct scenario scenarios[] = {
 	{ "overrun",	sc_overrun,	3, 1 },
 	{ "handback",	sc_handback,	2, 1 },
 	{ "storm",	sc_storm,	2, 1 },
+	{ "nnew",	sc_nnew,	2, 1 },
 	{ "manyq",	sc_manyq,	1, 1 },
 	{ "wrap",	sc_wrap,	1, 1 },
 	{ "ratechange",	sc_ratechange,	1, 1 },

@@ -123,6 +123,7 @@ struct kwq_worker {
 	TAILQ_HEAD(, kwq_cpu)	kw_new;		/* newly non-empty: boosted */
 	TAILQ_HEAD(, kwq_cpu)	kw_active;	/* the DRR ring */
 	u_int			kw_nactive;
+	u_int			kw_nnew;	/* length of kw_new (SCHED.md S3) */
 	bool			kw_sleeping;
 	bool			kw_exit;
 	struct thread		*kw_td;

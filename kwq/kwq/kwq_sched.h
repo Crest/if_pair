@@ -18,7 +18,8 @@
  *                      (int64_t ns), kc_passes, kc_overruns, kc_parks, kc_glitches,
  *                      kc_boosts, kc_grace
  *   struct kwq_worker: kw_new, kw_active (TAILQ_HEAD of kwq_cpu),
- *                      kw_nactive, kw_round (uint64_t), kw_phase,
+ *                      kw_nactive, kw_nnew (u_int list lengths),
+ *                      kw_round (uint64_t), kw_phase,
  *                      kw_ring_left, kw_tail_left, kw_want_new, kw_cur,
  *                      kw_served, kw_pass_start, kw_pass_budget,
  *                      kw_win_start, kw_win_busy, kw_knobs, kw_rounds, kw_passes,
@@ -33,6 +34,14 @@
 #define	_KWQ_SCHED_H_
 
 #include <kwq_sched_env.h>
+
+/*
+ * Consistency checks inside the core.  The environment defines KS_ASSERT
+ * (kernel: KASSERT, so INVARIANTS builds check; simulator: a violation).
+ */
+#ifndef KS_ASSERT
+#define	KS_ASSERT(e, msg)	do { } while (0)
+#endif
 
 /* Per-class knobs the core reads; the owner keeps them current. */
 struct kwq_sched_knobs {

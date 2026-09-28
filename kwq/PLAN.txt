@@ -289,7 +289,16 @@ Phases
     (b) kc_maxlat_ns is the age of the current backlog (time since the
     queue last became non-empty), not of the oldest item: a flood that
     never drains reports the run length (3 s on a07); either rename it
-    or restamp at each list swap.
+    or restamp at each list swap.  (c) DONE 2026-09-29: ks_next() no
+    longer counts the new list for the bounded tail; kw_nnew is kept by
+    the doorbell and the take, asserted against a count at every tail
+    (KS_ASSERT: INVARIANTS kernels and the simulator), checked after
+    every simulator step, exercised by the new "nnew" scenario and the
+    full suite on the GENERIC-DEBUG guest.  (d) kwq_pick_any() scans every CPU
+    of the domain reading each one's shared depth line (128 remote
+    lines per BULK enqueue on a07); bound the probe to a few CPUs before
+    P6 relies on it.  Deferred idea, SCHED.md S11: a calendar wheel for
+    parked queues.
 
 [TODO] P2  Observability (2 days)
     Files: kwq_sdt.c, kwq.d, kwq_ddb.c, sysctl in kwq.c.  The sysctl tree

@@ -1196,6 +1196,8 @@ Per class: `kern.kwq.<class>.`
 | `cpu<N>.handbacks` | counter | RD | | rounds ended early because a higher class waited (P1) |
 | `<queue>.cpu<N>.glitches` | counter | RD | | passes whose CPU-time delta was negative or over 1 s: a ticker fault, charged one quantum (SCHED.md S13) |
 | `cpu<N>.round` | uint64 | RD | | current round number (P1) |
+| `cpu<N>.nactive` | uint | RD | | entries on the DRR ring right now (a gauge, not a counter) |
+| `cpu<N>.nnew` | uint | RD | | entries on the new list right now, waiting for a boosted pass (SCHED.md S3 `kw_nnew`) |
 | `cpu<N>.idle_ns` | counter | RD | | time the worker spent asleep with nothing queued (P1) |
 | `cpu<N>.busy_ns` | counter | RD | | CPU time spent in passes (P1) |
 | `cpu<N>.steals_out` | counter | RD | | bulk only: batches taken from this CPU by others (P6) |
@@ -2118,3 +2120,12 @@ checked by the load-time assertion of Rule 5.  Record the numbers in
   reads; added the S13 clock glitch guard (KS_GLITCH_NS, per-queue
   glitches counter) to the scheduler core and a glitch filter to the
   test module's cost sums.  tests/run_p1b.sh takes KWQ_SSH/MODDIR.
+- 2026-09-29: recorded the parked-queue calendar wheel as a deferred
+  alternative (SCHED.md S11) and two O(N) scans as P2 follow-ups
+  (PLAN P1b status): the new-list count in ks_next() and the domain-wide
+  CPU scan in kwq_pick_any().
+- 2026-09-29 (later): kw_nnew replaces the per-round count of the new
+  list (SCHED.md S3, S4.2).  The core gained KS_ASSERT (KASSERT in the
+  kernel, a violation in the simulator) and asserts the counter against
+  a count at every tail; simulator scenario "nnew" added; verified in
+  the simulator suite and on the GENERIC-DEBUG guest.

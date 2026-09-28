@@ -370,6 +370,10 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	KW_U64(kw_idle_ns, "idle_ns", "wall time asleep with nothing queued");
 	KW_U64(kw_round, "round", "current round number");
 #undef KW_U64
+	SYSCTL_ADD_UINT(&kwq_worker_sysctl_ctx, ch, OID_AUTO, "nactive",
+	    CTLFLAG_RD, &kw->kw_nactive, 0, "(queue, CPU) entries on the DRR ring");
+	SYSCTL_ADD_UINT(&kwq_worker_sysctl_ctx, ch, OID_AUTO, "nnew",
+	    CTLFLAG_RD, &kw->kw_nnew, 0, "(queue, CPU) entries on the new list, waiting for a boosted pass");
 }
 
 int

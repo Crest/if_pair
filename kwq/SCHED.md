@@ -156,6 +156,7 @@ Per worker (`struct kwq_worker`, one per (class, CPU)):
 | `kw_new` | producers (doorbell) and the worker, under `kw_mtx` | queues that became non-empty; served first |
 | `kw_active` | producers (grace rule, S4.1) and the worker, under `kw_mtx` | the ring, in round-robin order |
 | `kw_nactive` | producers and the worker, under `kw_mtx` | ring length, fixes the number of ring entries a round visits |
+| `kw_nnew` | producers and the worker, under `kw_mtx` | new-list length, fixes the number of entries the bounded tail serves (S4.2); kept by the doorbell and the take, so the tail needs no walk of the list (2026-09-29: the walk it replaced ran under the spin lock over one cold line per entry) |
 | `kw_round` | the worker, plain store; read by producers under `kw_mtx` (one possibly stale read per doorbell, harmless: at worst one boost given or withheld) | round counter, for the grace rule; `uint64_t` (S13) |
 | `kwq_waiting[class]` (per CPU, outside the worker struct) | each class's worker, plain volatile store; read by lower classes on the same CPU | hand-back flags (S6.4) |
 | `kw_cur`, `kw_pass_start`, `kw_pass_budget` | the worker | the pass in progress, for `kwq_budget_left()` and `kwq_requeue()`; `kw_cur` and `kc_state = RUNNING` are set the moment `ks_next()` hands a queue over (I2 holds between the pop and the pass) |
@@ -184,7 +185,7 @@ Triggered by the first enqueue or notify into an IDLE list:
         append kc to kw_active tail; kc_onlist = ACTIVE; kw_nactive++
         kc_deficit is left as it was            (no boost: S4.6)
     else:
-        append kc to kw_new tail; kc_onlist = NEW
+        append kc to kw_new tail; kc_onlist = NEW; kw_nnew++
     kc_state = WAKING
     wake the worker if it sleeps
 
@@ -211,14 +212,14 @@ it is not on the per-item path.)
             tick_guard()
         if higher class waiting and >= 1 pass served: break
         serve_new(1)                              # alternate: new, ring, new, ...
-    m = length(kw_new)                            # ring done or empty: drain the
+    m = kw_nnew                                   # ring done or empty: drain the
     repeat m times:                               # new entries present NOW; later
         if higher class waiting and >= 1 pass served: break   # arrivals wait
         serve_new(1)                              # round (which starts at once)
     round_end()                                   # S6
 
     serve_new(k): up to k times, if kw_new non-empty:
-        kc = pop head of kw_new; kc_deficit = Qw(kc); kc_boosts++   # the boost
+        kc = pop head of kw_new; kw_nnew--; kc_deficit = Qw(kc); kc_boosts++   # the boost
         pass(kc); tick_guard()
 
 New-list entries and ring entries alternate strictly whenever both lists
@@ -633,6 +634,7 @@ compare the guest against in P1b:
 | hand-back, NET flood and BULK flood on one CPU | BULK receives one item per NET round, 0.32 of NET's service; NET worst latency 1.7 ms with a 64-deep flood (0 before the "at least one pass" rule) |
 | storm, 1000 light queues waking within 100 us against a flood | flood keeps 4750 passes in 2 s; light queues' worst latency 200 us |
 | manyq, 2000 Poisson queues at 40 % load, weights 1..8 | worst item latency 5.5 ms; invariants sampled |
+| nnew, 512 queues bursting in the same instant every 2 ms, 64 warm queues on the grace path, 8 floods, 1 overrunner | `kw_nnew` equals the new-list length at every tail (core assertion) and after every step (checker); 13.7 k boosted passes of 21 k |
 | wrap, wall clock, CPU time, round counter and `ticks` started just below their wraps | 27726 items through all four wraps, no violation; `ks_ticks2ns` exact against 128-bit arithmetic for 5 rates x 8 values including 2^64 - 1; `ks_ns_scale(0)` = 1 GHz |
 | quantum 10 us with 20 us items, weights 8:1 | ratio 8.2, the light queue's `overruns == passes` |
 | quantum 1 s, depth-32 floods | equal shares: the budget never binds, so weights cannot act (documented, not a defect) |
@@ -806,6 +808,28 @@ fixed here.
 - **Per-queue quantum (EEVDF's slice).**  A second knob for clients to
   get wrong; the class quantum plus the weight covers the cases seen so
   far.  Left for after P4/P6 measurements.
+- **A wheel for parked queues (deferred, 2026-09-29).**  A queue whose
+  deficit went negative stays on the ring today and is unlinked, refilled,
+  compared and re-appended once per round until it is positive again, at
+  most `penalty_rounds` times.  The O(1) alternative is a calendar: one
+  list per slot, a queue with deficit `D` parked in slot
+  `round + floor(-D/Qw) + 1`, the slot's queues given their `k x Qw` in one
+  step and moved to the ring when the wheel advances at round end.  Same
+  semantics (the deficit lands in `(0, Qw]`, so the carry cap never
+  engages; the simulator can prove the equivalence on identical traces),
+  rounds are already the clock, and the ring would then hold only
+  runnable queues, which simplifies `kw_ring_left` and `ks_next()`.
+  Costs: 64 slots of a fixed wheel with re-parking for longer debt
+  (1 KB per worker; `penalty_rounds` is a runtime knob up to 1024), a
+  third `kc_onlist` value with unlink in drain and destroy, invariants
+  I2 and I5 and the checker extended, the idle condition "ring, new list
+  and wheel empty", about 40 lines of core.  Measured worth today: a
+  parked visit is ~50 ns against a round of >= 200 us, parks occur only
+  for budget-ignoring handlers (5-38 per 3 s in the cooperative P1b
+  scenarios, 6700 in the overrun scenario), so the saving is under 0.1 %
+  of a round even with a misbehaving client.  Adopt if parked queues
+  become a steady-state condition (BLOCKING handlers in P7 are the first
+  plausible source) or if P2's pass-level trace shows the ring walk.
 - **Adaptive budgets (BFQ).**  Useful when queues under-use their budget
   systematically; kwq queues that under-use go idle and reset instead.
 - **Count budgets (NAPI weight, if_pair batch).**  Stretch with item

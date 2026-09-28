@@ -12,5 +12,6 @@
 #include "kwq_internal.h"
 
 #define	KSQ_WEIGHT(kc)	((kc)->kc_q->kwq_weight)
+#define	KS_ASSERT(e, msg)	KASSERT(e, msg)
 
 #endif /* !_KWQ_SCHED_ENV_H_ */

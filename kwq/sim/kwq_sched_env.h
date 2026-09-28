@@ -38,6 +38,7 @@ struct kwq_worker {
 	TAILQ_HEAD(, kwq_cpu)	kw_new;
 	TAILQ_HEAD(, kwq_cpu)	kw_active;
 	u_int			kw_nactive;
+	u_int			kw_nnew;
 	uint64_t		kw_round;
 	u_int			kw_phase;
 	int			kw_ring_left;
@@ -55,5 +56,9 @@ struct kwq_worker {
 };
 
 #define	KSQ_WEIGHT(kc)	((kc)->kc_weight)
+
+/* Core self-checks land in the simulator's violation count. */
+void	ks_env_fail(const char *fmt, ...);
+#define	KS_ASSERT(e, msg)	do { if (!(e)) ks_env_fail msg; } while (0)
 
 #endif /* !_KWQ_SCHED_ENV_H_ */

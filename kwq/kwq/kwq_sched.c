@@ -17,6 +17,7 @@ ks_worker_init(struct kwq_worker *kw, const struct kwq_sched_knobs *k,
 	TAILQ_INIT(&kw->kw_new);
 	TAILQ_INIT(&kw->kw_active);
 	kw->kw_nactive = 0;
+	kw->kw_nnew = 0;
 	kw->kw_round = 0;
 	kw->kw_phase = KWQ_PH_IDLE;
 	kw->kw_ring_left = 0;
@@ -76,6 +77,7 @@ ks_doorbell(struct kwq_worker *kw, struct kwq_cpu *kc)
 	} else {
 		TAILQ_INSERT_TAIL(&kw->kw_new, kc, kc_active);
 		kc->kc_onlist = KWQ_ON_NEW;
+		kw->kw_nnew++;
 		boost = true;
 	}
 	kc->kc_state = KWQ_CPU_WAKING;
@@ -89,7 +91,10 @@ ks_take_new(struct kwq_worker *kw)
 	struct kwq_cpu *kc;
 
 	kc = TAILQ_FIRST(&kw->kw_new);
+	KS_ASSERT(kc != NULL && kw->kw_nnew > 0,
+	    ("kwq: new list %p empty but kw_nnew %u", kw, kw->kw_nnew));
 	TAILQ_REMOVE(&kw->kw_new, kc, kc_active);
+	kw->kw_nnew--;
 	kc->kc_onlist = KWQ_ON_NONE;
 	kc->kc_warm = 0;
 	kc->kc_deficit = kw->kw_knobs->boost_weighted ? ks_quantum(kw, kc) :
@@ -172,12 +177,23 @@ ks_next(struct kwq_worker *kw, bool higher_waiting, struct kwq_cpu **kcp)
 			*kcp = kc;
 			return (KS_SERVE);
 		}
-		/* Ring done: the new entries present now, then the round ends. */
+		/*
+		 * Ring done: the new entries present now, then the round ends.
+		 * kw_nnew is the list length, kept by ks_doorbell() and
+		 * ks_take_new(); the walk that used to count here ran under the
+		 * spin lock over one cold line per entry.  The checking build
+		 * (INVARIANTS, or the simulator) still counts and compares.
+		 */
 		if (kw->kw_tail_left < 0) {
+#if !defined(_KERNEL) || defined(INVARIANTS)
 			m = 0;
 			TAILQ_FOREACH(kc, &kw->kw_new, kc_active)
 				m++;
-			kw->kw_tail_left = m;
+			KS_ASSERT(m == (int)kw->kw_nnew,
+			    ("kwq: new list has %d entries, kw_nnew %u", m,
+			    kw->kw_nnew));
+#endif
+			kw->kw_tail_left = (int)kw->kw_nnew;
 		}
 		if (kw->kw_tail_left > 0 && !TAILQ_EMPTY(&kw->kw_new)) {
 			kw->kw_tail_left--;
