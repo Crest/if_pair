@@ -45,7 +45,7 @@ independently.
 Phases
 ------
 
-[TODO] P0  Skeleton and lifecycle (2-3 days)
+[DONE 2026-09-28 except the pmcstat baseline, which needs hardware] P0  Skeleton and lifecycle (2-3 days)
     Files: kwq/kwq/{kwq.h,kwq_internal.h,kwq.c,kwq_worker.c,Makefile}.
     - Classes NET and BULK only; BLOCKING stubbed (kwq_create returns
       NULL for it, asserted under INVARIANTS).
@@ -90,6 +90,49 @@ Phases
       in-flight passes), kwq_destroy (asserts drained), MOD_UNLOAD
       returns EBUSY while queues exist, joins all workers (taskqueue_free
       as template).
+    Status 2026-09-25: kwq/kwq/{kwq.h,kwq_internal.h,kwq.c,kwq_worker.c,
+    Makefile} written and building on 15.0-RELEASE-p12 amd64; not yet
+    loaded anywhere.  tests/kwqvm.sh creates the test guest: 15.1-RELEASE
+    UFS VM image on a 20 GB file under /bhyve/guests/kwqvm, releng/15.1
+    GENERIC-DEBUG built on the host into /bhyve/obj-15.1 and installed as
+    /boot/kernel.debug, serial console on /dev/nmdm-kwqvm.1B, isolated
+    tap100 (10.0.99.1 host, 10.0.99.2 guest), root ssh by key, crash
+    dumps on; 'mods' builds both modules against that kernel and copies
+    them in.  Deviations from the bullets above:
+    notifiers are handed to the handler one per call (n == 1), items as
+    one list; the shared block is KWQ_LINE = max(CACHE_LINE_SIZE, 128)
+    with the per-enqueue fields in its first 64 bytes; KWQ_CPU_ANY picks
+    the shallowest list within the caller's NUMA domain (cache domain
+    later); kwq_budget_left() is a constant until P1; kwq_scatter()
+    returns EOPNOTSUPP until P6.  kwq_test.ko: first scenarios only.
+    Status 2026-09-28: first load on the guest (15.1-RELEASE-p3
+    GENERIC-DEBUG, 4 vCPUs) panicked in kwq_workers_start(): a
+    thread_unlock() after sched_add(), which releases the thread lock
+    itself (taskqueue and kthread_add do not unlock either).  Fixed.
+    Then, all under WITNESS + INVARIANTS with nothing logged:
+      lifecycle  1000 reps x 1000 items: in == out (1e6), 6.7 s
+      fifo       3 x 100000 items over 4 CPUs: 0 out-of-order
+      notify     1e6 signals: 5 runs, 999995 coalesced, final state seen
+      reject     limit 8, 20 us/item: 30 of 15000 refused, rest run
+      discard    KWQ_F_DISCARD, 20 us/item: 18 handed back with n < 0
+      kldunload/kldload kwq.ko 200x with no queues: < 1 s
+      sleep      pause() in a handler: panic "sleepq_add: ... with
+                 sleeping prohibited", dump saved (vmcore.0, 370 MB),
+                 guest rebooted by itself with debugger_on_panic=0
+      kldunload/kldload kwq.ko 1000x: 4 s, WITNESS silent
+    Observed: the INVARIANTS chain check reports "1 sleepqueue chain
+    collisions between workers" on 4 CPUs - the per-CPU worker structs
+    are allocated one by one, so their low address bytes are random.
+    Refinement for P1: allocate the workers of a class as one array per
+    NUMA domain with a 256-byte stride (sizeof(struct kwq_worker)), which
+    keeps up to 256 workers on distinct chains by construction.
+    Not yet: the pmcstat baseline (bhyve exposes no PMCs; needs the
+    Ampere or bare amd64).  Test-guest lessons folded into
+    tests/kwqvm.sh: a plain tap loses its host address when bhyve
+    reopens it (every guest reboot cut the host off; now vmnet plus a
+    re-add in the run loop), 'stop' asks the guest to power off before
+    destroying it (the image was mounted dirty once), and the serial
+    console is logged to console.log while nobody has cu attached.
     Exit: pmcstat remote-HITM / L2 writeback counts recorded on the
     Ampere and amd64 for a two-producer, one-consumer kwq_test load as
     the baseline for P1 (KWQ.md S17); kldload/kldunload 1000x in a loop with no queues; create/

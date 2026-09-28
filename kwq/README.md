@@ -18,7 +18,10 @@ if_pair Makefile in the parent directory.
     kwq/          kwq.ko - the service (kwq.h public KPI, kwq.c,
                   kwq_worker.c, kwq_sdt.c, kwq_ddb.c, kwq.d translator)
     kwq_test/     kwq_test.ko - synthetic clients driven by sysctl
-    tests/        ATF harness (Kyuafile, kwq_lib.sh, t_*.sh)
+    tests/        ATF harness (Kyuafile, kwq_lib.sh, t_*.sh) and
+                  kwqvm.sh, which builds and runs the disposable
+                  15.1/amd64 GENERIC-DEBUG bhyve guest the module tests
+                  need (doas tests/kwqvm.sh setup; start; mods; ssh)
     examples/     compilable usage examples (deferred.c, scatter.c,
                   pair_client.c)
     man/          kwq.9, dtrace_kwq.4

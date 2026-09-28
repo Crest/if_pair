@@ -421,10 +421,15 @@ same lock the producer used, so a producer that updates its state and
 then calls `kwq_notify()` is guaranteed one of two things: the handler
 that is about to run will see the state, or a new pass will be scheduled.
 The handler treats the notifier as a level: it processes everything the
-client's state says is outstanding, never "one event"; a notifier is
-allowed to be pending again while its previous instance is being
-handled (the handler's `n` items may include it once; the live list may
-hold it once more).  Callable from every context `kwq_enqueue()` is,
+client's state says is outstanding, never "one event".  Notifiers are
+delivered to the handler one per call with `n == 1` (or `-1` on a
+discarding drain), never as members of the item list: a notifier that is
+re-signalled while its handler runs is relinked into the live list at
+that moment, so its link cannot be part of a list the handler is still
+walking - the same reason `taskqueue(9)` unlinks a task before calling
+it.  Within a pass the pending notifiers are released and run first, then
+the items as one list.  A notifier is allowed to be pending again while
+its previous instance is being handled (once in the live list at most).  Callable from every context `kwq_enqueue()` is,
 including interrupt filters on `KWQ_F_SPIN` queues.
 
 *Signalled again while its handler is running.*  The pending state was
@@ -1724,35 +1729,51 @@ multiple of 65536 bytes apart always share a chain, while a stride of
 64, 128 or 256 bytes maps up to 256 consecutive elements to distinct
 chains (a stride of 512 already collides after 128).
 
-**Rule 1: one line per (queue, CPU) for the shared state, lock
-included.**  The producer takes the lock and writes head, tail, depth,
-state and the empty-since timestamp; putting them in the same line as
-the mutex means one line transfer per enqueue, not five.  Do not split
-the lock from the data it protects into different lines (a common
-"optimisation" that doubles the traffic), and do not put anything the
-consumer writes without the lock into that line.
+**Rule 1: one block per (queue, CPU) for the shared state, lock
+included.**  The producer takes the lock and writes head, tail, depth
+and state; putting them in the same line as the mutex means one line
+transfer per enqueue, not five.  Do not split the lock from the data it
+protects into different lines (a common "optimisation" that doubles the
+traffic), and do not put anything the consumer writes without the lock
+into that block.  The granule is `KWQ_LINE` = max(`CACHE_LINE_SIZE`,
+128): amd64's spatial prefetcher pairs 64-byte lines into 128-byte
+blocks, so two CPUs' private state in adjacent 64-byte lines still
+bounces, and arm64's line is 128 anyway.  Within the block, the fields
+every enqueue touches fill the first 64 bytes exactly (a `struct mtx` is
+32 bytes, the list head 16, depth, state, notifier count and flags 4
+each), so on amd64 a steady-state enqueue moves one 64-byte line; the
+burst-start and rare fields (notifier list, empty-since stamp, the
+worker's active-list link, reject and coalesce counters, drain waiters)
+fill the second 64 bytes.  This is the layout `kwq/kwq_internal.h`
+implements, with `CTASSERT`s on both boundaries:
 
     struct kwq_cpu {
-        /* line 0: shared, producer and consumer, under kc_mtx */
+        /* block 0, first 64 bytes: every enqueue and every pass */
         struct mtx      kc_mtx;
         STAILQ_HEAD(, kwq_item) kc_list;
-        u_int           kc_depth;
-        u_int           kc_state;       /* IDLE/WAKING/RUNNING/PARKED */
-        uint64_t        kc_empty_since; /* first enqueue into empty list */
-        uint64_t        kc_rejected;    /* producer writes, holds the lock */
-        uint64_t        kc_coalesced;   /* likewise (kwq_notify no-ops) */
-        /* line 1..: consumer-private, written only by the owning CPU */
-        int64_t         kc_deficit    __aligned(CACHE_LINE_SIZE);
-        TAILQ_ENTRY(kwq_cpu) kc_ring;
-        uint64_t        kc_items, kc_passes, kc_cycles, kc_overruns,
-                        kc_parks, kc_requeued, kc_steals_in,
-                        kc_maxdepth, kc_maxlat_ns;
-    } __aligned(CACHE_LINE_SIZE);
+        u_int           kc_depth, kc_state, kc_nnotify, kc_flags;
+        /* block 0, second 64 bytes: burst start, signals, rare paths */
+        STAILQ_HEAD(, kwq_item) kc_notify;
+        u_int           kc_waiters, kc_pad0;
+        uint64_t        kc_empty_since;
+        TAILQ_ENTRY(kwq_cpu) kc_active;
+        uint64_t        kc_rejected, kc_coalesced;
+        /* block 1..: consumer-private, written only by the owning CPU */
+        struct kwq     *kc_q __aligned(KWQ_LINE);
+        int             kc_cpu;
+        int64_t         kc_deficit;
+        uint64_t        kc_items, kc_passes, kc_cycles, kc_requeued,
+                        kc_maxdepth, kc_maxlat_ns, kc_overruns,
+                        kc_parks, kc_steals_in;
+    } __aligned(KWQ_LINE);
 
-`__aligned(CACHE_LINE_SIZE)` on the struct makes `sizeof` a multiple of
-the line so an array of them never shares lines; `struct mtx_padalign`
+`__aligned(KWQ_LINE)` on the struct makes `sizeof` a multiple of the
+block so an array of them never shares one; `struct mtx_padalign`
 (`sys/mutex.h`) is the tree's idiom for a lone lock and is not needed
-when the lock already heads a padded struct.
+when the lock already heads a padded struct.  The worker's doorbell
+lock (`kw_mtx`) is a spin mutex so that `KWQ_F_SPIN` producers may ring
+it; the lock order is list lock, then worker lock, and the worker never
+takes the list lock while holding its own.
 
 **Rule 2: the per-queue counters are plain fields, not `counter(9)`.**
 `counter(9)` exists to let any CPU increment without atomics; here every
@@ -1915,3 +1936,11 @@ checked by the load-time assertion of Rule 5.  Record the numbers in
   cancel needed), that the drain never re-arms (a late `kwq_notify()`
   counts as `ENXIO` in `rejected`), and the resulting detach order for
   clients with their own lists and for drivers that touch hardware.
+- 2026-09-25 (later): P0 code landed in `kwq/kwq/` (kwq.h,
+  kwq_internal.h, kwq.c, kwq_worker.c, Makefile), builds against
+  15.0-RELEASE-p12.  Implementation details folded back: notifiers are
+  delivered one per handler call (S3); the shared block is `KWQ_LINE` =
+  max(CACHE_LINE_SIZE, 128) with the per-enqueue fields in its first 64
+  bytes (S17); the worker's doorbell lock is a spin mutex.  P0 stubs:
+  `kwq_budget_left()` returns a constant, `kwq_scatter()` EOPNOTSUPP,
+  `KWQ_CPU_ANY` picks by queue depth within the NUMA domain.
