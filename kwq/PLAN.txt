@@ -358,8 +358,8 @@ Phases
     kwq_ddb.c; the core fires park and overrun through KS_HOOK_* macros
     the kernel environment maps to SDT.  19 probes listed; the S10.6
     one-liners (except the P6/P7 ones) run against kwq_test on the guest
-    and a07 with the translator (module built WITH_CTF=1; -L or
-    /usr/lib/dtrace/kwq.d).  show kwq shown live in DDB under load.
+    and a07 with the translator (the module carries CTF by default since
+    2026-09-30; -L or /usr/lib/dtrace/kwq.d).  show kwq shown live in DDB under load.
     Probe cost (cost scenario): pass-level within noise on both
     machines; the enqueue probe costs 24 % on a07 and 72 % on the WITNESS
     guest.  Estimated budget check in (12 % of calls read the clock;

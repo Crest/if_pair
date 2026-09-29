@@ -1311,7 +1311,7 @@ and the code must match it or the section must change first.
 Implemented 2026-09-29 (P2): the provider (`kwq_sdt.c`, hooks for the
 core's park and overrun events in `kwq_sched_env.h`), the translator
 (`kwq/kwq.d`; install as `/usr/lib/dtrace/kwq.d` or pass `-L` to
-dtrace, and build the module `WITH_CTF=1` so `struct kwq` is known),
+dtrace; the module build produces the CTF it needs by default),
 `show kwq` (`kwq_ddb.c`), and the S10.7 rows marked P2 except the P6/P7
 ones.  The measured probe effect is in S10.3.  OBSERVABILITY.md is the
 operator's version of S10: every tunable and counter with its range and

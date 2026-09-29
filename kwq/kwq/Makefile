@@ -10,10 +10,17 @@ SRCS=	kwq.c kwq_worker.c kwq_sched.c kwq_sdt.c kwq_ddb.c
 SRCS+=	kwq.h kwq_internal.h kwq_sched.h kwq_sched_env.h kwq_sdt.h
 SRCS+=	opt_ddb.h
 
-# Standalone builds (no KERNBUILDDIR) take GENERIC's options from
-# kmod.opts.mk, which leaves out KDTRACE_HOOKS; the stock kernel has it,
-# and without it the kwq provider (kwq_sdt.c) compiles to nothing.
-KERN_OPTS+=	KDTRACE_HOOKS
+# Standalone builds (no KERNBUILDDIR) get a fixed opt_global.h from
+# sys/conf/config.mk (SMP, MAC, VIMAGE and the DEFAULTS options), which has
+# no KDTRACE_HOOKS; the stock kernel has it, and without it the kwq provider
+# (kwq_sdt.c) compiles to nothing.  Builds against a kernel object tree take
+# that kernel's opt_global.h and need nothing here.
+.if !defined(KERNBUILDDIR)
+CFLAGS+=	-DKDTRACE_HOOKS
+.endif
+# CTF by default: the kwq.d translator needs struct kwq's type information,
+# and kmod builds only run ctfconvert when WITH_CTF is set.
+WITH_CTF?=	1
 # DWARF for ctfconvert: the kwq.d translator needs struct kwq's CTF (built
 # WITH_CTF=1).  DEBUG_FLAGS is the only way kmod.mk puts -g in CFLAGS, and
 # it also makes "make install" ship kwq.ko.debug into

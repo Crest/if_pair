@@ -166,9 +166,10 @@ Queue probes carry a translated `kwqinfo_t` as `args[0]`:
     kwq_name  kwq_class  kwq_weight  kwq_limit  kwq_flags  kwq_addr
 
 The translator is `kwq/kwq.d`.  Install it as `/usr/lib/dtrace/kwq.d`
-or pass `-L /path/to/kwq/kwq` to `dtrace`.  It needs the module's CTF:
-build with `WITH_CTF=1` (section 10); without it, `dtrace -l -P kwq`
-fails with "no struct kwq definition is available".
+or pass `-L /path/to/kwq/kwq` to `dtrace`.  It needs the module's CTF,
+which the module build produces by default (section 10); a module built
+`WITHOUT_CTF=1` makes `dtrace -l -P kwq` fail with "no struct kwq
+definition is available".
 
 | probe | fires | arguments after `args[0]` |
 |---|---|---|
@@ -293,15 +294,27 @@ and loads the modules from `MODDIR`:
     PAIRS=16 tests/run_p1b.sh scale
     FANIN=8 BATCH=1 tests/run_p1b.sh fanin
 
-## 10. Building for the translator
+## 10. Build defaults
 
-The kwq.d translator needs `struct kwq` in the module's CTF, and kmod
-builds only produce CTF when asked:
+A plain `make` in `kwq/` produces modules with everything above:
 
-    make WITH_CTF=1                     # in kwq/ (DEBUG_FLAGS=-g is the Makefile default)
+- the probes: standalone builds (no `KERNBUILDDIR`) get a fixed
+  `opt_global.h` from `sys/conf/config.mk` without `KDTRACE_HOOKS`; the
+  Makefile defines it on the compiler command line for that case.
+  Builds against a kernel object tree use that kernel's options (GENERIC
+  has the hooks);
+- the CTF the translator needs: the Makefile sets `WITH_CTF=1` and
+  `DEBUG_FLAGS=-g` (ctfconvert needs the DWARF).  `make WITHOUT_CTF=1`
+  turns it off;
+- `make install` ships only the modules into `/boot/modules`; the
+  split-off `kwq.ko.debug` is installed too only with
+  `make install KWQ_INSTALL_DEBUG=1`, into `/usr/lib/debug/boot/modules`,
+  which exists only after a full `installkernel`.
+
+Checks:
+
     ctfdump -S kwq/kwq.ko | grep 'total number of types'
+    nm kwq/kwq.ko | grep -c __set_sdt          # non-zero: probes compiled in
 
-`tests/kwqvm.sh mods` and `mods generic` pass `WITH_CTF=1`.  Standalone
-builds (no `KERNBUILDDIR`) get `KDTRACE_HOOKS` from the Makefile so the
-provider exists in them too.  `make KWQ_NO_SDT=1` compiles every probe
-site out, for measuring what the disabled probes cost.
+`make KWQ_NO_SDT=1` compiles every probe site out, for measuring what
+the disabled probes cost.

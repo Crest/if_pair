@@ -435,8 +435,7 @@ cmd_mods() {
 	export MAKEOBJDIRPREFIX=$objdir
 	mkdir -p "$objdir"
 	make -C "$KWQSRC" -s obj
-	# WITH_CTF: ctfconvert the objects, so the kwq.d translator can see struct kwq
-	make -C "$KWQSRC" -s clean all SYSDIR="$SRC/sys" WITH_CTF=1 $kbd
+	make -C "$KWQSRC" -s clean all SYSDIR="$SRC/sys" $kbd
 	mods="$(make -C "$KWQSRC/kwq" -V .OBJDIR)/kwq.ko $(make -C "$KWQSRC/kwq_test" -V .OBJDIR)/kwq_test.ko"
 	for m in $mods; do [ -f "$m" ] || die "$m not built"; done
 	log "copying to root@$GUESTIP:$dest/"
