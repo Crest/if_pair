@@ -1,5 +1,5 @@
 .\" SPDX-License-Identifier: BSD-2-Clause
-.Dd September 15, 2026
+.Dd September 23, 2026
 .Dt IF_PAIR 4
 .Os
 .Sh NAME
@@ -274,8 +274,16 @@ tunable:
 .Bl -tag -width "net.link.pair.batch_overruns"
 .It Va net.link.pair.batch
 Number of packets a delivery worker processes before briefly
-yielding its CPU so that timers and user processes keep running
+yielding its CPU so that timers and other kernel threads keep running
 under sustained load.
+The worker yields at the time-sharing priority the scheduler has
+computed for it from its recent history:
+a lightly loaded worker yields only to kernel threads and interactive
+processes, while a saturated worker drops among the CPU-bound user
+processes on its CPU and lets them run full time slices, tens of
+milliseconds, before it resumes delivering packets.
+On a multiprocessor the scheduler usually migrates such processes to
+other CPUs first.
 The default is 64.
 While yielding is enabled, a worker also yields whenever a clock
 tick has passed since it last yielded or slept, so timer lateness
