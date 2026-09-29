@@ -14,8 +14,15 @@ SRCS+=	opt_ddb.h
 # kmod.opts.mk, which leaves out KDTRACE_HOOKS; the stock kernel has it,
 # and without it the kwq provider (kwq_sdt.c) compiles to nothing.
 KERN_OPTS+=	KDTRACE_HOOKS
-# DWARF for ctfconvert: the kwq.d translator needs struct kwq's CTF.
+# DWARF for ctfconvert: the kwq.d translator needs struct kwq's CTF (built
+# WITH_CTF=1).  DEBUG_FLAGS is the only way kmod.mk puts -g in CFLAGS, and
+# it also makes "make install" ship kwq.ko.debug into
+# /usr/lib/debug/boot/modules, which exists only after a full installkernel;
+# the CTF survives the strip, so install the module alone unless asked.
 DEBUG_FLAGS?=	-g
+.if !defined(KWQ_INSTALL_DEBUG)
+INSTALL_NODEBUG=
+.endif
 # make KWQ_NO_SDT=1: probe sites compiled out, to measure the disabled-probe cost
 .if defined(KWQ_NO_SDT)
 CFLAGS+=	-DKWQ_NO_SDT

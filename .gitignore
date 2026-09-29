@@ -9,3 +9,4 @@ machine
 x86
 i386
 opt_*.h
+*.kld
