@@ -2292,3 +2292,13 @@ decision deferred until real clients show what fan-in they produce.
   modules and kwq.d and no debug file unless asked; `make uninstall`
   reverses it.  a07 builds from a git clone in-tree; tests/run_p1b.sh
   accepts MODDIR as a flat directory or the source tree.
+- 2026-09-29 (evening, if_pair's shape): kwq_test gained the `ifpair`
+  scenario (S10 of OBSERVABILITY.md; results SCHED.md S10.3): the
+  per-list lock is a single-digit cost on the worker and 300-330 ns per
+  packet on a sender under fan-in, the same shape if_pair pays today.
+  KPI change from it: `kwq_requeue()` accepts a NULL tail meaning the
+  rest of the list the pass handed over (S2, S5; SCHED.md S4.5), so a
+  handler never walks its leftovers; the walk had spiralled deep
+  backlogs onto one CPU.  The harness's first version panicked a07
+  eight times (a handler reading a live knob while the previous run's
+  queue drained); fixed, reproduced and verified on the guest.

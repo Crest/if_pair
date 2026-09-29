@@ -842,6 +842,111 @@ it: with the guard the light queue is at 218 us in every run and
 a counter that does read backwards) is reported to the operator, not
 fixed here.
 
+**The shape of if_pair: the `ifpair` scenario (a07, 2026-09-29).**  The
+question was whether the (queue, CPU) lock would still be a significant
+cost once if_pair runs on kwq.  `ifpair` models N interfaces as queues,
+each hashed over `spread` worker CPUs and fed by `fanin` senders on
+CPUs of their own; per packet the sender spins 1000 ns for the sending
+stack's work and enqueues once, the handler spins 1500 ns for the
+receiving stack's; each sender has a 1024-item window (a TCP sender
+blocked on its congestion window), items return to their sender's
+window in one batch per sender per pass.  Worker CPUs come first, so a
+side's losses show in its own numbers.  4 s runs, one each; enqueue
+cost is the time inside the call, measured per call.
+
+Fan-in into one worker CPU, 1000/1500 ns of work per packet:
+
+| senders into one (queue, CPU) | pkt/s (worker-bound) | sender: enqueue ns, share of its CPU | worker: share of its time not in packet work | queue latency mean (the windows) |
+|---|---|---|---|---|
+| 1 | 647 k | 49 ns, 3 % | 5 % | 1.3 ms |
+| 2 | 644 k | 178 ns, 5 % | 5 % | 2.9 ms |
+| 4 | 636 k | 306 ns, 4 % | 6 % | 6.2 ms |
+| 8 | 607 k | 565 ns, 4 % | 11 % | 13 ms |
+| 16 | 573 k | 1151 ns, 4 % | 16 % | 28 ms |
+| 32 | 552 k | 1203 ns, 2 % | 19 % | 59 ms |
+| 8, 4 packets per call | 623 k | 67 ns, < 1 % | 9 % | 13 ms |
+| 16, 4 packets per call | 598 k | 78 ns, < 1 % | 12 % | 27 ms |
+| 8, 500/500 ns work | 1.66 M | 759 ns, 15 % | 21 % | 4.7 ms |
+| 8, 250/250 ns work | 2.93 M | 791 ns, 29 % | 30 % | 2.5 ms |
+| 8, 2000/3000 ns work | 312 k | 300 ns, 1 % | 7 % | 26 ms |
+| 1, 250/250 ns work | 1.58 M (sender-bound) | 254 ns, 40 % | worker 77 % busy, 48 % of that packet work | 1 us |
+
+Many interfaces, flows hashed over several worker CPUs, 1000/1500 ns
+unless stated:
+
+| layout (ifaces x workers x senders) | pkt/s | sender: enqueue ns, share of its CPU | worker: share of its time not in packet work | queue latency mean / max |
+|---|---|---|---|---|
+| 1 x 16 x 16 | 9.88 M | 305 ns, 18 % | 9 % | 1.4 / 8.5 ms |
+| 1 x 16 x 32 | 8.84 M | 332 ns, 9 % | 19 % | 3.5 / 19 ms |
+| 2 x 16 x 32 | 17.4 M | 336 ns, 9 % | 20 % | 3.6 / 24 ms |
+| 4 x 8 x 8 | 19.7 M | 321 ns, 19 % | 9 % | 1.4 / 8.0 ms |
+| 8 x 4 x 8 | 19.4 M | 328 ns, 9 % | 11 % | 3.2 / 11 ms |
+| 8 x 8 x 7 (120 CPUs, sender-bound) | 36.3 M | 312 ns, 20 % | 14 % | 14 us / 281 us |
+| 8 x 8 x 7, 4 packets per call | 39.2 M | 60 ns, 4 % | 9 % | 1.2 / 6.8 ms |
+| 8 x 8 x 7, 500/500 ns work | 37.3 M | 770 ns, 51 % | workers 52 % busy | 2 us / 1.8 ms |
+| 8 x 8 x 7, 500/500 ns, 4 per call | 85.3 M | 104 ns, 15 % | workers 82 % busy, 23 % of that overhead | 4 us / 1.7 ms |
+| 8 x 8 x 7, 250/250 ns work | 39.4 M | 943 ns, 66 % | workers 40 % busy | 2 us / 2.0 ms |
+| 8 x 8 x 7, 2000/3000 ns work | 20.0 M | 281 ns, 10 % | 6 % | 2.6 / 14 ms |
+
+Reading.  On the *worker* the lock itself is small everywhere: the
+profile of a worker in the 8 x 8 x 7 run has 3 % in the mutex
+functions and 0.5 % in `spinlock_exit`; the worker's "not in packet
+work" share above (5-20 %) is mostly kwq's passes, the budget reads
+and returning items to the senders' pools (the harness's own lock:
+lockstat's top entry), and it grows with fan-in because passes get
+longer lists from more cores.  A worker fed by 32 senders still moves
+85 % of what one sender gives it.
+
+On the *sender* the lock is the cost.  Uncontended it is 49 ns per
+packet; wherever seven other senders and the worker share the list it
+is 300-330 ns, a fifth of the sender's CPU at 1 us of stack work per
+packet; with 500 ns of work it is half the sender's CPU and with 250 ns
+two thirds, and in both cases the senders, not the workers, are the
+limit (workers 40-52 % busy).  The profile of a sender in the 500 ns
+run: 35 % in `lock_delay` and the mutex functions and 12 % in the
+`kw_mtx` doorbell sections, against 42 % in its own packet work.
+lockstat in that run: 8.3 M contended acquisitions per second on the
+queues' `kc_mtx`, all by senders, 1.2-1.4 us of waiting each.  Four
+packets per `kwq_enqueue_list()` take the sender back to 60-100 ns and
+lift the 500 ns layout from 37 M to 85 M pkt/s.
+
+For if_pair this means: the port adds no cost, since `pq_mtx` today
+has exactly this shape (one lock per packet, taken by every sending
+CPU that hashes to the list); at 1500-byte packets and ~1 us of stack
+work per packet the sender loses about a fifth of its CPU to the
+handoff under fan-in, and cheaper packets or higher fan-in make the
+sender the bottleneck before the worker.  The two remedies stay as
+recorded in P4.0: batching at the sender where the source has a
+batch (if_pair's TSO chains and LRO batches are such sources), or the
+lock-free single-consumer list.
+
+Found on the way, and fixed before the table above was taken: the
+handler had to walk its leftovers to find the tail for
+`kwq_requeue()`.  With a deep backlog the walk cost more than the
+pass's work (20 % of the fan-in-8 worker's CPU in the profile, at the
+instruction chasing `kwi_link`), was charged to the queue as an
+overrun, shrank its next budget, and in the 1 x 16 x 16 layout one CPU
+ended up holding all 16 k items in flight (`maxdepth` 16381, 100 %
+busy, 6 wakeups) while its fifteen peers idled at 28 %: 1.7 M pkt/s
+with a mean queue latency of 8 ms.  `kwq_requeue()` now takes a NULL
+tail for the pass's own suffix (S4.5); the same layout then gave 9.9 M
+pkt/s and 1.4 ms.  The harness also had to seed each sender's flow
+hash: with one shared sequence every sender aimed at the same worker at
+the same moment.
+
+Incident: the first version of the harness read the `fanin` knob in
+the handler.  A queue keeps working off its backlog after the scenario
+reports "done", so a knob written for the next run made the handler
+index past its sender array, and on a07 (GENERIC, no dump device) that
+was a page fault: eight reboots between 13:01 and 14:09 UTC, taken for
+ssh stalls until the fourth.  Reproduced on the guest under INVARIANTS
+in 75 runs as the harness's own "bad ifpair item" panic, fixed by
+giving each flood the run's own sender count; 125 further runs and the
+P1b set pass.  Not a kwq defect, but two rules for the harness: nothing
+a handler reads may change while a queue of the previous run is alive,
+and a shared machine gets a new stress shape only after the guest has
+run it.
+
 ## 11. Alternatives considered and rejected for the first version
 
 - **FIFO among non-empty queues, whole batch per turn (P0's policy).**

@@ -272,13 +272,33 @@ case where this grows (SCHED.md S15.7).  `fbt::kwq_enqueue:entry` with
 `kern.kwq_test` and are not part of the KPI:
 
     scenario   lifecycle fifo notify reject discard sleep fairness latency gaming
-               overrun yield cost scale fanin tq_baseline switch_baseline
+               overrun yield cost scale fanin tq_baseline switch_baseline ifpair
     items reps cost_us limit cpu allow_panic secs     (P0 knobs)
     weight_a weight_b cost_a cost_b                    (fairness and overrun)
     batch      items per kwq_enqueue_list() in the flood producers (1 = kwq_enqueue)
     pairs      scale: independent producer/consumer pairs on disjoint CPUs
-    fanin      fanin: producers, each on its own CPU, into one (queue, CPU)
+    fanin      fanin: producers, each on its own CPU, into one (queue, CPU);
+               ifpair: senders per interface
+    ifaces spread prod_ns cons_ns
+               ifpair: interfaces (one queue each), worker CPUs each interface's
+               flows are hashed over, busy work per packet on the sending and
+               the receiving side (ns); items is each sender's window
     run        write 1 to start; result_state, result_msg, result_* hold the outcome
+
+`ifpair` is the shape of if_pair on kwq: worker CPUs 1 .. ifaces x spread,
+sender CPUs after them, one kwq_enqueue() per packet (batch > 1: one
+kwq_enqueue_list() per batch packets).  Its results: `result_msg` gives
+packets/s, the mean enqueue cost and its share of the senders' CPU,
+enqueue calls over 2 us (`result_enq_slow`, convoys), the workers' share
+of time in packet work (`result_cons_pct`; the rest is kwq's passes, the
+queue lock and returning items), queue latency mean and max
+(`result_maxlat_a_us`, `result_maxlat_b_us`), rejects and window waits
+(`result_pool_waits`: senders blocked on a full window, the receivers are
+the limit).  The queues stay alive after the run for `kern.kwq.net.queue.ifp<N>`
+and lockstat(1) names their locks "kwq ifp<N>".  While the queue works
+off its backlog after "done", the knobs must not change: the handler
+uses the run's own copies, but the next run's `kwq_drain()` is what ends
+the previous one.
 
     sysctl kern.kwq_test.scenario=fanin kern.kwq_test.fanin=8 kern.kwq_test.batch=16 \
         kern.kwq_test.limit=1000000 kern.kwq_test.secs=5 kern.kwq_test.run=1
@@ -296,6 +316,8 @@ kwq source tree after an in-tree build:
     KWQ_SSH="ssh a07 doas -n" MODDIR=/home/crest/if_pair/kwq tests/run_p1b.sh cost cost16
     PAIRS=16 tests/run_p1b.sh scale
     FANIN=8 BATCH=1 tests/run_p1b.sh fanin
+    IFACES=8 SPREAD=8 FANIN=7 tests/run_p1b.sh ifpair          # 120 CPUs
+    FANIN=8 PROD_NS=500 CONS_NS=500 LOCKSTAT=1 tests/run_p1b.sh ifpair
 
 ## 10. Build defaults
 

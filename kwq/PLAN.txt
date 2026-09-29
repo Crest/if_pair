@@ -431,6 +431,16 @@ Phases
     producers, batch 1 and 16; the S17 locking rules, I1/I2 and the
     doorbell protocol change with (c).  Until then P4 converts if_pair on
     the current handoff and measures its real fan-in first.
+    Input from the ifpair scenario (2026-09-29, SCHED.md S10.3, a07,
+    1 us sender work and 1.5 us receiver work per packet): the per-list
+    lock costs the worker 5-10 % at fan-in 1..8 into one list and 14 %
+    in the 8 x 8 x 7 layout; the sender pays 46 ns uncontended, 300-330
+    ns in many-to-many layouts (20 % of its CPU at 1 us packets, 52 % at
+    500 ns packets where senders become the limit); 4 packets per call
+    brings the sender to 60 ns / 4 %.  Same shape and order as if_pair's
+    pq_mtx today.  Found on the way and fixed: kwq_requeue() needed the
+    tail and the handler's walk to find it spiralled a deep backlog onto
+    one CPU (S4.5, tail NULL now).
     Files: if_pair.c, Makefile (MODULE_DEPEND(if_pair, kwq, 1, 1, 1)).
     - Replace pair_tasks/pair_queue/pair_task_deferred with one NET
       queue per pair side, named "pair<N><a|b>" (KWQ_F_INACTIVE; activated
@@ -544,6 +554,13 @@ kwq_test scenarios (what each proves)
   tq_baseline the same producer pattern into a taskqueue (epair's shape).
   switch_baseline  two threads passing a token: ns per thread switch.
   yield       callout rate and CPU-bound user process share under saturation.
+  ifpair      if_pair's shape (2026-09-29): ifaces queues hashed over
+              spread worker CPUs, fanin senders each, busy spins for the
+              two stacks' per-packet work; enqueue cost and share of the
+              sender's CPU, worker share in packet work, queue latency
+              (SCHED.md S10.3; the P4.0 decision input).
+  scale       independent producer/consumer pairs: per-CPU scaling.
+  fanin       producers into one (queue, CPU): the handoff under fan-in.
   drain       no item lost or run twice across 100 activate/drain cycles
               under load (each item carries a sequence number and a
               seen-bit checked by the handler).

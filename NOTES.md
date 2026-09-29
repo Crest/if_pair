@@ -4236,3 +4236,31 @@ by path), doas make uninstall before testing another tree; a stale
 /boot/modules/kwq.ko would win over a path-loaded build for kldload-by-
 name and MODULE_DEPEND.  The guest keeps its two build variants under
 /root/kwq and /root/kwq-generic via tests/kwqvm.sh mods.
+
+2026-09-29 (evening): the ifpair scenario, a KPI fix, and eight a07 reboots.
+  Asked: does queue locking stay a bottleneck once if_pair runs on kwq?
+  kwq_test gained `ifpair` (knobs ifaces, spread, fanin, prod_ns,
+  cons_ns, batch; runner case with IFACES SPREAD FANIN PROD_NS CONS_NS
+  BATCH LOCKSTAT): N queues hashed over spread worker CPUs, fanin
+  senders per queue on their own CPUs, busy spins of 1000/1500 ns per
+  packet for the two stacks, 1024-item windows.  Results in SCHED.md
+  S10.3: the worker loses 5-16 % to the handoff in every layout; the
+  sender pays 46 ns uncontended, 300-330 ns under fan-in (20 % of its
+  CPU at 1 us packets, 52 % at 500 ns), 60 ns with 4 packets per call.
+  Same shape as if_pair's pq_mtx today; P4.0 options unchanged.
+  Found and fixed in kwq: kwq_requeue() needed the tail and the
+  handler's walk to find it, charged to the queue after the budget
+  check, spiralled a deep backlog onto one CPU (S4.5; tail NULL now,
+  worker records kw_pass_tail).  1 x 16 x 16 went 1.7 -> 9.9 M pkt/s.
+  Incident: the harness read the fanin knob inside the handler; a queue
+  keeps draining after "done", so the next run's knob write made the
+  handler index past kt_scale[] -> page fault on a07 (GENERIC, no
+  dumpdev, no panic text anywhere): eight reboots 13:01-14:09 UTC,
+  misread as ssh stalls until the fourth.  Reproduced in the guest
+  under INVARIANTS (own "bad ifpair item" panic, vmcore.1), fixed
+  (per-run f->nprod), 125 runs + P1b set clean.  Rules: no shared
+  machine gets a new stress shape before the guest has run it in a
+  knob-changing loop; check uptime before and after every a07 run; the
+  a07 scratch clone ~/kwq-ifpair-scratch is still there for the user to
+  remove.  tc_cpu_ticks() in 15.1 is DPCPU (verified), so the a07
+  glitch is the counter, not a shared static.

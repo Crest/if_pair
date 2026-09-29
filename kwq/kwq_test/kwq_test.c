@@ -9,6 +9,7 @@
  *                                             # P1b: fairness latency gaming
  *                                             #     overrun yield cost
  *                                             #     tq_baseline switch_baseline
+ *                                             # P4 shape: ifpair
  *   sysctl kern.kwq_test.items=1000 kern.kwq_test.reps=1000
  *   sysctl kern.kwq_test.run=1
  *   sysctl kern.kwq_test                      # poll result_state until
@@ -41,6 +42,7 @@
 #include <sys/taskqueue.h>
 #include <sys/cpuset.h>
 #include <machine/atomic.h>
+#include <machine/cpu.h>
 #include <machine/stdarg.h>
 
 #include "kwq.h"
@@ -81,15 +83,25 @@ static u_int	kt_pairs = 1;		/* scale: producer/consumer pairs on disjoint CPUs *
 static u_int	kt_fanin = 1;		/* fanin: producers on their own CPUs into one (queue, CPU) */
 static char	kt_qname[KWQ_NAMELEN] = "test";	/* queue name for the P0 scenarios */
 #define	KT_MAX_FANIN	64
+/* ifpair: simulated interfaces, worker CPUs per interface, spin per packet */
+static u_int	kt_ifaces = 1;
+static u_int	kt_spread = 1;
+static u_int	kt_prod_ns = 1000;	/* sender's stack work per packet before the enqueue */
+static u_int	kt_cons_ns = 1500;	/* receiver's stack work per packet in the handler */
 
 /* Results. */
 static char	kt_state[16] = "idle";
-static char	kt_msg[128] = "";
+static char	kt_msg[256] = "";
 static uint64_t	kt_r_in, kt_r_out, kt_r_discarded, kt_r_rejected, kt_r_coalesced,
 		kt_r_runs, kt_r_ns, kt_r_fifo_errors;
 static uint64_t	kt_r_glitches;	/* cpu_ticks() deltas discarded, see kt_tickdelta() */
 static uint64_t	kt_r_cycles_a, kt_r_cycles_b, kt_r_maxlat_a_us, kt_r_maxlat_b_us,
 		kt_r_ns_per_item, kt_r_prod_ns_per_item;
+/* ifpair */
+static uint64_t	kt_r_enq_slow;		/* enqueues over 2 us */
+static uint64_t	kt_r_enq_pct;		/* share of producer CPU time inside kwq_enqueue */
+static uint64_t	kt_r_cons_pct;		/* share of consumer CPU time in packet work */
+static uint64_t	kt_r_pool_waits;	/* producers found their window empty */
 
 /* Per-run state shared with handlers. */
 static struct mtx kt_mtx;
@@ -106,7 +118,7 @@ SYSCTL_NODE(_kern, OID_AUTO, kwq_test, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "kwq test harness");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, scenario, CTLFLAG_RW, kt_scenario,
     sizeof(kt_scenario), "lifecycle fifo notify reject discard sleep | "
-    "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline");
+    "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline | ifpair");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, items, CTLFLAG_RW, &kt_items, 0,
     "items per repetition (P0), pool size per flood (P1b)");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, reps, CTLFLAG_RW, &kt_reps, 0,
@@ -132,7 +144,16 @@ SYSCTL_UINT(_kern_kwq_test, OID_AUTO, batch, CTLFLAG_RW, &kt_batch, 0,
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, pairs, CTLFLAG_RW, &kt_pairs, 0,
     "scale scenario: producer/consumer pairs, each on two CPUs of its own");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, fanin, CTLFLAG_RW, &kt_fanin, 0,
-    "fanin scenario: producers, each on its own CPU, feeding one (queue, CPU) list");
+    "fanin scenario: producers, each on its own CPU, feeding one (queue, CPU) list; "
+    "ifpair: senders per interface");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, ifaces, CTLFLAG_RW, &kt_ifaces, 0,
+    "ifpair scenario: simulated interfaces (one queue each)");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, spread, CTLFLAG_RW, &kt_spread, 0,
+    "ifpair scenario: worker CPUs each interface's flows are hashed over");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, prod_ns, CTLFLAG_RW, &kt_prod_ns, 0,
+    "ifpair scenario: sender-side busy work per packet before the enqueue, ns");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, cons_ns, CTLFLAG_RW, &kt_cons_ns, 0,
+    "ifpair scenario: receiver-side busy work per packet in the handler, ns");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, qname, CTLFLAG_RW, kt_qname, sizeof(kt_qname),
     "queue name used by the P0 scenarios (invalid names such as a.b or a/b must be refused)");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, result_state, CTLFLAG_RD, kt_state,
@@ -168,7 +189,15 @@ SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_maxlat_b_us, CTLFLAG_RD,
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_ns_per_item, CTLFLAG_RD,
     &kt_r_ns_per_item, 0, "wall ns per item (cost, tq_baseline) or per switch");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_prod_ns_per_item, CTLFLAG_RD,
-    &kt_r_prod_ns_per_item, 0, "producer cpu ns per enqueue (cost, tq_baseline)");
+    &kt_r_prod_ns_per_item, 0, "producer cpu ns per enqueue (cost, tq_baseline, ifpair)");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_enq_slow, CTLFLAG_RD,
+    &kt_r_enq_slow, 0, "ifpair: enqueue calls that took over 2 us");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_enq_pct, CTLFLAG_RD,
+    &kt_r_enq_pct, 0, "ifpair: percent of producer CPU time spent inside kwq_enqueue");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_cons_pct, CTLFLAG_RD,
+    &kt_r_cons_pct, 0, "ifpair: percent of the worker CPUs' wall time spent in packet work");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_pool_waits, CTLFLAG_RD,
+    &kt_r_pool_waits, 0, "ifpair: times a sender found its whole window in flight");
 
 static void
 kt_fail(const char *fmt, ...)
@@ -205,6 +234,29 @@ kt_tickdelta(uint64_t t0)
 		return (0);
 	}
 	return (d);
+}
+
+/*
+ * Busy work standing in for the network stack: spin for `ticks' of
+ * cpu_ticks().  A glitch (SCHED.md S13, kt_tickdelta above) can only end
+ * the spin early.  The loop reads the clock, which on arm64 is a
+ * serialising instruction; that is the only memory traffic real stack
+ * work would have and this does not, so the model is optimistic about
+ * cache pressure and pessimistic about nothing.
+ */
+static inline void
+kt_spin_ticks(uint64_t ticks)
+{
+	uint64_t t0 = cpu_ticks();
+
+	while (cpu_ticks() - t0 < ticks)
+		cpu_spinwait();
+}
+
+static inline uint64_t
+kt_ns2ticks(uint64_t ns)
+{
+	return (ns * cpu_tickrate() / 1000000000ULL);
 }
 
 static int
@@ -448,9 +500,15 @@ struct kt_flood {
 	bool		stamp;		/* items carry an enqueue stamp */
 	bool		empty_handler;
 	/* producer mode */
-	enum { F_FLOOD, F_BURSTPAUSE, F_NONE } mode;
+	enum { F_FLOOD, F_BURSTPAUSE, F_IFPAIR, F_NONE } mode;
 	u_int		burst;
 	u_int		pause_us;
+	/* ifpair: targets cpu .. cpu + spread - 1, spin ticks per packet */
+	u_int		spread;
+	u_int		nprod;		/* senders of this interface: kt_scale[idx .. idx + nprod - 1] */
+	uint64_t	prod_spin;
+	uint64_t	cons_spin;
+	struct kt_cstat	*cstat;		/* [spread], the interface's worker CPUs */
 	struct thread	*td;
 	volatile bool	stop, exited;
 	bool		owns_q;		/* drains and destroys q at teardown */
@@ -469,7 +527,24 @@ struct kt_flood {
 	/* Written by the producer only. */
 	uint64_t	produced __aligned(KT_LINE);
 	uint64_t	prod_ticks;
+	uint64_t	enq_slow;	/* ifpair: enqueues over 2 us */
+	uint64_t	rejected;	/* ifpair: ENOBUFS */
+	uint64_t	waits;		/* ifpair: window empty, slept */
 };
+
+/*
+ * ifpair: what one worker CPU did for one interface.  Written by that
+ * CPU's worker only, one line each.
+ */
+struct kt_cstat {
+	uint64_t	items;
+	uint64_t	passes;
+	uint64_t	spin_ticks;	/* packet work */
+	uint64_t	hand_ticks;	/* whole handler call, spin included */
+	uint64_t	requeued;
+	uint64_t	lat_sum;	/* enqueue-to-handler, sbintime units */
+	uint64_t	lat_max;
+} __aligned(KT_LINE);
 
 static struct kt_flood *kt_floods[2];
 static struct kt_flood **kt_scale;	/* scale scenario's pairs */
@@ -531,6 +606,8 @@ kt_pool_wait(struct kt_flood *f)
 
 static void kt_fanin_handler(struct kt_flood *f, struct kwq_item *head, int n);
 static void kt_flood_handler_one(struct kt_flood *f, struct kwq_item *head, int n);
+static void kt_ifpair_handler(struct kt_flood *f, struct kwq_item *head, int n);
+static void kt_ifpair_producer(struct kt_flood *f);
 
 static void
 kt_flood_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
@@ -555,10 +632,87 @@ kt_flood_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 		kt_flood_return_list(f, &back, left);
 		return;
 	}
-	if (f->fanin)
+	if (f->mode == F_IFPAIR)
+		kt_ifpair_handler(f, head, n);
+	else if (f->fanin)
 		kt_fanin_handler(f, head, n);
 	else
 		kt_flood_handler_one(f, head, n);
+}
+
+/*
+ * ifpair receiver, run by the worker of whichever of the interface's CPUs
+ * the flow hashed to.  Per packet: spin for the receiving stack's work,
+ * check the budget (items cost over a microsecond, S5 guidance: per
+ * item).  Items go back to their sender's window in one batch per sender
+ * per pass, the way a stack frees mbufs through its per-CPU caches rather
+ * than one lock round trip per packet.
+ */
+static void
+kt_ifpair_handler(struct kt_flood *f, struct kwq_item *head, int n)
+{
+	struct kt_itemq back[KT_MAX_FANIN];
+	u_int cnt[KT_MAX_FANIN];
+	struct kwq_item *it, *next;
+	struct titem *ti;
+	struct kt_cstat *cs;
+	uint64_t t0, now, spin = 0;
+	u_int i, nprod, base, local;
+	int done = 0;
+
+	/*
+	 * The run's own sender count, never the live kt_fanin knob: the
+	 * queue keeps working off its backlog after the scenario reported
+	 * "done", and a knob written for the next run meanwhile made this
+	 * handler index past kt_scale[] (the 2026-09-29 panics, a07 and the
+	 * guest: "bad ifpair item").
+	 */
+	nprod = f->nprod;
+	base = (u_int)f->idx;		/* the interface's first sender */
+	for (i = 0; i < nprod; i++) {
+		STAILQ_INIT(&back[i]);
+		cnt[i] = 0;
+	}
+	local = (u_int)(curcpu - f->cpu);
+	if (local >= f->spread)
+		panic("kwq_test: ifpair handler on CPU %d outside %d..%d", curcpu,
+		    f->cpu, f->cpu + (int)f->spread - 1);
+	cs = &f->cstat[local];
+	t0 = cpu_ticks();
+	now = (uint64_t)sbinuptime();
+	for (it = head; it != NULL; it = next) {
+		next = KWQ_ITEM_NEXT(it);
+		ti = __containerof(it, struct titem, ti_item);
+		if (ti->ti_magic != TITEM_MAGIC || (u_int)ti->ti_qidx - base >= nprod)
+			panic("kwq_test: bad ifpair item %p", ti);
+		if (ti->ti_cpu != curcpu)
+			panic("kwq_test: ifpair item for CPU %d handled on %d", ti->ti_cpu, curcpu);
+		if (now > ti->ti_seq) {	/* stamped at enqueue, one read per pass */
+			cs->lat_sum += now - ti->ti_seq;
+			if (now - ti->ti_seq > cs->lat_max)
+				cs->lat_max = now - ti->ti_seq;
+		}
+		if (f->cons_spin != 0) {
+			kt_spin_ticks(f->cons_spin);
+			spin += f->cons_spin;
+		}
+		KWQ_ITEM_INIT(it);
+		STAILQ_INSERT_TAIL(&back[ti->ti_qidx - base], it, kwi_link);
+		cnt[ti->ti_qidx - base]++;
+		done++;
+		if (next != NULL && kwq_budget_left(f->q) == 0) {
+			/* tail NULL: the rest of the handed list, no walk */
+			kwq_requeue(f->q, next, NULL, n - done);
+			cs->requeued += n - done;
+			break;
+		}
+	}
+	cs->hand_ticks += kt_tickdelta(t0);
+	cs->spin_ticks += spin;
+	cs->items += done;
+	cs->passes++;
+	for (i = 0; i < nprod; i++)
+		kt_flood_return_list(kt_scale[base + i], &back[i], cnt[i]);
 }
 
 /* fanin: items came from several producers' pools; return each to its own. */
@@ -588,13 +742,8 @@ kt_fanin_handler(struct kt_flood *f, struct kwq_item *head, int n)
 		cnt[ti->ti_qidx]++;
 		done++;
 		if (next != NULL && kwq_budget_left(f->q) == 0) {
-			struct kwq_item *tail = next;
-			int left = n - done;
-
-			while (KWQ_ITEM_NEXT(tail) != NULL)
-				tail = KWQ_ITEM_NEXT(tail);
-			kwq_requeue(f->q, next, tail, left);
-			f->requeued += left;
+			kwq_requeue(f->q, next, NULL, n - done);
+			f->requeued += n - done;
 			break;
 		}
 	}
@@ -607,7 +756,7 @@ kt_fanin_handler(struct kt_flood *f, struct kwq_item *head, int n)
 static void
 kt_flood_handler_one(struct kt_flood *f, struct kwq_item *head, int n)
 {
-	struct kwq_item *it, *next, *tail;
+	struct kwq_item *it, *next;
 	struct titem *ti;
 	struct kt_itemq back = STAILQ_HEAD_INITIALIZER(back);
 	uint64_t t0;
@@ -635,10 +784,7 @@ kt_flood_handler_one(struct kt_flood *f, struct kwq_item *head, int n)
 		done++; left--;
 		/* Progress rule: at least one item, then the budget decides. */
 		if (f->coop && next != NULL && kwq_budget_left(f->q) == 0) {
-			tail = next;
-			while (KWQ_ITEM_NEXT(tail) != NULL)
-				tail = KWQ_ITEM_NEXT(tail);
-			kwq_requeue(f->q, next, tail, left);
+			kwq_requeue(f->q, next, NULL, left);
 			f->requeued += left;
 			break;
 		}
@@ -661,6 +807,10 @@ kt_flood_producer(void *arg)
 	thread_lock(curthread);
 	sched_bind(curthread, f->pcpu);
 	thread_unlock(curthread);
+	if (f->mode == F_IFPAIR) {
+		kt_ifpair_producer(f);
+		goto out;
+	}
 	while (!f->stop) {
 		if (f->mode == F_BURSTPAUSE) {
 			/* wait until every item is back (the list emptied) */
@@ -742,9 +892,99 @@ kt_flood_producer(void *arg)
 		else
 			f->produced++;
 	}
+out:
 	f->exited = true;
 	wakeup(f);
 	kthread_exit();
+}
+
+/*
+ * ifpair sender: per packet, spin for the sending stack's work, then one
+ * kwq_enqueue() (kt_batch > 1: one kwq_enqueue_list() per kt_batch
+ * packets) to the worker CPU the packet's flow hashes to.  The window is
+ * the pool: when every item is in flight the sender sleeps until the
+ * handler returns some, like a TCP sender blocked on its congestion
+ * window.  The time inside the enqueue call is measured per call, so its
+ * share of the sender's CPU and its tail (calls over 2 us: a lock convoy)
+ * come out separately from the stack work.
+ */
+static void
+kt_ifpair_producer(struct kt_flood *f)
+{
+	struct kwq_item *it, *tail, *nx;
+	struct titem *ti;
+	uint64_t d, slow, now, seq = 0;
+	uint32_t h;
+	u_int k, want;
+	int error, target;
+
+	slow = kt_ns2ticks(2000);
+	while (!f->stop) {
+		want = kt_batch > 1 ? kt_batch : 1;
+		mtx_lock(&f->mtx);
+		it = STAILQ_FIRST(&f->free);
+		if (it == NULL) {
+			f->waits++;
+			kt_pool_wait(f);	/* releases f->mtx */
+			continue;
+		}
+		tail = it;
+		k = 1;
+		while (k < want && (nx = STAILQ_NEXT(tail, kwi_link)) != NULL) {
+			tail = nx;
+			k++;
+		}
+		nx = STAILQ_NEXT(tail, kwi_link);
+		if (nx == NULL)
+			STAILQ_INIT(&f->free);
+		else
+			STAILQ_FIRST(&f->free) = nx;
+		f->nfree -= k;
+		mtx_unlock(&f->mtx);
+		KWQ_ITEM_NEXT(tail) = NULL;
+		/*
+		 * The stack's work for k packets, then the flow hash to a
+		 * worker.  Each sender's flow sequence is mixed with its own
+		 * seed: with one shared sequence every sender aimed at the
+		 * same worker at the same time and the layout degenerated
+		 * into one hot list and idle workers, which no set of real
+		 * flows does.
+		 */
+		if (f->prod_spin != 0)
+			kt_spin_ticks(f->prod_spin * k);
+		seq++;
+		h = (uint32_t)seq ^ ((uint32_t)f->idx * 0x9E3779B9u);
+		h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+		target = f->cpu + (int)(h % f->spread);
+		now = (uint64_t)sbinuptime();
+		for (nx = it; nx != NULL; nx = KWQ_ITEM_NEXT(nx)) {
+			ti = __containerof(nx, struct titem, ti_item);
+			ti->ti_cpu = target;
+			ti->ti_seq = now;	/* enqueue stamp: queue latency */
+		}
+		d = cpu_ticks();
+		if (k == 1)
+			error = kwq_enqueue(f->q, target, it);
+		else
+			error = kwq_enqueue_list(f->q, target, it, tail, (int)k);
+		d = kt_tickdelta(d);
+		f->prod_ticks += d;
+		if (d > slow)
+			f->enq_slow++;
+		if (error != 0) {
+			struct kt_itemq back;
+
+			STAILQ_INIT(&back);
+			for (; it != NULL; it = nx) {
+				nx = KWQ_ITEM_NEXT(it);
+				KWQ_ITEM_INIT(it);
+				STAILQ_INSERT_TAIL(&back, it, kwi_link);
+			}
+			kt_flood_return_list(f, &back, k);
+			f->rejected += k;
+		} else
+			f->produced += k;
+	}
 }
 
 static struct kt_flood *
@@ -851,6 +1091,7 @@ kt_floods_destroy(void)
 			kwq_destroy(f->q);
 		}
 		mtx_destroy(&f->mtx);
+		free(f->cstat, M_KWQ_TEST);
 		free(f->items, M_KWQ_TEST);
 		free(f, M_KWQ_TEST);
 	}
@@ -976,6 +1217,139 @@ kt_run_scale(void)
 	snprintf(kt_msg, sizeof(kt_msg), "%u pairs, batch %u: %ju items/s aggregate, per pair %ju..%ju",
 	    n, kt_batch, (uintmax_t)(wall_us ? total * 1000000 / wall_us : 0),
 	    (uintmax_t)kt_r_cycles_a, (uintmax_t)kt_r_cycles_b);
+}
+
+/*
+ * ifpair: the shape of if_pair on kwq (P4).  kt_ifaces interfaces, each a
+ * queue whose flows are hashed over kt_spread worker CPUs and fed by
+ * kt_fanin senders on CPUs of their own; per packet the sender spins
+ * kt_prod_ns and enqueues once, the handler spins kt_cons_ns.  Worker CPUs
+ * come first (1 .. ifaces * spread), sender CPUs after them, so the two
+ * sides never share a core and every cycle a side loses to the handoff
+ * shows up in its own numbers.  kt_items is each sender's window.
+ *
+ * Reads: items/s; result_enq_pct and result_prod_ns_per_item (what the
+ * enqueue costs the sender, mean, and its share of the sender's CPU),
+ * result_enq_slow (calls over 2 us: convoys); result_cons_pct (share of the
+ * worker CPUs' time in packet work: the rest is kwq's passes, the queue
+ * lock, and returning items); result_pool_waits (senders blocked on a
+ * full window: the receivers are the limit).  kwq's own counters per
+ * (queue, CPU) and per worker are left readable, and lockstat(1) during
+ * the run shows the queue locks by name ("kwq ifpN").
+ */
+static void
+kt_run_ifpair(void)
+{
+	struct kt_flood *f, *owner;
+	struct kt_cstat *cs;
+	sbintime_t t0, t1;
+	uint64_t wall_us, wall_ticks, total = 0, produced = 0, prod_ticks = 0,
+	    spin_ticks = 0, hand_ticks = 0, lo = UINT64_MAX, hi = 0, lat_sum = 0,
+	    lat_max = 0;
+	char name[KWQ_NAMELEN];
+	u_int i, j, nif, nprod, spread, avail, ncons, nsend, npool;
+	int cpu, pcpu;
+
+	avail = 0;
+	CPU_FOREACH(i)
+		avail++;
+	nif = kt_ifaces != 0 ? kt_ifaces : 1;
+	nprod = kt_fanin != 0 ? kt_fanin : 1;
+	spread = kt_spread != 0 ? kt_spread : 1;
+	ncons = nif * spread;
+	nsend = nif * nprod;
+	if (nprod > KT_MAX_FANIN || 1 + ncons + nsend > avail) {
+		kt_fail("ifpair: %u ifaces x (%u workers + %u senders) need %u CPUs, %u present (fanin max %u)",
+		    nif, spread, nprod, 1 + ncons + nsend, avail, KT_MAX_FANIN);
+		return;
+	}
+	for (i = 1; i <= ncons + nsend; i++) {
+		if (CPU_ABSENT(i)) {
+			kt_fail("ifpair: CPU %u absent; needs CPUs 1..%u", i, ncons + nsend);
+			return;
+		}
+	}
+	npool = kt_items ? kt_items : 1024;
+	kt_scale = malloc(sizeof(*kt_scale) * nsend, M_KWQ_TEST, M_WAITOK | M_ZERO);
+	kt_nscale = nsend;
+	for (i = 0; i < nif; i++) {
+		cpu = 1 + (int)(i * spread);
+		snprintf(name, sizeof(name), "ifp%u", i);
+		owner = kt_flood_create((int)(i * nprod), name, 1, npool, 0, true, cpu, 0);
+		kt_scale[i * nprod] = owner;
+		if (owner->q == NULL)
+			return;
+		owner->cstat = malloc(sizeof(*owner->cstat) * spread, M_KWQ_TEST,
+		    M_WAITOK | M_ZERO);
+		for (j = 0; j < nprod; j++) {
+			pcpu = 1 + (int)ncons + (int)(i * nprod + j);
+			f = j == 0 ? owner : kt_flood_attach((int)(i * nprod + j), owner->q,
+			    npool, cpu, pcpu);
+			kt_scale[i * nprod + j] = f;
+			f->pcpu = pcpu;
+			f->mode = F_IFPAIR;
+			f->fanin = true;	/* discards route back by ti_qidx */
+			f->spread = spread;
+			f->nprod = nprod;
+			f->prod_spin = kt_ns2ticks(kt_prod_ns);
+			f->cons_spin = kt_ns2ticks(kt_cons_ns);
+		}
+	}
+	t0 = sbinuptime();
+	for (i = 0; i < nsend; i++)
+		kt_flood_start(kt_scale[i]);
+	pause("ktrun", kt_secs * hz);
+	for (i = 0; i < nsend; i++)
+		kt_flood_stop(kt_scale[i]);
+	t1 = sbinuptime();
+	wall_us = kt_sbt2us(t1 - t0);
+	wall_ticks = wall_us * cpu_tickrate() / 1000000ULL;
+	for (i = 0; i < nsend; i++) {
+		f = kt_scale[i];
+		produced += f->produced;
+		prod_ticks += f->prod_ticks;
+		kt_r_rejected += f->rejected;
+		kt_r_enq_slow += f->enq_slow;
+		kt_r_pool_waits += f->waits;
+		if (f->produced < lo) lo = f->produced;
+		if (f->produced > hi) hi = f->produced;
+	}
+	for (i = 0; i < nif; i++) {
+		owner = kt_scale[i * nprod];
+		for (j = 0; j < spread; j++) {
+			cs = &owner->cstat[j];
+			total += cs->items;
+			spin_ticks += cs->spin_ticks;
+			hand_ticks += cs->hand_ticks;
+			kt_r_runs += cs->passes;
+			lat_sum += cs->lat_sum;
+			if (cs->lat_max > lat_max)
+				lat_max = cs->lat_max;
+		}
+	}
+	kt_r_maxlat_b_us = kt_sbt2us((sbintime_t)lat_max);		/* queue latency, max */
+	kt_r_maxlat_a_us = total ? kt_sbt2us((sbintime_t)(lat_sum / total)) : 0;	/* mean */
+	kt_r_in = produced;
+	kt_r_out = total;
+	kt_r_ns_per_item = total ? wall_us * 1000 / total : 0;
+	kt_r_prod_ns_per_item = produced ?
+	    prod_ticks * 1000000000ULL / cpu_tickrate() / produced : 0;
+	/* Senders run (or sleep on their window) for the whole wall time. */
+	kt_r_enq_pct = wall_ticks ? prod_ticks * 100 / (wall_ticks * nsend) : 0;
+	kt_r_cons_pct = wall_ticks ? spin_ticks * 100 / (wall_ticks * ncons) : 0;
+	kt_r_cycles_a = spin_ticks * 1000000000ULL / cpu_tickrate();	/* packet work, ns */
+	kt_r_cycles_b = hand_ticks * 1000000000ULL / cpu_tickrate();	/* handler calls, ns */
+	snprintf(kt_msg, sizeof(kt_msg), "%u ifaces x %u workers x %u senders, spin %u/%u ns, batch %u: "
+	    "%ju pkt/s (%ju..%ju per sender); enqueue %ju ns = %ju%% of sender CPU, %ju over 2 us; "
+	    "workers %ju%% in packet work, %ju passes; queue latency mean %ju max %ju us; %ju rejects, %ju window waits",
+	    nif, spread, nprod, kt_prod_ns, kt_cons_ns, kt_batch,
+	    (uintmax_t)(wall_us ? total * 1000000 / wall_us : 0),
+	    (uintmax_t)(wall_us ? lo * 1000000 / wall_us : 0),
+	    (uintmax_t)(wall_us ? hi * 1000000 / wall_us : 0),
+	    (uintmax_t)kt_r_prod_ns_per_item, (uintmax_t)kt_r_enq_pct, (uintmax_t)kt_r_enq_slow,
+	    (uintmax_t)kt_r_cons_pct, (uintmax_t)kt_r_runs,
+	    (uintmax_t)kt_r_maxlat_a_us, (uintmax_t)kt_r_maxlat_b_us,
+	    (uintmax_t)kt_r_rejected, (uintmax_t)kt_r_pool_waits);
 }
 
 static void
@@ -1422,6 +1796,7 @@ kt_thread(void *arg __unused)
 	kt_r_runs = kt_r_fifo_errors = 0;
 	kt_r_cycles_a = kt_r_cycles_b = kt_r_maxlat_a_us = kt_r_maxlat_b_us = 0;
 	kt_r_ns_per_item = kt_r_prod_ns_per_item = kt_r_glitches = 0;
+	kt_r_enq_slow = kt_r_enq_pct = kt_r_cons_pct = kt_r_pool_waits = 0;
 	kt_msg[0] = '\0';
 
 	if (strcmp(kt_scenario, "lifecycle") == 0 ||
@@ -1451,6 +1826,8 @@ kt_thread(void *arg __unused)
 		kt_run_scale();
 	else if (strcmp(kt_scenario, "fanin") == 0)
 		kt_run_fanin();
+	else if (strcmp(kt_scenario, "ifpair") == 0)
+		kt_run_ifpair();
 	else if (strcmp(kt_scenario, "cost") == 0)
 		kt_run_cost();
 	else if (strcmp(kt_scenario, "tq_baseline") == 0)
