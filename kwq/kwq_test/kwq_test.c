@@ -77,6 +77,9 @@ static u_int	kt_secs = 3;
 static u_int	kt_weight_a = 1, kt_weight_b = 1;
 static u_int	kt_cost_a = 50, kt_cost_b = 500;	/* us per item */
 static u_int	kt_batch = 1;		/* items per kwq_enqueue_list() in the flood producer */
+static u_int	kt_pairs = 1;		/* scale: producer/consumer pairs on disjoint CPUs */
+static u_int	kt_fanin = 1;		/* fanin: producers on their own CPUs into one (queue, CPU) */
+#define	KT_MAX_FANIN	64
 
 /* Results. */
 static char	kt_state[16] = "idle";
@@ -102,7 +105,7 @@ SYSCTL_NODE(_kern, OID_AUTO, kwq_test, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "kwq test harness");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, scenario, CTLFLAG_RW, kt_scenario,
     sizeof(kt_scenario), "lifecycle fifo notify reject discard sleep | "
-    "fairness latency gaming overrun yield cost tq_baseline switch_baseline");
+    "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, items, CTLFLAG_RW, &kt_items, 0,
     "items per repetition (P0), pool size per flood (P1b)");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, reps, CTLFLAG_RW, &kt_reps, 0,
@@ -125,6 +128,10 @@ SYSCTL_UINT(_kern_kwq_test, OID_AUTO, cost_b, CTLFLAG_RW, &kt_cost_b, 0,
     "us per item, queue b");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, batch, CTLFLAG_RW, &kt_batch, 0,
     "flood producer: items per kwq_enqueue_list() call (1 = kwq_enqueue per item)");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, pairs, CTLFLAG_RW, &kt_pairs, 0,
+    "scale scenario: producer/consumer pairs, each on two CPUs of its own");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, fanin, CTLFLAG_RW, &kt_fanin, 0,
+    "fanin scenario: producers, each on its own CPU, feeding one (queue, CPU) list");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, result_state, CTLFLAG_RD, kt_state,
     sizeof(kt_state), "idle | running | done | fail");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, result_msg, CTLFLAG_RD, kt_msg,
@@ -443,6 +450,8 @@ struct kt_flood {
 	u_int		pause_us;
 	struct thread	*td;
 	volatile bool	stop, exited;
+	bool		owns_q;		/* drains and destroys q at teardown */
+	bool		fanin;		/* handler routes items back by ti_qidx to kt_scale[] */
 
 	/* Shared: the pool, taken by the producer, refilled by the handler. */
 	struct mtx	mtx __aligned(KT_LINE);
@@ -460,6 +469,8 @@ struct kt_flood {
 };
 
 static struct kt_flood *kt_floods[2];
+static struct kt_flood **kt_scale;	/* scale scenario's pairs */
+static u_int kt_nscale;
 
 static void
 kt_flood_return(struct kt_flood *f, struct kwq_item *it)
@@ -515,27 +526,91 @@ kt_pool_wait(struct kt_flood *f)
 	mtx_unlock(&f->mtx);
 }
 
+static void kt_fanin_handler(struct kt_flood *f, struct kwq_item *head, int n);
+static void kt_flood_handler_one(struct kt_flood *f, struct kwq_item *head, int n);
+
 static void
 kt_flood_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 {
 	struct kt_flood *f = ctx;
-	struct kwq_item *it, *next, *tail;
+	struct kwq_item *it, *next;
 	struct titem *ti;
 	struct kt_itemq back = STAILQ_HEAD_INITIALIZER(back);
-	uint64_t t0;
-	sbintime_t now;
-	int left, done = 0;
+	int left;
 
 	left = n < 0 ? -n : n;
 	if (n < 0) {
 		for (it = head; it != NULL; it = next) {
 			next = KWQ_ITEM_NEXT(it);
 			KWQ_ITEM_INIT(it);
-			STAILQ_INSERT_TAIL(&back, it, kwi_link);
+			if (f->fanin) {
+				ti = __containerof(it, struct titem, ti_item);
+				kt_flood_return(kt_scale[ti->ti_qidx], it);
+			} else
+				STAILQ_INSERT_TAIL(&back, it, kwi_link);
 		}
 		kt_flood_return_list(f, &back, left);
 		return;
 	}
+	if (f->fanin)
+		kt_fanin_handler(f, head, n);
+	else
+		kt_flood_handler_one(f, head, n);
+}
+
+/* fanin: items came from several producers' pools; return each to its own. */
+static void
+kt_fanin_handler(struct kt_flood *f, struct kwq_item *head, int n)
+{
+	struct kt_itemq back[KT_MAX_FANIN];
+	u_int cnt[KT_MAX_FANIN];
+	struct kwq_item *it, *next;
+	struct titem *ti;
+	uint64_t t0;
+	u_int i;
+	int done = 0;
+
+	for (i = 0; i < kt_nscale; i++) {
+		STAILQ_INIT(&back[i]);
+		cnt[i] = 0;
+	}
+	t0 = cpu_ticks();
+	for (it = head; it != NULL; it = next) {
+		next = KWQ_ITEM_NEXT(it);
+		ti = __containerof(it, struct titem, ti_item);
+		if (ti->ti_magic != TITEM_MAGIC || (u_int)ti->ti_qidx >= kt_nscale)
+			panic("kwq_test: bad fanin item %p", ti);
+		KWQ_ITEM_INIT(it);
+		STAILQ_INSERT_TAIL(&back[ti->ti_qidx], it, kwi_link);
+		cnt[ti->ti_qidx]++;
+		done++;
+		if (next != NULL && kwq_budget_left(f->q) == 0) {
+			struct kwq_item *tail = next;
+			int left = n - done;
+
+			while (KWQ_ITEM_NEXT(tail) != NULL)
+				tail = KWQ_ITEM_NEXT(tail);
+			kwq_requeue(f->q, next, tail, left);
+			f->requeued += left;
+			break;
+		}
+	}
+	f->cycles += kt_tickdelta(t0);
+	f->items_out += done;
+	for (i = 0; i < kt_nscale; i++)
+		kt_flood_return_list(kt_scale[i], &back[i], cnt[i]);
+}
+
+static void
+kt_flood_handler_one(struct kt_flood *f, struct kwq_item *head, int n)
+{
+	struct kwq_item *it, *next, *tail;
+	struct titem *ti;
+	struct kt_itemq back = STAILQ_HEAD_INITIALIZER(back);
+	uint64_t t0;
+	sbintime_t now;
+	int left = n, done = 0;
+
 	t0 = cpu_ticks();
 	for (it = head; it != NULL; it = next) {
 		next = KWQ_ITEM_NEXT(it);
@@ -556,11 +631,11 @@ kt_flood_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 		STAILQ_INSERT_TAIL(&back, it, kwi_link);
 		done++; left--;
 		/* Progress rule: at least one item, then the budget decides. */
-		if (f->coop && next != NULL && kwq_budget_left(q) == 0) {
+		if (f->coop && next != NULL && kwq_budget_left(f->q) == 0) {
 			tail = next;
 			while (KWQ_ITEM_NEXT(tail) != NULL)
 				tail = KWQ_ITEM_NEXT(tail);
-			kwq_requeue(q, next, tail, left);
+			kwq_requeue(f->q, next, tail, left);
 			f->requeued += left;
 			break;
 		}
@@ -670,8 +745,7 @@ kt_flood_producer(void *arg)
 }
 
 static struct kt_flood *
-kt_flood_create(int idx, const char *name, u_int weight, u_int npool,
-    uint64_t cost_us, bool coop, int cpu, int pcpu)
+kt_flood_alloc(int idx, u_int npool, uint64_t cost_us, bool coop, int cpu, int pcpu)
 {
 	struct kt_flood *f;
 	u_int i;
@@ -689,12 +763,35 @@ kt_flood_create(int idx, const char *name, u_int weight, u_int npool,
 		STAILQ_INSERT_TAIL(&f->free, &f->items[i].ti_item, kwi_link);
 	}
 	f->nfree = npool;
+	return (f);
+}
+
+static struct kt_flood *
+kt_flood_create(int idx, const char *name, u_int weight, u_int npool,
+    uint64_t cost_us, bool coop, int cpu, int pcpu)
+{
+	struct kt_flood *f;
+
+	f = kt_flood_alloc(idx, npool, cost_us, coop, cpu, pcpu);
 	f->q = kt_create(name, KWQ_F_DISCARD, weight, kt_flood_handler, f);
 	if (f->q == NULL) {
 		kt_fail("kwq_create(%s) failed", name);
 		return (f);
 	}
+	f->owns_q = true;
 	kwq_activate(f->q);
+	return (f);
+}
+
+/* A producer with its own pool feeding another flood's queue (fanin). */
+static struct kt_flood *
+kt_flood_attach(int idx, struct kwq *q, u_int npool, int cpu, int pcpu)
+{
+	struct kt_flood *f;
+
+	f = kt_flood_alloc(idx, npool, 0, true, cpu, pcpu);
+	f->q = q;
+	f->owns_q = false;
 	return (f);
 }
 
@@ -742,6 +839,140 @@ kt_floods_destroy(void)
 		free(f, M_KWQ_TEST);
 		kt_floods[i] = NULL;
 	}
+	for (i = 0; i < (int)kt_nscale; i++) {
+		f = kt_scale[i];
+		if (f == NULL)
+			continue;
+		if (f->q != NULL && f->owns_q) {
+			kwq_drain(f->q);
+			kwq_destroy(f->q);
+		}
+		mtx_destroy(&f->mtx);
+		free(f->items, M_KWQ_TEST);
+		free(f, M_KWQ_TEST);
+	}
+	free(kt_scale, M_KWQ_TEST);
+	kt_scale = NULL;
+	kt_nscale = 0;
+}
+
+/*
+ * scale: kt_pairs independent producer/consumer pairs, pair i's queue
+ * served on CPU 1 + 2i and fed from CPU 2 + 2i (CPU 0 is left to the
+ * rest of the system), empty handler, kt_batch items per enqueue call.
+ * Reports the aggregate rate and the per-pair spread.
+ */
+/*
+ * fanin: kt_fanin producers, each on its own CPU (2 .. fanin + 1), feed one
+ * (queue, CPU) list served on CPU 1; each producer has its own item pool and
+ * the handler returns items to their pools in per-pool batches.  Set
+ * kern.kwq_test.limit high enough for fanin x items in flight.
+ */
+static void
+kt_run_fanin(void)
+{
+	struct kt_flood *f;
+	sbintime_t t0, t1;
+	uint64_t lo = UINT64_MAX, hi = 0, wall_us, total;
+	u_int i, m, avail;
+
+	avail = 0;
+	CPU_FOREACH(i)
+		avail++;
+	m = kt_fanin;
+	if (m == 0)
+		m = 1;
+	if (m > KT_MAX_FANIN || m + 2 > avail) {
+		kt_fail("fanin: %u producers need %u CPUs, %u present (max %u)", m, m + 2, avail, KT_MAX_FANIN);
+		return;
+	}
+	kt_scale = malloc(sizeof(*kt_scale) * m, M_KWQ_TEST, M_WAITOK | M_ZERO);
+	kt_nscale = m;
+	f = kt_flood_create(0, "ktf", 1, kt_items ? kt_items : 1024, 0, true, 1, 2);
+	kt_scale[0] = f;
+	if (f->q == NULL)
+		return;
+	f->empty_handler = true;
+	f->fanin = true;
+	for (i = 1; i < m; i++)
+		kt_scale[i] = kt_flood_attach(i, f->q, kt_items ? kt_items : 1024, 1, 2 + i);
+	t0 = sbinuptime();
+	for (i = 0; i < m; i++)
+		kt_flood_start(kt_scale[i]);
+	pause("ktrun", kt_secs * hz);
+	for (i = 0; i < m; i++)
+		kt_flood_stop(kt_scale[i]);
+	t1 = sbinuptime();
+	wall_us = kt_sbt2us(t1 - t0);
+	total = f->items_out;
+	for (i = 0; i < m; i++) {
+		kt_r_in += kt_scale[i]->produced;
+		if (kt_scale[i]->produced < lo) lo = kt_scale[i]->produced;
+		if (kt_scale[i]->produced > hi) hi = kt_scale[i]->produced;
+	}
+	kt_r_out = total;
+	kt_r_runs = m;
+	kt_r_ns_per_item = total ? wall_us * 1000 / total : 0;
+	kt_r_cycles_a = wall_us ? lo * 1000000 / wall_us : 0;
+	kt_r_cycles_b = wall_us ? hi * 1000000 / wall_us : 0;
+	snprintf(kt_msg, sizeof(kt_msg), "fanin %u, batch %u: %ju items/s, per producer %ju..%ju, requeued %ju",
+	    m, kt_batch, (uintmax_t)(wall_us ? total * 1000000 / wall_us : 0),
+	    (uintmax_t)kt_r_cycles_a, (uintmax_t)kt_r_cycles_b, (uintmax_t)f->requeued);
+}
+
+static void
+kt_run_scale(void)
+{
+	struct kt_flood *f;
+	sbintime_t t0, t1;
+	uint64_t total = 0, lo = UINT64_MAX, hi = 0, wall_us;
+	char name[KWQ_NAMELEN];
+	u_int i, n, avail;
+
+	avail = 0;
+	CPU_FOREACH(i)
+		avail++;
+	n = kt_pairs;
+	if (n == 0)
+		n = 1;
+	if (2 * n + 1 > avail) {
+		kt_fail("scale: %u pairs need %u CPUs, %u present", n, 2 * n + 1, avail);
+		return;
+	}
+	kt_scale = malloc(sizeof(*kt_scale) * n, M_KWQ_TEST, M_WAITOK | M_ZERO);
+	kt_nscale = n;
+	for (i = 0; i < n; i++) {
+		snprintf(name, sizeof(name), "kts%u", i);
+		f = kt_flood_create(i, name, 1, kt_items ? kt_items : 1024, 0, true,
+		    1 + 2 * i, 2 + 2 * i);
+		kt_scale[i] = f;
+		if (f->q == NULL)
+			return;
+		f->empty_handler = true;
+	}
+	t0 = sbinuptime();
+	for (i = 0; i < n; i++)
+		kt_flood_start(kt_scale[i]);
+	pause("ktrun", kt_secs * hz);
+	for (i = 0; i < n; i++)
+		kt_flood_stop(kt_scale[i]);
+	t1 = sbinuptime();
+	wall_us = kt_sbt2us(t1 - t0);
+	for (i = 0; i < n; i++) {
+		f = kt_scale[i];
+		total += f->items_out;
+		kt_r_in += f->produced;
+		if (f->items_out < lo) lo = f->items_out;
+		if (f->items_out > hi) hi = f->items_out;
+	}
+	kt_r_out = total;
+	kt_r_runs = n;
+	kt_r_ns_per_item = total ? wall_us * 1000 / total : 0;	/* aggregate */
+	kt_r_cycles_a = wall_us ? lo * 1000000 / wall_us : 0;	/* slowest pair items/s */
+	kt_r_cycles_b = wall_us ? hi * 1000000 / wall_us : 0;	/* fastest pair items/s */
+	snprintf(kt_msg, sizeof(kt_msg), "%u pairs, batch %u: %ju items/s aggregate, per pair %ju..%ju",
+	    n, kt_batch, (uintmax_t)(wall_us ? total * 1000000 / wall_us : 0),
+	    (uintmax_t)kt_r_cycles_a, (uintmax_t)kt_r_cycles_b);
 }
 
 static void
@@ -1213,6 +1444,10 @@ kt_thread(void *arg __unused)
 		kt_run_overrun();
 	else if (strcmp(kt_scenario, "yield") == 0)
 		kt_run_yield();
+	else if (strcmp(kt_scenario, "scale") == 0)
+		kt_run_scale();
+	else if (strcmp(kt_scenario, "fanin") == 0)
+		kt_run_fanin();
 	else if (strcmp(kt_scenario, "cost") == 0)
 		kt_run_cost();
 	else if (strcmp(kt_scenario, "tq_baseline") == 0)

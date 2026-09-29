@@ -235,8 +235,10 @@ worker's spin mutex from the producer's CPU (S17).
   system data structures" made a panic rather than documented).
 - `cpu` is the CPU whose worker should run the item: the client's
   steering decision (flow hash, receive queue, or `curcpu` for "here").
-  `KWQ_CPU_ANY` lets BULK pick the least loaded CPU near the caller (P0:
-  shallowest list in the caller's NUMA domain; cache domain in P6); it
+  `KWQ_CPU_ANY` lets BULK pick the least loaded CPU near the caller (the
+  shallowest list among the caller's CPU and the next four of its NUMA
+  domain, a bounded probe since 2026-09-29: the P0 scan read every CPU's
+  shared line, 128 on a07; cache domain in P6); it
   is invalid for NET (ordering).  An offline or
   non-existent CPU maps to the caller's CPU.
 - Never sleeps, never allocates, never calls the handler.  Safe from any
@@ -1025,9 +1027,9 @@ with `SDT_PROBE_DEFINEn_XLATE` (the mechanism `ip`/`tcp` use) so that
 | probe | when | args (after translation) | cost class |
 |---|---|---|---|
 | `kwq:::create`, `activate`, `drain-start`, `drain-end`, `destroy` | lifecycle | `kwqinfo_t *` | negligible |
-| `kwq:::enqueue` | every accepted item | `kwqinfo_t *`, `int cpu`, `int depth_after`, `int woke` (1 if this enqueue rang the doorbell) | per item: hot, see 10.3 |
+| `kwq:::enqueue` | every accepted `kwq_enqueue()`; once per `kwq_enqueue_list()` call (depth_after then covers the whole list) | `kwqinfo_t *`, `int cpu`, `int depth_after`, `int woke` (1 if this enqueue rang the doorbell) | per item: hot, see 10.3 |
 | `kwq:::reject` | `kwq_enqueue` returned ENOBUFS/ENXIO | `kwqinfo_t *`, `int cpu`, `int errno` | per event |
-| `kwq:::pass-start` | worker swapped a list and is about to run the handler | `kwqinfo_t *`, `int cpu`, `int n` (items in the list call; notifiers are delivered in separate handler calls and counted in `items`), `uint64_t oldest_age_ns` | per pass |
+| `kwq:::pass-start` | worker swapped a list and is about to run the handler | `kwqinfo_t *`, `int cpu`, `int n` (items in the list call; notifiers are delivered in separate handler calls and counted in `items`), `uint64_t oldest_age_ns` (doorbell-to-this-pass latency on the first pass after a doorbell, 0 on later passes of the same backlog) | per pass |
 | `kwq:::pass-end` | handler returned | `kwqinfo_t *`, `int cpu`, `int n`, `uint64_t ns`, `int remaining_requeued` | per pass |
 | `kwq:::overrun` | a pass overran its quantum | `kwqinfo_t *`, `int cpu`, `uint64_t over_ns` | per event |
 | `kwq:::park` | queue parked with negative deficit | `kwqinfo_t *`, `int cpu`, `int64_t deficit_ns` | per event |
@@ -1083,6 +1085,33 @@ existing `dtrace_io(4)`, `dtrace_sched(4)`, `dtrace_tcp(4)`.
   answers them.
 - No probe takes a lock; all arguments are read from the per-CPU queue
   state the worker or enqueuer already holds or just published.
+
+**Measured probe effect (a07, 2026-09-29; `cost` scenario, one
+producer, one worker, 5 s runs, medians).**  The batched producer (16
+items per `kwq_enqueue_list()`, passes of ~500 items, 47.4 M items/s,
+21 ns per item) is the measurement that means something: it is stable
+to 0.5 % run to run and worker-bound, so tracing cost passes straight
+into throughput.  The single-item producer is bounded by the contended
+`kc_mtx` handoff and bimodal (1.8 or 2.2 M items/s in identical runs);
+enabling a per-pass probe there can even *raise* throughput by making
+passes longer, so its numbers say nothing about probes.
+
+| configuration (batched producer) | items/s | cost |
+|---|---|---|
+| probe sites compiled out (`make KWQ_NO_SDT=1`) | 47.4-47.5 M | reference |
+| probes compiled in, none enabled | 47.2 M | 0.6 %: the disabled check per site |
+| `pass-start`, `pass-end`, `round-end` enabled, `count()` | 45.7 M | 3.6 % at 268 k firings/s: ~140 ns per firing |
+| `enqueue` enabled with the translator, string key | 31.0 M | 35 % at 1.9 M firings/s (one per list call): ~180 ns per firing |
+
+Per firing, DTrace on this core costs 140 ns with a plain aggregation
+and 180 ns with the translator and a string key; the guest's WITNESS
+kernel roughly quadruples that.  Consequences: pass-level tracing costs
+three firings per pass, negligible when passes carry tens of items and
+about 10 % of a worker's CPU at the degenerate four-item passes of a
+trivial handler with a per-item producer; the per-item `enqueue` probe
+costs more than kwq's own per-item work and is for short looks only,
+as S10.3 says.  The disabled probes cost about a tenth of a nanosecond
+per item, below anything a client can notice.
 
 ### 10.4 What the workers look like to other providers
 
@@ -1168,9 +1197,9 @@ Service-wide
 
 | node | type | access | default | meaning |
 |---|---|---|---|---|
-| `kern.kwq.version` | int | RD | 1 | KPI version, matches `MODULE_VERSION(kwq)` (P2) |
-| `kern.kwq.ncpu` | int | RD | `mp_ncpus` | CPUs with workers (P2) |
-| `kern.kwq.nqueues` | int | RD | - | queues currently created (active or not) (P2) |
+| `kern.kwq.version` | int | RD | 1 | KPI version, matches `MODULE_VERSION(kwq)` |
+| `kern.kwq.ncpu` | int | RD | `mp_ncpus` | CPUs with workers |
+| `kern.kwq.nqueues` | int | RD | - | queues currently created (active or not) |
 
 Per class: `kern.kwq.<class>.`
 
@@ -1179,6 +1208,7 @@ Per class: `kern.kwq.<class>.`
 | `yield_prio` | int | RW | `PUSER` (56) | priority the worker yields at after each round; `PRI_MAX_TIMESHARE` (223) lets every user thread run a full slice per round |
 | `quantum_us` | int | RWTUN | net 200, bulk 1000, blocking 5000 | CPU time a queue of weight 1 may consume per round (BLOCKING too: the quantum shares a worker between queues, which ULE's slice does not) |
 | `penalty_rounds` | uint | RW | 32 | debt clamp in quanta: the most rounds an overrunning queue is parked (P1; SCHED.md S4.3) |
+| `budget_check_every` | uint | RW | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; 1 = every call (SCHED.md S4.4) (P2) |
 | `limit` | uint | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards |
 | `cap_pct` | uint | RW | 100 (off) | CPU-share cap: worker busy fraction above which it sleeps when other threads are runnable (S11 Missing 1); 100 or more = off |
 | `cap_sleep_us` | int | RW | 100 | length of that sleep |
@@ -1194,6 +1224,8 @@ Per class: `kern.kwq.<class>.`
 | `cpu<N>.tick_yields` | counter | RD | | yields forced by the tick guard (a pass outlived a tick) (P1) |
 | `cpu<N>.cap_sleeps` | counter | RD | | CPU-share cap sleeps taken (P1) |
 | `cpu<N>.handbacks` | counter | RD | | rounds ended early because a higher class waited (P1) |
+| `cpu<N>.budget_calls` | counter | RD | | `kwq_budget_left()` calls by handlers on this worker (P2) |
+| `cpu<N>.budget_reads` | counter | RD | | of those, the ones that read the clock (SCHED.md S4.4) (P2) |
 | `<queue>.cpu<N>.debts` | counter | RD | | doorbells sent to the ring because the queue went idle owing time (SCHED.md S4.3) |
 | `<queue>.cpu<N>.glitches` | counter | RD | | passes whose CPU-time delta was negative or over 1 s: a ticker fault, charged one quantum (SCHED.md S13) |
 | `cpu<N>.round` | uint64 | RD | | current round number (P1) |
@@ -1210,7 +1242,7 @@ Per queue: `kern.kwq.<class>.<name>.`
 | `weight` | uint | RD | as created (1..8) |
 | `limit` | uint | RD | per-CPU item limit in effect (`INT_MAX` for `KWQ_LIMIT_NONE`) |
 | `flags` | uint | RD | `KWQ_F_*` as created |
-| `state` | string | RD | `inactive`, `active`, `draining`, `drained` (P2) |
+| `state` | string | RD | `inactive`, `active`, `draining`, `drained` |
 | `cpu<N>.depth` | uint | RD (sampled) | items currently queued on this CPU |
 | `cpu<N>.state` | uint | RD (sampled) | 0 idle, 1 waking, 2 running, 3 parked |
 | `cpu<N>.maxdepth` | uint64 | RD, reset via `reset` | high-water mark of `depth` at pass start; the health signal for `KWQ_LIMIT_NONE` queues |
@@ -1225,8 +1257,8 @@ Per queue: `kern.kwq.<class>.<name>.`
 | `cpu<N>.grace` | counter | RD | doorbells sent to the ring instead of the new list by the grace rule (P1) |
 | `cpu<N>.requeued` | counter | RD | items handed back with `kwq_requeue()` |
 | `cpu<N>.steals_in` | counter | RD | bulk only: batches this CPU's worker took from others for this queue |
-| `cpu<N>.maxlat_ns` | uint64 | RD, reset via `reset` | largest oldest-item age seen at pass start since last reset (P1) |
-| `cpu<N>.reset` | int | WR | write 1 to zero `maxlat_ns` and `maxdepth` (P2) |
+| `cpu<N>.maxlat_ns` | uint64 | RD, reset via `reset` | longest doorbell-to-first-pass latency since last reset: the age of the burst stamp at the first pass after each doorbell (P1; sampling fixed P2) |
+| `reset` | int | WR | write 1 to zero `maxlat_ns` and `maxdepth` on every CPU of the queue (P2; one node per queue, not per CPU) |
 
 Only `kern.kwq.<class>.limit` and `quantum_us` are loader tunables
 (RWTUN), for the preloaded case; everything else is runtime only.  The test module's knobs
@@ -1241,6 +1273,13 @@ reference; both are design-level and will be the source for the
 `dtrace_kwq(4)` and `kwq(9)` manual pages, which PLAN.txt schedules in P8
 and which do not exist yet.  Until then this section is the reference,
 and the code must match it or the section must change first.
+
+Implemented 2026-09-29 (P2): the provider (`kwq_sdt.c`, hooks for the
+core's park and overrun events in `kwq_sched_env.h`), the translator
+(`kwq/kwq.d`; install as `/usr/lib/dtrace/kwq.d` or pass `-L` to
+dtrace, and build the module `WITH_CTF=1` so `struct kwq` is known),
+`show kwq` (`kwq_ddb.c`), and the S10.7 rows marked P2 except the P6/P7
+ones.  The measured probe effect is in S10.3.
 
 ## 11. What FreeBSD already provides, and what is missing
 
@@ -1716,8 +1755,11 @@ path and costs tens of nanoseconds against microseconds of `ip_input`;
 measured 2026-09-29, SCHED.md S15.7: with a *trivial* handler that
 claim fails - the handoff is then the whole cost, ~1350 cycles per item
 on a Neoverse-N1 with a quarter of the enqueues finding the lock held,
-and four items per `kwq_enqueue_list()` give 13x - so P4 measures
-if_pair's real figure before the per-packet rule is final) and pays for
+and four items per `kwq_enqueue_list()` give 13x; and the fan-in sweep
+of the same day, SCHED.md S15.7, showed one list behind one mutex
+collapsing beyond about 8 producing CPUs, which if_pair's hash steering
+would exceed - so P4 starts with the producer side of the handoff, S17
+Rule 6, before the per-packet rule is final) and pays for
 it three times: a flush timer, i.e. latency for the last
 packet of every burst and a new tunable; a staging area per (producing
 CPU, peer side, target CPU), since the target CPU is chosen per packet
@@ -1911,6 +1953,20 @@ touches a second line per item.
 transfer); `sysctl debug.sleepq` does not exist, so chain collisions are
 checked by the load-time assertion of Rule 5.  Record the numbers in
 ../NOTES.md next to the t_20 contention data.
+
+**Rule 6 (added 2026-09-29, from the fan-in measurement).**  One shared
+line per (queue, CPU) is right between one producer and one consumer and
+wrong for many producers: with `m` producing CPUs contending `kc_mtx`,
+FreeBSD's adaptive spin with backoff lets the consumer starve on its own
+list lock (SCHED.md S15.7: 39 M items/s at 1-4 producers, 11 M at 32).
+The producer side of the handoff must therefore be per *source* CPU: a
+producer writes a line that no other producer writes, and the consumer
+gathers the active sources at the swap - or the producers stop sharing
+a lock.  The candidates (per-source sublists, ruled out at ncpu^2 lines
+= 2 MB per queue on 128 CPUs and for reordering across sources; the
+lock-free single-consumer list, no extra memory and arrival order kept;
+or leaving the mutex list as it is) are recorded in PLAN P4.0 with the
+decision deferred until real clients show what fan-in they produce.
 
 ## 18. Revision log
 
@@ -2152,3 +2208,24 @@ checked by the load-time assertion of Rule 5.  Record the numbers in
   debt now survives idle (DEBT flag, S4.3, counter `debts`, simulator
   scenario overrun_idle).  kwq_test gained a `batch` knob and the runner
   a cost16 scenario.
+- 2026-09-29 (P2): observability implemented (S10.8): SDT provider with
+  the S10.1 probe set, translator kwq.d, `show kwq`, service-wide and
+  per-queue sysctls (version, ncpu, nqueues, state, reset), counters
+  budget_calls/budget_reads, knob budget_check_every.  Scheduler: the
+  estimated budget check (SCHED.md S4.4; 12 % of budget calls read the
+  clock), maxlat sampled once per doorbell (S9), KWQ_CPU_ANY probe bounded
+  to five CPUs.  Fixed: kwq_sbt2ns() wrapped after 2.1 s of uptime
+  (found by kwq:::round-end).  Simulator scenarios budgetjump and glitch.
+- 2026-09-29 (late): probe effect measured (S10.3) and per-CPU scaling
+  (SCHED.md S15.7): 63 independent producer/consumer pairs on a07 reach
+  2.55 G items/s, linear to 48 pairs; kwq_test gained the `scale`
+  scenario and `pairs` knob, the Makefile a KWQ_NO_SDT build for the
+  disabled-probe measurement.
+- 2026-09-29 (night): fan-in measured on a07 (SCHED.md S15.7): one
+  (queue, CPU) list holds to ~8 producers, collapses at 32 (consumer
+  starved on its own mutex).  S17 Rule 6 and the S16 caveat added; P4
+  now starts with per-source-CPU producer lists (or the lock-free list),
+  decided by the fanin scenario.  kwq_test gained `fanin`.
+- 2026-09-29 (later): the fan-in remedy is deferred (user decision):
+  per-CPU sublists cost ncpu^2 lines per queue; the options stay listed
+  in PLAN P4.0 and S17 Rule 6 until a real client shows its fan-in.

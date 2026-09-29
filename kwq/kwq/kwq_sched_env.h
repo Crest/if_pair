@@ -10,8 +10,13 @@
 #define	_KWQ_SCHED_ENV_H_
 
 #include "kwq_internal.h"
+#include "kwq_sdt.h"
 
 #define	KSQ_WEIGHT(kc)	((kc)->kc_q->kwq_weight)
 #define	KS_ASSERT(e, msg)	KASSERT(e, msg)
+#define	KS_HOOK_PARK(kw, kc)						\
+	SDT_PROBE3(kwq, , , park, (kc)->kc_q, (kc)->kc_cpu, (kc)->kc_deficit)
+#define	KS_HOOK_OVERRUN(kw, kc, over)					\
+	SDT_PROBE3(kwq, , , overrun, (kc)->kc_q, (kc)->kc_cpu, (over))
 
 #endif /* !_KWQ_SCHED_ENV_H_ */

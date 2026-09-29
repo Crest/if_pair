@@ -28,13 +28,14 @@
 #include <net/vnet.h>
 
 #include "kwq_sched.h"
+#include "kwq_sdt.h"
 
 MALLOC_DEFINE(M_KWQ, "kwq", "kernel work queues");
 
 const char *kwq_class_names[KWQ_NCLASS] = { "net", "bulk", "blocking" };
 
 /* All queues, for unload refusal, name uniqueness and DDB. */
-static LIST_HEAD(, kwq) kwq_all = LIST_HEAD_INITIALIZER(kwq_all);
+struct kwq_list kwq_all = LIST_HEAD_INITIALIZER(kwq_all);
 static struct sx kwq_sx;
 SX_SYSINIT(kwq_sx, &kwq_sx, "kwq queues");
 
@@ -48,6 +49,28 @@ SYSCTL_NODE(_kern_kwq, OID_AUTO, net, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "NET class: packet-latency work at PI_NET");
 SYSCTL_NODE(_kern_kwq, OID_AUTO, bulk, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "BULK class: CPU-heavy non-sleeping work at PI_SOFT");
+
+static int kwq_version = 1;
+SYSCTL_INT(_kern_kwq, OID_AUTO, version, CTLFLAG_RD, &kwq_version, 0,
+    "KPI version (MODULE_VERSION(kwq))");
+SYSCTL_INT(_kern_kwq, OID_AUTO, ncpu, CTLFLAG_RD, &mp_ncpus, 0,
+    "CPUs with workers");
+
+static int
+kwq_sysctl_nqueues(SYSCTL_HANDLER_ARGS)
+{
+	struct kwq *q;
+	int n = 0;
+
+	sx_slock(&kwq_sx);
+	LIST_FOREACH(q, &kwq_all, kwq_all)
+		n++;
+	sx_sunlock(&kwq_sx);
+	return (sysctl_handle_int(oidp, &n, 0, req));
+}
+SYSCTL_PROC(_kern_kwq, OID_AUTO, nqueues,
+    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0, kwq_sysctl_nqueues,
+    "I", "queues currently created (active or not)");
 SYSCTL_NODE(_kern_kwq, OID_AUTO, blocking, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "BLOCKING class: work that may sleep (not yet available)");
 
@@ -85,6 +108,7 @@ static u_int kwq_cap_pct[KWQ_NCLASS] = { 100, 100, 100 };
 static u_int kwq_cap_sleep_us[KWQ_NCLASS] = { 100, 100, 100 };
 static u_int kwq_cap_window_us[KWQ_NCLASS] = { 10000, 10000, 10000 };
 static u_int kwq_penalty_rounds[KWQ_NCLASS] = { 32, 32, 32 };
+static u_int kwq_budget_check_every[KWQ_NCLASS] = { 8, 8, 8 };
 static struct sysctl_ctx_list kwq_knob_sysctl;
 
 struct kwq_knob {
@@ -106,6 +130,7 @@ kwq_knobs_apply(int cls)
 	k->cap_sleep_ns = (uint64_t)kwq_cap_sleep_us[cls] * 1000;
 	k->boost_weighted = true;
 	k->penalty_rounds = kwq_penalty_rounds[cls];
+	k->budget_check_every = kwq_budget_check_every[cls];
 }
 
 static int
@@ -142,27 +167,28 @@ kwq_sysctl_yield_prio(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
-static struct kwq_knob kwq_knob_desc[KWQ_NCLASS][5];
+static struct kwq_knob kwq_knob_desc[KWQ_NCLASS][6];
 
 static void
 kwq_knobs_register(void)
 {
-	static const struct { const char *name, *descr; u_int lo, hi; } d[5] = {
+	static const struct { const char *name, *descr; u_int lo, hi; } d[6] = {
 		{ "quantum_us", "CPU time a queue of weight 1 may consume per round", 10, 1000000 },
 		{ "cap_pct", "CPU-share cap in percent of a window; 100 or more = off", 1, 1000 },
 		{ "cap_sleep_us", "sleep when over the cap", 1, 1000000 },
 		{ "cap_window_us", "busy-fraction window for the cap", 100, 10000000 },
 		{ "penalty_rounds", "debt clamp in quanta: rounds an overrunning queue is parked at most", 1, 1024 },
+		{ "budget_check_every", "kwq_budget_left() reads the clock at least every this many calls; 1 = every call", 1, 64 },
 	};
-	u_int *vars[5];
+	u_int *vars[6];
 	int cls, i;
 
 	sysctl_ctx_init(&kwq_knob_sysctl);
 	for (cls = 0; cls < KWQ_NCLASS; cls++) {
 		vars[0] = &kwq_quantum_us[cls]; vars[1] = &kwq_cap_pct[cls];
 		vars[2] = &kwq_cap_sleep_us[cls]; vars[3] = &kwq_cap_window_us[cls];
-		vars[4] = &kwq_penalty_rounds[cls];
-		for (i = 0; i < 5; i++) {
+		vars[4] = &kwq_penalty_rounds[cls]; vars[5] = &kwq_budget_check_every[cls];
+		for (i = 0; i < 6; i++) {
 			struct kwq_knob *kn = &kwq_knob_desc[cls][i];
 
 			kn->var = vars[i]; kn->lo = d[i].lo; kn->hi = d[i].hi;
@@ -216,28 +242,40 @@ kwq_cpu_for_hash(uint32_t hash)
  * caller's CPU.  P0 uses the queue's own depth as the load measure and the
  * NUMA domain as the neighbourhood; the cache-domain refinement is P6.
  */
+#define	KWQ_PICK_PROBES	4	/* other CPUs' shared lines read per KWQ_CPU_ANY pick */
+
 static int
 kwq_pick_any(struct kwq *q)
 {
 	struct kwq_cpu *kc;
-	int cpu, best, domain;
+	int cpu, best, domain, probes;
 	u_int depth, bestdepth;
 
 	best = curcpu;
 	bestdepth = q->kwq_pcpu[best]->kc_depth;
 	if (bestdepth == 0)
 		return (best);
+	/*
+	 * Bounded probe (KWQ.md S17): the next KWQ_PICK_PROBES CPUs of the
+	 * caller's domain, each a read of another CPU's shared line, never
+	 * the whole domain (128 lines on a07).  P6 refines the neighbourhood.
+	 */
 	domain = pcpu_find(best)->pc_domain;
-	CPU_FOREACH(cpu) {
-		if (pcpu_find(cpu)->pc_domain != domain)
-			continue;
-		kc = q->kwq_pcpu[cpu];
-		depth = kc->kc_depth;	/* unlocked read: a hint */
-		if (depth < bestdepth) {
-			best = cpu;
-			bestdepth = depth;
-			if (depth == 0)
-				break;
+	probes = 0;
+	for (cpu = best + 1; cpu != best && probes < KWQ_PICK_PROBES; cpu++) {
+		if (cpu > (int)mp_maxid)
+			cpu = -1;	/* the ++ wraps to 0 */
+		else if (!CPU_ABSENT(cpu) &&
+		    pcpu_find(cpu)->pc_domain == domain) {
+			probes++;
+			kc = q->kwq_pcpu[cpu];
+			depth = kc->kc_depth;	/* unlocked read: a hint */
+			if (depth < bestdepth) {
+				best = cpu;
+				bestdepth = depth;
+				if (depth == 0)
+					break;
+			}
 		}
 	}
 	return (best);
@@ -262,7 +300,7 @@ kwq_target_cpu(struct kwq *q, int cpu)
  * this (queue, CPU).  One lock hold covers publication and wakeup, so a
  * wakeup can never be lost (../NOTES.md, the if_pair invariant).
  */
-static inline void
+static inline bool
 kwq_kc_added(struct kwq_cpu *kc, u_int added)
 {
 	if (kc->kc_depth + kc->kc_nnotify == added)
@@ -270,7 +308,9 @@ kwq_kc_added(struct kwq_cpu *kc, u_int added)
 	if (kc->kc_state == KWQ_CPU_IDLE) {
 		kc->kc_state = KWQ_CPU_WAKING;
 		kwq_doorbell(kc);
+		return (true);
 	}
+	return (false);
 }
 
 /*
@@ -280,6 +320,8 @@ int
 kwq_enqueue(struct kwq *q, int cpu, struct kwq_item *it)
 {
 	struct kwq_cpu *kc;
+	u_int depth __unused;	/* SDT arguments */
+	bool woke __unused;
 
 	KASSERT(it->kwi_link.stqe_next == NULL,
 	    ("kwq_enqueue: item %p already linked", it));
@@ -292,17 +334,20 @@ kwq_enqueue(struct kwq *q, int cpu, struct kwq_item *it)
 	if (__predict_false(!q->kwq_active)) {
 		kc->kc_rejected++;
 		kwq_kc_unlock(kc);
+		SDT_PROBE3(kwq, , , reject, q, cpu, ENXIO);
 		return (ENXIO);
 	}
 	if (__predict_false(kc->kc_depth >= q->kwq_limit)) {
 		kc->kc_rejected++;
 		kwq_kc_unlock(kc);
+		SDT_PROBE3(kwq, , , reject, q, cpu, ENOBUFS);
 		return (ENOBUFS);
 	}
 	STAILQ_INSERT_TAIL(&kc->kc_list, it, kwi_link);
-	kc->kc_depth++;
-	kwq_kc_added(kc, 1);
+	depth = ++kc->kc_depth;
+	woke = kwq_kc_added(kc, 1);
 	kwq_kc_unlock(kc);
+	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);
 	return (0);
 }
 
@@ -312,6 +357,8 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 {
 	STAILQ_HEAD(, kwq_item) tmp;
 	struct kwq_cpu *kc;
+	u_int depth __unused;	/* SDT arguments */
+	bool woke __unused;
 
 	KASSERT(n > 0 && head != NULL && tail != NULL,
 	    ("kwq_enqueue_list: bad list %p %p %d", head, tail, n));
@@ -329,18 +376,22 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 	if (__predict_false(!q->kwq_active)) {
 		kc->kc_rejected += n;
 		kwq_kc_unlock(kc);
+		SDT_PROBE3(kwq, , , reject, q, cpu, ENXIO);
 		return (ENXIO);
 	}
 	/* Overflow-safe form of depth + n > limit; also guards LIMIT_NONE. */
 	if (__predict_false((u_int)n > q->kwq_limit - kc->kc_depth)) {
 		kc->kc_rejected += n;
 		kwq_kc_unlock(kc);
+		SDT_PROBE3(kwq, , , reject, q, cpu, ENOBUFS);
 		return (ENOBUFS);
 	}
 	STAILQ_CONCAT(&kc->kc_list, &tmp);
 	kc->kc_depth += n;
-	kwq_kc_added(kc, n);
+	depth = kc->kc_depth;
+	woke = kwq_kc_added(kc, n);
 	kwq_kc_unlock(kc);
+	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);	/* once per call */
 	return (0);
 }
 
@@ -383,14 +434,22 @@ uint64_t
 kwq_budget_left(struct kwq *q)
 {
 	struct kwq_worker *kw;
+	uint64_t left;
 
 	kw = kwq_workers[q->kwq_class][curcpu];
 	KASSERT(kw != NULL && kw->kw_td == curthread && kw->kw_cur != NULL &&
 	    kw->kw_cur->kc_q == q,
 	    ("kwq_budget_left: not called from a handler of %s", q->kwq_name));
-	if (kwq_higher_waiting(q->kwq_class))
+	if (kwq_higher_waiting(q->kwq_class)) {
+		SDT_PROBE2(kwq, , , budget__hit, q, curcpu);
 		return (0);
-	return (ks_budget_left(kw, kwq_cputime_ns(kw)));
+	}
+	if (!ks_budget_need_clock(kw, &left))	/* S4.4: the estimate */
+		return (left);
+	left = ks_budget_left(kw, kwq_cputime_ns(kw));
+	if (left == 0)
+		SDT_PROBE2(kwq, , , budget__hit, q, curcpu);
+	return (left);
 }
 
 int
@@ -429,6 +488,7 @@ kwq_notify(struct kwq *q, struct kwq_notifier *nf)
 	if (__predict_false(!q->kwq_active)) {
 		kc->kc_rejected++;
 		kwq_kc_unlock(kc);
+		SDT_PROBE3(kwq, , , reject, q, nf->kn_cpu, ENXIO);
 		return (false);
 	}
 	if (nf->kn_state != KWQ_NF_IDLE) {
@@ -498,6 +558,38 @@ kwq_sysctl_name(const char *name, char *out, size_t len)
 	out[i] = '\0';
 }
 
+static int
+kwq_sysctl_qstate(SYSCTL_HANDLER_ARGS)
+{
+	static const char *names[] = { "inactive", "active", "draining", "drained" };
+	struct kwq *q = arg1;
+	char buf[12];
+
+	strlcpy(buf, names[q->kwq_state & 3], sizeof(buf));
+	return (sysctl_handle_string(oidp, buf, sizeof(buf), req));
+}
+
+/* write 1: zero maxlat_ns and maxdepth on every CPU (KWQ.md S10.7) */
+static int
+kwq_sysctl_reset(SYSCTL_HANDLER_ARGS)
+{
+	struct kwq *q = arg1;
+	struct kwq_cpu *kc;
+	int cpu, val = 0, error;
+
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (val != 1)
+		return (EINVAL);
+	CPU_FOREACH(cpu) {
+		kc = q->kwq_pcpu[cpu];
+		kc->kc_maxlat_ns = 0;
+		kc->kc_maxdepth = 0;
+	}
+	return (0);
+}
+
 static void
 kwq_sysctl_register(struct kwq *q)
 {
@@ -520,6 +612,12 @@ kwq_sysctl_register(struct kwq *q)
 	    "weight", CTLFLAG_RD, &q->kwq_weight, 0, "DRR weight");
 	SYSCTL_ADD_U32(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,
 	    "flags", CTLFLAG_RD, &q->kwq_flags, 0, "KWQ_F_* flags");
+	SYSCTL_ADD_PROC(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,
+	    "state", CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, q, 0,
+	    kwq_sysctl_qstate, "A", "inactive, active, draining, drained");
+	SYSCTL_ADD_PROC(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,
+	    "reset", CTLTYPE_INT | CTLFLAG_WR | CTLFLAG_MPSAFE, q, 0,
+	    kwq_sysctl_reset, "I", "write 1 to zero maxlat_ns and maxdepth on every CPU");
 	CPU_FOREACH(cpu) {
 		kc = q->kwq_pcpu[cpu];
 		snprintf(cname, sizeof(cname), "cpu%d", cpu);
@@ -640,7 +738,9 @@ kwq_create(const char *name, enum kwq_class cls, uint32_t flags,
 	LIST_INSERT_HEAD(&kwq_all, q, kwq_all);
 	sx_xunlock(&kwq_sx);
 
+	q->kwq_state = KWQ_ST_INACTIVE;
 	kwq_sysctl_register(q);
+	SDT_PROBE1(kwq, , , create, q);
 	if ((flags & KWQ_F_INACTIVE) == 0)
 		kwq_activate(q);
 	return (q);
@@ -661,6 +761,8 @@ kwq_activate(struct kwq *q)
 		kwq_kc_unlock(kc);
 	}
 	atomic_store_rel_int(&q->kwq_active, 1);
+	q->kwq_state = KWQ_ST_ACTIVE;
+	SDT_PROBE1(kwq, , , activate, q);
 }
 
 /*
@@ -683,6 +785,8 @@ kwq_drain(struct kwq *q)
 	    ("kwq_drain: %s: called from a kwq handler", q->kwq_name));
 
 	atomic_store_rel_int(&q->kwq_active, 0);
+	q->kwq_state = KWQ_ST_DRAINING;
+	SDT_PROBE1(kwq, , , drain__start, q);
 	CPU_FOREACH(cpu) {
 		kc = q->kwq_pcpu[cpu];
 		kwq_kc_lock(kc);
@@ -704,6 +808,8 @@ kwq_drain(struct kwq *q)
 		kwq_kc_unlock(kc);
 	}
 	q->kwq_drained = 1;
+	q->kwq_state = KWQ_ST_DRAINED;
+	SDT_PROBE1(kwq, , , drain__end, q);
 }
 
 void
@@ -715,6 +821,7 @@ kwq_destroy(struct kwq *q)
 	KASSERT(q->kwq_drained, ("kwq_destroy: %s not drained", q->kwq_name));
 	KASSERT(THREAD_CAN_SLEEP(), ("kwq_destroy: non-sleepable context"));
 
+	SDT_PROBE1(kwq, , , destroy, q);
 	if (q->kwq_sysctl.tqh_first != NULL || q->kwq_sysctl.tqh_last != NULL)
 		sysctl_ctx_free(&q->kwq_sysctl);
 	sx_xlock(&kwq_sx);

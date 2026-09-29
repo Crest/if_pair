@@ -85,11 +85,15 @@ struct kwq_cpu {
 	uint64_t		kc_grace;	/* doorbells sent to the ring by the grace rule */
 	uint64_t		kc_glitches;	/* passes with a negative or > KS_GLITCH_NS CPU-time delta */
 	uint64_t		kc_debts;	/* doorbells sent to the ring because the queue owed time */
+	uint64_t		kc_bc_avg;	/* ns per kwq_budget_left() call, learned (SCHED.md S4.4) */
 	uint64_t		kc_steals_in;	/* P6 */
 } __aligned(KWQ_LINE);
 
 CTASSERT(__offsetof(struct kwq_cpu, kc_notify) <= 64);	/* item path in line 0 */
 CTASSERT(__offsetof(struct kwq_cpu, kc_q) == KWQ_LINE);
+
+/* kwq_state */
+enum kwq_qstate { KWQ_ST_INACTIVE = 0, KWQ_ST_ACTIVE, KWQ_ST_DRAINING, KWQ_ST_DRAINED };
 
 struct kwq {
 	/* Read-mostly: written at create/activate only. */
@@ -107,6 +111,7 @@ struct kwq {
 	/* Runtime-written: own block so a drain does not dirty the header. */
 	volatile u_int		kwq_active __aligned(KWQ_LINE);
 	u_int			kwq_drained;
+	u_int			kwq_state;	/* KWQ_ST_*, for sysctl and DDB */
 	LIST_ENTRY(kwq)		kwq_all;
 	struct sysctl_ctx_list	kwq_sysctl;
 } __aligned(KWQ_LINE);
@@ -143,17 +148,23 @@ struct kwq_worker {
 	struct kwq_cpu		*kw_cur;	/* pass in progress */
 	uint64_t		kw_pass_start;	/* worker CPU time, ns */
 	int64_t			kw_pass_budget;	/* deficit at pass start, ns */
+	u_int			kw_bc_calls;	/* budget calls since the last clock read (S4.4) */
+	int64_t			kw_bc_last;	/* elapsed at that read, ns */
 	uint64_t		kw_win_start;	/* cap window, wall ns */
 	uint64_t		kw_win_busy;
+	uint64_t		kw_round_wall;	/* sbinuptime ns at the last round end (kwq:::round-end) */
+	uint64_t		kw_idle_busy;	/* kw_busy_ns at the last wakeup (kwq:::idle) */
 	const struct kwq_sched_knobs *kw_knobs;
 	uint64_t		kw_ns_scale;	/* ks_ns_scale(cpu_tickrate()) */
 	uint64_t		kw_rate;	/* the rate the scale was derived from */
 	uint64_t		kw_rounds, kw_passes, kw_wakeups, kw_yields,
 				kw_tick_yields, kw_cap_sleeps, kw_handbacks,
-				kw_busy_ns, kw_idle_ns;
+				kw_busy_ns, kw_idle_ns, kw_budget_calls, kw_budget_reads;
 } __aligned(KWQ_LINE);
 
 extern struct kwq_worker **kwq_workers[KWQ_NCLASS];	/* [class][cpu] */
+LIST_HEAD(kwq_list, kwq);
+extern struct kwq_list kwq_all;		/* every queue, under kwq_sx (kwq.c) */
 extern const char *kwq_class_names[KWQ_NCLASS];
 extern int kwq_yield_prio[KWQ_NCLASS];
 
@@ -189,11 +200,17 @@ kwq_kc_wait(struct kwq_cpu *kc, const char *wmesg)
 	kc->kc_waiters--;
 }
 
-/* sbintime_t (32.32 s) -> ns, for differences only. */
+/*
+ * sbintime_t (32.32 s) -> ns.  sbttons() splits the multiply so absolute
+ * uptimes convert correctly; the first version multiplied the whole value
+ * by 1e9 and wrapped after 2.1 s of uptime, which the kwq:::round-end
+ * probe exposed as negative round lengths (2026-09-29; the cap window,
+ * off by default, was the other user).
+ */
 static inline uint64_t
 kwq_sbt2ns(sbintime_t sbt)
 {
-	return (((uint64_t)sbt * 1000000000ULL) >> 32);
+	return ((uint64_t)sbttons(sbt));
 }
 
 /* kwq_worker.c */

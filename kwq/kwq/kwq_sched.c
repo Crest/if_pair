@@ -30,6 +30,9 @@ ks_worker_init(struct kwq_worker *kw, const struct kwq_sched_knobs *k,
 	kw->kw_win_start = wall_now;
 	kw->kw_win_busy = 0;
 	kw->kw_knobs = k;
+	kw->kw_bc_calls = 0;
+	kw->kw_bc_last = 0;
+	kw->kw_budget_calls = kw->kw_budget_reads = 0;
 	kw->kw_rounds = kw->kw_passes = kw->kw_yields = 0;
 	kw->kw_cap_sleeps = kw->kw_handbacks = kw->kw_busy_ns = 0;
 }
@@ -45,6 +48,7 @@ ks_queue_init(struct kwq_cpu *kc)
 	kc->kc_deficit = 0;
 	kc->kc_passes = kc->kc_overruns = kc->kc_parks = 0;
 	kc->kc_boosts = kc->kc_grace = kc->kc_debts = kc->kc_glitches = 0;
+	kc->kc_bc_avg = 0;
 }
 
 /* Put kc on the ring tail. */
@@ -173,6 +177,7 @@ ks_next(struct kwq_worker *kw, bool higher_waiting, struct kwq_cpu **kcp)
 				kc->kc_parks++;
 				kc->kc_state = KWQ_CPU_PARKED;
 				ks_ring_append(kw, kc);
+				KS_HOOK_PARK(kw, kc);
 				continue;
 			}
 			kc->kc_src = KWQ_SRC_RING;
@@ -218,17 +223,45 @@ ks_pass_begin(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now)
 	kw->kw_cur = kc;
 	kw->kw_pass_start = cpu_now;
 	kw->kw_pass_budget = kc->kc_deficit;
+	kw->kw_bc_calls = 0;
+	kw->kw_bc_last = 0;
+}
+
+bool
+ks_budget_need_clock(struct kwq_worker *kw, uint64_t *leftp)
+{
+	struct kwq_cpu *kc = kw->kw_cur;
+	uint32_t k = kw->kw_knobs->budget_check_every;
+	int64_t est, margin;
+
+	kw->kw_budget_calls++;
+	kw->kw_bc_calls++;
+	if (k <= 1 || kw->kw_bc_calls >= k)
+		return (true);
+	margin = ks_quantum(kw, kc) / 10;
+	est = kw->kw_bc_last + (int64_t)kw->kw_bc_calls * (int64_t)kc->kc_bc_avg;
+	if (est + margin >= kw->kw_pass_budget)
+		return (true);
+	*leftp = (uint64_t)(kw->kw_pass_budget - est);	/* > margin */
+	return (false);
 }
 
 uint64_t
-ks_budget_left(const struct kwq_worker *kw, uint64_t cpu_now)
+ks_budget_left(struct kwq_worker *kw, uint64_t cpu_now)
 {
-	int64_t left;
+	struct kwq_cpu *kc = kw->kw_cur;
+	int64_t el = (int64_t)(cpu_now - kw->kw_pass_start), left;
 
-	int64_t el = (int64_t)(cpu_now - kw->kw_pass_start);
-
+	kw->kw_budget_reads++;
 	if (el < 0 || el > (int64_t)KS_GLITCH_NS)	/* clock glitch: stop */
 		return (0);
+	if (kw->kw_bc_calls > 0) {		/* learn ns per call, S4.4 */
+		uint64_t per = (uint64_t)(el - kw->kw_bc_last) / kw->kw_bc_calls;
+
+		kc->kc_bc_avg = kc->kc_bc_avg == 0 ? per : (kc->kc_bc_avg + per) / 2;
+	}
+	kw->kw_bc_last = el;
+	kw->kw_bc_calls = 0;
 	left = kw->kw_pass_budget - el;
 	return (left > 0 ? (uint64_t)left : 0);
 }
@@ -259,8 +292,10 @@ ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 	 * quantum: a cooperative handler that stops after the item which
 	 * exhausts the budget overshoots by one item, which is not one.
 	 */
-	if (dt > kw->kw_pass_budget + q)
+	if (dt > kw->kw_pass_budget + q) {
 		kc->kc_overruns++;
+		KS_HOOK_OVERRUN(kw, kc, (uint64_t)(dt - kw->kw_pass_budget));
+	}
 	kc->kc_deficit -= dt;
 	if (kc->kc_deficit < -(int64_t)kw->kw_knobs->penalty_rounds * q)
 		kc->kc_deficit = -(int64_t)kw->kw_knobs->penalty_rounds * q;

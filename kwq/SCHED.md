@@ -171,7 +171,7 @@ Per (queue, CPU) (`struct kwq_cpu`), in addition to the P0 fields:
 | `kc_onlist` | shared | producers and worker under `kw_mtx` | NONE, NEW or ACTIVE |
 | `kc_idle_round` | shared | the worker, read by producers under `kw_mtx` | low 32 bits of `kw_round` when the queue last went idle from the ring (`u_int`, to fit block 0: only the difference to `kw_round` is used, and a false "warm" after exactly 2^32 rounds costs one boost; S13); valid only while `kc_warm` is set |
 | `kc_warm` | shared | the worker, read by producers | set when the queue went idle from the ring, cleared when it went idle from the new list; replaces a sentinel value (S13) |
-| `kc_empty_since` | shared | producers under `kc_mtx` | `sbinuptime()` at the empty -> non-empty transition; a global monotonic clock, because the producer and the consumer are on different CPUs (S13) |
+| `kc_empty_since` | 0 | the producer at the empty-to-non-empty transition (under `kc_mtx`); the worker writes 0 at the first pass after it | `sbinuptime()` stamp of the burst start, 0 once sampled: `maxlat_ns` is the doorbell-to-first-pass latency, not the age of a backlog (2026-09-29, S9) |
 | `kc_deficit` | private | the worker | `D`, `int64_t` ns, clamped to `[-penalty_rounds x Qw, +2Qw]`, `penalty_rounds` 32 (S4.3, S13) |
 | `kc_state` | shared | as in P0 | IDLE, WAKING, RUNNING, PARKED |
 
@@ -243,7 +243,10 @@ nanoseconds plus the end-of-round yield.
 ### 4.3 Pass (worker, `kwq_pass()` as in P0 plus accounting)
 
     lock kc; swap out items and notifiers; kc_state = RUNNING
-    t0 = cpu_ticks(); sample maxlat_ns from kc_empty_since; unlock
+    t0 = cpu_ticks()
+    if kc_empty_since != 0:              # first pass since the doorbell
+        sample maxlat_ns = now - kc_empty_since; kc_empty_since = 0
+    unlock
     r0 = cputime_self()                 # td_runtime + (cpu_ticks() - switchtime)
     kw_pass_start = r0; kw_pass_budget = kc_deficit
     run notifiers one by one, then the item list (P0 rules)
@@ -312,13 +315,33 @@ work joins the ring tail: it has had its boost, it is now bulk
 
 ### 4.4 `kwq_budget_left(q)` (handler only)
 
-    return max(0, kw_pass_budget - ns(cputime_self() - kw_pass_start))
+    calls++                                     # since the last clock read
+    est = last_el + calls x avg                 # avg: this queue's ns per call
+    if calls >= K or est + Qw/10 >= kw_pass_budget:
+        el = ns(cputime_self() - kw_pass_start) # the real read
+        avg = (avg + (el - last_el) / calls) / 2; last_el = el; calls = 0
+        return max(0, kw_pass_budget - el)
+    return kw_pass_budget - est                 # > Qw/10 by construction
 
 Monotone within a pass, 0 once the budget is spent, never negative.
 Measured in the worker's own CPU time, so a handler preempted by an
-ithread is not charged for the interruption.  A
-handler that returns when it reads 0 and requeues its remainder keeps
-its pass within `budget + c_max`.
+ithread is not charged for the interruption.
+
+The clock is read only when the estimate says the budget is within a
+tenth of a quantum of running out, and unconditionally every `K` calls
+(`budget_check_every`, S8, default 8).  Between reads the elapsed time
+is estimated from the number of calls and the queue's running average
+cost per call, learned from the real reads (an average of the last two
+intervals).  The pass-end charge (S4.3) always uses a real read, so the
+deficit and fairness are exact; only the in-pass answer is approximate.
+Motivation: with cheap items the read was the handler's main cost (a
+sixth of the worker's cycles on a07, S15.7) and the check is one
+increment and compare instead.  The price is in B1: a pass may exceed
+its budget by the margin plus whatever the up to `K` unread items cost
+above the average, so a handler whose items suddenly become expensive
+overshoots by at most `K x c_max`; with `K` = 8 and `c_max` below
+`Qw / 9` that stays under the overrun threshold of one `Qw`.  `K` = 1
+restores the exact per-item check.
 
 ### 4.5 `kwq_requeue(q, head, tail, n)` (handler only)
 
@@ -409,15 +432,12 @@ correctly reads as mostly idle.
 Unchanged from KWQ.md S3/S6, restated with the scheduler's terms:
 
 - The handler owns the batch and is never interrupted by kwq; the
-  quantum is cooperative.  A handler processes items in order, checks
-  `kwq_budget_left()` **after every item** when items cost more than
-  about a microsecond, and every 8-16 items when they are cheaper (the
-  check is one clock read: ~25 cycles on x86, 60-100 on arm64 where the
-  generic-timer read carries a barrier; S15.7), and when it reads 0 with
-  items left, finishes any per-batch flush (LRO) and `kwq_requeue()`s the
-  untouched remainder.  Checking less often than that stretches B1 by
-  the items skipped; checking more often than the item cost warrants
-  turns the clock read into the handler's main cost.
+  quantum is cooperative.  A handler processes items in order, calls
+  `kwq_budget_left()` **after every item** (kwq decides when that call
+  costs a clock read, S4.4: at most every `K` items and whenever the
+  budget is nearly spent, so the per-item call is cheap), and when it
+  reads 0 with items left, finishes any per-batch flush (LRO) and
+  `kwq_requeue()`s the untouched remainder.
 - **Progress rule**: a handler processes at least one item per
   invocation before honouring a zero budget.  The budget at pass start
   is positive but may be tiny (a carried remainder), and a notifier's
@@ -545,9 +565,14 @@ Notation: `n` queues active on one (class, CPU); `Q`; `w_i`; `c_i` the
 client's `c_max`; `Y` the time the yielded-to threads run at a yield
 (zero when nothing else is runnable: the yield is then skipped, S6.1).
 
-- **B1 Pass length.**  A cooperative pass takes at most `budget + c_i`
-  <= `2 Q w_i + c_i` (carry cap).  A non-cooperative pass is unbounded
-  by kwq; the overrun is charged.
+- **B1 Pass length.**  A cooperative pass takes at most `budget + Qw/10
+  + K c_i` <= `2.1 Q w_i + K c_i` (carry cap, estimated budget check
+  S4.4 with `K` = `budget_check_every`; with `K` = 1 the classic
+  `budget + c_i`).  The `K c_i` term is the worst case of items turning
+  expensive right after a clock read; when item costs are steady the
+  estimate reads the clock as the budget nears and the pass stays within
+  `budget + Qw/10 + c_i`.  A non-cooperative pass is unbounded by kwq;
+  the overrun is charged.
 - **B2 Round length.**  `R <= sum over active i of (2 Q w_i + c_i) + sum
   over new-list entries of (Q w_j + c_j) + tick-guard yields + Y`.  With
   one active queue of weight 1 and a cooperative handler, `R <= 2Q + c +
@@ -594,6 +619,7 @@ client's `c_max`; `Y` the time the yielded-to threads run at a yield
 | `kern.kwq.<class>.cap_window_us` | class, RW | 10000 | cap measurement window |
 | `kern.kwq.<class>.cap_sleep_us` | class, RW | 100 | cap sleep, the jitter it adds |
 | `GRACE_ROUNDS` | compile-time | 1 | anti-gaming window; the P1a sweep found 1 and 2 indistinguishable (S12) |
+| `kern.kwq.<class>.budget_check_every` | class, RW | 8 | `K` of S4.4: `kwq_budget_left()` reads the clock at least every `K` calls; 1 = read on every call (exact B1, expensive with cheap items); validated to `[1, 64]` |
 | `kern.kwq.<class>.penalty_rounds` | class, RW | 32 | debt clamp in quanta: how many rounds an overrunning queue can be parked at most (S4.3).  Validated to `[1, 1024]` by the sysctl handler: 0 would make overruns free, since the deficit could never go negative |
 
 Choosing `Q`: one to two orders of magnitude above the heaviest common
@@ -610,10 +636,13 @@ final.
 Per (queue, CPU), added to P0's counters: `overruns` (passes that
 exceeded their budget by more than one `Qw`, S4.3), `parks` (rounds skipped), `boosts` (passes from the new
 list), `grace` (doorbells that went to the ring because of S4.6),
-`maxlat_ns` (largest oldest-item age at pass start; the B4/B5
-measurement).  Per worker: `rounds`, `yields`, `tick_yields`,
+`maxlat_ns` (the longest doorbell-to-first-pass latency: the age of
+`kc_empty_since` at the first pass after each doorbell, sampled once per
+burst; the B4/B5 measurement).  Per worker: `rounds`, `yields`, `tick_yields`,
 `cap_sleeps`, `handbacks` (rounds ended early for a higher class, S6.4),
-`busy_ns`, `idle_ns`, `wakeups`, `passes`.  KWQ.md S10.7 lists them with
+`busy_ns`, `idle_ns`, `wakeups`, `passes`, `budget_calls` and
+`budget_reads` (S4.4: how many `kwq_budget_left()` calls there were and
+how many of them read the clock).  KWQ.md S10.7 lists them with
 types (rows marked P1).  DTrace probes
 `kwq:::round-end`, `kwq:::park`, `kwq:::overrun`, `kwq:::yield` are P2
 (KWQ.md S10.1); the counters above are P1 so that the test plan can be
@@ -663,6 +692,8 @@ compare the guest against in P1b:
 | hand-back, NET flood and BULK flood on one CPU | BULK receives one item per NET round, 0.32 of NET's service; NET worst latency 1.7 ms with a 64-deep flood (0 before the "at least one pass" rule) |
 | storm, 1000 light queues waking within 100 us against a flood | flood keeps 4750 passes in 2 s; light queues' worst latency 200 us |
 | overrun_idle, the overrunner's items return 20 us after each pass (a handler that frees at the end) | share 1.22, 1 boost, 205 debts, 6560 parks over 206 passes; without the DEBT rule every pass was boosted |
+| budgetjump, 200 ns items with 5 % at 20 us, estimated budget check `K` = 8 | 20.8 % of budget calls read the clock; worst pass overshoot 57 us (bound 20 + 160 us); light queue worst 217 us; B1 in its estimated form checked on every pass |
+| glitch, the CPU clock jumps +2^32 ticks at pass 50 and -300 ns at pass 120 | both counted in `glitches`, charged one quantum each, `busy_ns` not inflated, the flood keeps its passes |
 | manyq, 2000 Poisson queues at 40 % load, weights 1..8 | worst item latency 5.5 ms; invariants sampled |
 | nnew, 512 queues bursting in the same instant every 2 ms, 64 warm queues on the grace path, 8 floods, 1 overrunner | `kw_nnew` equals the new-list length at every tail (core assertion) and after every step (checker); 13.7 k boosted passes of 21 k |
 | wrap, wall clock, CPU time, round counter and `ticks` started just below their wraps | 27726 items through all four wraps, no violation; `ks_ticks2ns` exact against 128-bit arithmetic for 5 rates x 8 values including 2^64 - 1; `ks_ns_scale(0)` = 1 GHz |
@@ -698,6 +729,7 @@ reproduces the table.
 | gaming | share 0.886, 1 boost, ~1960 grace hits | 0.895 | 0.80, 1 boost, 2081 grace |
 | overrun, budget-ignoring 8 ms passes | 1.22, `overruns == passes` | 1.22 | 1.22 |
 | overrun with items returned at pass end (2026-09-29, harness refills per pass) | 1.27 with the DEBT rule; 41 before it (374 boosts in 374 passes) | 1.26; 41 before | 1.22 (`overrun_idle`) |
+| estimated budget check (S4.4), `cost` scenario | 12 % of `kwq_budget_left()` calls read the clock (17.9 M of 147.7 M); worker clock-read share 16 % -> 13 % on a07 (passes of four items still pay three reads); `cost16` 40 -> 21 ns per item | 12.3 % of calls | 20.8 % (`budgetjump`) |
 | yield, 1 kHz callout pinned to the saturated CPU | 5 of 6 runs worst 0.4-1.3 ms; 1 run 35 ms (see below) | 5 of 6 runs 0.7-2.5 ms; 1 run 37 ms | n/a |
 | cost, empty handler: worker CPU / producer CPU / wall per item | 96 / 80 / 211 ns (14.2 M items in 3 s) | 175 / 158 / 393 ns (7.6 M) | ~20 ns bookkeeping |
 | tq_baseline, taskqueue of epair's shape: producer / wall per item | 58 / 193 ns (15.8 M) | 155 / 363 ns (8.2 M) | |
@@ -915,12 +947,12 @@ true difference is far below half the type's range.
 | `cpu_tickrate()` | `uint64_t` Hz | recalibrated once a second when the ticker is variable (`cpu_tick_variable`, non-invariant TSC) | division by zero before calibration; rate change inside a pass | `kwq_ticks2ns()` treats a zero rate as 1 GHz; a rate change mis-scales one pass by at most the P-state ratio, which only the deficit sees and the clamps bound.  Workers do not run before `smp_started`, by which time the ticker is calibrated |
 | `kwq_ticks2ns(t)` | `uint64_t` ns | `t x 1e9` overflows above 18 s of ticks at 1 GHz | multiplication overflow; a 64-bit division per call costs 20-40 cycles | a 32.32 fixed-point scale `ns_per_tick = (1e9 << 32) / rate`, computed at load and re-derived at each round end when `cpu_tickrate()` differs from the cached rate (there is no change notification), so the hot path is one multiply and shift (`(t x scale) >> 32`); exact to 1 ns for `t < 2^32` ticks (about 1.4 s at 3 GHz, far above any pass), and the S13 split-division form is used for longer intervals (the idle time counter) |
 | `kc_deficit`, `kw_pass_budget` | `int64_t` ns | clamped to `[-penalty_rounds x Qw, +2Qw]`, `Qw <= 8 s` | unbounded debt (S4.3), overflow | the clamp; with the largest legal `Q` (1 s), `w = 8` and `penalty_rounds` 32, `32 Qw = 2.6e11`, nowhere near 2^63 |
-| `kwq_budget_left()` | `uint64_t` ns | `budget - elapsed` | negative result | computed in `int64_t`, clamped at 0 |
+| `kwq_budget_left()` | `uint64_t` ns | `budget - elapsed` | negative result; stale estimate (S4.4) | computed in `int64_t`, clamped at 0; the estimate is used only while it leaves more than `Qw/10` and for at most `K` calls, so its staleness is bounded by `K` items (B1) and a real read always ends the pass |
 | `Q`, `Qw`, `2Qw` | `uint64_t` ns from `quantum_us` (`u_int`) | `quantum_us` validated to `[10, 1000000]`, `w` to `[1, 8]` | `Q = 0` parks every queue forever; an unvalidated `UINT_MAX` us x 8 x 1000 = 3.4e16 would still fit, but is nonsense | the sysctl handler rejects values outside the range; weight 0 is read as 1 at create |
 | `kw_round` | `uint64_t` | ~1e6 rounds/s worst case: 2^64 lasts 5.8e5 years | a 32-bit counter would wrap in 71 minutes at that rate | 64-bit |
 | `kc_idle_round` | `u_int` (block 0 has 4 bytes left, S17) | the low 32 bits of `kw_round` | wraps every 71 minutes at the worst-case round rate | only the unsigned difference to `kw_round` is used; validity is the `kc_warm` flag, not a sentinel; a wrapped difference can only make a queue idle for exactly a multiple of 2^32 rounds read as warm, which costs it one boost |
 | `ticks`, `td_swvoltick` | `int` | wraps every 24.8 days at hz = 1000 | signed wrap | the tick guard uses `(u_int)ticks - (u_int)td_swvoltick >= 1`, the kernel's own idiom, correct across the wrap |
-| `kc_empty_since`, `kw_win_start` | `sbintime_t` (`int64_t`, 32.32 fixed point) | uptime wraps after 68 years | cross-CPU stamp; wrap | `sbinuptime()` is one global monotonic clock, so a producer on CPU A stamping and the worker on CPU B reading do not compare two TSCs (the P0 code stamps with `cpu_ticks()`, unused so far; P1 switches it); differences only; 68 years is the kernel-wide limit and not kwq's to fix |
+| `kc_empty_since`, `kw_win_start` | `sbintime_t` (`int64_t`, 32.32 fixed point) | uptime wraps after 68 years | cross-CPU stamp; wrap | `sbinuptime()` is one global monotonic clock, so a producer on CPU A stamping and the worker on CPU B reading do not compare two TSCs (the P0 code stamps with `cpu_ticks()`, unused so far; P1 switches it); differences only; 68 years is the kernel-wide limit and not kwq's to fix  **Conversion overflow** (2026-09-29): the first `kwq_sbt2ns()` multiplied the whole 32.32 value by 1e9 and wrapped after 2.1 s of uptime, so every absolute wall stamp it produced (cap window, `kwq:::round-end`) was garbage; found by the round-end probe reporting negative round lengths, fixed with `sbttons()`, which splits the multiply |
 | `kw_win_busy`, `kw_busy_ns`, `kw_idle_ns`, `kc_cycles`, all counters | `uint64_t` | at 1e9/s, 584 years | wrap | monotonic counters; readers difference them |
 | `kc_depth` | `u_int` | bounded by `limit` | `KWQ_LIMIT_NONE` = `UINT_MAX` would let `depth++` wrap at 2^32 queued items (~100 GB of queued objects, but not impossible on a large machine) | the limit check runs for every queue including unbounded ones, in the overflow-safe form `n > limit - depth`; `limit` is capped at `INT_MAX` in `kwq_create()`, so the 2^31st item is refused instead of wrapping anything, and that refusal is the fault signal the design wants |
 | `kc_nnotify`, `kc_waiters`, `kw_nactive` | `u_int` | bounded by objects that exist | none | |
@@ -1083,6 +1115,7 @@ baseline 15 %: the pool lock had been hiding the real limit.
 | per item, per side | kwq, 1 item per `kwq_enqueue()` | kwq, 4 per `kwq_enqueue_list()` | kwq, 16 per call | taskqueue baseline (1 per call) |
 |---|---|---|---|---|
 | items/s (one producer, one worker) | 1.90 M | 24.7 M | 24.5 M | 2.26 M |
+| items/s after the estimated budget check (S4.4, later the same day) | 1.8-2.2 M (bimodal) | | 47.4 M (21 ns per item) | |
 | cycles, worker / producer | 1352 / 1352 | 104 / 104 | 105 / 94 | 1138 / 1138 |
 | instructions, worker / producer | 790 / 1061 | 177 / 118 | 178 / 137 | 560 / 923 |
 | backend stall cycles, worker / producer | 818 / 920 | 36 / 61 | 36 / 36 | 636 / 779 |
@@ -1143,4 +1176,84 @@ per-item lock (average wait 1.0 us) and the worker's two locks per pass
 
 The earlier a07 wall figures (S10.3: 470-515 ns per item with the old
 harness) are superseded by this table.
+
+**Scaling across CPUs (a07, 2026-09-29, `scale` scenario).**  `kt_pairs`
+independent producer/consumer pairs, pair i's queue served on CPU 1 + 2i
+and fed from CPU 2 + 2i, empty handler, 5 s runs, one run each.
+
+| pairs | 16 items per call: aggregate items/s | per pair | 1 item per call: aggregate | per pair |
+|---|---|---|---|---|
+| 1 | 47.4 M | 47.4 M | 1.97 M | 1.97 M |
+| 2 | 94.3 M | 47.0-47.3 M | 3.81 M | 1.87-1.95 M |
+| 4 | 189 M | 47.0-47.4 M | 8.07 M | 1.86-2.10 M |
+| 8 | 375 M | 46.7-47.2 M | 15.2 M | 1.77-2.20 M |
+| 16 | 744 M | 45.9-46.7 M | 31.6 M | 1.75-2.26 M |
+| 32 | 1.45 G | 44.6-45.8 M | 58.2 M | 1.61-2.16 M |
+| 48 | 2.13 G | 42.5-45.3 M | 87.0 M | 1.44-2.17 M |
+| 63 | 2.55 G | 34.5-42.9 M | | |
+
+Nothing in kwq is shared between pairs (per-(queue, CPU) lists, per-CPU
+workers, no global counter on the hot path), and the numbers say so:
+linear to 32 pairs within 6 %, 48 pairs at 94 % of linear, and the
+first real bend at 63 pairs (126 of 128 CPUs busy), where per-pair rates
+spread by 20 %, which is the machine's memory system and mesh under 2.5
+G line transfers per second, not a kwq lock.  The single-item pairs are
+each bound by their own handoff and scale the same way; their spread
+(1.4-2.2 M) is the bimodality S10.3 describes, per pair.  The 4-vCPU
+guest runs one pair (18.4 M items/s on the WITNESS kernel) and refuses
+two, as the scenario requires 2n + 1 CPUs.
+
+**Fan-in (a07, 2026-09-29, `fanin` scenario).**  `kt_fanin` producers,
+each on its own CPU (2 .. m + 1) with its own item pool, feed one
+(queue, CPU) list served on CPU 1; the handler is empty and returns
+items to their pools in per-pool batches; the queue's limit is raised so
+nothing is rejected.  5 s runs, one each.
+
+| producers | 16 items per call: items/s | per producer | items per pass | 1 item per call: items/s | per producer | items per pass |
+|---|---|---|---|---|---|---|
+| 1 | 39.0 M | 39.0 M | 511 | 1.99 M | 1.99 M | 2 |
+| 2 | 39.4 M | 19.5-19.9 M | 1035 | 1.90 M | 0.72-1.17 M | 1 |
+| 4 | 37.6 M | 9.1-9.9 M | 2091 | 5.25 M | 1.26-1.39 M | 133 |
+| 8 | 35.6 M | 4.3-4.8 M | 4447 | 4.88 M | 0.32-0.74 M | 320 |
+| 16 | 29.0 M | 1.77-1.95 M | 12305 | 4.65 M | 0.19-0.36 M | 336 |
+| 32 | 11.1 M | 0.34-0.36 M | 32024 | 2.80 M | 0.07-0.13 M | 101 |
+| 63 | 11.6 M | 0.18-0.19 M | 62436 | 1.56 M | 0.02-0.04 M | 105 |
+
+With one consumer the aggregate is bounded by that consumer, 39 M
+items/s here (the fan-in handler pays a per-pool routing step the plain
+handler does not).  It holds to 4 producers, loses 10 % at 8, 25 % at
+16, and collapses at 32 to less than a third, where a lone producer would
+do better.  lockstat at 16 single-item producers names the mechanism:
+698 k adaptive-mutex spins per second, 97 % of them producers on the
+queue's `kc_mtx` with an average wait of 21.6 us, and the worker's own
+two acquisitions per pass waiting 57.8 us each.  The consumer starves on
+its own list lock behind the producers' spinning, passes become rare and
+enormous (every item in flight, `maxdepth` = producers x pool), and the
+cooperative handler requeues most of each pass.  The single-item column
+adds the unfairness of the spin: at 63 producers the slowest gets half
+the fastest's share.  FreeBSD's adaptive mutex spins with exponential
+backoff while the owner runs; it was not made for dozens of CPUs
+contending a lock whose hold time is 100 ns.
+
+This is the first measurement that changes a design decision rather
+than confirming one.  if_pair steers by flow hash, so every transmitting
+CPU is a producer into each target's list: a fan-in of up to `ncpu`, the
+column that collapses.  P4 therefore starts with the producer side of
+the handoff, before if_pair is converted.  The two candidates, both
+architecture-neutral: per-source-CPU sublists under the target's queue
+(a producer appends only to its own CPU's list, no producer ever
+contends with another; the consumer swaps the non-empty sublists, found
+through a per-target bitmap the producer sets on its empty-to-non-empty
+transition, so the swap costs the number of active sources, not `ncpu`;
+FIFO holds per source, which is what a per-flow hash needs); or the
+lock-free single-consumer list (one atomic exchange on the tail per
+enqueue: no backoff convoy, but `ncpu` producers still serialize on one
+line, so it bounds the collapse rather than removing it).  The sublist
+design keeps `kc_mtx` for notifiers, drain and the doorbell and takes it
+off the item path for producers; the measurement to decide between them
+is this scenario with both implemented.  Decision deferred (2026-09-29):
+the sublists cost `ncpu^2` lines per queue (2 MB at 128 CPUs) and keep
+FIFO only per source, so they are out on footprint and order; the
+lock-free list and the present mutex list remain the candidates, and the
+choice waits for a real client's measured fan-in (PLAN P4.0).
 

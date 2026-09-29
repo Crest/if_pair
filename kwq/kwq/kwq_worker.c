@@ -127,10 +127,11 @@ kwq_doorbell(struct kwq_cpu *kc)
  * bit is set for the duration.
  */
 static void
-kwq_yield(struct kwq_worker *kw)
+kwq_yield(struct kwq_worker *kw, int reason)
 {
 	u_int bit = 1u << kw->kw_class;
 
+	SDT_PROBE3(kwq, , , yield, kw->kw_class, kw->kw_cpu, reason);
 	DPCPU_SET(kwq_waiting, DPCPU_GET(kwq_waiting) | bit);
 	kern_yield(kwq_yield_prio[kw->kw_class]);
 	thread_lock(curthread);
@@ -157,7 +158,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	struct kwq_notifier *nf;
 	struct epoch_tracker et;
 	sbintime_t now;
-	uint64_t t0, age;
+	uint64_t t0, age = 0, requeued0 __unused;	/* SDT argument */
 	u_int n, nnf;
 	int sign;
 	bool net, has_work;
@@ -177,16 +178,24 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	kc->kc_nnotify = 0;
 	/* Discard only ever happens on a drained queue. */
 	sign = (!q->kwq_active && (q->kwq_flags & KWQ_F_DISCARD)) ? -1 : 1;
-	if (n + nnf > 0) {
+	/*
+	 * First pass since the doorbell: sample the doorbell-to-service
+	 * latency and mark the stamp used, so later passes over the same
+	 * backlog do not report its age as a latency (SCHED.md S4.3, S9).
+	 */
+	if (n + nnf > 0 && kc->kc_empty_since != 0) {
 		now = sbinuptime();
 		if (now > kc->kc_empty_since) {
 			age = kwq_sbt2ns(now - kc->kc_empty_since);
 			if (age > kc->kc_maxlat_ns)
 				kc->kc_maxlat_ns = age;
 		}
+		kc->kc_empty_since = 0;
 	}
 	ks_pass_begin(kw, kc, kwq_cputime_ns_tick(kw, &t0));
 	kwq_kc_unlock(kc);
+	SDT_PROBE4(kwq, , , pass__start, q, kc->kc_cpu, n, age);
+	requeued0 = kc->kc_requeued;
 
 	if (n > kc->kc_maxdepth)
 		kc->kc_maxdepth = n;
@@ -229,6 +238,8 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	mtx_lock_spin(&kw->kw_mtx);
 	cpu_now = kwq_cputime_ns_tick(kw, &t1);
 	kc->kc_cycles += t1 - t0;
+	SDT_PROBE5(kwq, , , pass__end, q, kc->kc_cpu, n,
+	    cpu_now - kw->kw_pass_start, (int)(kc->kc_requeued - requeued0));
 	ks_pass_end(kw, kc, cpu_now, has_work);
 	mtx_unlock_spin(&kw->kw_mtx);
 	if (kc->kc_waiters != 0)
@@ -244,7 +255,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	 */
 	if (ks_ticked((u_int)ticks, (u_int)curthread->td_swvoltick)) {
 		kw->kw_tick_yields++;
-		kwq_yield(kw);
+		kwq_yield(kw, KWQ_YIELD_TICK);
 	}
 }
 
@@ -257,6 +268,7 @@ kwq_worker_main(void *arg)
 	enum ks_yield y;
 	sbintime_t t0;
 	uint64_t rate;
+	uint64_t wall;
 
 #ifdef SMP
 	/* Before sched_bind() to a CPU, wait for all CPUs to go on-line. */
@@ -270,6 +282,7 @@ kwq_worker_main(void *arg)
 	kw->kw_rate = cpu_tickrate();
 	kw->kw_ns_scale = ks_ns_scale(kw->kw_rate);
 	kw->kw_win_start = kwq_sbt2ns(sbinuptime());
+	kw->kw_round_wall = kw->kw_win_start;
 
 	for (;;) {
 		mtx_lock_spin(&kw->kw_mtx);
@@ -278,10 +291,13 @@ kwq_worker_main(void *arg)
 			if (kw->kw_exit)
 				goto out;
 			kw->kw_sleeping = true;
+			SDT_PROBE3(kwq, , , idle, kw->kw_class, kw->kw_cpu,
+			    kw->kw_busy_ns - kw->kw_idle_busy);
 			t0 = sbinuptime();
 			msleep_spin(kw->kw_chan, &kw->kw_mtx, "kwqidle", 0);
 			kw->kw_idle_ns += kwq_sbt2ns(sbinuptime() - t0);
 			kw->kw_wakeups++;
+			kw->kw_idle_busy = kw->kw_busy_ns;
 			mtx_unlock_spin(&kw->kw_mtx);
 			continue;
 		}
@@ -299,10 +315,13 @@ kwq_worker_main(void *arg)
 				kw->kw_rate = rate;
 				kw->kw_ns_scale = ks_ns_scale(rate);
 			}
-			y = ks_round_end(kw, kwq_sbt2ns(sbinuptime()),
-			    sched_runnable());
+			wall = kwq_sbt2ns(sbinuptime());
+			SDT_PROBE4(kwq, , , round__end, kw->kw_class, kw->kw_cpu,
+			    kw->kw_nactive, wall - kw->kw_round_wall);
+			kw->kw_round_wall = wall;
+			y = ks_round_end(kw, wall, sched_runnable());
 			if (y == KS_Y_YIELD) {
-				kwq_yield(kw);
+				kwq_yield(kw, KWQ_YIELD_ROUND);
 			} else if (y == KS_Y_PAUSE) {
 				pause_sbt("kwqcap",
 				    (sbintime_t)kw->kw_knobs->cap_sleep_ns * SBT_1NS,
@@ -385,6 +404,8 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	KW_U64(kw_busy_ns, "busy_ns", "worker CPU time inside handlers");
 	KW_U64(kw_idle_ns, "idle_ns", "wall time asleep with nothing queued");
 	KW_U64(kw_round, "round", "current round number");
+	KW_U64(kw_budget_calls, "budget_calls", "kwq_budget_left() calls by handlers on this worker");
+	KW_U64(kw_budget_reads, "budget_reads", "of those, the ones that read the clock (SCHED.md S4.4)");
 #undef KW_U64
 	SYSCTL_ADD_UINT(&kwq_worker_sysctl_ctx, ch, OID_AUTO, "nactive",
 	    CTLFLAG_RD, &kw->kw_nactive, 0, "(queue, CPU) entries on the DRR ring");

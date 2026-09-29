@@ -27,7 +27,7 @@ struct kwq_cpu {
 	u_int			kc_idle_round;
 	u_int			kc_src;
 	int64_t			kc_deficit;
-	uint64_t		kc_glitches, kc_debts;
+	uint64_t		kc_glitches, kc_debts, kc_bc_avg;
 	uint64_t		kc_passes, kc_overruns, kc_parks, kc_boosts,
 				kc_grace;
 	u_int			kc_weight;
@@ -48,11 +48,13 @@ struct kwq_worker {
 	struct kwq_cpu		*kw_cur;
 	uint64_t		kw_pass_start;
 	int64_t			kw_pass_budget;
+	u_int			kw_bc_calls;
+	int64_t			kw_bc_last;
 	uint64_t		kw_win_start;
 	uint64_t		kw_win_busy;
 	const struct kwq_sched_knobs *kw_knobs;
 	uint64_t		kw_rounds, kw_passes, kw_yields, kw_cap_sleeps,
-				kw_handbacks, kw_busy_ns;
+				kw_handbacks, kw_busy_ns, kw_budget_calls, kw_budget_reads;
 };
 
 #define	KSQ_WEIGHT(kc)	((kc)->kc_weight)

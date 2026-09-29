@@ -16,7 +16,8 @@
  *   kwqsim suite                     run every scenario over its seeds
  *
  * Scenarios: fairness latency gaming overrun overrun_idle handback storm
- * nnew manyq wrap ratechange badhandler random sweep_grace sweep_boost.
+ * nnew manyq budgetjump glitch wrap ratechange badhandler random
+ * sweep_grace sweep_boost.
  */
 
 #include <sys/types.h>
@@ -172,6 +173,8 @@ struct sim {
 	bool		round_had_pass[NCLASS];
 	uint64_t	last_round[NCLASS];
 	uint64_t	pass_in_progress_max;
+	uint64_t	max_overshoot;		/* largest pass time beyond its budget (coop) */
+	uint64_t	glitch_pos_pass, glitch_neg_pass;	/* glitch scenario: inject at these passes */
 	uint64_t	cmax[NCLASS];
 	uint64_t	t_start, t_dur;		/* run window, wrap-safe: now - t_start < t_dur */
 	uint64_t	wall0;			/* wall time at reset, for the tick counter */
@@ -221,6 +224,8 @@ sim_reset(uint64_t wall0, uint64_t cpu0, uint64_t round0, u_int ticks0)
 	S.ticks = ticks0;
 	for (int c = 0; c < NCLASS; c++) {
 		S.cputime[c] = cpu0;
+		S.max_overshoot = 0;
+		S.glitch_pos_pass = S.glitch_neg_pass = 0;
 		S.knobs[c].quantum_ns = c == C_NET ? 200 * NS_PER_US : 1000 * NS_PER_US;
 		S.knobs[c].grace_rounds = 1;
 		S.knobs[c].cap_pct = 100;
@@ -228,6 +233,7 @@ sim_reset(uint64_t wall0, uint64_t cpu0, uint64_t round0, u_int ticks0)
 		S.knobs[c].cap_sleep_ns = 100 * NS_PER_US;
 		S.knobs[c].boost_weighted = true;
 		S.knobs[c].penalty_rounds = 32;
+		S.knobs[c].budget_check_every = 8;
 		ks_worker_init(&S.w[c], &S.knobs[c], wall0);
 		S.w[c].kw_round = round0;
 		S.sleeping[c] = true;
@@ -540,6 +546,17 @@ do_yield(int c)
 	S.ticks = S.ticks0 + (u_int)((S.now - S.wall0) / TICK_NS);
 }
 
+/* The handler's budget query as the kernel makes it (S4.4). */
+static uint64_t
+sim_budget(int c, struct kwq_worker *kw)
+{
+	uint64_t left;
+
+	if (!ks_budget_need_clock(kw, &left))
+		return (left);
+	return (ks_budget_left(kw, S.cputime[c]));
+}
+
 static void
 run_pass(int c, struct kwq_cpu *kc)
 {
@@ -551,6 +568,8 @@ run_pass(int c, struct kwq_cpu *kc)
 
 	ks_pass_begin(kw, kc, S.cputime[c]);
 	cpu0 = S.cputime[c];
+	if (S.glitch_pos_pass != 0 && kc->kc_passes + 1 == S.glitch_pos_pass)
+		S.cputime[c] += 171798691840ULL;	/* +2^32 ticks at 25 MHz: a07's fault */
 	budget = kw->kw_pass_budget > 0 ? (uint64_t)kw->kw_pass_budget : 0;
 	if (sq->doorbell_t != 0 && sq->kc.kc_state == KWQ_CPU_RUNNING) {
 		uint64_t l = S.now - sq->doorbell_t;
@@ -564,7 +583,7 @@ run_pass(int c, struct kwq_cpu *kc)
 	/* The handler: the batch is what was queued at pass start. */
 	while (nbatch > 0 && !stop) {
 		bool hb = (c == C_BULK && S.waiting[C_NET]);	/* S6.4 */
-		uint64_t left = hb ? 0 : ks_budget_left(kw, S.cputime[c]);
+		uint64_t left = hb ? 0 : sim_budget(c, kw);
 
 		if (sq->hk == H_REQUEUEALL) { sq->requeued += nbatch; break; }
 		if (sq->hk == H_FIRSTBUDGET && left == 0) { sq->requeued += nbatch; break; }
@@ -581,7 +600,7 @@ run_pass(int c, struct kwq_cpu *kc)
 		if (nbatch == 0) break;
 		switch (sq->hk) {
 		case H_COOP: case H_FIRSTBUDGET:
-			left = hb ? 0 : ks_budget_left(kw, S.cputime[c]);
+			left = hb ? 0 : sim_budget(c, kw);
 			if (left == 0) { stop = true; sq->requeued += nbatch; }
 			break;
 		case H_FIRSTONLY:
@@ -591,12 +610,19 @@ run_pass(int c, struct kwq_cpu *kc)
 		}
 	}
 	/* B1: a cooperative pass takes at most budget + c_max (+ overhead). */
-	if (sq->hk == H_COOP) {
+	if (sq->hk == H_COOP && !(S.glitch_pos_pass != 0 && kc->kc_passes + 1 == S.glitch_pos_pass)) {
 		uint64_t dt = S.cputime[c] - cpu0;
-		uint64_t lim = budget + sq->cost + (sq->heavy_p > 0 ? sq->heavy_cost : 0) + PASS_OVERHEAD_NS;
+		uint64_t cmax = sq->cost > sq->heavy_cost ? sq->cost : (sq->heavy_p > 0 ? sq->heavy_cost : sq->cost);
+		uint32_t k = kw->kw_knobs->budget_check_every;
+		/* B1 with the estimated check: budget + Qw/10 + K c_max (K = 1: budget + c_max) */
+		uint64_t lim = budget + (k > 1 ? ks_quantum(kw, kc) / 10 + (uint64_t)k * cmax : cmax) + PASS_OVERHEAD_NS;
+
 		if (dt > lim)
-			fail("B1: q%d pass %" PRIu64 " ns > budget %" PRIu64 " + c_max", sq->id, dt, budget);
+			fail("B1: q%d pass %" PRIu64 " ns > budget %" PRIu64 " + slack %" PRIu64 " (K %u)", sq->id, dt, budget, lim - budget, k);
+		if (dt > budget && dt - budget > S.max_overshoot) S.max_overshoot = dt - budget;
 	}
+	if (S.glitch_neg_pass != 0 && kc->kc_passes + 1 == S.glitch_neg_pass)
+		S.cputime[c] -= 300;			/* a backwards read: 300 ns */
 	pump();
 	if (sq->refill_delay == 0)
 		refill(sq);	/* instant producer: the flood never empties */
@@ -957,6 +983,62 @@ sc_manyq(uint64_t secs)
 	return (S.violations);
 }
 
+/*
+ * budgetjump: the estimated budget check (S4.4) against items that are
+ * cheap most of the time and 100x dearer 5 % of the time, plus a light
+ * queue that must still see its latency bound.  run_pass() checks B1 in
+ * its estimated form for every cooperative pass.
+ */
+static int
+sc_budgetjump(uint64_t secs)
+{
+	struct simq *a, *b;
+	uint64_t calls, reads;
+
+	sim_reset(0, 0, 0, 0);
+	a = addq(C_NET, 1, P_FLOOD, H_COOP, 200); a->flood_depth = 512;
+	a->heavy_p = 0.05; a->heavy_cost = 20 * NS_PER_US;
+	b = addq(C_NET, 1, P_PERIODIC, H_COOP, 5 * NS_PER_US); b->rate = 1000; b->burst = 1;
+	run_for(secs * NS_PER_S);
+	calls = S.w[C_NET].kw_budget_calls; reads = S.w[C_NET].kw_budget_reads;
+	report("budgetjump: 200 ns items with 5 % at 20 us, estimated budget check K=8");
+	printf("  info budget calls %" PRIu64 ", clock reads %" PRIu64 " (%.1f %%), worst pass overshoot %.1f us, light queue worst %.1f us\n",
+	    calls, reads, calls ? 100.0 * reads / calls : 0.0, (double)S.max_overshoot / NS_PER_US, (double)b->lat_max / NS_PER_US);
+	if (reads == 0 || reads * 4 > calls)
+		fail("budgetjump: expected the estimate to save most clock reads (%" PRIu64 " of %" PRIu64 ")", reads, calls);
+	if (b->lat_max > 2 * S.knobs[C_NET].quantum_ns + 8 * 20 * NS_PER_US + 50 * NS_PER_US)
+		fail("budgetjump: light queue worst %" PRIu64 " us beyond B4 with the estimate", b->lat_max / NS_PER_US);
+	return (S.violations);
+}
+
+/*
+ * glitch: the a07 ticker fault (S13): one pass sees its CPU clock jump
+ * forward by 2^32 ticks, another sees it step back.  Both must be
+ * charged one quantum and counted, the deficit must stay clamped and
+ * the queue must keep being served.
+ */
+static int
+sc_glitch(uint64_t secs)
+{
+	struct simq *a, *b;
+
+	sim_reset(0, 0, 0, 0);
+	a = addq(C_NET, 1, P_FLOOD, H_COOP, 20 * NS_PER_US); a->flood_depth = 256;
+	b = addq(C_NET, 1, P_POISSON, H_COOP, 5 * NS_PER_US); b->rate = 2000;
+	S.glitch_pos_pass = 50; S.glitch_neg_pass = 120;
+	run_for(secs * NS_PER_S);
+	report("glitch: +2^32 ticks at pass 50, -300 ns at pass 120");
+	printf("  info glitches a %" PRIu64 " b %" PRIu64 ", a passes %" PRIu64 ", worker busy %.3f s of %" PRIu64 " s\n",
+	    a->kc.kc_glitches, b->kc.kc_glitches, a->kc.kc_passes, (double)S.w[C_NET].kw_busy_ns / NS_PER_S, secs);
+	if (a->kc.kc_glitches + b->kc.kc_glitches != 2)
+		fail("glitch: expected 2 glitches counted, got %" PRIu64, a->kc.kc_glitches + b->kc.kc_glitches);
+	if (a->kc.kc_passes < 1000)
+		fail("glitch: the flood stopped being served (%" PRIu64 " passes)", a->kc.kc_passes);
+	if (S.w[C_NET].kw_busy_ns > (uint64_t)secs * NS_PER_S * 2)
+		fail("glitch: busy_ns %" PRIu64 " inflated by the jump", S.w[C_NET].kw_busy_ns);
+	return (S.violations);
+}
+
 static int
 sc_wrap(uint64_t secs)
 {
@@ -1180,6 +1262,8 @@ static struct scenario scenarios[] = {
 	{ "storm",	sc_storm,	2, 1 },
 	{ "nnew",	sc_nnew,	2, 1 },
 	{ "manyq",	sc_manyq,	1, 1 },
+	{ "budgetjump",	sc_budgetjump,	3, 1 },
+	{ "glitch",	sc_glitch,	2, 1 },
 	{ "wrap",	sc_wrap,	1, 1 },
 	{ "ratechange",	sc_ratechange,	1, 1 },
 	{ "badhandler",	sc_badhandler,	2, 1 },

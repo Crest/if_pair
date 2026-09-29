@@ -16,7 +16,7 @@
  *   struct kwq_cpu:    kc_active (TAILQ_ENTRY), kc_state, kc_onlist,
  *                      kc_warm, kc_idle_round (u_int), kc_src, kc_deficit
  *                      (int64_t ns), kc_passes, kc_overruns, kc_parks, kc_glitches,
- *                      kc_debts,
+ *                      kc_debts, kc_bc_avg (uint64_t ns per budget call),
  *                      kc_boosts, kc_grace
  *   struct kwq_worker: kw_new, kw_active (TAILQ_HEAD of kwq_cpu),
  *                      kw_nactive, kw_nnew (u_int list lengths),
@@ -24,7 +24,9 @@
  *                      kw_ring_left, kw_tail_left, kw_want_new, kw_cur,
  *                      kw_served, kw_pass_start, kw_pass_budget,
  *                      kw_win_start, kw_win_busy, kw_knobs, kw_rounds, kw_passes,
- *                      kw_yields, kw_cap_sleeps, kw_handbacks, kw_busy_ns
+ *                      kw_yields, kw_cap_sleeps, kw_handbacks, kw_busy_ns,
+ *                      kw_bc_calls (u_int), kw_bc_last (int64_t), kw_budget_calls,
+ *                      kw_budget_reads (uint64_t)
  *
  * Units: all times are nanoseconds.  "cpu" times are the worker's own CPU
  * time (S1a.4); "wall" times are a monotonic clock (sbinuptime in the
@@ -44,10 +46,21 @@
 #define	KS_ASSERT(e, msg)	do { } while (0)
 #endif
 
+/*
+ * Event hooks the core fires for the environment's tracing (the kernel
+ * maps them to SDT probes, the simulator to nothing).  Arguments are the
+ * worker, the (queue, CPU) and, for the overrun, the ns beyond the budget.
+ */
+#ifndef KS_HOOK_PARK
+#define	KS_HOOK_PARK(kw, kc)		do { } while (0)
+#define	KS_HOOK_OVERRUN(kw, kc, over)	do { } while (0)
+#endif
+
 /* Per-class knobs the core reads; the owner keeps them current. */
 struct kwq_sched_knobs {
 	uint64_t	quantum_ns;	/* Q, validated 10 us .. 1 s */
 	uint32_t	grace_rounds;	/* GRACE_ROUNDS, 1 */
+	uint32_t	budget_check_every;	/* K of S4.4: clock read at least every K calls, 1..64 */
 	uint32_t	cap_pct;	/* 100 or more = cap off */
 	uint64_t	cap_window_ns;
 	uint64_t	cap_sleep_ns;
@@ -121,7 +134,13 @@ enum ks_action ks_next(struct kwq_worker *kw, bool higher_waiting,
 /* Pass bracketing (S4.3, S4.4). */
 void	ks_pass_begin(struct kwq_worker *kw, struct kwq_cpu *kc,
 	    uint64_t cpu_now);
-uint64_t ks_budget_left(const struct kwq_worker *kw, uint64_t cpu_now);
+uint64_t ks_budget_left(struct kwq_worker *kw, uint64_t cpu_now);
+/*
+ * S4.4: the handler's budget query.  Returns true when a clock read is
+ * required, in which case the caller reads its CPU time and calls
+ * ks_budget_left(); false means *leftp already holds the estimate.
+ */
+bool	ks_budget_need_clock(struct kwq_worker *kw, uint64_t *leftp);
 /*
  * Charge the pass and re-place the queue; caller holds the queue lock and
  * the worker lock.  `has_work' is the emptiness re-check under the queue

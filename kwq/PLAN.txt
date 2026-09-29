@@ -314,7 +314,7 @@ Phases
     P6 relies on it.  Deferred idea, SCHED.md S11: a calendar wheel for
     parked queues.
 
-[TODO] P2  Observability (2 days)
+[DONE 2026-09-29] P2  Observability (2 days)
     Files: kwq_sdt.c, kwq.d, kwq_ddb.c, sysctl in kwq.c.  The sysctl tree
     is specified in KWQ.md S10.7 and the probes in S10.1; implement to
     those tables and change the tables first if a name must differ.
@@ -347,6 +347,27 @@ Phases
     output against kwq_test load; dtrace -l | grep kwq lists all probes;
     a pass-level trace at 1M items/s costs < 3 % throughput, per-item
     enqueue probe enabled costs are measured and recorded.
+    Status 2026-09-29: done.  Files kwq_sdt.c, kwq_sdt.h, kwq.d,
+    kwq_ddb.c; the core fires park and overrun through KS_HOOK_* macros
+    the kernel environment maps to SDT.  19 probes listed; the S10.6
+    one-liners (except the P6/P7 ones) run against kwq_test on the guest
+    and a07 with the translator (module built WITH_CTF=1; -L or
+    /usr/lib/dtrace/kwq.d).  show kwq shown live in DDB under load.
+    Probe cost (cost scenario): pass-level within noise on both
+    machines; the enqueue probe costs 24 % on a07 and 72 % on the WITNESS
+    guest.  Estimated budget check in (12 % of calls read the clock;
+    cost16 on a07 40 -> 21 ns/item), maxlat sampled once per doorbell,
+    KWQ_CPU_ANY probe bounded to five CPUs, budget_calls/budget_reads
+    counters, budget_check_every knob, version/ncpu/nqueues/state/reset
+    sysctls.  Found and fixed by the new round-end probe: kwq_sbt2ns()
+    overflowed after 2.1 s of uptime (SCHED.md S13).  Not done: the
+    dtrace_kwq(4) and kwq(9) manual pages (P8 per KWQ.md S10.8); the
+    lock-free item list stays a P4 decision.  Later the same day: probe
+    effect quantified on a07 (KWQ.md S10.3: 0.6 % disabled, ~140 ns per
+    firing, ~180 ns translated) and per-CPU scaling (SCHED.md S15.7:
+    linear to 48 pairs, 2.55 G items/s at 63) with the new `scale`
+    scenario; the many-producers-one-queue case is still unmeasured
+    (P4, with the lock-free list decision).
 
 [TODO] P3  kwq_test.ko and the ATF harness (2-3 days, overlaps P1/P2)
     Files: kwq/kwq_test/kwq_test.c, kwq/tests/*.
@@ -380,6 +401,26 @@ Phases
     GENERIC and GENERIC-DEBUG (INVARIANTS/WITNESS) both.
 
 [TODO] P4  if_pair as first client (1-2 days + Ampere measurement)
+    P4.0 (added 2026-09-29, from the fan-in sweep, SCHED.md S15.7; scope
+    set by the user the same day): the producer side of the (queue, CPU)
+    handoff collapses beyond ~8 producing CPUs (39 -> 11 M items/s at
+    32; consumer starved on its own kc_mtx behind spinning producers).
+    if_pair's hash steering makes every CPU a producer into every target
+    list, so this must be revisited - but only once real clients exist
+    and show what fan-in they actually produce.  Options recorded, none
+    chosen: (a) keep the single mutex-protected list (today; FIFO across
+    producers, 33 KB per queue at 128 CPUs, fine to ~8 producers);
+    (b) per-source-CPU sublists (no producer shares a line: ncpu^2 lines
+    = 2 MB per queue at 128 CPUs, ruled out on footprint; FIFO only per
+    source, reordering at the swap when a sender migrates); (c) the
+    lock-free single-consumer list (no extra memory, arrival order kept,
+    the convoy replaced by one exchange per enqueue on a shared line
+    whose transfer rate, ~5-10 M/s at 63 producers, bounds it; with the
+    batched enqueue that bound carries a list per exchange).  When a
+    client shows the fan-in, decide with the fanin scenario at 1..63
+    producers, batch 1 and 16; the S17 locking rules, I1/I2 and the
+    doorbell protocol change with (c).  Until then P4 converts if_pair on
+    the current handoff and measures its real fan-in first.
     Files: if_pair.c, Makefile (MODULE_DEPEND(if_pair, kwq, 1, 1, 1)).
     - Replace pair_tasks/pair_queue/pair_task_deferred with one NET
       queue per pair side, named "pair<N><a|b>" (KWQ_F_INACTIVE; activated

@@ -6,8 +6,20 @@
 # KERNBUILDDIR=/usr/obj/.../sys/GENERIC-DEBUG so its opt_global.h is used.
 
 KMOD=	kwq
-SRCS=	kwq.c kwq_worker.c kwq_sched.c
-SRCS+=	kwq.h kwq_internal.h kwq_sched.h kwq_sched_env.h
+SRCS=	kwq.c kwq_worker.c kwq_sched.c kwq_sdt.c kwq_ddb.c
+SRCS+=	kwq.h kwq_internal.h kwq_sched.h kwq_sched_env.h kwq_sdt.h
+SRCS+=	opt_ddb.h
+
+# Standalone builds (no KERNBUILDDIR) take GENERIC's options from
+# kmod.opts.mk, which leaves out KDTRACE_HOOKS; the stock kernel has it,
+# and without it the kwq provider (kwq_sdt.c) compiles to nothing.
+KERN_OPTS+=	KDTRACE_HOOKS
+# DWARF for ctfconvert: the kwq.d translator needs struct kwq's CTF.
+DEBUG_FLAGS?=	-g
+# make KWQ_NO_SDT=1: probe sites compiled out, to measure the disabled-probe cost
+.if defined(KWQ_NO_SDT)
+CFLAGS+=	-DKWQ_NO_SDT
+.endif
 # kwq_sched.h includes <kwq_sched_env.h>; the kernel one lives here.
 CFLAGS+=	-I${.CURDIR}
 
