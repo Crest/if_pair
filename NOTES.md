@@ -4064,3 +4064,154 @@ on tap100 (a tap drops addresses when bhyve reopens it; now vmnet100
 plus a re-add in the run loop), and the guest console was silent to me
 because a cu session already held the nmdm B side.  pmcstat baseline
 still open: bhyve exposes no PMCs.
+
+2026-09-28 - kwq P1 (scheduler) done: P1a simulator (kwq/sim, links the
+kernel's kwq_sched.c; 13 scenarios + 100 random seeds, ~1e7 steps in 27 s)
+found three specification defects before any kernel code (penalty cap
+2 -> 32 quanta: an 8 ms budget-ignoring handler took 13.4x a cooperative
+share, now 1.22x; hand-back only after one pass: BULK was otherwise
+starved completely under saturated NET; overrun = more than one quantum
+over budget).  P1b kernel glue on the guest agrees with the simulator on
+every share (fairness 0.998 / 1.95, gaming 0.87 with 2 boosts and 1971
+grace hits, overrunner 1.22 exactly), the 1 kHz callout keeps 2995 of
+3000 fires under a saturating NET worker with 10.8 ms worst lateness
+(one tick at hz=100 plus a pass), and costs are 215 ns worker CPU per
+item (including the test handler's own mutex), 150 ns producer CPU per
+enqueue, vs a taskqueue of epair's shape at 198 ns producer and 374 ns
+wall per item, and 1012 ns per thread switch.  The light queue's worst
+latency (1.9-3.4 ms vs the 420 us bound) is a VM measurement with
+visible hypervisor stalls (a 20 us DELAY overrunning by > 200 us);
+re-measure on the Ampere.  Harness lessons: a bhyve guest has hz=100
+(a callout aligned to hardclock fires 100x/s); two producer kthreads
+spinning on one CPU at kernel priority starve each other (ULE never
+slices them: yield or separate CPUs); the console logger must open the
+nmdm B side raw with echo off, or the guest's login loops on its own
+echoed prompt at 99 % CPU on both ends - and it must be opened before
+bhyveload, because a tty comes back cooked on every first open (nmdm has
+no .init node) and the loader menu then "types" its own echoed escape
+codes; one boot landed in single-user mode that way.
+
+2026-09-28 (evening) - kwq P1b on the stock GENERIC kernel (nextboot -k
+kernel, modules built without the debug options): shares identical to
+DEBUG and the simulator; costs halve without WITNESS (kwq 96 ns worker /
+80 ns producer / 211 ns wall per item vs taskqueue 58 / 193 ns; thread
+switch 524 ns).  The first GENERIC runs showed 40-500 ms callout stalls
+and 6-56 ms light-queue latency.  Root cause, by DTrace in the guest: (1)
+15.1's per-CPU "clock (N)" softclock thread is unpinned by default
+(kern.pin_pcpu_swi=0) and ranks below PI_NET, so under a saturated NET
+worker ULE wakes it onto another CPU from CPU 1's timer interrupt; (2)
+that migration takes the target CPU's scheduler spin lock, which the
+test producer on CPU 2 was hammering with a kern_yield(PRI_UNCHANGED)
+loop (~1M mi_switch/s); unfair spin locks plus bhyve's PAUSE exits let
+the interrupt spin for up to 1.1 s with interrupts off.  WITNESS had
+hidden it on GENERIC-DEBUG by slowing every switch.  Producers now sleep
+on the pool; light-queue latency is 220-550 us on both kernels (bound
+420 us, simulator 399 us).  Residual: one run in six still shows a
+24-37 ms stall on both kernels and with pin_pcpu_swi=1 (idle CPUs waiting
+for their own sched lock in the preempt IPI while CPU 1 does cross-CPU
+wakeups).  Host DTrace: no vCPU thread involuntarily off-CPU > 1.1 ms
+during a guest stall, so the 4-core/8-thread host is not it.  Lessons:
+a test load must never spin-yield at kernel priority; ps(1) "cpu" is a
+usage factor, not a CPU id; dtrace fbt return probes do not fire on
+tail-calling shims (sched_add); the sched provider's enqueue probe fires
+before the CPU is picked.
+
+2026-09-28 (night) - kwq P1b on a07 (128 x Neoverse-N1, 15.1 GENERIC,
+hz=1000; modules built there against /usr/obj with KERNBUILDDIR, sources
+rsynced to ~/kwq-src, loaded with doas): everything the VM struggled with
+is clean on hardware - 12 yield runs with 66-69 us worst callout lateness
+and zero stalls (the unpinned callout thread runs on CPUs 5..126), light
+queue 214-221 us in 9 runs, shares 0.999 / 2.000 / gaming 0.874 / overrun
+1.27.  Costs are 2-3x the x86 guest's, as expected for an efficiency core
+(N1: density over per-core speed): 285-337 ns worker, 282-335 ns
+producer, 470-515 ns wall per item vs taskqueue 391 / 514 ns; a thread
+switch 257 ns.  Finding on a07 itself: cpu_ticks() (tc_cpu_ticks over the
+25 MHz generic timer, 32-bit mask) jumps by 2^32 ticks = 171.8 s a few
+times per minute per busy CPU because the counter reads 5-9 ticks
+backwards (fbt::tc_cpu_ticks:return, same CPU, isb() present) and the
+wrap heuristic fires; td_runtime and every cpu_ticks() delta on that box
+inherit it.  Consequences seen before the fix: 88 us "worker CPU per
+item", 30 us "per enqueue", and two 5 ms light-queue outliers (a pass
+stamped inside the jump had a negative elapsed time, the budget never ran
+out, the whole 256-item pool ran).  kwq got the S13 clock glitch guard
+(negative or > 1 s pass: charge one quantum, count glitches; budget_left
+returns 0); kwq_test discards such deltas (result_glitches).  Worth
+reporting to dch: it is the kernel's accounting on this hardware, not
+kwq's.  Also noted for P2: kc_maxlat_ns is backlog age, not item age.
+
+2026-09-29 - kwq hardware counters on a07 (hwpmc, SCHED.md S15.7): the
+cost scenario's ~1350 cycles per item on both CPUs are 70 % backend
+stalls on 6-7 cross-core line transfers per item per side, and lockstat
+puts 96 % of 480 k adaptive-mutex spins/s on the queue's own kc_mtx: the
+per-item producer lock against the worker's two locks per four-item
+pass.  Layout is fine (one shared line per (queue, CPU), no false sharing
+in kwq; the harness had some and was fixed: items one line each, flood
+struct split by writer, pool refilled per pass - which changed kwq's
+rate not at all and the taskqueue's by +15 %).  Batching 4 items per
+kwq_enqueue_list(): 104 cycles/item, 1 line/item, 24.7 M items/s, 13x.
+Clock reads were 16 % of the worker (arm64 timer reads carry an isb);
+kwq now reads once per pass boundary instead of twice.  The corrected
+harness exposed a DRR hole: an overrunner whose items return at pass end
+empties, has its deficit reset on idle, and gets the new-list boost every
+pass (374/374, 41x share on both machines).  Fixed: debt survives idle
+(KWQ_DEBT bit in kc_warm; doorbell goes to the ring; counter debts);
+simulator scenario overrun_idle with a delayed-refill flood reproduces
+it (share 1.22 with the rule).  Idea kept for P4: a lock-free MPSC item
+list would take kc_mtx off the enqueue path (architecture-neutral).
+
+2026-09-29 - kwq P2 (observability) done: SDT provider kwq with the 19
+probes of KWQ.md S10.1 (lifecycle, enqueue, reject, pass-start/end,
+overrun, park, round-end, yield, idle, budget-hit; steal and worker-*
+defined for P6/P7), translator kwq.d (needs the module built WITH_CTF=1:
+kmod builds only run ctfconvert when told to, and DEBUG_FLAGS=-g for the
+DWARF), show kwq in DDB, version/ncpu/nqueues/state/reset sysctls.  The
+one-liners of S10.6 work on the guest and on a07 (dtrace -L for the
+translator there).  Probe cost: pass-level tracing is free within noise;
+the per-item enqueue probe costs 24 % of throughput on a07 and 72 % on
+the WITNESS guest.  The round-end probe immediately paid for itself: it
+reported negative round lengths because kwq_sbt2ns() multiplied a 32.32
+uptime by 1e9 and wrapped after 2.1 s; the cap window had the same bug
+unnoticed since P1 (off by default).  Fixed with sbttons().  Also this
+step: the estimated budget check (SCHED.md S4.4: kwq decides when a
+budget call costs a clock read; 12 % of calls do, K=8; on a07 the batched
+cost scenario went 40 -> 21 ns/item), maxlat_ns sampled once per
+doorbell (was backlog age), KWQ_CPU_ANY probes five CPUs instead of the
+domain, simulator scenarios budgetjump (B1 in its estimated form) and
+glitch (the a07 ticker fault).  Lessons: SDT probes in a KLD show with
+module = the KLD name and function "none"; dtrace -l -P fails if the
+translator file cannot resolve its struct (check CTF first); FreeBSD's
+sbintime_t must be converted with sbttons(), never (x * 1e9) >> 32.
+
+2026-09-29 (late) - kwq probe effect measured on a07 (KWQ.md S10.3):
+disabled probes 0.6 % of the batched throughput (47.4 vs 47.2 M items/s;
+a KWQ_NO_SDT=1 build compiles the sites out for this comparison), pass-
+level tracing ~140 ns per firing, the translated enqueue probe ~180 ns
+per firing; the WITNESS guest is about 4x that.  The single-item cost
+scenario is unusable for probe measurements: bounded by the contended
+kc_mtx handoff, it is bimodal (1.8/2.2 M) and a probe that slows the
+worker lengthens passes and can raise throughput.  Side result: the
+estimated budget check took the batched scenario from 24.7 to 47.4 M
+items/s on a07 (40 -> 21 ns per item).
+
+2026-09-29 (night) - kwq per-CPU scaling on a07 (scale scenario, N
+independent producer/consumer pairs on disjoint CPUs, empty handler, 16
+items per kwq_enqueue_list()): 47.4 M items/s per pair alone, 2.13 G/s
+aggregate at 48 pairs (94 % of linear), 2.55 G/s at 63 pairs (126 CPUs
+busy, per-pair spread 34-43 M: the mesh, not kwq).  Single-item pairs
+scale the same way (87 M/s at 48 pairs).  Unmeasured: many producers
+into one queue (P4).
+
+2026-09-29 (night) - kwq fan-in on a07 (fanin scenario: m producers on
+their own CPUs into one (queue, CPU) list, empty handler, per-pool
+batched returns): 39 M items/s for 1-4 producers (consumer-bound), 36 M
+at 8, 29 M at 16, 11 M at 32 and 63 - below a lone producer.  lockstat:
+97 % of 698 k spins/s are producers on kc_mtx (avg wait 22 us), the
+worker's own two acquisitions per pass wait 58 us: the consumer starves
+on its own list lock behind the adaptive-mutex backoff of dozens of
+spinners; passes become the whole backlog and the handler requeues most
+of each.  Single-item producers also show 2x unfairness among themselves.
+Design consequence (KWQ.md S17 Rule 6, PLAN P4.0): if_pair's hash
+steering fans every CPU into every target list, so the producer side
+must be per source CPU (sublists + active-source mask, or the lock-free
+list) before if_pair is converted.  The first measurement that changed a
+decision instead of confirming one.
