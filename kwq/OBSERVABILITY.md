@@ -313,6 +313,12 @@ A plain `make` in `kwq/` produces modules with everything above:
   `make install KWQ_INSTALL_DEBUG=1`, into `/usr/lib/debug/boot/modules`,
   which exists only after a full `installkernel`.
 
+`make uninstall` (as root, after `kldunload kwq_test kwq`) removes the
+two modules and the translator again and refreshes `linker.hints`.  Do
+that before testing a build from another tree: `kldload kwq` by name,
+and a client module's `MODULE_DEPEND` on kwq, pick up
+`/boot/modules/kwq.ko` in preference to anything loaded by path.
+
 Checks:
 
     ctfdump -S kwq/kwq.ko | grep 'total number of types'

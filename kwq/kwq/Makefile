@@ -53,4 +53,12 @@ install-kwqd:
 	${INSTALL} -o ${KMODOWN} -g ${KMODGRP} -m 444 ${.CURDIR}/kwq.d \
 	    ${DESTDIR}${DTRACEDIR}/
 
+# The reverse of install; a stale /boot/modules/kwq.ko would otherwise be
+# what "kldload kwq" and a client's MODULE_DEPEND pick up over a test build.
+uninstall:
+	rm -f ${DESTDIR}${KMODDIR}/${KMOD}.ko ${DESTDIR}${KMODDIR}/${KMOD}.ko.debug \
+	    ${DESTDIR}${KERN_DEBUGDIR}${KMODDIR}/${KMOD}.ko.debug \
+	    ${DESTDIR}${DTRACEDIR}/kwq.d
+	${KLDXREF_CMD} ${DESTDIR}${KMODDIR}
+
 .include <bsd.kmod.mk>
