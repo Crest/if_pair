@@ -184,8 +184,8 @@ defined in GLOSSARY.md.
 `kwq_create()` allocates the queue object and its per-CPU state (heads,
 tails, counters, a `struct mtx` per CPU queue) with `M_WAITOK` in a
 context that may sleep; it registers the name under
-`kern.kwq.<class>.<name>` (with `/` and `.` in the name replaced by `_`
-for the sysctl node), and returns an inactive queue.  `kwq_activate()` activates it (a single store under
+`kern.kwq.<class>.queue.<name>` (the name is 1..31 characters from
+`[A-Za-z0-9_-]`, used verbatim; anything else is refused), and returns an inactive queue.  `kwq_activate()` activates it (a single store under
 the per-CPU queue locks) - the create-then-activate split is the cloner
 create-return-window lesson: nothing can be enqueued before the handler
 and storage exist [../DISPATCH.md S10].  A queue created without
@@ -391,7 +391,7 @@ memory is exhausted somewhere else.  The design therefore offers
 are the memory they pin and its population is bounded by that memory" -
 usable only for closed and reclamation clients, and never as a way to
 make rejects go away.  For an unbounded queue the health signal moves
-from `rejected` to `cpu<N>.depth` and `maxdepth`, which the sysctl
+from `rejected` to `cpu.<N>.depth` and `maxdepth`, which the sysctl
 reference exports for that reason.
 
 **Choosing the CPU.**  The `cpu` argument is the client's statement of
@@ -1049,7 +1049,7 @@ items a cooperative handler requeued.
 ### 10.2 Translator (`/usr/lib/dtrace/kwq.d`)
 
     typedef struct kwqinfo {
-        string   kwq_name;         /* "pair0a", "netisr/ip", "wg/crypto" */
+        string   kwq_name;         /* "pair0a", "netisr_ip", "wg_crypto" */
         string   kwq_class;        /* "net", "bulk", "blocking" */
         int      kwq_weight;
         uint32_t kwq_limit;        /* per-CPU bound */
@@ -1132,10 +1132,10 @@ per item, below anything a client can notice.
 DTrace is for investigation; steady-state health needs no probe enabled.
 Every (queue, CPU) exports per-CPU 64-bit counter fields (plain fields,
 S17 Rule 2) under
-`kern.kwq.<class>.<name>.cpu<N>.` (items, rejected, passes, cycles,
+`kern.kwq.<class>.queue.<name>.cpu.<N>.` (items, rejected, passes, cycles,
 overruns, parks, requeued, steals_in, coalesced, depth/maxdepth,
 maxlat_ns) plus
-class-level `kern.kwq.<class>.cpu<N>.` (rounds, yields, tick_yields,
+class-level `kern.kwq.<class>.cpu.<N>.` (rounds, yields, tick_yields,
 cap_sleeps, idle_ns, busy_ns, steals_out); the full list with types and
 defaults is S10.7.  `sysctl kern.kwq` is the first thing to look at, and
 `dtrace` the second.  `show kwq` in DDB prints every queue's
@@ -1159,7 +1159,7 @@ Doorbell efficiency (wakeups per enqueue; near 0 = good batching):
 
 Per-CPU imbalance of a client's work:
 
-    dtrace -n 'kwq:::pass-end /args[0]->kwq_name == "netisr/ip"/ { @[arg1] = sum(arg3); }'
+    dtrace -n 'kwq:::pass-end /args[0]->kwq_name == "netisr_ip"/ { @[arg1] = sum(arg3); }'
 
 Who is dropping, and who feeds the queue that drops:
 
@@ -1185,13 +1185,28 @@ unnamed mutexes; the probes exist so that the next operator does not.
 
 ### 10.7 sysctl reference
 
-All nodes live under `kern.kwq`.  `<class>` is `net`, `bulk` or
-`blocking`; `<name>` is the queue name given to `kwq_create()` with `/`
-and `.` replaced by `_`; `<N>` a CPU id.  Counters are 64-bit per-CPU
-fields (S17 Rule 2), one per (queue, CPU) node, read individually.  RW
-knobs take effect at the next round; RWTUN knobs are also read from
-`loader.conf` when the module is preloaded.  Rows marked P1/P2/P7 are
-specified but not yet exported by the P0 code.
+All nodes live under `kern.kwq`.  The tree has one level for each kind
+of thing, so user-chosen names never share a level with anything kwq
+defines:
+
+    kern.kwq.{version,ncpu,nqueues}
+    kern.kwq.<class>.<knob>                 quantum_us, limit, ... (below)
+    kern.kwq.<class>.cpu.<N>.*              the class's worker on CPU N
+    kern.kwq.<class>.queue.<name>.*         one queue
+    kern.kwq.<class>.queue.<name>.cpu.<N>.* that queue's list on CPU N
+
+`<class>` is `net`, `bulk` or `blocking`; `<N>` a CPU id; `<name>` the
+queue name given to `kwq_create()`, verbatim.  A name is 1..31
+characters from `[A-Za-z0-9_-]` (`kwq_name_valid()`), so it is printable
+ASCII and contains nothing that reads as sysctl structure; anything else
+is refused at create with a log line, as is a duplicate within the
+class.  (The first version had a flat tree and sanitized names: sysctl(9)
+merged a queue called `cpu0` into the worker's node and silently dropped
+the leaves of a queue called `limit`; found and restructured
+2026-09-29.)  Counters are 64-bit per-CPU fields (S17 Rule 2), one per
+(queue, CPU) node, read individually.  RW knobs take effect at the next
+round; RWTUN knobs are also read from `loader.conf` when the module is
+preloaded.  Rows marked P6/P7 are specified but not yet exported.
 
 Service-wide
 
@@ -1217,25 +1232,28 @@ Per class: `kern.kwq.<class>.`
 | `nworkers` | int | RD | ncpu (blocking: current) | worker threads in the class (P7) |
 | `max_workers` | int | RW | blocking only, 4 x ncpu | ceiling for worker replacement (P7) |
 | `idle_timeout_s` | int | RW | blocking only, 30 | reap an idle replacement worker after this long (P7) |
-| `cpu<N>.rounds` | counter | RD | | DRR rounds completed by this CPU's worker (P1) |
-| `cpu<N>.passes` | counter | RD | | handler invocations by this worker (P1) |
-| `cpu<N>.wakeups` | counter | RD | | times the worker was woken from idle (P1) |
-| `cpu<N>.yields` | counter | RD | | end-of-round yields taken (P1) |
-| `cpu<N>.tick_yields` | counter | RD | | yields forced by the tick guard (a pass outlived a tick) (P1) |
-| `cpu<N>.cap_sleeps` | counter | RD | | CPU-share cap sleeps taken (P1) |
-| `cpu<N>.handbacks` | counter | RD | | rounds ended early because a higher class waited (P1) |
-| `cpu<N>.budget_calls` | counter | RD | | `kwq_budget_left()` calls by handlers on this worker (P2) |
-| `cpu<N>.budget_reads` | counter | RD | | of those, the ones that read the clock (SCHED.md S4.4) (P2) |
-| `<queue>.cpu<N>.debts` | counter | RD | | doorbells sent to the ring because the queue went idle owing time (SCHED.md S4.3) |
-| `<queue>.cpu<N>.glitches` | counter | RD | | passes whose CPU-time delta was negative or over 1 s: a ticker fault, charged one quantum (SCHED.md S13) |
-| `cpu<N>.round` | uint64 | RD | | current round number (P1) |
-| `cpu<N>.nactive` | uint | RD | | entries on the DRR ring right now (a gauge, not a counter) |
-| `cpu<N>.nnew` | uint | RD | | entries on the new list right now, waiting for a boosted pass (SCHED.md S3 `kw_nnew`) |
-| `cpu<N>.idle_ns` | counter | RD | | time the worker spent asleep with nothing queued (P1) |
-| `cpu<N>.busy_ns` | counter | RD | | CPU time spent in passes (P1) |
-| `cpu<N>.steals_out` | counter | RD | | bulk only: batches taken from this CPU by others (P6) |
 
-Per queue: `kern.kwq.<class>.<name>.`
+Per worker: `kern.kwq.<class>.cpu.<N>.`
+
+| node | type | access | default | meaning |
+|---|---|---|---|---|
+| `cpu.<N>.rounds` | counter | RD | | DRR rounds completed by this CPU's worker (P1) |
+| `cpu.<N>.passes` | counter | RD | | handler invocations by this worker (P1) |
+| `cpu.<N>.wakeups` | counter | RD | | times the worker was woken from idle (P1) |
+| `cpu.<N>.yields` | counter | RD | | end-of-round yields taken (P1) |
+| `cpu.<N>.tick_yields` | counter | RD | | yields forced by the tick guard (a pass outlived a tick) (P1) |
+| `cpu.<N>.cap_sleeps` | counter | RD | | CPU-share cap sleeps taken (P1) |
+| `cpu.<N>.handbacks` | counter | RD | | rounds ended early because a higher class waited (P1) |
+| `cpu.<N>.budget_calls` | counter | RD | | `kwq_budget_left()` calls by handlers on this worker (P2) |
+| `cpu.<N>.budget_reads` | counter | RD | | of those, the ones that read the clock (SCHED.md S4.4) (P2) |
+| `cpu.<N>.round` | uint64 | RD | | current round number (P1) |
+| `cpu.<N>.nactive` | uint | RD | | entries on the DRR ring right now (a gauge, not a counter) |
+| `cpu.<N>.nnew` | uint | RD | | entries on the new list right now, waiting for a boosted pass (SCHED.md S3 `kw_nnew`) |
+| `cpu.<N>.idle_ns` | counter | RD | | time the worker spent asleep with nothing queued (P1) |
+| `cpu.<N>.busy_ns` | counter | RD | | CPU time spent in passes (P1) |
+| `cpu.<N>.steals_out` | counter | RD | | bulk only: batches taken from this CPU by others (P6) |
+
+Per queue: `kern.kwq.<class>.queue.<name>.`
 
 | node | type | access | meaning |
 |---|---|---|---|
@@ -1243,21 +1261,23 @@ Per queue: `kern.kwq.<class>.<name>.`
 | `limit` | uint | RD | per-CPU item limit in effect (`INT_MAX` for `KWQ_LIMIT_NONE`) |
 | `flags` | uint | RD | `KWQ_F_*` as created |
 | `state` | string | RD | `inactive`, `active`, `draining`, `drained` |
-| `cpu<N>.depth` | uint | RD (sampled) | items currently queued on this CPU |
-| `cpu<N>.state` | uint | RD (sampled) | 0 idle, 1 waking, 2 running, 3 parked |
-| `cpu<N>.maxdepth` | uint64 | RD, reset via `reset` | high-water mark of `depth` at pass start; the health signal for `KWQ_LIMIT_NONE` queues |
-| `cpu<N>.items` | counter | RD | items accepted |
-| `cpu<N>.rejected` | counter | RD | enqueues refused with `ENOBUFS`, and enqueues or notifies after drain began (`ENXIO`) |
-| `cpu<N>.coalesced` | counter | RD | `kwq_notify()` calls that found the notifier already pending (signal coalescing ratio) |
-| `cpu<N>.passes` | counter | RD | handler invocations |
-| `cpu<N>.cycles` | counter | RD | `cpu_ticks()` consumed by passes; divide by `kern.kwq.<class>.cpu<N>.busy_ns` for the queue's share of its worker |
-| `cpu<N>.overruns` | counter | RD | passes that exceeded their budget by more than one quantum x weight (P1; SCHED.md S4.3) |
-| `cpu<N>.parks` | counter | RD | times the queue was skipped for a negative deficit (P1) |
-| `cpu<N>.boosts` | counter | RD | passes served from the new list (P1) |
-| `cpu<N>.grace` | counter | RD | doorbells sent to the ring instead of the new list by the grace rule (P1) |
-| `cpu<N>.requeued` | counter | RD | items handed back with `kwq_requeue()` |
-| `cpu<N>.steals_in` | counter | RD | bulk only: batches this CPU's worker took from others for this queue |
-| `cpu<N>.maxlat_ns` | uint64 | RD, reset via `reset` | longest doorbell-to-first-pass latency since last reset: the age of the burst stamp at the first pass after each doorbell (P1; sampling fixed P2) |
+| `cpu.<N>.depth` | uint | RD (sampled) | items currently queued on this CPU |
+| `cpu.<N>.state` | uint | RD (sampled) | 0 idle, 1 waking, 2 running, 3 parked |
+| `cpu.<N>.maxdepth` | uint64 | RD, reset via `reset` | high-water mark of `depth` at pass start; the health signal for `KWQ_LIMIT_NONE` queues |
+| `cpu.<N>.items` | counter | RD | items accepted |
+| `cpu.<N>.rejected` | counter | RD | enqueues refused with `ENOBUFS`, and enqueues or notifies after drain began (`ENXIO`) |
+| `cpu.<N>.coalesced` | counter | RD | `kwq_notify()` calls that found the notifier already pending (signal coalescing ratio) |
+| `cpu.<N>.passes` | counter | RD | handler invocations |
+| `cpu.<N>.cycles` | counter | RD | `cpu_ticks()` consumed by passes; divide by `kern.kwq.<class>.cpu.<N>.busy_ns` for the queue's share of its worker |
+| `cpu.<N>.overruns` | counter | RD | passes that exceeded their budget by more than one quantum x weight (P1; SCHED.md S4.3) |
+| `cpu.<N>.parks` | counter | RD | times the queue was skipped for a negative deficit (P1) |
+| `cpu.<N>.boosts` | counter | RD | passes served from the new list (P1) |
+| `cpu.<N>.grace` | counter | RD | doorbells sent to the ring instead of the new list by the grace rule (P1) |
+| `cpu.<N>.debts` | counter | RD | doorbells sent to the ring because the queue went idle owing time (SCHED.md S4.3) |
+| `cpu.<N>.glitches` | counter | RD | passes whose CPU-time delta was negative or over 1 s: a ticker fault, charged one quantum (SCHED.md S13) |
+| `cpu.<N>.requeued` | counter | RD | items handed back with `kwq_requeue()` |
+| `cpu.<N>.steals_in` | counter | RD | bulk only: batches this CPU's worker took from others for this queue |
+| `cpu.<N>.maxlat_ns` | uint64 | RD, reset via `reset` | longest doorbell-to-first-pass latency since last reset: the age of the burst stamp at the first pass after each doorbell (P1; sampling fixed P2) |
 | `reset` | int | WR | write 1 to zero `maxlat_ns` and `maxdepth` on every CPU of the queue (P2; one node per queue, not per CPU) |
 
 Only `kern.kwq.<class>.limit` and `quantum_us` are loader tunables
@@ -1622,7 +1642,7 @@ one queue is a client option, not a requirement.
 refused work is retried by GEOM as today, memory is never allocated on
 the request path as today, threads exist from attach as today - and adds
 what GELI's private pool lacks: per-provider per-CPU accounting under
-`kern.kwq.blocking.geli-<provider>`, DTrace probes, the tick guard and
+`kern.kwq.blocking.queue.geli-<provider>`, DTrace probes, the tick guard and
 quantum so that a saturating encryption stream cannot monopolise a CPU
 against other BLOCKING clients, and one fewer thread pool in the system.
 The prerequisites are the reserved-worker mechanism and the BLOCKING
@@ -2232,3 +2252,13 @@ decision deferred until real clients show what fan-in they produce.
 - 2026-09-29 (later): the fan-in remedy is deferred (user decision):
   per-CPU sublists cost ncpu^2 lines per queue; the options stay listed
   in PLAN P4.0 and S17 Rule 6 until a real client shows its fan-in.
+- 2026-09-29 (later): kwq_create() refuses names that collide with the
+  class sysctl namespace (knob names, cpu<N>, another queue's sanitized
+  name); sysctl(9) merged same-named nodes and dropped same-named leaves
+  silently.  kwq_test gained the `qname` knob to exercise it.
+- 2026-09-29 (later): sysctl tree restructured (S10.7): workers under
+  kern.kwq.<class>.cpu.<N>, queues under kern.kwq.<class>.queue.<name>
+  with their lists under .cpu.<N>; queue names restricted to 1..31
+  characters of [A-Za-z0-9_-], used verbatim (no sanitizing), invalid or
+  duplicate names refused at create.  Supersedes the same-day collision
+  check on the flat tree.

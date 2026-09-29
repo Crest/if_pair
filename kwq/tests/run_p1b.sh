@@ -24,8 +24,8 @@ run() { name=\$1; shift
 	printf '%-16s %-5s in=%s out=%s rej=%s runs=%s cyc_a=%s cyc_b=%s lat_a=%sus lat_b=%sus ns/item=%s prod=%s ns=%s %s\n' "\$name" "\$(R state)" "\$(R in)" "\$(R out)" "\$(R rejected)" "\$(R runs)" "\$(R cycles_a)" "\$(R cycles_b)" "\$(R maxlat_a_us)" "\$(R maxlat_b_us)" "\$(R ns_per_item)" "\$(R prod_ns_per_item)" "\$(R ns)" "\$(R msg)"
 	[ "\$(R state)" = done ]
 }
-C() { sysctl kern.kwq.net.kta.cpu1 kern.kwq.net.ktb.cpu1 2>/dev/null | grep -v ": 0\$" | grep -E "boosts|grace|parks|overruns|passes|items|maxlat|requeued" | sed 's/^/    /'
-      sysctl kern.kwq.net.cpu1 | grep -E "rounds|yields|handbacks|wakeups" | tr '\n' ' ' | sed 's/kern.kwq.net.cpu1.//g; s/^/    worker: /; s/\$/\n/'; }
+C() { sysctl kern.kwq.net.queue.kta.cpu.1 kern.kwq.net.queue.ktb.cpu.1 2>/dev/null | grep -v ": 0\$" | grep -E "boosts|grace|parks|overruns|passes|items|maxlat|requeued" | sed 's/^/    /'
+      sysctl kern.kwq.net.cpu.1 | grep -E "rounds|yields|handbacks|wakeups" | tr '\n' ' ' | sed 's/kern.kwq.net.cpu.1.//g; s/^/    worker: /; s/\$/\n/'; }
 rc=0
 for s in $scenarios; do
 	case \$s in
@@ -44,7 +44,7 @@ for s in $scenarios; do
 	cost16) run cost items=1024 batch=16 || rc=1 ;;	# S16 batching: 16 items per kwq_enqueue_list()
 	scale) run scale items=1024 batch=${BATCH:-16} pairs=${PAIRS:-1} || rc=1 ;;	# PAIRS producer/consumer pairs on disjoint CPUs
 	fanin) run fanin items=1024 batch=${BATCH:-16} fanin=${FANIN:-2} limit=1000000 || rc=1 ;;	# FANIN producers into one (queue, CPU)
-	cost) b0=\$(sysctl -n kern.kwq.net.cpu1.busy_ns); run cost items=1024 || rc=1; b1=\$(sysctl -n kern.kwq.net.cpu1.busy_ns); echo "    consumer busy ns per item: \$(( (b1 - b0) / \$(sysctl -n kern.kwq_test.result_out) )) (cpu_ticks glitches discarded by the test: \$(sysctl -n kern.kwq_test.result_glitches))" ;;
+	cost) b0=\$(sysctl -n kern.kwq.net.cpu.1.busy_ns); run cost items=1024 || rc=1; b1=\$(sysctl -n kern.kwq.net.cpu.1.busy_ns); echo "    consumer busy ns per item: \$(( (b1 - b0) / \$(sysctl -n kern.kwq_test.result_out) )) (cpu_ticks glitches discarded by the test: \$(sysctl -n kern.kwq_test.result_glitches))" ;;
 	tq_baseline) run tq_baseline items=1024 || rc=1 ;;
 	switch_baseline) run switch_baseline || rc=1 ;;
 	*) echo "unknown scenario \$s"; rc=1 ;;

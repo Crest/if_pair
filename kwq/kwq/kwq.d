@@ -7,7 +7,7 @@
 #pragma D depends_on provider kwq
 
 typedef struct kwqinfo {
-	string kwq_name;	/* "pair0a", "netisr/ip", "wg/crypto" */
+	string kwq_name;	/* "pair0a", "netisr_ip", "wg_crypto" */
 	string kwq_class;	/* "net", "bulk", "blocking" */
 	int kwq_weight;
 	uint32_t kwq_limit;	/* per-CPU bound */

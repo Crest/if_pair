@@ -40,8 +40,10 @@ static struct sx kwq_sx;
 SX_SYSINIT(kwq_sx, &kwq_sx, "kwq queues");
 
 /*
- * sysctl tree: kern.kwq.<class>.{priority,limit} and
- * kern.kwq.<class>.<name>.cpu<N>.* per queue (../KWQ.md S10.7).
+ * sysctl tree (../KWQ.md S10.7): kern.kwq.{version,ncpu,nqueues};
+ * kern.kwq.<class>.{knobs,priority,limit}; kern.kwq.<class>.cpu.<N>.* per
+ * worker; kern.kwq.<class>.queue.<name>.* and .cpu.<N>.* per queue.  User
+ * chosen names live only under "queue", one level of their own.
  */
 SYSCTL_NODE(_kern, OID_AUTO, kwq, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "kernel work queues");
@@ -73,6 +75,13 @@ SYSCTL_PROC(_kern_kwq, OID_AUTO, nqueues,
     "I", "queues currently created (active or not)");
 SYSCTL_NODE(_kern_kwq, OID_AUTO, blocking, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "BLOCKING class: work that may sleep (not yet available)");
+/* One level each for the workers and for the user-chosen queue names. */
+SYSCTL_NODE(_kern_kwq_net, OID_AUTO, cpu, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "workers by CPU");
+SYSCTL_NODE(_kern_kwq_net, OID_AUTO, queue, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "queues by name");
+SYSCTL_NODE(_kern_kwq_bulk, OID_AUTO, cpu, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "workers by CPU");
+SYSCTL_NODE(_kern_kwq_bulk, OID_AUTO, queue, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "queues by name");
+SYSCTL_NODE(_kern_kwq_blocking, OID_AUTO, cpu, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "workers by CPU");
+SYSCTL_NODE(_kern_kwq_blocking, OID_AUTO, queue, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "queues by name");
 
 static u_int kwq_limit[KWQ_NCLASS] = { 4096, 4096, 4096 };
 SYSCTL_UINT(_kern_kwq_net, OID_AUTO, limit, CTLFLAG_RWTUN, &kwq_limit[KWQ_NET],
@@ -94,6 +103,8 @@ SYSCTL_INT(_kern_kwq_blocking, OID_AUTO, priority, CTLFLAG_RD,
     "scheduler priority of the class's workers");
 
 static struct sysctl_oid_list *kwq_class_oids[KWQ_NCLASS];
+static struct sysctl_oid_list *kwq_cpu_oids[KWQ_NCLASS];	/* <class>.cpu */
+static struct sysctl_oid_list *kwq_queue_oids[KWQ_NCLASS];	/* <class>.queue */
 
 /*
  * Scheduler knobs (../SCHED.md S8).  The sysctl handlers validate a write
@@ -542,20 +553,29 @@ kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf)
 /*
  * Lifecycle (../KWQ.md S2).
  */
-static void
-kwq_sysctl_name(const char *name, char *out, size_t len)
+/*
+ * Queue names: 1 .. KWQ_NAMELEN-1 characters from [A-Za-z0-9_-].  They
+ * become sysctl node names verbatim under kern.kwq.<class>.queue, so no
+ * '.', '/', spaces or anything else that reads as structure or is not
+ * printable ASCII (../KWQ.md S2, S10.7).
+ */
+bool
+kwq_name_valid(const char *name)
 {
 	size_t i;
 	char c;
 
-	for (i = 0; i < len - 1 && name[i] != '\0'; i++) {
+	if (name == NULL || name[0] == '\0')
+		return (false);
+	for (i = 0; name[i] != '\0'; i++) {
+		if (i >= KWQ_NAMELEN - 1)
+			return (false);
 		c = name[i];
 		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
 		    (c >= '0' && c <= '9') || c == '_' || c == '-'))
-			c = '_';
-		out[i] = c;
+			return (false);
 	}
-	out[i] = '\0';
+	return (true);
 }
 
 static int
@@ -590,21 +610,32 @@ kwq_sysctl_reset(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
-static void
+/*
+ * Register kern.kwq.<class>.queue.<name> and its cpu.<N> children.  The
+ * "queue" level holds nothing but queue names, and kwq_create() has
+ * already refused a duplicate, so a collision cannot happen; the checks
+ * stay because sysctl(9) would otherwise merge two nodes of one name or
+ * silently drop leaves, which is exactly what hid the first version's
+ * flat tree problem (KWQ.md S10.7, 2026-09-29).
+ */
+static int
 kwq_sysctl_register(struct kwq *q)
 {
-	struct sysctl_oid *qoid, *coid;
+	struct sysctl_oid *qoid, *cpuoid, *coid;
 	struct sysctl_oid_list *cchildren;
 	struct kwq_cpu *kc;
-	char sname[KWQ_NAMELEN], cname[16];
+	char cname[16];
 	int cpu;
 
 	sysctl_ctx_init(&q->kwq_sysctl);
-	kwq_sysctl_name(q->kwq_name, sname, sizeof(sname));
-	qoid = SYSCTL_ADD_NODE(&q->kwq_sysctl, kwq_class_oids[q->kwq_class],
-	    OID_AUTO, sname, CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "kwq queue");
-	if (qoid == NULL)
-		return;
+	qoid = SYSCTL_ADD_NODE(&q->kwq_sysctl, kwq_queue_oids[q->kwq_class],
+	    OID_AUTO, q->kwq_name, CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "kwq queue");
+	if (qoid == NULL || qoid->oid_refcnt > 1) {
+		printf("kwq: %s: sysctl node kern.kwq.%s.queue.%s already exists\n",
+		    q->kwq_name, kwq_class_names[q->kwq_class], q->kwq_name);
+		sysctl_ctx_free(&q->kwq_sysctl);
+		return (EEXIST);
+	}
 	SYSCTL_ADD_UINT(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,
 	    "limit", CTLFLAG_RD, &q->kwq_limit, 0,
 	    "per-CPU item limit in effect (INT_MAX for KWQ_LIMIT_NONE)");
@@ -618,10 +649,14 @@ kwq_sysctl_register(struct kwq *q)
 	SYSCTL_ADD_PROC(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,
 	    "reset", CTLTYPE_INT | CTLFLAG_WR | CTLFLAG_MPSAFE, q, 0,
 	    kwq_sysctl_reset, "I", "write 1 to zero maxlat_ns and maxdepth on every CPU");
+	cpuoid = SYSCTL_ADD_NODE(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,
+	    "cpu", CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "the queue's per-CPU lists");
+	if (cpuoid == NULL)
+		return (0);
 	CPU_FOREACH(cpu) {
 		kc = q->kwq_pcpu[cpu];
-		snprintf(cname, sizeof(cname), "cpu%d", cpu);
-		coid = SYSCTL_ADD_NODE(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid),
+		snprintf(cname, sizeof(cname), "%d", cpu);
+		coid = SYSCTL_ADD_NODE(&q->kwq_sysctl, SYSCTL_CHILDREN(cpuoid),
 		    OID_AUTO, cname, CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
 		    "per-CPU list");
 		if (coid == NULL)
@@ -653,6 +688,7 @@ kwq_sysctl_register(struct kwq *q)
 		KC_U64(kc_grace, "grace", "doorbells sent to the ring by the grace rule");
 #undef KC_U64
 	}
+	return (0);
 }
 
 struct kwq *
@@ -669,8 +705,13 @@ kwq_create(const char *name, enum kwq_class cls, uint32_t flags,
 		np.domain = -1;
 		p = &np;
 	}
-	if (name == NULL || fn == NULL || strlen(name) >= KWQ_NAMELEN) {
-		KASSERT(0, ("kwq_create: bad name or handler"));
+	if (name == NULL || fn == NULL) {
+		KASSERT(0, ("kwq_create: no name or handler"));
+		return (NULL);
+	}
+	if (!kwq_name_valid(name)) {
+		printf("kwq: refusing queue name \"%.*s\": 1..%d characters from "
+		    "[A-Za-z0-9_-] only\n", KWQ_NAMELEN, name, KWQ_NAMELEN - 1);
 		return (NULL);
 	}
 	if (cls == KWQ_BLOCKING) {
@@ -739,7 +780,11 @@ kwq_create(const char *name, enum kwq_class cls, uint32_t flags,
 	sx_xunlock(&kwq_sx);
 
 	q->kwq_state = KWQ_ST_INACTIVE;
-	kwq_sysctl_register(q);
+	if (kwq_sysctl_register(q) != 0) {
+		q->kwq_drained = 1;	/* destroy unlinks and frees it */
+		kwq_destroy(q);
+		return (NULL);
+	}
 	SDT_PROBE1(kwq, , , create, q);
 	if ((flags & KWQ_F_INACTIVE) == 0)
 		kwq_activate(q);
@@ -857,8 +902,16 @@ kwq_modevent(module_t mod __unused, int type, void *data __unused)
 		    SYSCTL_STATIC_CHILDREN(_kern_kwq_bulk);
 		kwq_class_oids[KWQ_BLOCKING] =
 		    SYSCTL_STATIC_CHILDREN(_kern_kwq_blocking);
+		kwq_cpu_oids[KWQ_NET] = SYSCTL_STATIC_CHILDREN(_kern_kwq_net_cpu);
+		kwq_cpu_oids[KWQ_BULK] = SYSCTL_STATIC_CHILDREN(_kern_kwq_bulk_cpu);
+		kwq_cpu_oids[KWQ_BLOCKING] =
+		    SYSCTL_STATIC_CHILDREN(_kern_kwq_blocking_cpu);
+		kwq_queue_oids[KWQ_NET] = SYSCTL_STATIC_CHILDREN(_kern_kwq_net_queue);
+		kwq_queue_oids[KWQ_BULK] = SYSCTL_STATIC_CHILDREN(_kern_kwq_bulk_queue);
+		kwq_queue_oids[KWQ_BLOCKING] =
+		    SYSCTL_STATIC_CHILDREN(_kern_kwq_blocking_queue);
 		kwq_knobs_register();
-		error = kwq_workers_start(kwq_class_oids);
+		error = kwq_workers_start(kwq_cpu_oids);
 		if (error != 0)
 			sysctl_ctx_free(&kwq_knob_sysctl);
 		return (error);

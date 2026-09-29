@@ -16,7 +16,7 @@
  *
  * A scenario runs in its own kernel thread; results land in the
  * kern.kwq_test.result_* sysctls.  The P1b scenarios leave their queues
- * alive (named kta, ktb under kern.kwq.net) until the next run or unload,
+ * alive (kern.kwq.net.queue.kta and ktb) until the next run or unload,
  * so kwq's own counters can be read afterwards.  The "sleep" scenario
  * deliberately sleeps inside a handler and is expected to panic an
  * INVARIANTS kernel; it refuses to run unless kern.kwq_test.allow_panic=1.
@@ -79,6 +79,7 @@ static u_int	kt_cost_a = 50, kt_cost_b = 500;	/* us per item */
 static u_int	kt_batch = 1;		/* items per kwq_enqueue_list() in the flood producer */
 static u_int	kt_pairs = 1;		/* scale: producer/consumer pairs on disjoint CPUs */
 static u_int	kt_fanin = 1;		/* fanin: producers on their own CPUs into one (queue, CPU) */
+static char	kt_qname[KWQ_NAMELEN] = "test";	/* queue name for the P0 scenarios */
 #define	KT_MAX_FANIN	64
 
 /* Results. */
@@ -132,6 +133,8 @@ SYSCTL_UINT(_kern_kwq_test, OID_AUTO, pairs, CTLFLAG_RW, &kt_pairs, 0,
     "scale scenario: producer/consumer pairs, each on two CPUs of its own");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, fanin, CTLFLAG_RW, &kt_fanin, 0,
     "fanin scenario: producers, each on its own CPU, feeding one (queue, CPU) list");
+SYSCTL_STRING(_kern_kwq_test, OID_AUTO, qname, CTLFLAG_RW, kt_qname, sizeof(kt_qname),
+    "queue name used by the P0 scenarios (invalid names such as a.b or a/b must be refused)");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, result_state, CTLFLAG_RD, kt_state,
     sizeof(kt_state), "idle | running | done | fail");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, result_msg, CTLFLAG_RD, kt_msg,
@@ -320,7 +323,7 @@ kt_run_items(uint32_t flags, kwq_handler_t *fn)
 	in = rejected = 0;
 	cur = 0;
 	for (rep = 0; rep < kt_reps; rep++) {
-		q = kt_create("test", flags, 1, fn, NULL);
+		q = kt_create(kt_qname, flags, 1, fn, NULL);
 		if (q == NULL) {
 			kt_fail("kwq_create failed at rep %u", rep);
 			break;
@@ -388,7 +391,7 @@ kt_run_notify(void)
 	u_int i;
 	int cpu;
 
-	q = kt_create("test", 0, 1, kt_notify_handler, NULL);
+	q = kt_create(kt_qname, 0, 1, kt_notify_handler, NULL);
 	if (q == NULL) {
 		kt_fail("kwq_create failed");
 		return;

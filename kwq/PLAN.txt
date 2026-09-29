@@ -72,7 +72,7 @@ Phases
       per-enqueue fields in its first 64 bytes, then consumer-private
       blocks with plain uint64 counters; CTASSERTs on both boundaries.
       Registers
-      kern.kwq.<class>.<name>; KWQ_F_INACTIVE and kwq_activate();
+      kern.kwq.<class>.queue.<name>; KWQ_F_INACTIVE and kwq_activate();
       KWQ_F_SPIN selects MTX_SPIN.
     - Workers: struct kwq_worker per (class, CPU), aligned and allocated
       on the CPU's domain; wait channel is a field of it; INVARIANTS
@@ -347,6 +347,10 @@ Phases
     output against kwq_test load; dtrace -l | grep kwq lists all probes;
     a pass-level trace at 1M items/s costs < 3 % throughput, per-item
     enqueue probe enabled costs are measured and recorded.
+    2026-09-29 (later): sysctl tree restructured after a queue named
+    "cpu0" was found to merge into the worker's node: workers under
+    <class>.cpu.<N>, queues under <class>.queue.<name> with lists under
+    .cpu.<N>; names restricted to [A-Za-z0-9_-], 1..31 chars, verbatim.
     Status 2026-09-29: done.  Files kwq_sdt.c, kwq_sdt.h, kwq.d,
     kwq_ddb.c; the core fires park and overrun through KS_HOOK_* macros
     the kernel environment maps to SDT.  19 probes listed; the S10.6

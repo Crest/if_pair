@@ -377,7 +377,7 @@ kwq_workers_check_chains(void)
 }
 #endif
 
-/* kern.kwq.<class>.cpu<N>.* worker statistics (../KWQ.md S10.7). */
+/* kern.kwq.<class>.cpu.<N>.* worker statistics (../KWQ.md S10.7). */
 static void
 kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 {
@@ -385,7 +385,7 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	struct sysctl_oid_list *ch;
 	char name[16];
 
-	snprintf(name, sizeof(name), "cpu%d", kw->kw_cpu);
+	snprintf(name, sizeof(name), "%d", kw->kw_cpu);
 	oid = SYSCTL_ADD_NODE(&kwq_worker_sysctl_ctx, parent, OID_AUTO, name,
 	    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "class worker on this CPU");
 	if (oid == NULL)
@@ -414,7 +414,7 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 }
 
 int
-kwq_workers_start(struct sysctl_oid_list **class_oids)
+kwq_workers_start(struct sysctl_oid_list **cpu_oids)
 {
 	struct kwq_worker *kw;
 	struct thread *td;
@@ -441,7 +441,7 @@ kwq_workers_start(struct sysctl_oid_list **class_oids)
 			kw->kw_ns_scale = ks_ns_scale(cpu_tickrate());
 			kw->kw_rate = cpu_tickrate();
 			kwq_workers[cls][cpu] = kw;
-			kwq_worker_sysctl(kw, class_oids[cls]);
+			kwq_worker_sysctl(kw, cpu_oids[cls]);
 			error = kthread_add(kwq_worker_main, kw, NULL, &kw->kw_td,
 			    RFSTOPPED, 0, "kwq_%s/%d", kwq_class_names[cls], cpu);
 			if (error != 0) {

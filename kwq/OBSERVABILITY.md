@@ -12,21 +12,24 @@ Contents: 1 the sysctl tree; 2 tunables; 3 service-wide read-only nodes;
 
 ## 1. The sysctl tree
 
-    kern.kwq                       service-wide
-    kern.kwq.<class>               class knobs and read-only class data
-    kern.kwq.<class>.cpu<N>        one worker thread (class, CPU)
-    kern.kwq.<class>.<queue>       one queue
-    kern.kwq.<class>.<queue>.cpu<N>  that queue's list on one CPU
+    kern.kwq                              service-wide
+    kern.kwq.<class>                      class knobs and read-only class data
+    kern.kwq.<class>.cpu.<N>              one worker thread (class, CPU)
+    kern.kwq.<class>.queue.<queue>        one queue
+    kern.kwq.<class>.queue.<queue>.cpu.<N>  that queue's list on one CPU
 
-`<class>` is `net`, `bulk` or `blocking`; `<queue>` is the name given to
-`kwq_create()` with every character outside `[A-Za-z0-9_-]` replaced by
-`_` (so `netisr/ip` becomes `netisr_ip`); `<N>` is a CPU id.  Counters
-are 64-bit and never reset except `maxlat_ns` and `maxdepth` through
-`reset`.  The whole tree at a glance:
+`<class>` is `net`, `bulk` or `blocking`; `<N>` is a CPU id; `<queue>` is
+the name given to `kwq_create()`, verbatim.  A name is 1 to 31
+characters from `[A-Za-z0-9_-]`, so `netisr_ip` and `wg-crypto` are
+names and `netisr/ip` is refused at create with a line in the kernel
+log, as is a name already used in the class.  Every level holds one kind
+of thing: knobs, workers or queues, never mixed.  Counters are 64-bit
+and never reset except `maxlat_ns` and `maxdepth` through `reset`.  The
+whole tree at a glance:
 
     sysctl kern.kwq
-    sysctl kern.kwq.net.pair0a          # one queue with all its CPUs
-    sysctl kern.kwq.net.cpu1            # one worker
+    sysctl kern.kwq.net.queue.pair0a      # one queue with all its CPUs
+    sysctl kern.kwq.net.cpu.1             # one worker
 
 ## 2. Tunables
 
@@ -72,7 +75,7 @@ The grace window of the anti-gaming rule (one round) is compile time.
     kern.kwq.nqueues        queues currently created, active or not
     kern.kwq.<class>.priority   scheduler priority of the class's workers (net 1, bulk 2)
 
-## 4. Per-worker counters: `kern.kwq.<class>.cpu<N>.`
+## 4. Per-worker counters: `kern.kwq.<class>.cpu.<N>.`
 
 | node | meaning |
 |---|---|
@@ -94,18 +97,18 @@ The grace window of the anti-gaming rule (one round) is compile time.
 Examples:
 
     # how busy is the NET worker on CPU 3: busy / (busy + idle) over its lifetime
-    sysctl -n kern.kwq.net.cpu3.busy_ns kern.kwq.net.cpu3.idle_ns | paste -s -d' ' - |
+    sysctl -n kern.kwq.net.cpu.3.busy_ns kern.kwq.net.cpu.3.idle_ns | paste -s -d' ' - |
         awk '{ printf "%.3f\n", $1 / ($1 + $2) }'
 
     # is anything else fighting for CPU 3?  yields grow only when a yield had a taker
-    sysctl kern.kwq.net.cpu3.yields kern.kwq.net.cpu3.tick_yields
+    sysctl kern.kwq.net.cpu.3.yields kern.kwq.net.cpu.3.tick_yields
 
     # items per pass over a 5 s window (batching efficiency)
-    p0=$(sysctl -n kern.kwq.net.cpu3.passes); i0=$(sysctl -n kern.kwq.net.pair0a.cpu3.items); sleep 5
-    p1=$(sysctl -n kern.kwq.net.cpu3.passes); i1=$(sysctl -n kern.kwq.net.pair0a.cpu3.items)
+    p0=$(sysctl -n kern.kwq.net.cpu.3.passes); i0=$(sysctl -n kern.kwq.net.queue.pair0a.cpu.3.items); sleep 5
+    p1=$(sysctl -n kern.kwq.net.cpu.3.passes); i1=$(sysctl -n kern.kwq.net.queue.pair0a.cpu.3.items)
     echo "$(( (i1 - i0) / (p1 - p0 + 1) )) items per pass"
 
-## 5. Per-queue nodes: `kern.kwq.<class>.<queue>.`
+## 5. Per-queue nodes: `kern.kwq.<class>.queue.<queue>.`
 
 | node | meaning |
 |---|---|
@@ -115,7 +118,7 @@ Examples:
 | `state` | `inactive`, `active`, `draining`, `drained` |
 | `reset` | write 1 to zero `maxlat_ns` and `maxdepth` on every CPU of the queue |
 
-Per CPU, `kern.kwq.<class>.<queue>.cpu<N>.`:
+Per CPU, `kern.kwq.<class>.queue.<queue>.cpu.<N>.`:
 
 | node | meaning |
 |---|---|
@@ -139,17 +142,17 @@ Per CPU, `kern.kwq.<class>.<queue>.cpu<N>.`:
 Examples:
 
     # health of one queue on every CPU: refusals, depth against the limit, misbehaviour
-    sysctl kern.kwq.net.pair0a | grep -E 'rejected|maxdepth|overruns|parks|glitches' | grep -v ': 0$'
+    sysctl kern.kwq.net.queue.pair0a | grep -E 'rejected|maxdepth|overruns|parks|glitches' | grep -v ': 0$'
 
     # worst queueing delay a client saw since the last reset, then start a new window
-    sysctl kern.kwq.net.pair0a.cpu3.maxlat_ns
-    sysctl kern.kwq.net.pair0a.reset=1
+    sysctl kern.kwq.net.queue.pair0a.cpu.3.maxlat_ns
+    sysctl kern.kwq.net.queue.pair0a.reset=1
 
     # a handler that ignores its budget shows overruns == passes and parks > 0
-    sysctl kern.kwq.net.wg_crypto.cpu5.overruns kern.kwq.net.wg_crypto.cpu5.passes kern.kwq.net.wg_crypto.cpu5.parks
+    sysctl kern.kwq.net.queue.wg_crypto.cpu.5.overruns kern.kwq.net.queue.wg_crypto.cpu.5.passes kern.kwq.net.queue.wg_crypto.cpu.5.parks
 
     # which CPUs a hash-steered client actually lands on
-    sysctl kern.kwq.net.pair0a | grep '\.items:' | grep -v ': 0$'
+    sysctl kern.kwq.net.queue.pair0a | grep '\.items:' | grep -v ': 0$'
 
 `glitches` should stay 0; a non-zero value means `cpu_ticks()` on this
 machine is not monotonic (seen on Ampere Altra, SCHED.md S13) and every

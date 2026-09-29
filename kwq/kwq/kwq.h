@@ -86,7 +86,14 @@ struct kwq_notifier {
 	u_int		kn_state;
 };
 
-/* Configuration (sleepable context). */
+/*
+ * Configuration (sleepable context).  A queue name is 1..KWQ_NAMELEN-1
+ * characters from [A-Za-z0-9_-] (kwq_name_valid()); it appears verbatim
+ * as kern.kwq.<class>.queue.<name>, in the worker's lock name and in
+ * DTrace.  kwq_create() returns NULL, with a log line, for a bad class,
+ * flags or params, an invalid name, or a name already used in the class.
+ */
+bool		 kwq_name_valid(const char *name);
 struct kwq	*kwq_create(const char *name, enum kwq_class cls, uint32_t flags,
 		    const struct kwq_params *p, kwq_handler_t *fn, void *ctx);
 void		 kwq_activate(struct kwq *q);

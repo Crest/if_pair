@@ -214,7 +214,7 @@ kwq_sbt2ns(sbintime_t sbt)
 }
 
 /* kwq_worker.c */
-int	kwq_workers_start(struct sysctl_oid_list **class_oids);
+int	kwq_workers_start(struct sysctl_oid_list **cpu_oids);
 void	kwq_workers_stop(void);
 void	kwq_doorbell(struct kwq_cpu *kc);	/* kc locked, state IDLE */
 bool	kwq_higher_waiting(enum kwq_class cls);	/* hand-back flags, this CPU */
