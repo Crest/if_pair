@@ -146,6 +146,8 @@ struct kwq_worker {
 	bool			kw_want_new;
 	u_int			kw_served;
 	struct kwq_cpu		*kw_cur;	/* pass in progress */
+	struct kwq_item		*kw_pass_tail;	/* last item handed to the handler
+						   this pass: kwq_requeue(tail NULL) */
 	uint64_t		kw_pass_start;	/* worker CPU time, ns */
 	int64_t			kw_pass_budget;	/* deficit at pass start, ns */
 	u_int			kw_bc_calls;	/* budget calls since the last clock read (S4.4) */

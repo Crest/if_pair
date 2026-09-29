@@ -170,6 +170,14 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	kwq_kc_lock(kc);
 	items = STAILQ_FIRST(&kc->kc_list);
 	n = kc->kc_depth;
+	/*
+	 * Remember the tail so a handler that stops early can hand the rest
+	 * back without walking to it: with a deep backlog that walk cost
+	 * more than the pass's work and, charged to the queue, shrank its
+	 * next budget until one CPU held every item in flight (SCHED.md
+	 * S10.3, the ifpair layouts).
+	 */
+	kw->kw_pass_tail = STAILQ_LAST(&kc->kc_list, kwq_item, kwi_link);
 	STAILQ_INIT(&kc->kc_list);
 	kc->kc_depth = 0;
 	nfs = STAILQ_FIRST(&kc->kc_notify);

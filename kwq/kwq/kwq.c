@@ -409,7 +409,9 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 /*
  * Handler only: put already-admitted leftovers back at the HEAD of the
  * current CPU's list so FIFO holds against items enqueued meanwhile.
- * Never counts against the limit.
+ * Never counts against the limit.  A NULL tail means "up to the end of
+ * the list this pass handed me": the worker recorded that tail, so the
+ * handler need not walk the remainder to find it.
  */
 void
 kwq_requeue(struct kwq *q, struct kwq_item *head, struct kwq_item *tail,
@@ -418,13 +420,18 @@ kwq_requeue(struct kwq *q, struct kwq_item *head, struct kwq_item *tail,
 	struct kwq_worker *kw;
 	struct kwq_cpu *kc;
 
-	KASSERT(n > 0 && head != NULL && tail != NULL,
+	KASSERT(n > 0 && head != NULL,
 	    ("kwq_requeue: bad list %p %p %d", head, tail, n));
 	kw = kwq_workers[q->kwq_class][curcpu];
 	KASSERT(kw != NULL && kw->kw_td == curthread && kw->kw_cur != NULL &&
 	    kw->kw_cur->kc_q == q,
 	    ("kwq_requeue: not called from a handler of %s", q->kwq_name));
 	kc = kw->kw_cur;
+	if (tail == NULL) {
+		tail = kw->kw_pass_tail;
+		KASSERT(tail != NULL, ("kwq_requeue: %s: no list this pass",
+		    q->kwq_name));
+	}
 
 	kwq_kc_lock(kc);
 	tail->kwi_link.stqe_next = kc->kc_list.stqh_first;

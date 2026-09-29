@@ -115,7 +115,9 @@ void		 kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf);
 
 /*
  * Handler only.  kwq_requeue() prepends already-admitted leftovers to the
- * current (queue, CPU) list (FIFO kept, no limit check).  kwq_budget_left()
+ * current (queue, CPU) list (FIFO kept, no limit check); tail NULL means
+ * the leftovers run to the end of the list this pass handed over, so the
+ * handler does not walk to find it.  kwq_budget_left()
  * returns the nanoseconds of this pass's budget still unspent, 0 when the
  * handler should requeue and return; P0 returns a constant, P1 implements
  * SCHED.md S4.4.  A handler processes at least one item per call.

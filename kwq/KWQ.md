@@ -133,7 +133,8 @@ defined in GLOSSARY.md.
                                  struct kwq_item *head,
                                  struct kwq_item *tail, int n);
     void        kwq_requeue(struct kwq *q, struct kwq_item *head,
-                            struct kwq_item *tail, int n);  /* handler only */
+                            struct kwq_item *tail, int n);  /* handler only;
+                            tail NULL = to the end of the list handed over */
 
     /* Idempotent signals: taskqueue_enqueue(9)'s contract, cannot fail. */
     struct kwq_notifier { struct kwq_item kn_item; int kn_cpu; u_int kn_state; };
@@ -545,7 +546,14 @@ waits [L8].
 - Is given a budget it can query: `kwq_budget_left(q)` returns the
   nanoseconds remaining in the current quantum.  A handler processing a
   long list should stop when the budget is gone, hand the unprocessed
-  remainder back with `kwq_requeue(q, head, tail, n)`, and return.
+  remainder back with `kwq_requeue(q, head, NULL, n)`, and return.  The
+  NULL tail stands for the last item of the list the pass handed over,
+  which the worker remembers: the handler never walks its leftovers to
+  find the tail.  (The walk was the first version of this contract; with
+  a deep backlog it cost more than the pass's work, was charged to the
+  queue as an overrun, and shrank its next budget until one CPU held
+  every item in flight, SCHED.md S10.3.  A handler that requeues a
+  list of its own, not the pass's suffix, passes the tail explicitly.)
   `kwq_requeue()` PREPENDS the remainder to the current CPU's list of the
   same queue, ahead of items that arrived during the pass, so per-CPU FIFO
   order is preserved; a plain `kwq_enqueue_list()` would append behind
@@ -824,8 +832,9 @@ A component that today creates a taskqueue or a thread does this:
             KWQ_ITEM_INIT(it);                   /* link must be NULL again */
             pair_input(ifp_of(KWQ_ITEM_MBUF(it)), KWQ_ITEM_MBUF(it));
             if (nx != NULL && kwq_budget_left(q) == 0) {
-                /* at least one item done (progress rule); tail found by walking */
-                kwq_requeue(q, nx, kwq_item_tail(nx), left - 1);
+                /* at least one item done (progress rule); NULL tail: the
+                   rest of the list this pass handed over, no walk */
+                kwq_requeue(q, nx, NULL, left - 1);
                 return;                          /* FIFO kept: prepended */
             }
         }

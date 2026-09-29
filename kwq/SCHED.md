@@ -351,6 +351,17 @@ non-empty list and appends the queue to the ring tail with whatever
 deficit remains: a cooperative handler leaves `D` slightly positive or
 slightly negative and is served again next round.
 
+`tail` may be NULL: the worker records the last item of the list it
+hands over (`kw_pass_tail`, taken from the STAILQ before the flush) and
+uses it.  Before that the handler had to walk its leftovers to find the
+tail, a cost proportional to the backlog and paid *after* the budget
+check, so it was charged to the queue as an overrun.  With a deep
+backlog (the ifpair layouts, S10.3: one 16 k-item backlog on one CPU)
+the walk exceeded the pass's work, the debt shrank the next budget, the
+list grew, and the spiral ended with one CPU 100 % busy walking while
+its fifteen peers idled.  The rule that follows: nothing the handler
+must do to comply with the budget may cost more than a constant.
+
 ### 4.6 Grace rule (anti-gaming)
 
 Without it, a bulk queue whose producer pauses briefly between bursts
