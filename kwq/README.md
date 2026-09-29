@@ -42,4 +42,4 @@ grew out of, and its measurements, are in ../if_pair.c and ../NOTES.md.
 Build: make (both modules, against /usr/src/sys); for the test guest's
 kernel, tests/kwqvm.sh mods.  Load: kldload ./kwq/kwq.ko
 ./kwq_test/kwq_test.ko; drive kwq_test through sysctl kern.kwq_test
-(scenario, items, reps, run, result_*).  Status: P0, P1a, P1b and P2 done (measured in the bhyve guest on both kernels and on a07, SCHED.md S10.2-S10.3, S15.7); P3 (ATF harness) is next.  DTrace: `dtrace -l -P kwq`, translator kwq/kwq.d.  tests/run_p1b.sh runs the guest scenarios (MODDIR=/root/kwq-generic after `kwqvm.sh mods generic` for the stock GENERIC kernel, booted with `nextboot -k kernel`).
+(scenario, items, reps, run, result_*).  Status: P0, P1a, P1b and P2 done (measured in the bhyve guest on both kernels and on a07, SCHED.md S10.2-S10.3, S15.7); P3 (ATF harness) is next.  Tunables, sysctl counters, DTrace probes, DDB and the test runner are documented with examples in OBSERVABILITY.md.  tests/run_p1b.sh runs the guest scenarios (MODDIR=/root/kwq-generic after `kwqvm.sh mods generic` for the stock GENERIC kernel, booted with `nextboot -k kernel`).

@@ -1279,7 +1279,10 @@ core's park and overrun events in `kwq_sched_env.h`), the translator
 (`kwq/kwq.d`; install as `/usr/lib/dtrace/kwq.d` or pass `-L` to
 dtrace, and build the module `WITH_CTF=1` so `struct kwq` is known),
 `show kwq` (`kwq_ddb.c`), and the S10.7 rows marked P2 except the P6/P7
-ones.  The measured probe effect is in S10.3.
+ones.  The measured probe effect is in S10.3.  OBSERVABILITY.md is the
+operator's version of S10: every tunable and counter with its range and
+default, the probes with their arguments, and commands to type; the P8
+manual pages derive from it.
 
 ## 11. What FreeBSD already provides, and what is missing
 
