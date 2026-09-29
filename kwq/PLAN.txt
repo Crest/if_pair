@@ -55,7 +55,7 @@ independently.
 Phases
 ------
 
-[DONE 2026-09-28 except the pmcstat baseline, which needs hardware] P0  Skeleton and lifecycle (2-3 days)
+[DONE 2026-09-28; pmcstat baseline 2026-09-29 on a07, SCHED.md S15.7] P0  Skeleton and lifecycle (2-3 days)
     Files: kwq/kwq/{kwq.h,kwq_internal.h,kwq.c,kwq_worker.c,Makefile}.
     - Classes NET and BULK only; BLOCKING stubbed (kwq_create returns
       NULL for it, asserted under INVARIANTS).
@@ -284,12 +284,26 @@ Phases
     wall per item vs taskqueue 391 / 514.  a07 exposed non-monotonic
     cpu_ticks() (+2^32-tick jumps); the S13 clock glitch guard came out
     of it.  Not run: pmcstat.
+    2026-09-29 PMC baseline on a07 (SCHED.md S15.7): the single-item
+    enqueue is bounded by the kc_mtx handoff (~1350 cycles/item, 70 %
+    backend stalls, 6-7 line transfers per item per side); 4 items per
+    kwq_enqueue_list() give 104 cycles/item, 13x.  Found and fixed the
+    debt-reset hole (S4.3 DEBT rule, overrun_idle scenario).
+    Follow-up for P4: decide on a lock-free single-consumer item list
+    (removes kc_mtx from the enqueue path) once if_pair's per-packet
+    enqueue is measured; for P2/S5: budget_left() costs a clock read,
+    guidance on how often to call it.
     Follow-ups for P2: (a) a simulator scenario that injects a ticker
     jump at a pass start and checks kc_glitches and the pass bound;
-    (b) kc_maxlat_ns is the age of the current backlog (time since the
-    queue last became non-empty), not of the oldest item: a flood that
-    never drains reports the run length (3 s on a07); either rename it
-    or restamp at each list swap.  (c) DONE 2026-09-29: ks_next() no
+    (b) kc_maxlat_ns samples the age of kc_empty_since at every pass
+    start, so for a backlogged queue it reports how long the backlog has
+    existed (3 s on a07), not a latency.  Keep the producer's stamp (only
+    the producer is present when the burst starts, the read is per
+    doorbell not per item, and the write is in a line it modifies
+    anyway); sample it on the consumer only at the first pass after a
+    doorbell, so the counter becomes the worst doorbell-to-first-pass
+    latency.  Do not move the stamp to the consumer: that measures the
+    previous swap's age, i.e. nothing (2026-09-29).  (c) DONE 2026-09-29: ks_next() no
     longer counts the new list for the bounded tail; kw_nnew is kept by
     the doorbell and the take, asserted against a count at every tail
     (KS_ASSERT: INVARIANTS kernels and the simulator), checked after
@@ -312,6 +326,23 @@ Phases
       KWQ.md S10.7 lists them, including depth/maxdepth for KWQ_LIMIT_NONE
       queues; lock names "kwq <name>" for lockstat.
     - show kwq in DDB.
+    - Estimated budget check (added 2026-09-29, from the a07 counters:
+      the per-item clock read in kwq_budget_left() was 60-100 cycles on
+      arm64 and a sixth of the worker's cycles).  kwq_budget_left() keeps
+      counting calls since the last real clock read and a running
+      average cost per call learned from the real reads; it reads the
+      clock only when the estimate comes within Q/10 of exhausting the
+      budget, and unconditionally every K calls (K = 8..16, a knob).
+      The pass-end charge still uses the true CPU time, so fairness is
+      unchanged; only the in-pass check is approximate.  Specify in
+      SCHED.md S5 (the handler keeps calling after every item; kwq
+      decides when it costs a read) and S13 (staleness bound), and
+      restate B1 as budget + Q/10 + K items above the running average.
+      Simulator first: check the new B1 against the exact item costs,
+      including the random scenario's heavy-tailed mix and a scenario
+      whose item cost jumps by 100x mid-pass; then the guest and a07,
+      with the S15.7 counters repeated to confirm the clock reads are
+      gone from the worker's profile.  Removes the S5 cadence guidance.
     Exit: every one-liner in KWQ.md S10.6 runs and produces plausible
     output against kwq_test load; dtrace -l | grep kwq lists all probes;
     a pass-level trace at 1M items/s costs < 3 % throughput, per-item
@@ -336,6 +367,12 @@ Phases
       overlap and that exactly one further run follows a burst),
       sleep (expects panic; run only with kern.kwq_test.allow_panic=1
       in the guest).
+    - Make the P0 scenarios deterministic (found 2026-09-29 on a07):
+      reject and discard depend on where the unbound test thread runs;
+      on a07 it ran on the worker's CPU, was preempted per item and
+      produced 0 rejections and 2 discards while the guest gave 9754 and
+      7369.  Bind the P0 producer to a CPU other than the target and
+      assert on the counts (rejections > 0, discards > 0).
     - ATF sh tests load kwq.ko + kwq_test.ko, set knobs, poll result
       sysctls, assert; require root and a >= 4 CPU machine (skip
       otherwise); run under kyua; clean up modules in body/cleanup.

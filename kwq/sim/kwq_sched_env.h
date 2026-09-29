@@ -27,7 +27,7 @@ struct kwq_cpu {
 	u_int			kc_idle_round;
 	u_int			kc_src;
 	int64_t			kc_deficit;
-	uint64_t		kc_glitches;
+	uint64_t		kc_glitches, kc_debts;
 	uint64_t		kc_passes, kc_overruns, kc_parks, kc_boosts,
 				kc_grace;
 	u_int			kc_weight;
@@ -56,6 +56,12 @@ struct kwq_worker {
 };
 
 #define	KSQ_WEIGHT(kc)	((kc)->kc_weight)
+
+/* __diagused is a kernel-side annotation (sys/systm.h); the simulator's
+   checking code is always compiled, so the variable is simply used. */
+#ifndef __diagused
+#define	__diagused
+#endif
 
 /* Core self-checks land in the simulator's violation count. */
 void	ks_env_fail(const char *fmt, ...);

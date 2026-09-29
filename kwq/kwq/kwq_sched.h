@@ -16,6 +16,7 @@
  *   struct kwq_cpu:    kc_active (TAILQ_ENTRY), kc_state, kc_onlist,
  *                      kc_warm, kc_idle_round (u_int), kc_src, kc_deficit
  *                      (int64_t ns), kc_passes, kc_overruns, kc_parks, kc_glitches,
+ *                      kc_debts,
  *                      kc_boosts, kc_grace
  *   struct kwq_worker: kw_new, kw_active (TAILQ_HEAD of kwq_cpu),
  *                      kw_nactive, kw_nnew (u_int list lengths),
@@ -163,6 +164,18 @@ ks_ticked(unsigned int ticks_now, unsigned int swvoltick)
  * 25 MHz).  Such a pass is charged one quantum and counted.
  */
 #define	KS_GLITCH_NS	1000000000ULL
+
+/*
+ * kc_warm bits (SCHED.md S4.3, S4.6).  WARM: the queue left the ring
+ * recently and the grace rule may send its next doorbell to the ring
+ * instead of the new list.  DEBT: it went idle owing time; its deficit was
+ * kept and its next doorbell goes to the ring unconditionally, where the
+ * refill parks it.  Without DEBT a handler that frees its batch at the
+ * end of an 8 ms pass emptied its list, had the debt reset and took a
+ * fresh boost every pass: 41x a cooperative queue's share (2026-09-29).
+ */
+#define	KWQ_WARM	0x01
+#define	KWQ_DEBT	0x02
 
 static inline uint64_t
 ks_ns_scale(uint64_t rate_hz)

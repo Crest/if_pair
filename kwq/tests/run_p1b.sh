@@ -16,7 +16,7 @@ kldstat -q -m kwq_test && kldunload kwq_test; kldstat -q -m kwq && kldunload kwq
 kldload $MODDIR/kwq.ko && kldload $MODDIR/kwq_test.ko || { echo LOADFAIL; exit 1; }
 uname -v | sed 's/^/kernel: /'; sysctl -n kern.hz hw.ncpu hw.machine | tr '\\n' ' ' | sed 's/^/hz ncpu machine: /'; echo
 run() { name=\$1; shift
-	sysctl -q kern.kwq_test.cost_us=0 kern.kwq_test.limit=0 kern.kwq_test.cpu=-1 kern.kwq_test.items=1000 kern.kwq_test.reps=10 kern.kwq_test.secs=3 kern.kwq_test.weight_a=1 kern.kwq_test.weight_b=1 kern.kwq_test.cost_a=50 kern.kwq_test.cost_b=500 >/dev/null
+	sysctl -q kern.kwq_test.cost_us=0 kern.kwq_test.limit=0 kern.kwq_test.cpu=-1 kern.kwq_test.items=1000 kern.kwq_test.reps=10 kern.kwq_test.secs=3 kern.kwq_test.weight_a=1 kern.kwq_test.weight_b=1 kern.kwq_test.cost_a=50 kern.kwq_test.cost_b=500 kern.kwq_test.batch=1 >/dev/null
 	for kv in "\$@"; do sysctl -q kern.kwq_test.\$kv >/dev/null; done
 	sysctl -q kern.kwq_test.scenario=\$name >/dev/null; start=\$(date +%s); sysctl -q kern.kwq_test.run=1 >/dev/null
 	while [ "\$(sysctl -n kern.kwq_test.result_state)" = running ]; do sleep 0.2; [ \$(( \$(date +%s) - start )) -gt 120 ] && { echo "\$name: TIMEOUT"; return 1; }; done
@@ -41,6 +41,7 @@ for s in $scenarios; do
 	overrun) run overrun || rc=1; C ;;
 	yield) run yield || rc=1; C ;;
 	yield0) run yield items=0 || rc=1 ;;	# callout only: VM/timer noise baseline
+	cost16) run cost items=1024 batch=16 || rc=1 ;;	# S16 batching: 16 items per kwq_enqueue_list()
 	cost) b0=\$(sysctl -n kern.kwq.net.cpu1.busy_ns); run cost items=1024 || rc=1; b1=\$(sysctl -n kern.kwq.net.cpu1.busy_ns); echo "    consumer busy ns per item: \$(( (b1 - b0) / \$(sysctl -n kern.kwq_test.result_out) )) (cpu_ticks glitches discarded by the test: \$(sysctl -n kern.kwq_test.result_glitches))" ;;
 	tq_baseline) run tq_baseline items=1024 || rc=1 ;;
 	switch_baseline) run switch_baseline || rc=1 ;;

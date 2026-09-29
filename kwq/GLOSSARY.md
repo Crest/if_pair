@@ -299,6 +299,12 @@ more.  "kwq:" marks terms this project defines.
   rule*).  Not a synonym for *quantum* (the per-round refill) and
   unrelated to if_pair's count-based `net.link.pair.batch`.  Alias:
   *budget* (BFQ, NAPI).
+- **debt** (kwq) - a negative deficit at the moment a queue goes idle.
+  Textbook DRR resets the deficit on empty; kwq keeps a negative one and
+  flags the queue (`KWQ_DEBT`) so that its next doorbell goes to the
+  ring, where the refill parks it, instead of the new list and its
+  *boost*.  Added 2026-09-29 after a handler that freed its batch at the
+  end of each pass escaped the *penalty cap* entirely.  SCHED.md S4.3.
 - **penalty cap** (kwq) - the deficit may not fall below minus
   `penalty_rounds` (32) quanta after a pass is charged, so one overrun
   costs at most 32 rounds of *park* and a repeat offender is held to
@@ -413,5 +419,5 @@ more.  "kwq:" marks terms this project defines.
 (for drain).  When one of these appears in a citation of an external
 document it is kept verbatim and the kwq term follows in parentheses.
 
-Last revised 2026-09-28 together with KWQ.md S18 (revision log) and
+Last revised 2026-09-29 (debt) together with KWQ.md S18 (revision log) and
 SCHED.md.

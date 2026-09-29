@@ -181,7 +181,10 @@ Per (queue, CPU) (`struct kwq_cpu`), in addition to the P0 fields:
 
 Triggered by the first enqueue or notify into an IDLE list:
 
-    if kc_warm and (u_int)kw_round - kc_idle_round <= GRACE_ROUNDS:  # unsigned
+    if kc_warm & DEBT:                            # went idle owing time (S4.3)
+        append kc to kw_active tail; kc_onlist = ACTIVE; kw_nactive++
+        kc_debts++                                # the refill will park it
+    elif kc_warm & WARM and (u_int)kw_round - kc_idle_round <= GRACE_ROUNDS:
         append kc to kw_active tail; kc_onlist = ACTIVE; kw_nactive++
         kc_deficit is left as it was            (no boost: S4.6)
     else:
@@ -255,8 +258,9 @@ nanoseconds plus the end-of-round yield.
         append kc to kw_active tail; kc_onlist = ACTIVE; kw_nactive++
     else:
         kc_state = IDLE
-        kc_warm = (kc came from the ring); kc_idle_round = kw_round
-        kc_deficit = 0                              # DRR: reset on empty
+        kc_warm = WARM if kc came from the ring else 0; kc_idle_round = kw_round
+        if kc_deficit < 0: kc_warm |= DEBT          # debt survives idle
+        else: kc_deficit = 0                        # DRR: reset on empty
     wake drain/cancel waiters; unlock
 
 The lower clamp is a deliberate departure from textbook DRR, whose
@@ -276,6 +280,24 @@ thus bounded per overrun rather than repaid in full (B3 holds for
 cooperative handlers), which is what CFS bandwidth control (throttled
 only until the period ends) and EEVDF (lag bounded and decaying) also
 settled on for CPU time.
+
+**Debt survives idle (added 2026-09-29).**  Textbook DRR resets the
+deficit when a queue empties, and the first implementation did so
+unconditionally.  A handler that frees its batch at the end of its pass
+empties its list at exactly that moment: the kernel `overrun` scenario,
+once its harness returned items per pass instead of per item, showed the
+budget-ignoring queue going idle after every 8 ms pass, its debt erased,
+and its refill a few microseconds later ringing the doorbell as a new
+queue with a fresh boosted quantum, 374 boosts in 374 passes and 41
+times the cooperative queue's share on both test machines.  The grace
+rule did not apply because it marks only queues that were served from
+the ring.  The rule now: a queue that goes idle with a negative deficit
+keeps it and is flagged `DEBT`; its next doorbell goes to the ring
+regardless of grace, where the normal refill parks it, and the flag
+clears with the next boost.  The debt is repaid only through refills,
+i.e. rounds; when no other queue has work the rounds are empty and the
+debt is paid in microseconds, which is work-conserving and intended.
+Simulator scenario `overrun_idle`; the kernel result is in S10.2.
 
 An **overrun**, for the counter, is a pass that exceeded its budget by
 more than one `Qw`.  A cooperative handler that stops after the item that
@@ -370,7 +392,8 @@ correctly reads as mostly idle.
   worker list; WAKING or PARKED iff on a worker list; RUNNING iff
   `kw_cur == kc`.
 - I3 `-penalty_rounds x Qw <= kc_deficit <= 2 Qw` at all times (penalty
-  cap and carry cap), and `kc_deficit == 0` whenever `kc_state == IDLE`.
+  cap and carry cap), and whenever `kc_state == IDLE` either
+  `kc_deficit == 0` or `kc_deficit < 0` with the `DEBT` flag set (S4.3).
 - I4 The worker holds no service lock while a handler runs.
 - I5 Between two consecutive `round_end()` calls, every queue on the
   ring at the first call has been refilled exactly once and has had
@@ -378,6 +401,8 @@ correctly reads as mostly idle.
   early; the entries not reached keep their place at the ring's head.
 - I6 A queue is boosted at most once per idle period, and an idle period
   ending within `GRACE_ROUNDS` of leaving the ring is not boosted.
+  A queue that went idle owing time is not boosted at all; its doorbell
+  goes to the ring.
 
 ## 5. Handler contract under the scheduler
 
@@ -385,10 +410,14 @@ Unchanged from KWQ.md S3/S6, restated with the scheduler's terms:
 
 - The handler owns the batch and is never interrupted by kwq; the
   quantum is cooperative.  A handler processes items in order, checks
-  `kwq_budget_left()` **after every item** (a `cpu_ticks()` read, cheaper
-  than any item; KWQ.md S16), and when it reads 0 with items left,
-  finishes any per-batch flush (LRO) and `kwq_requeue()`s the untouched
-  remainder.
+  `kwq_budget_left()` **after every item** when items cost more than
+  about a microsecond, and every 8-16 items when they are cheaper (the
+  check is one clock read: ~25 cycles on x86, 60-100 on arm64 where the
+  generic-timer read carries a barrier; S15.7), and when it reads 0 with
+  items left, finishes any per-batch flush (LRO) and `kwq_requeue()`s the
+  untouched remainder.  Checking less often than that stretches B1 by
+  the items skipped; checking more often than the item cost warrants
+  turns the clock read into the handler's main cost.
 - **Progress rule**: a handler processes at least one item per
   invocation before honouring a zero budget.  The budget at pass start
   is positive but may be tiny (a carried remainder), and a notifier's
@@ -633,6 +662,7 @@ compare the guest against in P1b:
 | overrun, budget-ignoring 8 ms passes vs a cooperative flood | `overruns == passes`, parks 6560, share 1.22 with `penalty_rounds` 32 (13.4 with the first draft's 2) |
 | hand-back, NET flood and BULK flood on one CPU | BULK receives one item per NET round, 0.32 of NET's service; NET worst latency 1.7 ms with a 64-deep flood (0 before the "at least one pass" rule) |
 | storm, 1000 light queues waking within 100 us against a flood | flood keeps 4750 passes in 2 s; light queues' worst latency 200 us |
+| overrun_idle, the overrunner's items return 20 us after each pass (a handler that frees at the end) | share 1.22, 1 boost, 205 debts, 6560 parks over 206 passes; without the DEBT rule every pass was boosted |
 | manyq, 2000 Poisson queues at 40 % load, weights 1..8 | worst item latency 5.5 ms; invariants sampled |
 | nnew, 512 queues bursting in the same instant every 2 ms, 64 warm queues on the grace path, 8 floods, 1 overrunner | `kw_nnew` equals the new-list length at every tail (core assertion) and after every step (checker); 13.7 k boosted passes of 21 k |
 | wrap, wall clock, CPU time, round counter and `ticks` started just below their wraps | 27726 items through all four wraps, no violation; `ks_ticks2ns` exact against 128-bit arithmetic for 5 rates x 8 values including 2^64 - 1; `ks_ns_scale(0)` = 1 GHz |
@@ -667,6 +697,7 @@ reproduces the table.
 | latency, light 1 kHz queue vs a 20 us flood: light queue worst | 273, 383, 434 us | 228, 336 us; one run 4.6 ms (see below) | 399 us |
 | gaming | share 0.886, 1 boost, ~1960 grace hits | 0.895 | 0.80, 1 boost, 2081 grace |
 | overrun, budget-ignoring 8 ms passes | 1.22, `overruns == passes` | 1.22 | 1.22 |
+| overrun with items returned at pass end (2026-09-29, harness refills per pass) | 1.27 with the DEBT rule; 41 before it (374 boosts in 374 passes) | 1.26; 41 before | 1.22 (`overrun_idle`) |
 | yield, 1 kHz callout pinned to the saturated CPU | 5 of 6 runs worst 0.4-1.3 ms; 1 run 35 ms (see below) | 5 of 6 runs 0.7-2.5 ms; 1 run 37 ms | n/a |
 | cost, empty handler: worker CPU / producer CPU / wall per item | 96 / 80 / 211 ns (14.2 M items in 3 s) | 175 / 158 / 393 ns (7.6 M) | ~20 ns bookkeeping |
 | tq_baseline, taskqueue of epair's shape: producer / wall per item | 58 / 193 ns (15.8 M) | 155 / 363 ns (8.2 M) | |
@@ -1034,3 +1065,82 @@ per-item state.
 
 The Ampere runs the same four scenarios for the arm64 column, with
 `pmcstat` for the cache-line traffic baseline of KWQ.md S17.
+
+### 15.7 Measured: hardware counters on a07 (2026-09-29)
+
+hwpmc on a07 (128 x Neoverse-N1, six ARMv8 counters per CPU, all
+architectural events implemented), `cost` scenario (empty handler, one
+queue, producer bound to CPU 2, worker on CPU 1), system-wide counters
+per CPU over 6 s of a 10 s run, both CPUs saturated.  The harness was
+first corrected: 40-byte items packed three to a line, a flood struct
+with producer- and worker-written counters in one line, and a pool
+returned under a mutex per item are costs kwq's clients do not have;
+items are now one line each, the struct is split by writer, the pool is
+refilled once per pass.  That correction did not change kwq's rate at
+all (1.90-1.95 M items/s before and after) and raised the taskqueue
+baseline 15 %: the pool lock had been hiding the real limit.
+
+| per item, per side | kwq, 1 item per `kwq_enqueue()` | kwq, 4 per `kwq_enqueue_list()` | kwq, 16 per call | taskqueue baseline (1 per call) |
+|---|---|---|---|---|
+| items/s (one producer, one worker) | 1.90 M | 24.7 M | 24.5 M | 2.26 M |
+| cycles, worker / producer | 1352 / 1352 | 104 / 104 | 105 / 94 | 1138 / 1138 |
+| instructions, worker / producer | 790 / 1061 | 177 / 118 | 178 / 137 | 560 / 923 |
+| backend stall cycles, worker / producer | 818 / 920 | 36 / 61 | 36 / 36 | 636 / 779 |
+| frontend stall cycles, worker / producer | 246 / 51 | 11 / 7 | 11 / 21 | 287 / 56 |
+| L1D refills, worker / producer | 6.8 / 5.7 | 1.0 / 1.4 | 1.0 / 0.8 | 23.5 / 7.6 |
+| LLC read misses, worker / producer | 6.8 / 6.5 | 1.1 / 1.6 | 1.0 / 1.5 | 16.0 / 8.4 |
+| barriers (`dmb`), worker / producer | 4.7 / 2.6 | | | 3.3 / 3.1 |
+| acquire / release accesses, worker | 4.4 / 2.6 | | | 3.5 / 3.4 |
+| branch mispredictions | < 0.6 | < 0.02 | | < 0.7 |
+
+Where the cycles go (dtrace profile, single-item enqueue): on the worker
+48 % in sleep-mutex lock and unlock, 16 % in clock reads (`get_cntxct`,
+`tc_cpu_ticks`, `binuptime`: the generic timer read carries an `isb`),
+13 % in kwq's own code, 7 % in the spin lock, 4 % in epoch enter/exit,
+6 % in the test handler; on the producer 71 % in mutex lock, unlock and
+`lock_delay`, 24 % in clock reads (the harness's two `cpu_ticks()` per
+enqueue plus kwq's `sbinuptime()` burst stamp), the rest in
+`kwq_enqueue()`.  lockstat: 480 k adaptive-mutex spins per second, 96 %
+of them on the queue's own `kc_mtx`, split between the producer's
+per-item lock (average wait 1.0 us) and the worker's two locks per pass
+(0.36 us); passes averaged four items.
+
+**Findings.**
+
+1. **The bottleneck is the per-item mutex handoff, not layout.**  Every
+   L1 refill is an LLC miss, i.e. a line moving between the two cores,
+   and 6-7 of them per item on each side are far more than the two the
+   data structures require (the item and the list head).  The rest are
+   the lock word and its neighbours thrashing under contention: a
+   quarter of the enqueues find the lock held, and `lock_delay`'s
+   backoff, tuned for long holds, turns a 100 ns hold into a 1 us wait.
+   70 % of all cycles are backend stalls on those lines.
+2. **Batching removes it.**  Four items per `kwq_enqueue_list()` cut the
+   worker to 104 cycles and one line per item, a 13x rate increase with
+   the same code; sixteen per call gains nothing more because the
+   harness's pool is then the limit.  S16's rule to batch at the
+   producer when the source naturally has a batch is thereby
+   quantified; a per-packet producer (S16's other case) pays the
+   handoff and should expect ~1300 cycles per item on this class of
+   core, of which kwq's bookkeeping is under 200.
+3. **kwq's layout holds.**  The producer/consumer shared state is one
+   line per (queue, CPU) as S17 intended; no false sharing was found in
+   kwq's own structures, only in the harness (fixed).  The remaining
+   candidate is structural, not layout: a lock-free single-consumer
+   list for the item path (one atomic exchange per enqueue, one per
+   swap) would take `kc_mtx` off the hot path.  It is an architecture-
+   neutral technique, but a change to the S17 locking rules and the
+   notifier and drain protocols; recorded for the P4 decision, to be
+   taken when if_pair's per-packet enqueue has been measured.
+4. **Clock reads are the second cost.**  kwq read the clock five times
+   per pass (twice for the same tick); now three.  `kwq_budget_left()`
+   is one read per call, 60-100 cycles on arm64 with the barrier, ~25 on
+   x86: a handler should call it per item when items cost more than
+   about a microsecond and every 8-16 items otherwise (S5 guidance).
+5. **The taskqueue's shape is not cheaper.**  Same cycles per item at
+   one item per call, more misses on its worker (its wakeup path), and
+   no batched enqueue in its KPI.
+
+The earlier a07 wall figures (S10.3: 470-515 ns per item with the old
+harness) are superseded by this table.
+

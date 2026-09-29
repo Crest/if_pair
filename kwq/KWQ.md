@@ -1194,6 +1194,7 @@ Per class: `kern.kwq.<class>.`
 | `cpu<N>.tick_yields` | counter | RD | | yields forced by the tick guard (a pass outlived a tick) (P1) |
 | `cpu<N>.cap_sleeps` | counter | RD | | CPU-share cap sleeps taken (P1) |
 | `cpu<N>.handbacks` | counter | RD | | rounds ended early because a higher class waited (P1) |
+| `<queue>.cpu<N>.debts` | counter | RD | | doorbells sent to the ring because the queue went idle owing time (SCHED.md S4.3) |
 | `<queue>.cpu<N>.glitches` | counter | RD | | passes whose CPU-time delta was negative or over 1 s: a ticker fault, charged one quantum (SCHED.md S13) |
 | `cpu<N>.round` | uint64 | RD | | current round number (P1) |
 | `cpu<N>.nactive` | uint | RD | | entries on the DRR ring right now (a gauge, not a counter) |
@@ -1711,8 +1712,13 @@ drivers qualifies.
 **Producer-side staging would be a loss.**  Holding packets in a
 per-producer buffer until N have accumulated or a timer fires buys one
 mutex acquisition per packet (the queue mutex is uncontended in the fast
-path and costs tens of nanoseconds against microseconds of `ip_input`)
-and pays for it three times: a flush timer, i.e. latency for the last
+path and costs tens of nanoseconds against microseconds of `ip_input`;
+measured 2026-09-29, SCHED.md S15.7: with a *trivial* handler that
+claim fails - the handoff is then the whole cost, ~1350 cycles per item
+on a Neoverse-N1 with a quarter of the enqueues finding the lock held,
+and four items per `kwq_enqueue_list()` give 13x - so P4 measures
+if_pair's real figure before the per-packet rule is final) and pays for
+it three times: a flush timer, i.e. latency for the last
 packet of every burst and a new tunable; a staging area per (producing
 CPU, peer side, target CPU), since the target CPU is chosen per packet
 by `kwq_cpu_for_hash(flowid)` and a batch would have to be split by it
@@ -2129,3 +2135,20 @@ checked by the load-time assertion of Rule 5.  Record the numbers in
   kernel, a violation in the simulator) and asserts the counter against
   a count at every tail; simulator scenario "nnew" added; verified in
   the simulator suite and on the GENERIC-DEBUG guest.
+- 2026-09-29 (night): current code (glitch guard, kw_nnew, nnew/nactive
+  gauges) built and run on a07 GENERIC: all scenarios pass, yield 64-70
+  us over 6 runs, light queue 216-218 us, gaming 0.875, costs 320 / 364 /
+  517 ns worker / producer / wall per item.  The non-INVARIANTS build
+  caught an unused variable in the checking-only count; it is now
+  __diagused (sys/systm.h), which the simulator's environment header
+  defines away since its checking code is always compiled.
+- 2026-09-29 (PMC day): hwpmc on a07 (SCHED.md S15.7): the per-item
+  mutex handoff, not layout, is the cost; batching four items per
+  kwq_enqueue_list() gives 13x.  Harness corrected (items one line each,
+  flood struct split by writer, pool refilled per pass); worker reads
+  the clock three times per pass instead of five.  The corrected
+  harness exposed a specification hole: an overrunner that empties at
+  pass end had its debt reset and was boosted every pass (41x share);
+  debt now survives idle (DEBT flag, S4.3, counter `debts`, simulator
+  scenario overrun_idle).  kwq_test gained a `batch` knob and the runner
+  a cost16 scenario.

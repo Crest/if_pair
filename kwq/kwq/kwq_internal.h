@@ -61,7 +61,7 @@ struct kwq_cpu {
 	STAILQ_HEAD(, kwq_item)	kc_notify;	/* pending notifiers */
 	u_short			kc_waiters;	/* drain/cancel sleepers on kc */
 	u_char			kc_onlist;	/* enum kwq_onlist */
-	u_char			kc_warm;	/* grace rule (SCHED.md S4.6) */
+	u_char			kc_warm;	/* KWQ_WARM | KWQ_DEBT (SCHED.md S4.3, S4.6) */
 	u_int			kc_idle_round;	/* low 32 bits of kw_round at idle */
 	sbintime_t		kc_empty_since;	/* sbinuptime at empty -> non-empty */
 	TAILQ_ENTRY(kwq_cpu)	kc_active;	/* worker's new list or ring */
@@ -84,6 +84,7 @@ struct kwq_cpu {
 	uint64_t		kc_boosts;	/* passes served from the new list */
 	uint64_t		kc_grace;	/* doorbells sent to the ring by the grace rule */
 	uint64_t		kc_glitches;	/* passes with a negative or > KS_GLITCH_NS CPU-time delta */
+	uint64_t		kc_debts;	/* doorbells sent to the ring because the queue owed time */
 	uint64_t		kc_steals_in;	/* P6 */
 } __aligned(KWQ_LINE);
 
@@ -201,5 +202,6 @@ void	kwq_workers_stop(void);
 void	kwq_doorbell(struct kwq_cpu *kc);	/* kc locked, state IDLE */
 bool	kwq_higher_waiting(enum kwq_class cls);	/* hand-back flags, this CPU */
 uint64_t kwq_cputime_ns(const struct kwq_worker *kw);
+uint64_t kwq_cputime_ns_tick(const struct kwq_worker *kw, uint64_t *tick);
 
 #endif /* !_KWQ_INTERNAL_H_ */

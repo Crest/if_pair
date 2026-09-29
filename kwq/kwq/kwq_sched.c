@@ -44,7 +44,7 @@ ks_queue_init(struct kwq_cpu *kc)
 	kc->kc_src = KWQ_SRC_NONE;
 	kc->kc_deficit = 0;
 	kc->kc_passes = kc->kc_overruns = kc->kc_parks = 0;
-	kc->kc_boosts = kc->kc_grace = 0;
+	kc->kc_boosts = kc->kc_grace = kc->kc_debts = kc->kc_glitches = 0;
 }
 
 /* Put kc on the ring tail. */
@@ -68,7 +68,12 @@ ks_doorbell(struct kwq_worker *kw, struct kwq_cpu *kc)
 {
 	bool boost;
 
-	if (kc->kc_warm &&
+	if (kc->kc_warm & KWQ_DEBT) {
+		/* Owes time (S4.3): to the ring, where the refill parks it. */
+		ks_ring_append(kw, kc);
+		kc->kc_debts++;
+		boost = false;
+	} else if ((kc->kc_warm & KWQ_WARM) &&
 	    (uint32_t)kw->kw_round - kc->kc_idle_round <=
 	    kw->kw_knobs->grace_rounds) {
 		ks_ring_append(kw, kc);
@@ -118,7 +123,7 @@ ks_next(struct kwq_worker *kw, bool higher_waiting, struct kwq_cpu **kcp)
 {
 	struct kwq_cpu *kc;
 	int64_t q;
-	int m;
+	int m __diagused;	/* the checking count below */
 
 	*kcp = NULL;
 	if (kw->kw_phase == KWQ_PH_IDLE) {
@@ -265,9 +270,12 @@ ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 		ks_ring_append(kw, kc);
 	} else {
 		kc->kc_state = KWQ_CPU_IDLE;
-		kc->kc_warm = (kc->kc_src == KWQ_SRC_RING);
+		kc->kc_warm = (kc->kc_src == KWQ_SRC_RING) ? KWQ_WARM : 0;
 		kc->kc_idle_round = (uint32_t)kw->kw_round;
-		kc->kc_deficit = 0;
+		if (kc->kc_deficit < 0)
+			kc->kc_warm |= KWQ_DEBT;	/* debt survives idle (S4.3) */
+		else
+			kc->kc_deficit = 0;		/* DRR: reset on empty */
 	}
 	kc->kc_src = KWQ_SRC_NONE;
 }

@@ -77,8 +77,23 @@ kwq_cputime_ns(const struct kwq_worker *kw)
 {
 	uint64_t t;
 
+	return (kwq_cputime_ns_tick(kw, &t));
+}
+
+/*
+ * Same, and also hand back the raw cpu_ticks() reading so a caller that
+ * wants both (the pass accounting) reads the clock once: on arm64 a
+ * generic-timer read costs an isb() and showed at 16 % of the worker's
+ * cycles on a07 with five reads per pass (SCHED.md S15.7).
+ */
+uint64_t
+kwq_cputime_ns_tick(const struct kwq_worker *kw, uint64_t *tick)
+{
+	uint64_t t;
+
 	critical_enter();
-	t = curthread->td_runtime + (cpu_ticks() - PCPU_GET(switchtime));
+	*tick = cpu_ticks();
+	t = curthread->td_runtime + (*tick - PCPU_GET(switchtime));
 	critical_exit();
 	return (ks_ticks2ns(t, kw->kw_ns_scale));
 }
@@ -146,6 +161,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	u_int n, nnf;
 	int sign;
 	bool net, has_work;
+	uint64_t t1, cpu_now;
 
 	q = kc->kc_q;
 	net = (q->kwq_class == KWQ_NET);
@@ -169,12 +185,11 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 				kc->kc_maxlat_ns = age;
 		}
 	}
-	ks_pass_begin(kw, kc, kwq_cputime_ns(kw));
+	ks_pass_begin(kw, kc, kwq_cputime_ns_tick(kw, &t0));
 	kwq_kc_unlock(kc);
 
 	if (n > kc->kc_maxdepth)
 		kc->kc_maxdepth = n;
-	t0 = cpu_ticks();
 	THREAD_NO_SLEEPING();
 	if (net)
 		NET_EPOCH_ENTER(et);
@@ -206,14 +221,15 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	if (net)
 		NET_EPOCH_EXIT(et);
 	THREAD_SLEEPING_OK();
-	kc->kc_cycles += cpu_ticks() - t0;
 	kc->kc_items += n + nnf;
 
 	/* Emptiness re-check under the lock; the core re-places the queue. */
 	kwq_kc_lock(kc);
 	has_work = !STAILQ_EMPTY(&kc->kc_list) || !STAILQ_EMPTY(&kc->kc_notify);
 	mtx_lock_spin(&kw->kw_mtx);
-	ks_pass_end(kw, kc, kwq_cputime_ns(kw), has_work);
+	cpu_now = kwq_cputime_ns_tick(kw, &t1);
+	kc->kc_cycles += t1 - t0;
+	ks_pass_end(kw, kc, cpu_now, has_work);
 	mtx_unlock_spin(&kw->kw_mtx);
 	if (kc->kc_waiters != 0)
 		wakeup(kc);

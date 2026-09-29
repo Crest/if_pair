@@ -549,6 +549,7 @@ kwq_sysctl_register(struct kwq *q)
 		KC_U64(kc_maxlat_ns, "maxlat_ns", "largest oldest-item age seen at pass start");
 		KC_U64(kc_overruns, "overruns", "passes that exceeded their budget by more than one quantum x weight");
 		KC_U64(kc_parks, "parks", "rounds skipped for a deficit <= 0");
+		KC_U64(kc_debts, "debts", "doorbells sent to the ring because the queue went idle owing time");
 		KC_U64(kc_glitches, "glitches", "passes whose CPU-time delta was negative or > 1 s (ticker fault; charged one quantum)");
 		KC_U64(kc_boosts, "boosts", "passes served from the new list");
 		KC_U64(kc_grace, "grace", "doorbells sent to the ring by the grace rule");

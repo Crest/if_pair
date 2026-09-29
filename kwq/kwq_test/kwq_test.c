@@ -49,13 +49,21 @@ MALLOC_DEFINE(M_KWQ_TEST, "kwq_test", "kwq test items");
 
 #define	TITEM_MAGIC	0x6b77712d74657374ULL	/* "kwq-test" */
 
+/*
+ * One line per item.  A real item (an mbuf, a request) is at least a
+ * line; 40-byte items packed three to a line made the producer and the
+ * worker write the same lines at different times, which is not a cost
+ * kwq's clients pay (a07 PMC run, SCHED.md S15.7).
+ */
+#define	KT_LINE	128	/* KWQ_LINE: 128 covers amd64's prefetch pair and arm64 */
+
 struct titem {
 	struct kwq_item	ti_item;
 	uint64_t	ti_magic;
 	uint64_t	ti_seq;		/* per-CPU sequence, or an sbinuptime stamp */
 	int		ti_cpu;
 	int		ti_qidx;	/* flood queue index (P1b) */
-};
+} __aligned(KT_LINE);
 
 /* Knobs. */
 static char	kt_scenario[32] = "lifecycle";
@@ -68,6 +76,7 @@ static int	kt_allow_panic = 0;
 static u_int	kt_secs = 3;
 static u_int	kt_weight_a = 1, kt_weight_b = 1;
 static u_int	kt_cost_a = 50, kt_cost_b = 500;	/* us per item */
+static u_int	kt_batch = 1;		/* items per kwq_enqueue_list() in the flood producer */
 
 /* Results. */
 static char	kt_state[16] = "idle";
@@ -114,6 +123,8 @@ SYSCTL_UINT(_kern_kwq_test, OID_AUTO, cost_a, CTLFLAG_RW, &kt_cost_a, 0,
     "us per item, queue a");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, cost_b, CTLFLAG_RW, &kt_cost_b, 0,
     "us per item, queue b");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, batch, CTLFLAG_RW, &kt_batch, 0,
+    "flood producer: items per kwq_enqueue_list() call (1 = kwq_enqueue per item)");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, result_state, CTLFLAG_RD, kt_state,
     sizeof(kt_state), "idle | running | done | fail");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, result_msg, CTLFLAG_RD, kt_msg,
@@ -415,16 +426,13 @@ kt_run_notify(void)
  * `coop', and hands items back to the pool.
  */
 struct kt_flood {
+	/* Read-mostly configuration. */
 	struct kwq	*q;
 	int		idx;
 	int		cpu;		/* target (queue, CPU) */
 	int		pcpu;		/* producer CPU */
 	u_int		npool;
 	struct titem	*items;
-	struct mtx	mtx;
-	STAILQ_HEAD(, kwq_item) free;
-	u_int		nfree;
-	u_int		waiters;	/* producers asleep on an empty pool */
 	uint64_t	cost_us;
 	bool		coop;
 	bool		stamp;		/* items carry an enqueue stamp */
@@ -433,12 +441,22 @@ struct kt_flood {
 	enum { F_FLOOD, F_BURSTPAUSE, F_NONE } mode;
 	u_int		burst;
 	u_int		pause_us;
-	/* results */
-	uint64_t	cycles, items_out, maxlat_us, produced, prod_ticks;
-	uint64_t	requeued;
-	/* producer thread */
 	struct thread	*td;
 	volatile bool	stop, exited;
+
+	/* Shared: the pool, taken by the producer, refilled by the handler. */
+	struct mtx	mtx __aligned(KT_LINE);
+	STAILQ_HEAD(, kwq_item) free;
+	u_int		nfree;
+	u_int		waiters;	/* producers asleep on an empty pool */
+
+	/* Written by the handler (the worker CPU) only. */
+	uint64_t	cycles __aligned(KT_LINE);
+	uint64_t	items_out, maxlat_us, requeued;
+
+	/* Written by the producer only. */
+	uint64_t	produced __aligned(KT_LINE);
+	uint64_t	prod_ticks;
 };
 
 static struct kt_flood *kt_floods[2];
@@ -451,6 +469,28 @@ kt_flood_return(struct kt_flood *f, struct kwq_item *it)
 	f->nfree++;
 	if (f->waiters != 0)
 		wakeup_one(&f->free);
+	mtx_unlock(&f->mtx);
+}
+
+/*
+ * Return a whole batch under one lock.  Per-item returns made the pool
+ * mutex the second most contended lock on a07 (36 % of adaptive spins)
+ * and cost a lock round trip per item; a client frees or recycles its
+ * items in batches (or through a per-CPU cache), so the harness should
+ * not charge kwq for a shared lock it would not have.
+ */
+STAILQ_HEAD(kt_itemq, kwq_item);
+
+static void
+kt_flood_return_list(struct kt_flood *f, struct kt_itemq *lst, u_int n)
+{
+	if (n == 0)
+		return;
+	mtx_lock(&f->mtx);
+	STAILQ_CONCAT(&f->free, lst);
+	f->nfree += n;
+	if (f->waiters != 0)
+		wakeup(&f->free);
 	mtx_unlock(&f->mtx);
 }
 
@@ -481,6 +521,7 @@ kt_flood_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 	struct kt_flood *f = ctx;
 	struct kwq_item *it, *next, *tail;
 	struct titem *ti;
+	struct kt_itemq back = STAILQ_HEAD_INITIALIZER(back);
 	uint64_t t0;
 	sbintime_t now;
 	int left, done = 0;
@@ -490,8 +531,9 @@ kt_flood_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 		for (it = head; it != NULL; it = next) {
 			next = KWQ_ITEM_NEXT(it);
 			KWQ_ITEM_INIT(it);
-			kt_flood_return(f, it);
+			STAILQ_INSERT_TAIL(&back, it, kwi_link);
 		}
+		kt_flood_return_list(f, &back, left);
 		return;
 	}
 	t0 = cpu_ticks();
@@ -511,7 +553,7 @@ kt_flood_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 		if (!f->empty_handler && f->cost_us != 0)
 			DELAY(f->cost_us);
 		KWQ_ITEM_INIT(it);
-		kt_flood_return(f, it);
+		STAILQ_INSERT_TAIL(&back, it, kwi_link);
 		done++; left--;
 		/* Progress rule: at least one item, then the budget decides. */
 		if (f->coop && next != NULL && kwq_budget_left(q) == 0) {
@@ -525,6 +567,7 @@ kt_flood_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 	}
 	f->cycles += kt_tickdelta(t0);
 	f->items_out += done;
+	kt_flood_return_list(f, &back, done);
 }
 
 static void
@@ -569,6 +612,40 @@ kt_flood_producer(void *arg)
 		it = STAILQ_FIRST(&f->free);
 		if (it == NULL) {
 			kt_pool_wait(f);	/* releases f->mtx */
+			continue;
+		}
+		if (kt_batch > 1) {
+			/* S16 batching: up to kt_batch items in one call. */
+			struct kwq_item *tail = it, *nx;
+			u_int k = 1;
+
+			while (k < kt_batch && (nx = STAILQ_NEXT(tail, kwi_link)) != NULL) {
+				tail = nx;
+				k++;
+			}
+			nx = STAILQ_NEXT(tail, kwi_link);
+			if (nx == NULL)
+				STAILQ_INIT(&f->free);
+			else
+				STAILQ_FIRST(&f->free) = nx;
+			f->nfree -= k;
+			mtx_unlock(&f->mtx);
+			KWQ_ITEM_NEXT(tail) = NULL;
+			t0 = cpu_ticks();
+			error = kwq_enqueue_list(f->q, f->cpu, it, tail, (int)k);
+			f->prod_ticks += kt_tickdelta(t0);
+			if (error != 0) {
+				struct kt_itemq back;
+
+				STAILQ_INIT(&back);
+				for (; it != NULL; it = nx) {
+					nx = KWQ_ITEM_NEXT(it);
+					KWQ_ITEM_INIT(it);
+					STAILQ_INSERT_TAIL(&back, it, kwi_link);
+				}
+				kt_flood_return_list(f, &back, k);
+			} else
+				f->produced += k;
 			continue;
 		}
 		STAILQ_REMOVE_HEAD(&f->free, kwi_link);

@@ -15,8 +15,8 @@
  *   kwqsim <scenario> [-s seed] [-t seconds] [-v]
  *   kwqsim suite                     run every scenario over its seeds
  *
- * Scenarios: fairness latency gaming overrun handback storm nnew manyq
- * wrap ratechange badhandler random sweep_grace sweep_boost.
+ * Scenarios: fairness latency gaming overrun overrun_idle handback storm
+ * nnew manyq wrap ratechange badhandler random sweep_grace sweep_boost.
  */
 
 #include <sys/types.h>
@@ -127,6 +127,7 @@ struct simq {
 	int		burst;		/* items per burst */
 	uint64_t	pause_ns;	/* burstpause: pause after the list empties */
 	int		flood_depth;	/* flood: keep this many queued */
+	uint64_t	refill_delay;	/* flood: 0 = refill during the pass (instant producer); else the consumed items come back this long after the pass ends */
 	bool		pause_armed;
 	/* handler */
 	enum hand_kind	hk;
@@ -143,6 +144,7 @@ struct simq {
 	/* oracle for the grace rule */
 	uint64_t	idle_round;	/* kw_round when it went idle (64-bit) */
 	bool		idle_from_ring;
+	bool		idle_with_debt;	/* kc_warm & KWQ_DEBT when it went idle */
 	int		boost_viol;
 };
 
@@ -315,8 +317,11 @@ check_invariants(int c)
 		q = ks_quantum(kw, kc);
 		if (kc->kc_deficit > 2 * q || kc->kc_deficit < -(int64_t)kw->kw_knobs->penalty_rounds * q)
 			fail("q%d deficit %" PRId64 " outside [-%uQw, 2Qw] (%" PRId64 ")", sq->id, kc->kc_deficit, kw->kw_knobs->penalty_rounds, q);
-		if (kc->kc_state == KWQ_CPU_IDLE && kc->kc_deficit != 0)
-			fail("q%d idle with deficit %" PRId64, sq->id, kc->kc_deficit);
+		if (kc->kc_state == KWQ_CPU_IDLE) {
+			/* S4.3: idle with a deficit only as recorded debt */
+			if ((kc->kc_warm & KWQ_DEBT) ? kc->kc_deficit >= 0 : kc->kc_deficit != 0)
+				fail("q%d idle with deficit %" PRId64 " (warm 0x%x)", sq->id, kc->kc_deficit, kc->kc_warm);
+		}
 	}
 }
 
@@ -374,13 +379,13 @@ enqueue(struct simq *sq, uint64_t t)
 			bool boost, expect_boost;
 
 			/* Oracle for S4.6: warm iff idle from the ring within grace rounds. */
-			expect_boost = !(sq->idle_from_ring &&
+			expect_boost = !sq->idle_with_debt && !(sq->idle_from_ring &&
 			    kw->kw_round - sq->idle_round <= kw->kw_knobs->grace_rounds);
 			boost = ks_doorbell(kw, &sq->kc);
 			if (boost != expect_boost) {
 				sq->boost_viol++;
-				fail("I6: q%d boost=%d expected %d (idle_from_ring %d, rounds since idle %" PRIu64 ")",
-				    sq->id, boost, expect_boost, sq->idle_from_ring, kw->kw_round - sq->idle_round);
+				fail("I6: q%d boost=%d expected %d (idle_from_ring %d, debt %d, rounds since idle %" PRIu64 ")",
+				    sq->id, boost, expect_boost, sq->idle_from_ring, sq->idle_with_debt, kw->kw_round - sq->idle_round);
 			}
 			sq->doorbell_t = t;
 			S.sleeping[sq->cls] = false;
@@ -434,6 +439,8 @@ heap_pop(void)
 	return (sq);
 }
 
+static void refill(struct simq *sq);
+
 /* Generate all timed arrivals with time <= now; refill the flood being served. */
 static void
 pump(void)
@@ -454,6 +461,9 @@ pump(void)
 			break;
 		case P_ONESHOT:
 			enqueue(sq, sq->next_t);
+			break;
+		case P_FLOOD:		/* delayed refill after a pass */
+			refill(sq);
 			break;
 		case P_BURSTPAUSE:	/* the pause is over: burst */
 			for (int k = 0; k < sq->burst; k++) enqueue(sq, sq->next_t);
@@ -560,7 +570,8 @@ run_pass(int c, struct kwq_cpu *kc)
 		if (sq->hk == H_FIRSTBUDGET && left == 0) { sq->requeued += nbatch; break; }
 		pump();				/* arrivals during the pass */
 		it = dq_pop_front(&sq->q);
-		refill(sq);
+		if (sq->refill_delay == 0)
+			refill(sq);	/* instant producer refills behind the handler */
 		{
 			uint64_t l = S.now - it.enq_t;
 			sq->lat_sum += l; if (l > sq->lat_max) sq->lat_max = l;
@@ -587,13 +598,20 @@ run_pass(int c, struct kwq_cpu *kc)
 			fail("B1: q%d pass %" PRIu64 " ns > budget %" PRIu64 " + c_max", sq->id, dt, budget);
 	}
 	pump();
-	refill(sq);
+	if (sq->refill_delay == 0)
+		refill(sq);	/* instant producer: the flood never empties */
+	else if (sq->heap_pos < 0) {
+		/* the consumed items come back refill_delay after the pass */
+		sq->next_t = S.now + sq->refill_delay;
+		heap_push(sq);
+	}
 	if (S.now - t0 > S.pass_in_progress_max) S.pass_in_progress_max = S.now - t0;
 	ks_pass_end(kw, kc, S.cputime[c], !dq_empty(&sq->q));
 	if (kc->kc_state == KWQ_CPU_IDLE) {
 		sq->backlog_ns += S.now - sq->backlog_since;
 		sq->idle_round = kw->kw_round;
-		sq->idle_from_ring = (kc->kc_warm != 0);
+		sq->idle_from_ring = (kc->kc_warm & KWQ_WARM) != 0;
+		sq->idle_with_debt = (kc->kc_warm & KWQ_DEBT) != 0;
 		arm_pause(sq);
 	}
 	check_invariants(c);
@@ -657,7 +675,9 @@ start_producers(void)
 			if (sq->next_t != UINT64_MAX) heap_push(sq);
 			break;
 		case P_FLOOD:
-			refill(sq);
+			/* delayed floods are filled once, then re-armed at pass end */
+			if (sq->refill_delay == 0 || sq->kc.kc_passes == 0)
+				refill(sq);
 			break;
 		case P_BURSTPAUSE:
 			for (int k = 0; k < sq->burst; k++) enqueue(sq, S.now);
@@ -1021,6 +1041,39 @@ sc_ratechange(uint64_t secs)
 	return (S.violations);
 }
 
+/*
+ * overrun_idle: the overrunner's items come back 20 us after its pass
+ * ends, as a handler that frees its batch at the end of the pass would
+ * have it.  Its list is empty at pass end, so it goes idle; before the
+ * DEBT rule (2026-09-29) the idle transition reset its deficit and every
+ * doorbell took the boost: 41x the cooperative queue's share in the
+ * kernel.  With the rule its doorbells go to the ring and the refill
+ * parks it.
+ */
+static int
+sc_overrun_idle(uint64_t secs)
+{
+	struct simq *a, *o;
+
+	sim_reset(0, 0, 0, 0);
+	a = addq(C_NET, 1, P_FLOOD, H_COOP, 20 * NS_PER_US); a->flood_depth = 256;
+	o = addq(C_NET, 1, P_FLOOD, H_IGNORE, 2 * NS_PER_MS); o->flood_depth = 4;
+	o->refill_delay = 20 * NS_PER_US;
+	run_for(secs * NS_PER_S);
+	report("overrun_idle: budget-ignoring 2 ms items refilled 20 us after each pass");
+	printf("  info overrunner share %.2f, boosts %" PRIu64 ", debts %" PRIu64 ", parks %" PRIu64 " over %" PRIu64 " passes\n",
+	    (double)o->service_ns / a->service_ns, o->kc.kc_boosts, o->kc.kc_debts, o->kc.kc_parks, o->kc.kc_passes);
+	if (o->kc.kc_overruns != o->kc.kc_passes)
+		fail("overrun_idle: expected overruns == passes, got %" PRIu64 " vs %" PRIu64, o->kc.kc_overruns, o->kc.kc_passes);
+	if (o->kc.kc_debts == 0 || o->kc.kc_parks == 0)
+		fail("overrun_idle: the debt did not survive idle (debts %" PRIu64 ", parks %" PRIu64 ")", o->kc.kc_debts, o->kc.kc_parks);
+	if (o->kc.kc_boosts > 1)
+		fail("overrun_idle: the overrunner was boosted %" PRIu64 " times", o->kc.kc_boosts);
+	if ((double)o->service_ns > 1.5 * (double)a->service_ns)
+		fail("overrun_idle: overrunner share %.2f exceeds 1.5", (double)o->service_ns / a->service_ns);
+	return (S.violations);
+}
+
 static int
 sc_badhandler(uint64_t secs)
 {
@@ -1122,6 +1175,7 @@ static struct scenario scenarios[] = {
 	{ "latency",	sc_latency,	3, 1 },
 	{ "gaming",	sc_gaming,	3, 1 },
 	{ "overrun",	sc_overrun,	3, 1 },
+	{ "overrun_idle", sc_overrun_idle, 3, 1 },
 	{ "handback",	sc_handback,	2, 1 },
 	{ "storm",	sc_storm,	2, 1 },
 	{ "nnew",	sc_nnew,	2, 1 },
