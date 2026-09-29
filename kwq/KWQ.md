@@ -1203,7 +1203,21 @@ is refused at create with a log line, as is a duplicate within the
 class.  (The first version had a flat tree and sanitized names: sysctl(9)
 merged a queue called `cpu0` into the worker's node and silently dropped
 the leaves of a queue called `limit`; found and restructured
-2026-09-29.)  Counters are 64-bit per-CPU fields (S17 Rule 2), one per
+2026-09-29.)  To reconsider once clients exist: refusing is the simple
+rule, but a client that names queues after things it does not control
+(a device name, a jail name, a provider path such as GELI's) would have
+to mangle them itself; the alternative is to accept any printable ASCII
+name and let the sysctl node carry an escaped form, keeping the verbatim
+name for the lock and for DTrace.  What sysctl(9) offers by itself is
+narrow: `sysctl_escape_name()` runs on every dynamically added node name
+and replaces only `.` with the three characters `%25` (nothing else is
+touched, `/` and spaces pass through, and no userland side unescapes it,
+so a queue named `geli.da0` would be listed and typed as `geli%25da0`).
+A readable scheme would have to be kwq's own, for
+instance `_` for anything outside the safe set plus a `name` leaf under
+the queue node holding the verbatim string, so a script can map back.
+Decide when the first such client appears.
+Counters are 64-bit per-CPU fields (S17 Rule 2), one per
 (queue, CPU) node, read individually.  RW knobs take effect at the next
 round; RWTUN knobs are also read from `loader.conf` when the module is
 preloaded.  Rows marked P6/P7 are specified but not yet exported.

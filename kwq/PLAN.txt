@@ -351,6 +351,9 @@ Phases
     "cpu0" was found to merge into the worker's node: workers under
     <class>.cpu.<N>, queues under <class>.queue.<name> with lists under
     .cpu.<N>; names restricted to [A-Za-z0-9_-], 1..31 chars, verbatim.
+    Reconsider with the first client that names queues after things it
+    does not control (device, jail, GELI provider): quote or escape the
+    name for the sysctl node instead of refusing it (KWQ.md S10.7).
     Status 2026-09-29: done.  Files kwq_sdt.c, kwq_sdt.h, kwq.d,
     kwq_ddb.c; the core fires park and overrun through KS_HOOK_* macros
     the kernel environment maps to SDT.  19 probes listed; the S10.6
