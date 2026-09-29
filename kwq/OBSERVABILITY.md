@@ -165,8 +165,9 @@ Queue probes carry a translated `kwqinfo_t` as `args[0]`:
 
     kwq_name  kwq_class  kwq_weight  kwq_limit  kwq_flags  kwq_addr
 
-The translator is `kwq/kwq.d`.  Install it as `/usr/lib/dtrace/kwq.d`
-or pass `-L /path/to/kwq/kwq` to `dtrace`.  It needs the module's CTF,
+The translator is `kwq/kwq.d`; `make install` puts it in
+`/usr/lib/dtrace/kwq.d` next to the module, and an uninstalled build
+tree works with `-L /path/to/kwq/kwq`.  It needs the module's CTF,
 which the module build produces by default (section 10); a module built
 `WITHOUT_CTF=1` makes `dtrace -l -P kwq` fail with "no struct kwq
 definition is available".
@@ -306,8 +307,9 @@ A plain `make` in `kwq/` produces modules with everything above:
 - the CTF the translator needs: the Makefile sets `WITH_CTF=1` and
   `DEBUG_FLAGS=-g` (ctfconvert needs the DWARF).  `make WITHOUT_CTF=1`
   turns it off;
-- `make install` ships only the modules into `/boot/modules`; the
-  split-off `kwq.ko.debug` is installed too only with
+- `make install` ships the modules into `/boot/modules` and the
+  translator into `/usr/lib/dtrace`, which is everything DTrace and DDB
+  need; the split-off `kwq.ko.debug` is installed too only with
   `make install KWQ_INSTALL_DEBUG=1`, into `/usr/lib/debug/boot/modules`,
   which exists only after a full `installkernel`.
 

@@ -44,4 +44,13 @@ EXPORT_SYMS=	kwq_create kwq_activate kwq_drain kwq_destroy \
 		kwq_notifier_init kwq_notify kwq_notify_cancel \
 		kwq_requeue kwq_budget_left kwq_name kwq_class
 
+# The DTrace translator (KWQ.md S10.2) goes where dtrace(1) looks for
+# library files; DDB's "show kwq" needs nothing beyond the module.
+DTRACEDIR?=	/usr/lib/dtrace
+
+afterinstall: install-kwqd
+install-kwqd:
+	${INSTALL} -o ${KMODOWN} -g ${KMODGRP} -m 444 ${.CURDIR}/kwq.d \
+	    ${DESTDIR}${DTRACEDIR}/
+
 .include <bsd.kmod.mk>
