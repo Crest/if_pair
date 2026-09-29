@@ -287,11 +287,13 @@ case where this grows (SCHED.md S15.7).  `fbt::kwq_enqueue:entry` with
 `tests/run_p1b.sh` runs the scenarios with their standard knobs and
 prints the results and the relevant counters.  It reaches the machine
 through `KWQ_SSH` (default: the bhyve guest via `tests/kwqvm.sh ssh`)
-and loads the modules from `MODDIR`:
+and loads the modules from `MODDIR`, which may be a flat directory
+(`/root/kwq` in the guest, `/boot/modules` after `make install`) or the
+kwq source tree after an in-tree build:
 
     tests/run_p1b.sh                                   # everything, in the guest
     tests/run_p1b.sh fairness latency                  # a subset
-    KWQ_SSH="ssh a07 doas -n" MODDIR=/home/crest/kwq-mods tests/run_p1b.sh cost cost16
+    KWQ_SSH="ssh a07 doas -n" MODDIR=/home/crest/if_pair/kwq tests/run_p1b.sh cost cost16
     PAIRS=16 tests/run_p1b.sh scale
     FANIN=8 BATCH=1 tests/run_p1b.sh fanin
 

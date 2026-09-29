@@ -6,14 +6,19 @@
 # 'mods generic' for the stock kernel).  Scenario knobs: kwq_test/kwq_test.c.
 set -eu
 cd "$(dirname "$0")"
+# MODDIR: where kwq.ko and kwq_test.ko are on the test machine, either a
+# flat directory (the guest's /root/kwq, or /boot/modules after make
+# install) or the kwq source tree itself after an in-tree build
+# (kwq/kwq.ko and kwq_test/kwq_test.ko under it).
 MODDIR=${MODDIR:-/root/kwq}
 # KWQ_SSH: how to reach a root shell on the test machine (default: the
-# bhyve guest).  For a07: KWQ_SSH="ssh a07 doas -n" MODDIR=/home/crest/kwq-mods
+# bhyve guest).  For a07: KWQ_SSH="ssh a07 doas -n" MODDIR=/home/crest/if_pair/kwq
 KWQ_SSH=${KWQ_SSH:-./kwqvm.sh ssh}
 scenarios=${*:-"lifecycle fifo notify reject discard fairness fairness2 latency gaming overrun yield cost tq_baseline switch_baseline"}
 $KWQ_SSH 'sh -s' <<GUEST
 kldstat -q -m kwq_test && kldunload kwq_test; kldstat -q -m kwq && kldunload kwq
-kldload $MODDIR/kwq.ko && kldload $MODDIR/kwq_test.ko || { echo LOADFAIL; exit 1; }
+if [ -f $MODDIR/kwq/kwq.ko ]; then K=$MODDIR/kwq/kwq.ko; T=$MODDIR/kwq_test/kwq_test.ko; else K=$MODDIR/kwq.ko; T=$MODDIR/kwq_test.ko; fi
+kldload \$K && kldload \$T || { echo LOADFAIL; exit 1; }
 uname -v | sed 's/^/kernel: /'; sysctl -n kern.hz hw.ncpu hw.machine | tr '\\n' ' ' | sed 's/^/hz ncpu machine: /'; echo
 run() { name=\$1; shift
 	sysctl -q kern.kwq_test.cost_us=0 kern.kwq_test.limit=0 kern.kwq_test.cpu=-1 kern.kwq_test.items=1000 kern.kwq_test.reps=10 kern.kwq_test.secs=3 kern.kwq_test.weight_a=1 kern.kwq_test.weight_b=1 kern.kwq_test.cost_a=50 kern.kwq_test.cost_b=500 kern.kwq_test.batch=1 kern.kwq_test.pairs=1 kern.kwq_test.fanin=1 >/dev/null

@@ -4215,3 +4215,24 @@ steering fans every CPU into every target list, so the producer side
 must be per source CPU (sublists + active-source mask, or the lock-free
 list) before if_pair is converted.  The first measurement that changed a
 decision instead of confirming one.
+
+2026-09-29 (evening) - kwq build and install, prompted by the first
+"make; doas make install" from a fresh clone on a07: (1) the install
+failed because DEBUG_FLAGS=-g (needed for ctfconvert) also makes kmod.mk
+install kwq.ko.debug into /usr/lib/debug/boot/modules, which exists only
+after installkernel; INSTALL_NODEBUG is now the default (KWQ_INSTALL_DEBUG=1
+restores it).  (2) A plain make produced no probes and no CTF: standalone
+kmod builds get a fixed opt_global.h from sys/conf/config.mk without
+KDTRACE_HOOKS (KERN_OPTS only selects sources and is assigned there, so
+KERN_OPTS+= from a module Makefile does nothing), and ctfconvert runs only
+under WITH_CTF; the Makefile now defines KDTRACE_HOOKS for standalone
+builds and defaults WITH_CTF=1.  (3) make install now also installs
+kwq.d to /usr/lib/dtrace (kmod.mk has no FILES support; an afterinstall
+dependency does it), make uninstall removes modules and translator and
+refreshes linker.hints.  Verified: 19 probes and 508 CTF types in the
+module a07 built itself, translator works without -L.  a07 workflow from
+now on: git clone at ~/if_pair, in-tree make, doas make install (or load
+by path), doas make uninstall before testing another tree; a stale
+/boot/modules/kwq.ko would win over a path-loaded build for kldload-by-
+name and MODULE_DEPEND.  The guest keeps its two build variants under
+/root/kwq and /root/kwq-generic via tests/kwqvm.sh mods.

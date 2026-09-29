@@ -2277,3 +2277,9 @@ decision deferred until real clients show what fan-in they produce.
   characters of [A-Za-z0-9_-], used verbatim (no sanitizing), invalid or
   duplicate names refused at create.  Supersedes the same-day collision
   check on the flat tree.
+- 2026-09-29 (evening, build): a plain `make` in kwq/ now yields the
+  provider and CTF (standalone builds define KDTRACE_HOOKS themselves;
+  WITH_CTF and -g are Makefile defaults); `make install` ships the two
+  modules and kwq.d and no debug file unless asked; `make uninstall`
+  reverses it.  a07 builds from a git clone in-tree; tests/run_p1b.sh
+  accepts MODDIR as a flat directory or the source tree.
