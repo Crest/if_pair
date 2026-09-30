@@ -70,6 +70,29 @@ kwq_sysctl_nqueues(SYSCTL_HANDLER_ARGS)
 	sx_sunlock(&kwq_sx);
 	return (sysctl_handle_int(oidp, &n, 0, req));
 }
+
+/*
+ * kern.kwq.<class>.queue.<name>.limit: the per-CPU item limit, writable
+ * at run time (1..INT_MAX) so a queue's depth can be tuned or swept
+ * without recreating it.  A plain store: the admission test reads the
+ * value unlocked and any interleaving is one packet admitted or refused
+ * under the old bound.
+ */
+static int
+kwq_sysctl_limit(SYSCTL_HANDLER_ARGS)
+{
+	struct kwq *q = arg1;
+	u_int v = q->kwq_limit;
+	int error;
+
+	error = sysctl_handle_int(oidp, &v, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (v == 0 || v > INT_MAX)
+		return (EINVAL);
+	q->kwq_limit = v;
+	return (0);
+}
 SYSCTL_PROC(_kern_kwq, OID_AUTO, nqueues,
     CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0, kwq_sysctl_nqueues,
     "I", "queues currently created (active or not)");
@@ -643,9 +666,10 @@ kwq_sysctl_register(struct kwq *q)
 		sysctl_ctx_free(&q->kwq_sysctl);
 		return (EEXIST);
 	}
-	SYSCTL_ADD_UINT(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,
-	    "limit", CTLFLAG_RD, &q->kwq_limit, 0,
-	    "per-CPU item limit in effect (INT_MAX for KWQ_LIMIT_NONE)");
+	SYSCTL_ADD_PROC(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,
+	    "limit", CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, q, 0,
+	    kwq_sysctl_limit, "IU",
+	    "per-CPU item limit in effect (INT_MAX for KWQ_LIMIT_NONE); writable, 1..INT_MAX");
 	SYSCTL_ADD_UINT(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,
 	    "weight", CTLFLAG_RD, &q->kwq_weight, 0, "DRR weight");
 	SYSCTL_ADD_U32(&q->kwq_sysctl, SYSCTL_CHILDREN(qoid), OID_AUTO,

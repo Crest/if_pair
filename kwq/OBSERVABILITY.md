@@ -113,7 +113,7 @@ Examples:
 | node | meaning |
 |---|---|
 | `weight` | DRR weight as created (1 .. 8) |
-| `limit` | per-CPU item limit in effect (`2147483647` for `KWQ_LIMIT_NONE`) |
+| `limit` | per-CPU item limit in effect (`2147483647` for `KWQ_LIMIT_NONE`); writable at run time, 1..INT_MAX, to tune or sweep a queue's depth without recreating it |
 | `flags` | `KWQ_F_*` as created (0x1 inactive at create, 0x2 stealable, 0x4 discard on drain, 0x8 reserve, 0x10 vnet, 0x20 spin) |
 | `state` | `inactive`, `active`, `draining`, `drained` |
 | `reset` | write 1 to zero `maxlat_ns` and `maxdepth` on every CPU of the queue |
