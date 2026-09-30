@@ -4301,3 +4301,199 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   kernel's own cloner-detach path under the vnet sx, identical code in
   both drivers, first time this guest's console log shows it (it had not
   unloaded if_pair before).  Kernel-side; noted, not acted on.
+
+2026-09-30: P4, if_pair on kwq.  The driver's own queueing is gone:
+  each side owns one kwq NET queue named after the interface (created
+  inactive with KWQ_F_DISCARD, limit 4096 per CPU list, activated just
+  before the side goes RUNNING), pair_output() enqueues the mbuf itself
+  (m_nextpkt is the kwq item) at the CPU its flow hashes to via
+  kwq_cpu_for_hash(), and pair_handler() delivers the chain with the
+  receiving interface's vnet set per pass, a kwq_budget_left() check
+  per packet and kwq_requeue(NULL tail) for the rest; n < 0 (drain of
+  a destroyed pair) frees the backlog.  Destroy order unchanged in
+  spirit: quiesce, epoch wait, kwq_drain both, detach, kwq_destroy,
+  if_free.  What left with the taskqueue pool: pair_yield/pair_ticked
+  and their priority games (kwq yields at ticks and round ends),
+  net.link.pair.batch and batch_overruns (class quantum and per-queue
+  overruns now; man page updated; t_15/t_18 skip on this driver), the
+  MAXCPU taskqueue array, the SI_SUB_TASKQ SYSINITs (MOD_LOAD seeds
+  the hash; MODULE_DEPEND on kwq).  if_pair.c lost ~250 lines.
+  Guest GENERIC-DEBUG: tests/run_all.sh 28/28 with if_pair.ko on kwq
+  (t_01..t_14 pass, t_15 skips, benchmarks skip without iperf3), the
+  taskqueue baseline loaded alongside and smoke-tested at the same
+  time; the same vnet_sxlock -> ifnet_detach_sx LOR at kldunload as
+  before, kernel-side.  tests/lib.sh gained ensure_kwq() (KWQ_KO, the
+  source tree, or by name) and skip() (runs cleanups).  Next: the A/B
+  throughput pairs on a07 (t_17, t_20, t_19) for the P4 exit.
+  Guest A/B (same boot, GENERIC-DEBUG so WITNESS taxes both, 4 vCPUs,
+  mtu 16384, 3 s runs, receiver Gbit/s, kwq driver vs taskqueue
+  baseline): 1 conn 10.9 vs 9.65, 2: 14.4 vs 11.8, 4: 15.4 vs 14.1,
+  8: 15.7 vs 14.6, 16: 15.0 vs 14.2, 32: 14.9 vs 14.5, 64: 14.0 vs
+  13.2, 128: 12.9 vs 12.9; no drops either side.  kwq ahead at every
+  point below saturation, most at 1-2 connections (+13 %, +22 %),
+  where the baseline's per-pass yield and re-assert costs the most;
+  the 4-vCPU VM saturates from 8 connections on and the two meet.
+  Not the exit measurement (that is a07), but the port loses nothing
+  on a WITNESS kernel.  iperf3 3.21 is now installed in the guest
+  (offline: fetched on the host, pkg add; the guest has no route out).
+  a07 A/B (2026-09-30 16:43, same boot, kwq driver vs taskqueue
+  baseline preloaded together, t_17 5 s runs, mtu 16384, receiver
+  Gbit/s; net.inet.tcp.per_cpu_timers was back at 0 after the box's
+  00:48 reboot, so both sit on the callout wall of the timers=0
+  regime, ~230 peak instead of 479):
+    conns:   1     2     4     8    16    32    64   128
+    kwq:    20.0  63.3  121   182   234   211   188   165
+    tq:     35.1  67.9  116   187   231   217   194   178
+  Equal within the ~10 % run spread from 2 connections up; a clear
+  deficit at ONE connection (20 vs 35).  t_20 at P=128: 222 vs 228
+  Gbit/s, the same callout/tcpinp/so_snd wall for both; the drivers'
+  own locks are noise (kwq_pair1a 9 ms wait, pairq 5 ms).  t_19 at
+  P=64: locks 81 % vs 86 %, copy 11.7 % vs 8.4 %, idle 15 % vs 12 %.
+  The first A/B attempt (16:23) is void: three host<->jail functional
+  tests failed because a07's host now runs pf with "block drop in all"
+  (jail -> host echo requests reach ip_input and die at the pfil hook,
+  identical for both drivers; the jail<->jail benchmarks are
+  unaffected), their leftover pairs made t_14 skip, and after my
+  driver got unloaded, ifconfig autoloaded the taskqueue if_pair.ko
+  installed in /boot/modules, so t_15 passed and "kwq" t_17 showed
+  batch_overruns.  lib.sh now refuses a preloaded if_pair without
+  kwq.ko.  kwq.ko itself is left loaded on a07: kldunload returns
+  EBUSY with 128 healthy workers and no queues; reason not yet found.
+  Single flow, a07, same boot, iperf3 -P 1 for 6 s, mtu 16384, both
+  jails, receiver Gbit/s: taskqueue 35.8 and 38.5; kwq 34.2, 34.2,
+  34.1, 31.9 with quantum 200, 2000, 20000 and again 200 us.  The
+  quantum is irrelevant, so it is not scheduling granularity but
+  per-pass cost: for one flow both directions hash to one CPU (the
+  flowid is symmetric), and that worker ran 78 k passes/s of 3.9 data
+  packets and 2.0 ACKs each, woke 37 k times/s, and was 93 % busy;
+  kwq's fixed cost per pass (two kc_mtx holds, the kw_mtx spin
+  sections, three cpu_ticks() reads with their isb, the DRR
+  bookkeeping, a boost per ACK pass since that queue never leaves the
+  new list) times that pass rate is the ~10 % a single CPU-bound flow
+  loses.  From two connections up the passes carry more and the
+  drivers are equal.  P4b candidate: cheaper passes (fewer clock
+  reads, one lock section) or letting a worker take a second list
+  before sleeping.  The t_17 single-connection 20 Gbit/s was an
+  outlier of that run; the controlled repeats say 32-34 vs 36-38.
+  a07 A/B with net.inet.tcp.per_cpu_timers=1 restored by the user
+  (2026-09-30 18:09, 15.1-RELEASE-p4 after dch's patch run, same boot,
+  both drivers preloaded, two t_17 rounds each, receiver Gbit/s):
+    conns:  1     2     4     8    16    32    64   128
+    kwq:   37.5  60.1  123   226   351   495   357   338
+           36.6  73.2  109   209   360   495   356   338
+    tq:    36.9  65.6  112   240   377   496   361   340
+           33.6  58.2  109   215   361   488   356   341
+  Parity at every point, including the single flow (the 10 % deficit
+  seen with timers=0 does not appear with the timers spread; the pass
+  cost is still there, hidden under the callout-free stack).  Peak 495
+  against the recorded 479, 338 at P=128 against the exit's >= 337:
+  the P4 exit's throughput terms hold, on parity with the baseline.
+  t_20 kwq at P=128: 332 Gbit/s, mbuf zone lock on top (158 s spin),
+  no callout entry: no callout-contention regression.
+  t_20 baseline at P=128: 333 Gbit/s, same list (mbuf zone 111 s spin,
+  so_rcv, tcpinp, turnstile chain), no callout entry either: the two
+  drivers are indistinguishable under lockstat with the timers spread.
+  Observation: t_20 leaves its two jails and the pair behind on a07
+  (both drivers), so a following run fails on "jail already exists";
+  cleaned by hand each time.  The stuck kwq.ko was gone by 18:09 (a
+  fresh load worked and unloaded normally at the end).
+  Eight pairs at once (tests/t_29_multi_pair.sh, new: 8 pairs, each
+  between two jails, iperf3 per pair with 1/8/32 streams = 8/64/256
+  connections, 10 s, pings across every pair during the load), a07,
+  timers=1, same boot, both drivers:
+    conns   total Gbit/s     per pair min/avg/max   rtt under load avg/max (idle 0.032)
+    kwq  8   211.6           23.4/26.5/29.4         0.053 /  0.37 ms
+    tq   8   200.4           23.5/25.1/26.4         0.052 /  0.45 ms
+    kwq 64   354.0           42.6/44.3/45.1         5.8   / 85   ms
+    tq  64   358.4           41.4/44.8/46.8         3.1   / 91   ms
+    kwq 256  340.7           41.2/42.6/44.3         4.5   / 54   ms
+    tq  256  338.3           38.9/42.3/45.5         3.2   / 67   ms
+  Throughput: equal within the spread at 64 and 256, kwq +5.6 % with
+  one stream per pair; per-pair spread tighter on kwq at 256 (41-44 vs
+  39-46).  kwq passes: 0.94 M/s of 2 items at 8 conns, 1.31 M/s of 5
+  at 64, 0.83 M/s of 11 at 256.  Latency under load: both drivers
+  queue the ping behind the streams' backlog (limit 4096 x 16 KB per
+  CPU list), so milliseconds either way; kwq's average is 1.4-1.9 x
+  the baseline's while its maximum is lower.  Expected from the DRR:
+  up to 16 backlogged queues share each CPU in 200 us quanta, so a
+  packet deep in one queue's backlog waits several rounds of ~3 ms,
+  whereas the taskqueue drains a whole backlog in one task run (lower
+  latency for that queue, at everyone else's expense: the higher
+  maximum).  P4b knob to explore: kern.kwq.net.quantum_us (a smaller
+  quantum shortens the round at the cost of more passes).
+  Depth sweep (t_29 with DEPTHS="64 .. 4096", 6 s runs, a07, timers=1,
+  same boot; kwq via the now writable kern.kwq.net.queue.<q>.limit,
+  the baseline via a new net.link.pairtq.qlimit knob applied at
+  create; raw log samples/t29_a07_depth_sweep.txt):
+    depth  | 64 conns Gbit/s  oqdrops      | 256 conns Gbit/s  oqdrops   rtt avg / max ms
+           | kwq    tq     kwq     tq      | kwq    tq      kwq    tq   kwq        tq
+      64   | 453    462    359 k   4.8 k   | 338    338     89 k   28 k  10.6/106   12.1/174
+     128   | 380    440    229 k   2.2 k   | 337    337     21 k   17 k   8.7/123   10.6/189
+     256   | 353    373     72 k   4.4 k   | 337    336     9.2 k  5.5 k 15.1/192   76.2/697
+     512   | 357    357     89     208     | 336    336     422    904    8.1/159   10.5/155
+    1024   | 362    355     0      0       | 336    334     53     2      9.7/150   53.9/468
+    2048   | 358    357     0      0       | 337    335     0      0      9.7/163   218 /2285
+    4096   | 351    355     0      0       | 338    335     0      0     11.4/114   11.2/102
+  8 connections: 197-225 Gbit/s on both at every depth, RTT 0.04-0.07
+  ms, no drops (a handful at 64/128).  Reading: (1) depth does not
+  move throughput from 512 up on either driver; at 64 and 128 the
+  shallow lists drop enough that TCP backs off and the 64-connection
+  total RISES (453/462 vs ~355), i.e. less in flight means less lock
+  and cache pressure; the price is the drops.  (2) At shallow depths
+  kwq drops far more than the baseline (359 k vs 4.8 k at 64): the DRR
+  serves each of the 16 queues on a CPU in turn, so a burst into a
+  64-slot list waits its round while the taskqueue drains each task
+  as soon as it is scheduled; deeper lists (>= 512 for kwq, >= 1024
+  for the baseline) absorb it.  (3) RTT under load at 256 connections
+  is the baseline's weak point: averages of 54, 76 and 218 ms with
+  maxima of 0.5, 0.7 and 2.3 s at depths 1024, 256 and 2048 (whole
+  backlogs drained in one task run, and the ping's own task last in
+  line), against kwq's 8-15 ms average and 106-192 ms maximum at
+  every depth: bounded by the DRR round.  At 64 connections the
+  baseline's average stays lower (1.2-3.3 vs 2.1-10.2 ms), the round
+  cost of fairness with little backlog behind it.  Default depth 4096
+  stays: no drops, equal throughput, the best kwq tail.
+  Minimum depth from the sweep: drops stop mattering at 512 per CPU
+  list (a few hundred in tens of millions of packets, ~1 in 1e5 for
+  both drivers) and stop at 1024 (kwq: 53 at 256 connections, else 0;
+  baseline: 2); 2048 and 4096 dropped nothing at any load.  Same
+  threshold within 2x for both drivers, so it is the traffic (32 TCP
+  streams landing on one list between two service turns), not the
+  service pattern; kwq needs the deeper end since a burst must fit
+  the list while its queue waits for its round.  If the kwq driver's
+  depth is ever lowered from 4096, 1024 is the floor, not 512.  Caveat:
+  8 pairs on 128 CPUs, <= 32 streams per pair; more streams per list or
+  fewer CPUs raise it.
+  Buffering bound per interface direction on a07 (both drivers): 128
+  lists x 4096 = 524,288 packets; per pair both ways 1,048,576; one
+  flow at most 4,096 (one list).  Memory per queued packet as the
+  local stack builds it: mtu 65535 -> 3 x 16 KB + 9 KB + 4 KB + 2 x
+  2 KB clusters + 8 mbufs ~ 68 KB; mtu 16384 -> one 16 KB cluster +
+  2 mbufs ~ 17 KB; mtu 1500 -> one 2 KB cluster + 2 mbufs ~ 2.3 KB.
+  So one direction full = 35.9 GB / 8.9 GB / 1.2 GB, one list = 280 /
+  69 / 9.4 MB.  a07: 549 GB RAM, kern.ipc.maxmbufmem 165 GB, but the
+  16 KB cluster zone is only 1.68 M clusters (27.5 GB): one full
+  direction at 65535 would need 1.57 M of them (94 % of the machine's
+  pool), at 16384 31 %; the senders run out of clusters and block long
+  before the queue bound is reached, only at 1500 bytes is the full
+  count reachable (2.6 % of the 20 M 2 KB clusters).  The limit is a
+  per-(interface, CPU) count and the per-queue kwq limit is writable,
+  so the depth is a lever if the pools ever become the constraint.
+  kwq_cpu_for_hash() on sparse CPU ids (2026-09-30): the port kept
+  the old driver's steering exactly on dense machines (hash %
+  (mp_maxid + 1), TCP's own per-CPU timer mapping), but for a hash
+  landing on an absent CPU id kwq fell back to curcpu like TCP does,
+  which for a queue spreads one flow over CPUs and reorders it; the
+  old driver never had the case since it indexed present CPUs only.
+  Fixed with a remap table built at module load: present ids map to
+  themselves, absent ids to the next present id upwards (wrapping),
+  KASSERTed at load; one table read on the enqueue path.  Dense
+  machines (both test machines: a07 maxid 127 = ncpu - 1) see no
+  change, verified by the kwq ATF suite 14/14 in the guest.  THE SPARSE
+  CASE ITSELF IS UNTESTED: only the load-time assertions (every table
+  entry a present CPU) and code review stand behind it.  There is no
+  test bed here: FreeBSD's id space can
+  have holes (mp_maxid > mp_ncpus - 1, CPU_ABSENT exists for it, e.g.
+  a core that fails to start), but hint.lapic.N.disabled and
+  hyperthreading_allowed=0 on amd64 still number densely.  KWQ.md S3
+  updated.

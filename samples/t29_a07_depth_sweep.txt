@@ -1,0 +1,108 @@
+start 19:35:46  7:35PM  up 18:48, 1 user, load averages: 0.09, 0.02, 0.27
+1
+== kwq driver
+t_29_multi_pair: depth 64: 8 pairs of pair, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.032 ms
+t_29_multi_pair: depth   64   8 conns (1 per pair): total 213.1 Gbit/s; per pair min/avg/max 23.6/26.6/30.9; rtt avg 0.042 ms max 0.237 ms; oqdrops 15; kwq items/pass 2, passes/s 922923
+t_29_multi_pair:      per pair Gbit/s: 28.6 23.8 30.9 25.7 26.2 28.5 23.6 25.8
+t_29_multi_pair: depth   64  64 conns (8 per pair): total 452.6 Gbit/s; per pair min/avg/max 55.3/56.6/58.9; rtt avg 3.583 ms max 49.148 ms; oqdrops 359392; kwq items/pass 3, passes/s 1549188
+t_29_multi_pair:      per pair Gbit/s: 56.0 57.1 55.7 56.8 56.5 56.3 55.3 58.9
+t_29_multi_pair: depth   64 256 conns (32 per pair): total 337.5 Gbit/s; per pair min/avg/max 39.8/42.2/44.0; rtt avg 10.564 ms max 106.285 ms; oqdrops 89265; kwq items/pass 4, passes/s 916649
+t_29_multi_pair:      per pair Gbit/s: 43.1 44.0 43.8 41.0 41.1 41.8 39.8 42.9
+t_29_multi_pair: depth 128: 8 pairs of pair, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.031 ms
+t_29_multi_pair: depth  128   8 conns (1 per pair): total 211.9 Gbit/s; per pair min/avg/max 22.8/26.5/29.6; rtt avg 0.050 ms max 0.324 ms; oqdrops 5; kwq items/pass 2, passes/s 938712
+t_29_multi_pair:      per pair Gbit/s: 27.9 27.2 27.7 23.5 27.4 29.6 25.8 22.8
+t_29_multi_pair: depth  128  64 conns (8 per pair): total 379.8 Gbit/s; per pair min/avg/max 46.3/47.5/48.6; rtt avg 4.722 ms max 57.467 ms; oqdrops 228802; kwq items/pass 3, passes/s 1351580
+t_29_multi_pair:      per pair Gbit/s: 48.3 46.3 48.1 47.7 46.5 47.3 47.0 48.6
+t_29_multi_pair: depth  128 256 conns (32 per pair): total 336.7 Gbit/s; per pair min/avg/max 39.9/42.1/45.2; rtt avg 8.726 ms max 122.984 ms; oqdrops 21360; kwq items/pass 5, passes/s 863769
+t_29_multi_pair:      per pair Gbit/s: 43.3 42.2 45.2 41.4 41.6 39.9 41.1 42.0
+t_29_multi_pair: depth 256: 8 pairs of pair, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.035 ms
+t_29_multi_pair: depth  256   8 conns (1 per pair): total 198.7 Gbit/s; per pair min/avg/max 21.4/24.8/27.0; rtt avg 0.069 ms max 1.926 ms; oqdrops 0; kwq items/pass 2, passes/s 921215
+t_29_multi_pair:      per pair Gbit/s: 24.3 26.5 26.0 25.0 21.4 24.6 23.9 27.0
+t_29_multi_pair: depth  256  64 conns (8 per pair): total 352.7 Gbit/s; per pair min/avg/max 38.1/44.1/46.1; rtt avg 3.042 ms max 83.284 ms; oqdrops 71675; kwq items/pass 4, passes/s 1274800
+t_29_multi_pair:      per pair Gbit/s: 46.1 44.8 38.1 45.5 44.5 45.0 44.7 44.0
+t_29_multi_pair: depth  256 256 conns (32 per pair): total 336.8 Gbit/s; per pair min/avg/max 41.3/42.1/43.1; rtt avg 15.077 ms max 191.545 ms; oqdrops 9221; kwq items/pass 7, passes/s 882867
+t_29_multi_pair:      per pair Gbit/s: 42.8 42.3 41.6 41.3 42.5 43.1 41.5 41.7
+t_29_multi_pair: depth 512: 8 pairs of pair, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.033 ms
+t_29_multi_pair: depth  512   8 conns (1 per pair): total 205.8 Gbit/s; per pair min/avg/max 16.4/25.7/30.6; rtt avg 0.048 ms max 0.339 ms; oqdrops 0; kwq items/pass 2, passes/s 875140
+t_29_multi_pair:      per pair Gbit/s: 25.3 30.6 29.4 29.0 22.9 23.0 16.4 29.2
+t_29_multi_pair: depth  512  64 conns (8 per pair): total 356.8 Gbit/s; per pair min/avg/max 42.3/44.6/45.8; rtt avg 3.401 ms max 66.424 ms; oqdrops 89; kwq items/pass 4, passes/s 1353487
+t_29_multi_pair:      per pair Gbit/s: 43.6 45.5 44.7 44.4 45.8 44.7 45.8 42.3
+t_29_multi_pair: depth  512 256 conns (32 per pair): total 336.1 Gbit/s; per pair min/avg/max 41.1/42.0/43.6; rtt avg 8.139 ms max 159.436 ms; oqdrops 422; kwq items/pass 9, passes/s 872624
+t_29_multi_pair:      per pair Gbit/s: 43.6 41.1 41.4 42.0 42.9 41.2 42.1 41.8
+t_29_multi_pair: depth 1024: 8 pairs of pair, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.032 ms
+t_29_multi_pair: depth 1024   8 conns (1 per pair): total 208.5 Gbit/s; per pair min/avg/max 21.6/26.1/29.0; rtt avg 0.044 ms max 0.325 ms; oqdrops 0; kwq items/pass 2, passes/s 935192
+t_29_multi_pair:      per pair Gbit/s: 21.6 24.4 25.8 24.6 27.0 27.1 29.0 29.0
+t_29_multi_pair: depth 1024  64 conns (8 per pair): total 362.1 Gbit/s; per pair min/avg/max 43.7/45.3/48.0; rtt avg 10.187 ms max 77.817 ms; oqdrops 0; kwq items/pass 4, passes/s 1358673
+t_29_multi_pair:      per pair Gbit/s: 46.4 43.7 44.7 44.3 48.0 44.9 46.3 43.8
+t_29_multi_pair: depth 1024 256 conns (32 per pair): total 335.5 Gbit/s; per pair min/avg/max 40.6/41.9/43.4; rtt avg 9.703 ms max 149.757 ms; oqdrops 53; kwq items/pass 10, passes/s 833910
+t_29_multi_pair:      per pair Gbit/s: 42.2 43.4 40.6 41.2 41.3 42.6 42.7 41.5
+t_29_multi_pair: depth 2048: 8 pairs of pair, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.032 ms
+t_29_multi_pair: depth 2048   8 conns (1 per pair): total 220.6 Gbit/s; per pair min/avg/max 23.3/27.6/31.1; rtt avg 0.040 ms max 0.173 ms; oqdrops 0; kwq items/pass 2, passes/s 951117
+t_29_multi_pair:      per pair Gbit/s: 31.1 23.3 26.0 28.3 28.5 29.4 27.9 26.1
+t_29_multi_pair: depth 2048  64 conns (8 per pair): total 358.2 Gbit/s; per pair min/avg/max 37.9/44.8/47.4; rtt avg 3.822 ms max 85.223 ms; oqdrops 0; kwq items/pass 4, passes/s 1339604
+t_29_multi_pair:      per pair Gbit/s: 47.4 40.2 46.0 37.9 45.9 47.2 46.7 46.9
+t_29_multi_pair: depth 2048 256 conns (32 per pair): total 336.9 Gbit/s; per pair min/avg/max 39.8/42.1/45.4; rtt avg 9.665 ms max 162.737 ms; oqdrops 0; kwq items/pass 11, passes/s 824376
+t_29_multi_pair:      per pair Gbit/s: 45.4 44.1 41.5 43.8 41.9 39.9 39.8 40.5
+t_29_multi_pair: depth 4096: 8 pairs of pair, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.033 ms
+t_29_multi_pair: depth 4096   8 conns (1 per pair): total 225.1 Gbit/s; per pair min/avg/max 22.7/28.1/30.2; rtt avg 0.044 ms max 0.330 ms; oqdrops 0; kwq items/pass 2, passes/s 948723
+t_29_multi_pair:      per pair Gbit/s: 22.7 29.7 29.6 28.5 24.1 30.1 30.2 30.2
+t_29_multi_pair: depth 4096  64 conns (8 per pair): total 351.1 Gbit/s; per pair min/avg/max 43.4/43.9/44.6; rtt avg 2.080 ms max 57.062 ms; oqdrops 0; kwq items/pass 6, passes/s 1275384
+t_29_multi_pair:      per pair Gbit/s: 43.4 44.2 44.4 43.4 43.8 43.6 43.7 44.6
+t_29_multi_pair: depth 4096 256 conns (32 per pair): total 338.1 Gbit/s; per pair min/avg/max 38.0/42.3/45.0; rtt avg 11.425 ms max 114.027 ms; oqdrops 0; kwq items/pass 11, passes/s 809175
+t_29_multi_pair:      per pair Gbit/s: 44.1 38.4 41.5 43.7 44.1 43.3 38.0 45.0
+t_29_multi_pair: PASS
+== taskqueue baseline
+t_29_multi_pair: depth 64: 8 pairs of pairtq, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.034 ms
+t_29_multi_pair: depth   64   8 conns (1 per pair): total 218.2 Gbit/s; per pair min/avg/max 23.0/27.3/29.4; rtt avg 0.048 ms max 0.350 ms; oqdrops 0
+t_29_multi_pair:      per pair Gbit/s: 23.0 29.4 29.1 29.0 29.1 26.1 25.6 26.9
+t_29_multi_pair: depth   64  64 conns (8 per pair): total 461.6 Gbit/s; per pair min/avg/max 56.3/57.7/59.9; rtt avg 1.539 ms max 50.826 ms; oqdrops 4817
+t_29_multi_pair:      per pair Gbit/s: 59.9 56.3 57.8 58.0 58.0 58.0 56.9 56.7
+t_29_multi_pair: depth   64 256 conns (32 per pair): total 338.0 Gbit/s; per pair min/avg/max 40.9/42.2/45.6; rtt avg 12.111 ms max 174.074 ms; oqdrops 28447
+t_29_multi_pair:      per pair Gbit/s: 42.7 42.7 45.6 41.1 42.3 41.4 41.3 40.9
+t_29_multi_pair: depth 128: 8 pairs of pairtq, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.033 ms
+t_29_multi_pair: depth  128   8 conns (1 per pair): total 203.1 Gbit/s; per pair min/avg/max 21.0/25.4/29.3; rtt avg 0.045 ms max 0.345 ms; oqdrops 5
+t_29_multi_pair:      per pair Gbit/s: 25.0 25.2 23.2 29.3 23.8 26.9 21.0 28.7
+t_29_multi_pair: depth  128  64 conns (8 per pair): total 440.3 Gbit/s; per pair min/avg/max 53.3/55.0/56.4; rtt avg 1.174 ms max 40.618 ms; oqdrops 2238
+t_29_multi_pair:      per pair Gbit/s: 55.1 56.4 54.2 54.2 54.7 53.3 56.4 56.0
+t_29_multi_pair: depth  128 256 conns (32 per pair): total 337.1 Gbit/s; per pair min/avg/max 39.4/42.1/43.9; rtt avg 10.623 ms max 189.090 ms; oqdrops 17043
+t_29_multi_pair:      per pair Gbit/s: 42.5 43.9 43.6 40.4 43.9 42.1 39.4 41.3
+t_29_multi_pair: depth 256: 8 pairs of pairtq, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.039 ms
+t_29_multi_pair: depth  256   8 conns (1 per pair): total 216.2 Gbit/s; per pair min/avg/max 24.4/27.0/30.4; rtt avg 0.048 ms max 0.317 ms; oqdrops 3
+t_29_multi_pair:      per pair Gbit/s: 27.6 25.3 24.4 27.0 30.4 29.6 26.1 25.8
+t_29_multi_pair: depth  256  64 conns (8 per pair): total 373.3 Gbit/s; per pair min/avg/max 43.2/46.7/50.1; rtt avg 1.939 ms max 52.502 ms; oqdrops 4371
+t_29_multi_pair:      per pair Gbit/s: 47.5 45.8 48.7 50.1 43.2 44.8 47.2 46.0
+t_29_multi_pair: depth  256 256 conns (32 per pair): total 336.2 Gbit/s; per pair min/avg/max 38.0/42.0/45.0; rtt avg 76.195 ms max 696.910 ms; oqdrops 5512
+t_29_multi_pair:      per pair Gbit/s: 40.9 42.4 45.0 42.9 38.0 42.9 42.8 41.3
+t_29_multi_pair: depth 512: 8 pairs of pairtq, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.037 ms
+t_29_multi_pair: depth  512   8 conns (1 per pair): total 204.1 Gbit/s; per pair min/avg/max 22.1/25.5/28.4; rtt avg 0.050 ms max 0.305 ms; oqdrops 0
+t_29_multi_pair:      per pair Gbit/s: 22.1 24.9 27.3 27.9 22.5 26.0 28.4 25.0
+t_29_multi_pair: depth  512  64 conns (8 per pair): total 357.3 Gbit/s; per pair min/avg/max 41.9/44.7/46.9; rtt avg 3.252 ms max 78.445 ms; oqdrops 208
+t_29_multi_pair:      per pair Gbit/s: 45.9 42.4 44.2 41.9 45.9 44.6 46.9 45.5
+t_29_multi_pair: depth  512 256 conns (32 per pair): total 335.7 Gbit/s; per pair min/avg/max 37.6/42.0/45.2; rtt avg 10.452 ms max 154.711 ms; oqdrops 904
+t_29_multi_pair:      per pair Gbit/s: 43.9 45.2 44.2 37.6 43.8 38.1 41.0 41.9
+t_29_multi_pair: depth 1024: 8 pairs of pairtq, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.032 ms
+t_29_multi_pair: depth 1024   8 conns (1 per pair): total 196.5 Gbit/s; per pair min/avg/max 20.4/24.6/28.7; rtt avg 0.042 ms max 0.335 ms; oqdrops 0
+t_29_multi_pair:      per pair Gbit/s: 23.9 24.7 24.1 26.2 28.7 22.7 20.4 25.8
+t_29_multi_pair: depth 1024  64 conns (8 per pair): total 354.6 Gbit/s; per pair min/avg/max 41.3/44.3/46.2; rtt avg 3.094 ms max 70.049 ms; oqdrops 0
+t_29_multi_pair:      per pair Gbit/s: 46.2 43.2 45.3 44.2 43.3 45.5 41.3 45.6
+t_29_multi_pair: depth 1024 256 conns (32 per pair): total 334.4 Gbit/s; per pair min/avg/max 38.9/41.8/44.5; rtt avg 53.924 ms max 467.731 ms; oqdrops 2
+t_29_multi_pair:      per pair Gbit/s: 38.9 41.0 43.9 44.5 39.7 43.0 43.9 39.5
+t_29_multi_pair: depth 2048: 8 pairs of pairtq, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.039 ms
+t_29_multi_pair: depth 2048   8 conns (1 per pair): total 214.7 Gbit/s; per pair min/avg/max 23.4/26.8/30.2; rtt avg 0.046 ms max 0.326 ms; oqdrops 0
+t_29_multi_pair:      per pair Gbit/s: 27.5 26.5 23.4 27.8 30.2 29.8 25.0 24.5
+t_29_multi_pair: depth 2048  64 conns (8 per pair): total 357.2 Gbit/s; per pair min/avg/max 42.0/44.6/47.3; rtt avg 2.588 ms max 63.294 ms; oqdrops 0
+t_29_multi_pair:      per pair Gbit/s: 46.0 44.6 44.3 47.3 42.0 44.7 45.7 42.6
+t_29_multi_pair: depth 2048 256 conns (32 per pair): total 334.8 Gbit/s; per pair min/avg/max 37.0/41.8/47.1; rtt avg 217.774 ms max 2285.440 ms; oqdrops 0
+t_29_multi_pair:      per pair Gbit/s: 43.6 41.3 47.1 37.0 41.4 42.5 42.5 39.4
+t_29_multi_pair: depth 4096: 8 pairs of pairtq, 6s runs, mtu 16384; idle rtt (worst pair avg) 0.033 ms
+t_29_multi_pair: depth 4096   8 conns (1 per pair): total 199.0 Gbit/s; per pair min/avg/max 21.3/24.9/28.1; rtt avg 0.048 ms max 0.302 ms; oqdrops 0
+t_29_multi_pair:      per pair Gbit/s: 25.7 23.6 25.4 27.2 28.1 25.2 22.5 21.3
+t_29_multi_pair: depth 4096  64 conns (8 per pair): total 355.4 Gbit/s; per pair min/avg/max 41.5/44.4/46.8; rtt avg 1.892 ms max 74.920 ms; oqdrops 0
+t_29_multi_pair:      per pair Gbit/s: 44.6 44.8 41.5 43.7 43.3 46.2 44.5 46.8
+t_29_multi_pair: depth 4096 256 conns (32 per pair): total 335.2 Gbit/s; per pair min/avg/max 37.2/41.9/44.5; rtt avg 11.233 ms max 101.742 ms; oqdrops 0
+t_29_multi_pair:      per pair Gbit/s: 43.2 44.5 44.4 37.2 42.0 43.0 41.0 39.9
+t_29_multi_pair: PASS
+34    1 0xffff0007c42aa000    27000 if_epair.ko
+jails left: 0
+end 19:58:43  7:58PM  up 19:11, 1 user, load averages: 69.32, 45.03, 30.05
+== p4f done

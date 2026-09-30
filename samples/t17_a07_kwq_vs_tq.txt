@@ -1,0 +1,63 @@
+start 18:09:49  6:09PM  up 17:22, 1 user, load averages: 2.27, 11.16, 9.29
+FreeBSD 15.1-RELEASE-p4 releng/15.1-n283627-db6066678b33 GENERIC
+net.inet.tcp.per_cpu_timers: 1
+34    1 0xffff0007c42aa000    27000 if_epair.ko
+40    2 0xffff0007be1c1000    2d000 kwq.ko
+41    1 0xffff0007c4200000    24000 if_pair.ko
+42    1 0xffff0007c4224000    27000 if_pair_tq.ko
+== t_17 round 1, kwq driver (pair)
+t_17_throughput: conns  Gbit/s  oqdrops   idrop  overruns  (5s runs, mtu 16384)
+t_17_throughput:     1    37.5        0       0         0
+t_17_throughput:     2    60.1        0       0         0
+t_17_throughput:     4     123        0       0         0
+t_17_throughput:     8     226        0       0         0
+t_17_throughput:    16     351        0       0         0
+t_17_throughput:    32     495        0       0         0
+t_17_throughput:    64     357        0       0         0
+t_17_throughput:   128     338        0       0         0
+== t_17 round 1, taskqueue baseline (pairtq)
+t_17_throughput: conns  Gbit/s  oqdrops   idrop  overruns  (5s runs, mtu 16384)
+t_17_throughput:     1    36.9        0       0      4695
+t_17_throughput:     2    65.6        0       0      9489
+t_17_throughput:     4     112        0       0     18906
+t_17_throughput:     8     240        0       0     38523
+t_17_throughput:    16     377        0       0     72638
+t_17_throughput:    32     496        0       0    135116
+t_17_throughput:    64     361        0       0    202106
+t_17_throughput:   128     340        0       0    200063
+== t_17 round 2, kwq driver (pair)
+t_17_throughput: conns  Gbit/s  oqdrops   idrop  overruns  (5s runs, mtu 16384)
+t_17_throughput:     1    36.6        0       0         0
+t_17_throughput:     2    73.2        0       0         0
+t_17_throughput:     4     109        0       0         0
+t_17_throughput:     8     209        0       0         0
+t_17_throughput:    16     360        0       0         0
+t_17_throughput:    32     495        0       0         0
+t_17_throughput:    64     356        0       0         0
+t_17_throughput:   128     338        0       0         0
+== t_17 round 2, taskqueue baseline (pairtq)
+t_17_throughput: conns  Gbit/s  oqdrops   idrop  overruns  (5s runs, mtu 16384)
+t_17_throughput:     1    33.6        0       0      4604
+t_17_throughput:     2    58.2        0       0      6603
+t_17_throughput:     4     109        0       0     16250
+t_17_throughput:     8     215        0       0     38202
+t_17_throughput:    16     361        0       0     71685
+t_17_throughput:    32     488        0       0    126214
+t_17_throughput:    64     356        0       0    189424
+t_17_throughput:   128     341        0       0    192876
+== t_20 lockstat, kwq driver
+t_20_lockstat: throughput: 332 Gbits/sec (receiver SUM, -P 128)
+t_20_lockstat: -- wait time above idle baseline (top 15, ms) --
+t_20_lockstat:   adaptive-spin   mbuf                       157807 ms
+t_20_lockstat:   adaptive-block  mbuf                        51867 ms
+t_20_lockstat:   spin-spin       turnstile_chain             32389 ms
+t_20_lockstat:   adaptive-spin   so_rcv                      26445 ms
+t_20_lockstat:   rw-block        tcpinp                      22426 ms
+t_20_lockstat:   rw-spin         tcpinp                      20754 ms
+t_20_lockstat:   adaptive-block  so_rcv                       8991 ms
+t_20_lockstat:   adaptive-block  mbuf_jumbo_page              8218 ms
+== t_20 lockstat, taskqueue baseline
+34    1 0xffff0007c42aa000    27000 if_epair.ko
+40    1 0xffff0007be1c1000    2d000 kwq.ko
+end 18:13:59  6:13PM  up 17:26, 1 user, load averages: 65.43, 35.65, 20.18
+== p4d done
