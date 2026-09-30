@@ -2302,3 +2302,7 @@ decision deferred until real clients show what fan-in they produce.
   backlogs onto one CPU.  The harness's first version panicked a07
   eight times (a handler reading a live knob while the previous run's
   queue drained); fixed, reproduced and verified on the guest.
+- 2026-09-29 (late, P3): tests/kwq_test.sh and tests/Kyuafile, the ATF
+  suite under kyua (OBSERVABILITY.md S9); kwq_test's P0 producer bound
+  away from its targets, items tagged per rep to prove exactly-once
+  delivery (`result_dups`).  P3 closed; P4 next.

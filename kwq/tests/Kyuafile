@@ -1,0 +1,9 @@
+-- kwq test suite: kyua test -k /path/to/kwq/tests/Kyuafile
+-- Needs root and a machine with at least 4 CPUs; loads kwq.ko and
+-- kwq_test.ko from the `moddir' configuration variable
+-- (-v test_suites.kwq.moddir=/root/kwq), by module name otherwise.
+syntax(2)
+
+test_suite("kwq")
+
+atf_test_program{name="kwq_test.sh", timeout=900}

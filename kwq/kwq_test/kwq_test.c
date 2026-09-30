@@ -65,6 +65,7 @@ struct titem {
 	uint64_t	ti_seq;		/* per-CPU sequence, or an sbinuptime stamp */
 	int		ti_cpu;
 	int		ti_qidx;	/* flood queue index (P1b) */
+	u_int		ti_seen;	/* P0: rep tag of the delivery, catches an item run twice */
 } __aligned(KT_LINE);
 
 /* Knobs. */
@@ -95,6 +96,7 @@ static char	kt_msg[256] = "";
 static uint64_t	kt_r_in, kt_r_out, kt_r_discarded, kt_r_rejected, kt_r_coalesced,
 		kt_r_runs, kt_r_ns, kt_r_fifo_errors;
 static uint64_t	kt_r_glitches;	/* cpu_ticks() deltas discarded, see kt_tickdelta() */
+static uint64_t	kt_r_dups;	/* P0: items run or discarded twice in a rep */
 static uint64_t	kt_r_cycles_a, kt_r_cycles_b, kt_r_maxlat_a_us, kt_r_maxlat_b_us,
 		kt_r_ns_per_item, kt_r_prod_ns_per_item;
 /* ifpair */
@@ -112,6 +114,9 @@ static uint64_t	kt_nf_runs;		/* notifier handler runs */
 static uint64_t	kt_nf_seen;		/* last state value the handler saw */
 static uint64_t	kt_nf_state;		/* the "hardware state" the producer bumps */
 static uint64_t	kt_fifo_errors;
+static uint64_t	kt_dups;		/* P0: items delivered twice in one rep */
+static u_int	kt_rep_tag;		/* P0: current rep + 1, stamped into ti_seen */
+static int	kt_pcpu = -1;		/* P0: the producer's CPU, never a target */
 static uint64_t	*kt_last_seq;		/* [mp_maxid + 1] */
 
 SYSCTL_NODE(_kern, OID_AUTO, kwq_test, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
@@ -174,6 +179,8 @@ SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_runs, CTLFLAG_RD, &kt_r_runs, 0,
     "notifier handler runs / callout fires");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_fifo_errors, CTLFLAG_RD,
     &kt_r_fifo_errors, 0, "out-of-order deliveries seen");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_dups, CTLFLAG_RD, &kt_r_dups, 0,
+    "P0: items delivered twice within a rep (must be 0)");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_glitches, CTLFLAG_RD, &kt_r_glitches, 0,
     "cpu_ticks() deltas over 40 ms discarded from the cost sums (ticker glitches)");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_ns, CTLFLAG_RD, &kt_r_ns, 0,
@@ -289,6 +296,10 @@ kt_item_handler(struct kwq *q __unused, struct kwq_item *head, int n,
 		ti = __containerof(it, struct titem, ti_item);
 		if (ti->ti_magic != TITEM_MAGIC)
 			panic("kwq_test: bad item %p", ti);
+		/* Run or discarded, each item exactly once per rep. */
+		if (ti->ti_seen == kt_rep_tag)
+			atomic_add_64(&kt_dups, 1);
+		ti->ti_seen = kt_rep_tag;
 		if (n > 0) {
 			if (ti->ti_cpu != cpu ||
 			    ti->ti_seq <= kt_last_seq[cpu])
@@ -356,11 +367,21 @@ kt_next_cpu(int *cur)
 	do {
 		*cur = (*cur + 1) % (mp_maxid + 1);
 		cpu = *cur;
-	} while (CPU_ABSENT(cpu));
+	} while (CPU_ABSENT(cpu) || cpu == kt_pcpu);
 	return (cpu);
 }
 
-/* create/activate/enqueue/drain/destroy, kt_reps times. */
+/*
+ * create/activate/enqueue/drain/destroy, kt_reps times.  The producer
+ * (this thread) is bound to a CPU that is never a target: unbound, it
+ * once ran on the worker's CPU on a07, was preempted by the worker per
+ * item, and the reject and discard scenarios saw no rejects and two
+ * discards where the guest saw thousands.  With the producer on its own
+ * CPU the counts follow from the knobs alone: a list of `limit' items
+ * drained at `cost_us' per item against a producer enqueuing in
+ * nanoseconds must reject, and a drain with items still queued must
+ * discard.
+ */
 static void
 kt_run_items(uint32_t flags, kwq_handler_t *fn)
 {
@@ -368,13 +389,23 @@ kt_run_items(uint32_t flags, kwq_handler_t *fn)
 	struct titem *items, *ti;
 	uint64_t in, rejected, *seq;
 	u_int rep, i;
-	int cpu, cur, error;
+	int cpu, cur, error, pcpu;
+
+	pcpu = kt_cpu >= 0 ? kt_other_cpu(kt_cpu) : (int)mp_maxid;
+	while (CPU_ABSENT(pcpu) && pcpu > 0)
+		pcpu--;
+	kt_pcpu = pcpu;
+	thread_lock(curthread);
+	sched_bind(curthread, pcpu);
+	thread_unlock(curthread);
 
 	items = malloc(sizeof(*items) * kt_items, M_KWQ_TEST, M_WAITOK | M_ZERO);
 	seq = malloc(sizeof(*seq) * (mp_maxid + 1), M_KWQ_TEST, M_WAITOK | M_ZERO);
 	in = rejected = 0;
 	cur = 0;
+	kt_dups = 0;
 	for (rep = 0; rep < kt_reps; rep++) {
+		kt_rep_tag = rep + 1;
 		q = kt_create(kt_qname, flags, 1, fn, NULL);
 		if (q == NULL) {
 			kt_fail("kwq_create failed at rep %u", rep);
@@ -428,10 +459,17 @@ kt_run_items(uint32_t flags, kwq_handler_t *fn)
 	kt_r_discarded = kt_discarded;
 	kt_r_rejected = rejected;
 	kt_r_fifo_errors = kt_fifo_errors;
+	kt_r_dups = kt_dups;
 	if (kt_fifo_errors != 0)
 		kt_fail("%ju out-of-order deliveries", (uintmax_t)kt_fifo_errors);
+	else if (kt_dups != 0)
+		kt_fail("%ju items delivered twice", (uintmax_t)kt_dups);
 	free(seq, M_KWQ_TEST);
 	free(items, M_KWQ_TEST);
+	thread_lock(curthread);
+	sched_unbind(curthread);
+	thread_unlock(curthread);
+	kt_pcpu = -1;
 }
 
 static void
@@ -1795,7 +1833,7 @@ kt_thread(void *arg __unused)
 	kt_r_in = kt_r_out = kt_r_discarded = kt_r_rejected = kt_r_coalesced = 0;
 	kt_r_runs = kt_r_fifo_errors = 0;
 	kt_r_cycles_a = kt_r_cycles_b = kt_r_maxlat_a_us = kt_r_maxlat_b_us = 0;
-	kt_r_ns_per_item = kt_r_prod_ns_per_item = kt_r_glitches = 0;
+	kt_r_ns_per_item = kt_r_prod_ns_per_item = kt_r_glitches = kt_r_dups = 0;
 	kt_r_enq_slow = kt_r_enq_pct = kt_r_cons_pct = kt_r_pool_waits = 0;
 	kt_msg[0] = '\0';
 

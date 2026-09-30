@@ -41,7 +41,8 @@ if_pair module in the parent directory:
     kwq_test.c, Makefile
   kwq/tests/               kwqvm.sh: the bhyve test guest (build, install
                            GENERIC-DEBUG, start/stop, mods, ssh); ATF sh
-                           tests (Kyuafile, kwq_lib.sh, t_*.sh) are P3
+                           tests: Kyuafile + kwq_test.sh (the ATF suite,
+                           P3), run_p1b.sh (performance runner), kwqvm.sh
   kwq/examples/            compilable examples, P8 (build against ../kwq/kwq.h)
     deferred.c             minimal deferred-work client
     scatter.c              BULK fan-out with completion callback
@@ -379,7 +380,23 @@ Phases
     scenario; the many-producers-one-queue case is still unmeasured
     (P4, with the lock-free list decision).
 
-[TODO] P3  kwq_test.ko and the ATF harness (2-3 days, overlaps P1/P2)
+[DONE 2026-09-29] P3  kwq_test.ko and the ATF harness (2-3 days, overlaps P1/P2)
+    Status: tests/kwq_test.sh (atf-sh) + tests/Kyuafile, 14 cases: lifecycle
+    (100 cycles, exactly-once via a per-rep seen tag, nqueues back to 0),
+    fifo, reject, discard, notify, bad_names, fairness (1:1 and 2:1 within
+    10 %), latency (light queue <= 10 quanta), gaming (share, boosts <= 2,
+    grace hits), overrun (counted, parked, share), yield (callout kept, tick
+    yields), cost and ifpair smoke.  Passes 14/14 in the guest on
+    GENERIC-DEBUG and on a07 (one case per kyua invocation there: kyua dies
+    on its own PID bookkeeping with randompid, and needs KYUA_STOREDIR
+    pointed at a copy of /usr/share/kyua/store), 13 + 1 skip on the guest's
+    stock GENERIC (yield skips itself on the VM's callout stall).  The
+    guest is amd64, not the arm64 VM the exit named; a07 covers arm64.
+    Determinism: the P0 producer is bound to a CPU that is never a target
+    and reject/discard use one target list (round-robin over 128 CPUs never
+    fills a list).  Still open, tracked where they belong: steal and scatter
+    (P6), the notify-from-handler variant and a standalone drain scenario
+    (the exactly-once check now lives in lifecycle), sleep stays manual.
     Files: kwq/kwq_test/kwq_test.c, kwq/tests/*.
     - Module exposes kern.kwq_test.{scenario,items,reps,cost_us,limit,
       cpu,allow_panic,run,result_*} (P0, as built) plus, for P1,

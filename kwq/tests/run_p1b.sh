@@ -37,8 +37,8 @@ for s in $scenarios; do
 	lifecycle) run lifecycle reps=100 || rc=1 ;;
 	fifo) run fifo items=100000 reps=2 || rc=1 ;;
 	notify) run notify items=100000 || rc=1 ;;
-	reject) run reject limit=8 cost_us=20 items=5000 reps=2 || rc=1 ;;
-	discard) run discard cost_us=20 limit=100000 items=5000 reps=2 || rc=1 ;;
+	reject) run reject cpu=1 limit=8 cost_us=20 items=5000 reps=2 || rc=1 ;;	# one target list, producer bound elsewhere
+	discard) run discard cpu=1 cost_us=20 limit=100000 items=5000 reps=2 || rc=1 ;;
 	fairness) run fairness || rc=1; C ;;
 	fairness2) run fairness weight_a=2 || rc=1; C ;;
 	latency) run latency cost_a=20 || rc=1; C ;;

@@ -29,8 +29,9 @@ if_pair Makefile in the parent directory.
     tests/        kwqvm.sh, which builds and runs the disposable
                   15.1/amd64 GENERIC-DEBUG bhyve guest the module tests
                   need (doas tests/kwqvm.sh setup; start; then mods and
-                  ssh as your user); the ATF harness (Kyuafile,
-                  kwq_lib.sh, t_*.sh) is P3
+                  ssh as your user); the ATF suite (Kyuafile,
+                  kwq_test.sh; run under kyua, OBSERVABILITY.md S9);
+                  run_p1b.sh, the performance runner
     examples/     (P8) compilable usage examples (deferred.c, scatter.c,
                   pair_client.c)
     man/          (P8) kwq.9, dtrace_kwq.4
@@ -42,4 +43,4 @@ grew out of, and its measurements, are in ../if_pair.c and ../NOTES.md.
 Build: make (both modules, against /usr/src/sys); for the test guest's
 kernel, tests/kwqvm.sh mods.  Load: kldload ./kwq/kwq.ko
 ./kwq_test/kwq_test.ko; drive kwq_test through sysctl kern.kwq_test
-(scenario, items, reps, run, result_*).  Status: P0, P1a, P1b and P2 done (measured in the bhyve guest on both kernels and on a07, SCHED.md S10.2-S10.3, S15.7); P3 (ATF harness) is next.  Tunables, sysctl counters, DTrace probes, DDB and the test runner are documented with examples in OBSERVABILITY.md.  tests/run_p1b.sh runs the scenarios: in the guest by default (MODDIR=/root/kwq-generic after `kwqvm.sh mods generic` for the stock GENERIC kernel, booted with `nextboot -k kernel`), on a07 with `KWQ_SSH="ssh a07 doas -n" MODDIR=/home/crest/if_pair/kwq` against an in-tree build there.  `make` in this directory builds both modules with probes and CTF; `make install` and `make uninstall` handle /boot/modules and the translator.
+(scenario, items, reps, run, result_*).  Status: P0 through P3 done (measured in the bhyve guest on both kernels and on a07, SCHED.md S10.2-S10.3, S15.7); P4 (if_pair on kwq) is next.  The ATF suite: `kyua -v test_suites.kwq.moddir=<modules> test -k tests/Kyuafile` as root on a machine with 4+ CPUs (OBSERVABILITY.md S9).  Tunables, sysctl counters, DTrace probes, DDB and the test runner are documented with examples in OBSERVABILITY.md.  tests/run_p1b.sh runs the scenarios: in the guest by default (MODDIR=/root/kwq-generic after `kwqvm.sh mods generic` for the stock GENERIC kernel, booted with `nextboot -k kernel`), on a07 with `KWQ_SSH="ssh a07 doas -n" MODDIR=/home/crest/if_pair/kwq` against an in-tree build there.  `make` in this directory builds both modules with probes and CTF; `make install` and `make uninstall` handle /boot/modules and the translator.

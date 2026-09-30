@@ -319,6 +319,32 @@ kwq source tree after an in-tree build:
     IFACES=8 SPREAD=8 FANIN=7 tests/run_p1b.sh ifpair          # 120 CPUs
     FANIN=8 PROD_NS=500 CONS_NS=500 LOCKSTAT=1 tests/run_p1b.sh ifpair
 
+`tests/kwq_test.sh` is the ATF test program and `tests/Kyuafile` its
+suite: fourteen cases that load the two modules, run a scenario and
+assert the property it proves (per-CPU FIFO and exactly-once delivery,
+rejects and discards, notifier coalescing, name validation, fairness
+within 10 %, the light queue's latency bound, the grace rule, overrun
+parking, tick yields, and two flow smoke tests).  It needs root and at
+least 4 CPUs and skips otherwise; each case unloads what it loaded.
+Run it as root on the test machine, pointing `moddir` at a flat module
+directory or the source tree, or leave it unset to load installed
+modules by name:
+
+    kyua -v test_suites.kwq.moddir=/root/kwq test -k /root/kwq/tests/Kyuafile
+    kyua -v test_suites.kwq.moddir=/home/crest/if_pair/kwq test -k tests/Kyuafile
+    kyua report                                        # last run, per case
+    kyua report --verbose --results-filter failed      # stdout of the failures
+
+The "sleep" scenario (a sleeping handler must panic an INVARIANTS
+kernel) is not in the suite; run it by hand in the guest with
+`kern.kwq_test.allow_panic=1`.  Two machine-specific notes: on a07 the
+FreeBSD-kyua package lacks `/usr/share/kyua/store` (copy it from another
+15.1 machine and point `KYUA_STOREDIR` at it), and kyua itself dies with
+"PID already in all_exec_data" when it runs the whole suite there
+(`kern.randompid` is on); one case per invocation, `kyua test -k
+Kyuafile kwq_test.sh:<case>`, works.  In the bhyve guest the `yield`
+case skips itself when the VM's own 20-40 ms callout stall hits.
+
 ## 10. Build defaults
 
 A plain `make` in `kwq/` produces modules with everything above:
