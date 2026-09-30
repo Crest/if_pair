@@ -406,10 +406,17 @@ four ways to pick, in descending order of how often they are right:
    computes (if_pair's `pair_hash_mbuf`, netisr's `m2flow`).  Keeps a flow
    on one CPU for its lifetime regardless of which thread produces it,
    which is the property `curcpu` lacks.  The helper maps the hash as
-   `hash % (mp_maxid + 1)` and falls back to the caller's CPU if that id
-   is offline: the same function TCP uses for `net.inet.tcp.per_cpu_timers`
-   (`tcp_timer.c`), so a connection's kwq worker, its timers and, on RSS
-   kernels, its NIC queue land on the same CPU, and every kwq client
+   `hash % (mp_maxid + 1)`, the same function TCP uses for
+   `net.inet.tcp.per_cpu_timers` (`tcp_timer.c`), so a connection's kwq
+   worker, its timers and, on RSS kernels, its NIC queue land on the same
+   CPU.  Where the id space has holes (an absent CPU id) TCP falls back to
+   the caller's CPU, which would spread a flow over CPUs and reorder it;
+   kwq instead remaps each absent id to a fixed present one (the next
+   present id upwards, wrapping), through a table built at load, so a
+   dense machine sees exactly TCP's mapping and a sparse one still keeps
+   every flow on one CPU (2026-09-30; the sparse path is untested, no
+   such machine being available, and rests on the load-time assertion
+   that every table entry is a present CPU).  Every kwq client
    agrees on the mapping (../NOTES.md, the flowid-learning chain).
 2. **The source's CPU**: the NIC receive queue's CPU (`rss_m2cpuid` on RSS
    kernels, netisr's `NETISR_POLICY_CPU`), or the CPU an ithread is bound
@@ -2313,3 +2320,8 @@ decision deferred until real clients show what fan-in they produce.
   MODULE_DEPEND on kwq.  The taskqueue driver stays as
   ../extras/if_pair_tq for A/B runs.  Functional suite green on the
   guest; a07 throughput pairs pending.
+- 2026-09-30 (later): `kwq_cpu_for_hash()` remaps absent CPU ids to a
+  fixed present one through a table built at load (S3) instead of
+  falling back to the caller's CPU, so a flow stays on one CPU on a
+  machine with holes in its CPU numbering; dense machines unchanged.
+  Per-queue `limit` writable at run time (S10.7).

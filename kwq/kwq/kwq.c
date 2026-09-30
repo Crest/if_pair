@@ -259,16 +259,47 @@ kwq_class(const struct kwq *q)
 
 /*
  * CPU selection (../KWQ.md S3 "Choosing the CPU").
+ *
+ * hash % (mp_maxid + 1) is TCP's per-CPU timer mapping (inp_to_cpuid()),
+ * so on a densely numbered machine a connection's kwq worker and its
+ * timers share a CPU.  CPU ids may have holes (hint.lapic.N.disabled,
+ * firmware that skips a core): TCP then falls back to the caller's CPU,
+ * which for a queue would spread one flow over CPUs and reorder it.
+ * kwq instead remaps every absent id to a fixed present one, the next
+ * present id upwards with wrap-around, through a table built at load.
+ * Present ids map to themselves, so dense machines see exactly TCP's
+ * mapping and sparse ones keep every flow on one CPU.  The sparse path
+ * is untested as of 2026-09-30 (no such machine at hand); the KASSERTs
+ * in kwq_cpu_remap_init() are what stands behind it.
  */
+static int kwq_cpu_remap[MAXCPU];
+
+static void
+kwq_cpu_remap_init(void)
+{
+	int cpu, first, next;
+
+	first = -1;
+	CPU_FOREACH(cpu) {
+		first = cpu;
+		break;
+	}
+	KASSERT(first >= 0, ("kwq: no CPU present"));
+	next = first;
+	for (cpu = (int)mp_maxid; cpu >= 0; cpu--) {
+		if (!CPU_ABSENT(cpu))
+			next = cpu;
+		kwq_cpu_remap[cpu] = next;	/* itself, or the next present one */
+	}
+	for (cpu = 0; cpu <= (int)mp_maxid; cpu++)
+		KASSERT(!CPU_ABSENT(kwq_cpu_remap[cpu]),
+		    ("kwq: cpu %d remapped to absent %d", cpu, kwq_cpu_remap[cpu]));
+}
+
 int
 kwq_cpu_for_hash(uint32_t hash)
 {
-	int cpu;
-
-	cpu = hash % (mp_maxid + 1);
-	if (__predict_false(CPU_ABSENT(cpu)))
-		cpu = curcpu;
-	return (cpu);
+	return (kwq_cpu_remap[hash % (mp_maxid + 1)]);
 }
 
 /*
@@ -928,6 +959,7 @@ kwq_modevent(module_t mod __unused, int type, void *data __unused)
 
 	switch (type) {
 	case MOD_LOAD:
+		kwq_cpu_remap_init();
 		kwq_class_oids[KWQ_NET] = SYSCTL_STATIC_CHILDREN(_kern_kwq_net);
 		kwq_class_oids[KWQ_BULK] =
 		    SYSCTL_STATIC_CHILDREN(_kern_kwq_bulk);
