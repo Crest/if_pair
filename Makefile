@@ -10,6 +10,8 @@
 KMOD=	if_pair
 SRCS=	if_pair.c
 SRCS+=	opt_inet.h opt_inet6.h
+# The kwq(9) KPI header; kwq.ko (kwq/kwq) must be loaded first.
+CFLAGS+=	-I${.CURDIR}/kwq/kwq
 
 # bsd.kmod.mk has no manual page handling of its own; reuse
 # bsd.man.mk (MAN, maninstall, MK_MANCOMPRESS compression) and point

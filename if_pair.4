@@ -35,12 +35,20 @@ and carry bare IPv4 and IPv6 packets, so there are no link-layer
 headers, no ARP or NDP neighbor resolution and none of the associated
 overhead.
 Traffic between the two sides is delivered into the peer's protocol
-input path by a pool of kernel worker threads, one pinned to each CPU
-and shared by all pairs.
-Packets are distributed over the workers by a flow hash covering the
+input path by the kernel work queue service
+.Xr kwq 9 :
+each side owns one queue, served by the per-CPU worker threads of the
+network class, which all pairs and other network work share under a
+deficit round-robin scheduler.
+Packets are distributed over the CPUs by a flow hash covering the
 source and destination address, the IP protocol and, where applicable,
 the TCP or UDP ports, so concurrent flows spread across CPUs while
 packets of any one flow are delivered in order.
+The
+.Nm
+module depends on
+.Pa kwq.ko ,
+which is loaded with it.
 .Pp
 .Xr altq 4
 is not supported:
@@ -266,40 +274,31 @@ jail -r demo
 .Sh SYSCTL VARIABLES
 The
 .Nm
-driver exposes the following
+driver has no
 .Xr sysctl 8
-variable, which can also be set as a
-.Xr loader.conf 5
-tunable:
-.Bl -tag -width "net.link.pair.batch_overruns"
-.It Va net.link.pair.batch
-Number of packets a delivery worker processes before briefly
-yielding its CPU so that timers and other kernel threads keep running
-under sustained load.
-The worker yields at the time-sharing priority the scheduler has
-computed for it from its recent history:
-a lightly loaded worker yields only to kernel threads and interactive
-processes, while a saturated worker drops among the CPU-bound user
-processes on its CPU and lets them run full time slices, tens of
-milliseconds, before it resumes delivering packets.
-On a multiprocessor the scheduler usually migrates such processes to
-other CPUs first.
-The default is 64.
-While yielding is enabled, a worker also yields whenever a clock
-tick has passed since it last yielded or slept, so timer lateness
-stays bounded even for expensive packets or many small batches.
-Values above the per-queue limit of 4096 are reduced to it with a
-console warning; a value of 0 or less disables yielding, in which
-case a saturated worker monopolizes its CPU.
-.It Va net.link.pair.batch_overruns
-Read-only count of worker yields forced because a clock tick
-elapsed before the packet budget ran out.
-Yielding after a full batch is normal under load; a steadily growing
-overrun count means single batches regularly outlive a clock tick,
-for example with very large MTUs, and a smaller
+variables of its own.
+How much CPU time a pair's delivery may take before yielding to other
+queues, timers and user processes is governed by the network class of
+.Xr kwq 9 ,
+under
+.Va kern.kwq.net ,
+in particular the per-pass quantum
+.Va kern.kwq.net.quantum_us .
+Each side's queue appears under
+.Va kern.kwq.net.queue
+by its interface name, for example
+.Va kern.kwq.net.queue.pair0a ,
+with per-CPU counters of packets delivered, passes, rejected packets
+(the transmitter's
+.Dq Oqdrops ) ,
+worst queueing latency and budget overruns.
+The former
 .Va net.link.pair.batch
-may bound timer latency more smoothly.
-.El
+and
+.Va net.link.pair.batch_overruns
+variables of the driver's own worker pool no longer exist; the
+class quantum replaces the packet budget, and overruns are counted per
+queue.
 .Sh DIAGNOSTICS
 Interface counters, shown by
 .Xr netstat 1
@@ -325,13 +324,23 @@ It will report TCP and UDP checksums as incorrect whenever transmit
 checksum offloading is enabled; this is the normal appearance of
 offloaded checksums and not an error.
 .Pp
-The delivery workers are visible as kernel threads named
-.Dq Li pair_task_ Ns Ar N
+The delivery workers are the
+.Xr kwq 9
+network-class threads, visible as
+.Dq Li kwq_net/ Ns Ar N
 in
-.Xr top 1 .
-A single flow is served by a single worker by design; one busy worker
+.Xr top 1 ;
+they serve every pair and any other network-class queue on their CPU.
+A single flow is served by a single CPU by design; one busy worker
 next to idle CPUs is the expected picture for a single high-volume
 connection.
+The per-queue counters under
+.Va kern.kwq.net.queue
+and the
+.Xr dtrace 1
+provider
+.Li kwq
+show how a pair's packets are queued and served.
 .Pp
 If traffic forwarded from a pair undergoes address or port rewriting
 on the host and is emitted with invalid checksums, the cause is

@@ -25,6 +25,11 @@ fi
 
 if ! kldstat -q -m ${PAIR_MOD}; then
 	d=$(dirname "$0")
+	if [ "${PAIR_MOD}" = if_pair ] && ! kldstat -q -m kwq; then
+		for ko in "${KWQ_KO:-}" "$d/../kwq/kwq/kwq.ko" kwq; do
+			[ -n "$ko" ] && kldload "$ko" 2>/dev/null && break
+		done
+	fi
 	for ko in "$d/../${PAIR_MOD}.ko" "$d/../extras/${PAIR_MOD}/${PAIR_MOD}.ko" "$d/${PAIR_MOD}.ko"; do
 		[ -f "$ko" ] && { kldload "$ko"; break; }
 	done

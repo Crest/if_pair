@@ -11,12 +11,17 @@
  * both.  Unlike epair there is no Ethernet emulation: the interfaces
  * are IFF_POINTOPOINT and carry bare IPv4/IPv6 packets - no
  * link-layer headers, no ARP/NDP neighbor discovery, no bridge/vlan
- * machinery.  A transmitted mbuf is flow-hashed onto one of the peer
- * side's receive queues and delivered into the peer's protocol input,
- * in the peer's vnet, by the matching thread of a CPU-pinned worker
- * pool shared by all pairs; TCP/UDP checksums are elided for traffic
- * that never leaves the machine.  Just two ends of a wire for routed
- * traffic between vnets (or between the host and a vnet).
+ * machinery.  A transmitted mbuf is flow-hashed onto a CPU and
+ * delivered into the peer's protocol input, in the peer's vnet, by that
+ * CPU's kwq(9) NET worker (kwq/KWQ.md): each side owns one kwq queue
+ * with a per-CPU list, and the kwq scheduler shares every worker fairly
+ * between all pairs and other NET clients; TCP/UDP checksums are elided
+ * for traffic that never leaves the machine.  Just two ends of a wire
+ * for routed traffic between vnets (or between the host and a vnet).
+ *
+ * The previous version, a CPU-pinned taskqueue pool of the driver's own
+ * with a batch-and-yield governor, is kept as extras/if_pair_tq for A/B
+ * measurements.
  */
 
 #include "opt_inet.h"
@@ -24,8 +29,6 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
-#include <sys/counter.h>
-#include <sys/cpuset.h>
 #include <sys/epoch.h>
 #include <sys/hash.h>
 #include <sys/kernel.h>
@@ -34,16 +37,13 @@
 #include <sys/mbuf.h>
 #include <sys/module.h>
 #include <sys/mutex.h>
-#include <sys/priority.h>
 #include <sys/proc.h>
 #include <sys/queue.h>
-#include <sys/sched.h>
 #include <sys/smp.h>
 #include <sys/socket.h>
 #include <sys/sockio.h>
 #include <sys/sx.h>
 #include <sys/sysctl.h>
-#include <sys/taskqueue.h>
 
 #include <net/bpf.h>
 #include <net/if.h>
@@ -56,6 +56,8 @@
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
+
+#include "kwq.h"	/* kwq/kwq/kwq.h: the work queue KPI */
 
 #define	PAIR_NAME	"pair"
 #define	PAIR_MTU_DFLT	16384	/* lo(4)'s LOMTU; see commit af78195e0024 */
@@ -143,48 +145,20 @@ enum pair_side {
 };
 
 /*
- * Authors of the borrowed epair queue code (with relevant commits):
- *   Mark Johnston           df7bbd8c354a  the three-state doorbell
- *   Bjoern A. Zeeb          original epair (2008)
- *   Kristof Provost         24f0bfbad57b  per-queue fanout
- *   Alexander V. Chernikov  12aeeb91903b, 04a32b802ec7  refactoring
- *
- * The flow steering, the shared CPU-pinned worker pool, and the
- * batching/yield governor are if_pair's own.
- *
- * Receive queue, one per pool worker per side.  Transmitters enqueue
- * onto the receiving side's queue; the pinned worker for pq_id drains
- * it.  Modeled on epair(4)'s struct epair_queue, including the
- * IDLE/WAKING/RUNNING state machine that avoids redundant task
- * enqueues.
- *
- * State machine invariant (lost-wakeup freedom): pq_state != IDLE
- * implies pq_task is pending or running, so every enqueued packet is
- * followed by a worker flush.  The invariant is maintained jointly by
- * producer and worker, and both halves must happen under pq_mtx: the
- * producer transitions IDLE->WAKING and enqueues the task in the same
- * lock hold as its mbufq_enqueue(), and the worker re-checks queue
- * emptiness under the lock before declaring IDLE.  Enqueueing the
- * mbuf before the state check, or re-checking emptiness outside the
- * lock, would silently strand packets on an idle queue.
+ * Receive queue: one kwq(9) NET queue per side, named after the
+ * interface (kern.kwq.net.queue.pairNa), with one list per CPU inside
+ * it.  Transmitters enqueue the mbuf itself (its m_nextpkt link is the
+ * kwq item) onto the receiving side's queue at the CPU its flow hashes
+ * to; that CPU's kwq worker runs pair_handler() with the packets in
+ * FIFO order.  The doorbell, the lost-wakeup protocol, the per-CPU
+ * FIFO, the bound (PAIR_QLIMIT items per CPU list, ENOBUFS beyond it)
+ * and the sharing of a CPU between pairs and other NET queues are
+ * kwq's; the driver keeps only the flow steering.  The lineage of the
+ * queueing that used to live here (epair(4)'s three-state doorbell by
+ * Mark Johnston, the per-queue fanout by Kristof Provost) is recorded
+ * in extras/if_pair_tq.
  */
-#define	PAIR_QLIMIT	4096	/* epair's RXRSIZE */
-#define	PAIR_BATCH_DFLT	64	/* packets per worker pass between yields */
-
-struct pair_softc;
-
-struct pair_queue {
-	struct mtx		 pq_mtx;
-	struct mbufq		 pq_q;
-	int			 pq_id;		/* pool worker index */
-	enum {
-		PAIR_QUEUE_IDLE,
-		PAIR_QUEUE_WAKING,
-		PAIR_QUEUE_RUNNING,
-	}			 pq_state;
-	struct task		 pq_task;
-	struct pair_softc	*pq_sc;		/* receiving side */
-};
+#define	PAIR_QLIMIT	4096	/* epair's RXRSIZE, per (queue, CPU) list */
 
 struct pair_softc {
 	if_t			 sc_ifp;
@@ -192,8 +166,8 @@ struct pair_softc {
 	struct if_clone		*sc_ifc;	/* creating vnet's cloner */
 	enum pair_side		 sc_side;
 	int			 sc_unit;
-	int			 sc_defqid;	/* steering fallback */
-	struct pair_queue	*sc_queues;	/* pair_tasks.pt_count of them */
+	int			 sc_defcpu;	/* steering fallback */
+	struct kwq		*sc_q;		/* this side's receive queue */
 	LIST_ENTRY(pair_softc)	 sc_list;	/* pair registry; 'a' side
 						   only, under pair_sx */
 };
@@ -208,87 +182,21 @@ struct pair_softc {
 static LIST_HEAD(, pair_softc) pair_list = LIST_HEAD_INITIALIZER(pair_list);
 
 /*
- * The worker pool: one taskqueue with one CPU-pinned thread per CPU,
- * created once at load and shared by all pairs.  epair(4) has this
- * shape only on RSS kernels (one unpinned thread otherwise); we use
- * it unconditionally.
+ * Round robin over the present CPUs for each new side's steering
+ * fallback (unhashable packets).  Atomic: creates in different vnets
+ * are not mutually serialized.
  */
-static struct {
-	int			 pt_count;	/* >= 1: CPU_FOREACH yields at
-						   least the BSP; queue sizing
-						   and the steering modulo
-						   rely on it */
-	struct taskqueue	*pt_tq[MAXCPU];
-} pair_tasks;
+static u_int pair_next_defcpu;
 
-/* Atomic: creates in different vnets are not mutually serialized. */
-static u_int pair_next_defq;
-
-/* Random per-load seed so flow-to-worker mapping is not guessable. */
+/* Random per-load seed so flow-to-CPU mapping is not guessable. */
 static uint32_t pair_hash_seed;
 
-SYSCTL_DECL(_net_link);
-SYSCTL_NODE(_net_link, OID_AUTO, pair, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
-    "if_pair(4) point-to-point interface pairs");
-
 /*
- * Packets a worker delivers per pass before yielding the CPU; see
- * pair_task_deferred() for why the yield exists.  Plain int read
- * once per pass: the value is advisory per-iteration state with no
- * cross-thread invariant, so stale reads are harmless (contrast
- * pair_unloading, which participates in an invariant and lives
- * under pair_sx).  Values <= 0 disable yielding; values above
- * PAIR_QLIMIT are clamped by the handler with a warning, since a
- * single pass can never hold more than one queue's worth anyway.
- * The handler also serves the loader tunable: the sysctl framework
- * applies CTLFLAG_RWTUN tunables through the handler at module
- * load, so an oversized loader.conf value is clamped (and warns)
- * the same way.
+ * No sysctls of the driver's own any more: the batch-and-yield knobs
+ * (net.link.pair.batch, batch_overruns) became kwq's per-class quantum
+ * and yield rules (kern.kwq.net.*, kwq/OBSERVABILITY.md), and the
+ * per-queue counters live under kern.kwq.net.queue.pairNa.
  */
-static int pair_batch = PAIR_BATCH_DFLT;
-
-static int
-pair_batch_sysctl(SYSCTL_HANDLER_ARGS)
-{
-	int error, val;
-
-	val = pair_batch;
-	error = sysctl_handle_int(oidp, &val, 0, req);
-	if (error != 0 || req->newptr == NULL)
-		return (error);
-	if (val > PAIR_QLIMIT) {
-		printf("if_pair: batch size %d exceeds queue size %d, "
-		    "clamping\n", val, PAIR_QLIMIT);
-		val = PAIR_QLIMIT;
-	}
-	pair_batch = val;
-	return (0);
-}
-SYSCTL_PROC(_net_link_pair, OID_AUTO, batch,
-    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, NULL, 0,
-    pair_batch_sysctl, "I",
-    "Packets delivered per worker pass before yielding the CPU"
-    " (<= 0: never yield)");
-
-/*
- * Tick-triggered yields only (both the in-loop and the end-of-pass
- * site); count-budget yields are deliberately not counted, since
- * yielding between batches is normal operation under load.  Every
- * increment means a tick boundary passed since the thread's last
- * voluntary switch, and each one resets that anchor, so a worker
- * contributes at most ~one count per tick - the counter integrates
- * busy-worker time (~hz x the sum of worker duty cycles), which is
- * how the scaling analysis in NOTES.md reads it.
- * COUNTER_U64_DEFINE_EARLY backs the counter with
- * static per-CPU storage valid from module link time, so there is
- * no counter_u64_alloc() lifecycle and no window where the sysctl
- * is visible before a SYSINIT has allocated the counter.  The
- * per-CPU increment slots line up with the pinned workers.
- */
-COUNTER_U64_DEFINE_EARLY(pair_batch_overruns);
-SYSCTL_COUNTER_U64(_net_link_pair, OID_AUTO, batch_overruns, CTLFLAG_RD,
-    &pair_batch_overruns,
-    "Worker yields forced by a clock tick before the packet budget");
 
 /*
  * Control-plane lock, serializing pair creation, destruction and the
@@ -328,59 +236,24 @@ VNET_DEFINE_STATIC(struct if_clone *, pair_cloner);
 #define	V_pair_cloner	VNET(pair_cloner)
 
 /*
- * Pool lifecycle runs as plain SYSINIT/SYSUNINIT at SI_SUB_TASKQ
- * rather than from the module event handler: kern_linker.c fires
- * MOD_UNLOAD before it runs the file's SYSUNINITs, and file SYSUNINITs
- * run in reverse subsystem order, so this ordering guarantees the pool
- * exists before the first cloner attach (SI_SUB_PSEUDO) and outlives
- * every pair destruction - the MOD_UNLOAD sweep and the cloner
- * detach loops both run before this SYSUNINIT.  (epair frees its
- * pool from MOD_UNLOAD, before its own cloner teardown runs.)
+ * The n-th present CPU, round robin over creates: the steering fallback
+ * for a new side.  There is no worker pool to size any more; kwq has one
+ * NET worker per CPU for the lifetime of kwq.ko.
  */
-static void
-pair_pool_init(const void *unused __unused)
+static int
+pair_default_cpu(void)
 {
-	char name[32];
-	int cpu, i;
+	u_int n, i;
+	int cpu;
 
-	/*
-	 * Unlike epair we do NOT sched_bind() ourselves to each CPU for
-	 * NUMA-local allocations: with the module preloaded from
-	 * loader.conf these SYSINITs run before SI_SUB_SMP has released
-	 * the APs, and binding the boot thread to an offline CPU hangs.
-	 * The workers themselves are still pinned via cpuset; they
-	 * simply wait until their CPU comes online.
-	 */
-	pair_hash_seed = arc4random();
-
+	n = atomic_fetchadd_int(&pair_next_defcpu, 1) % mp_ncpus;
 	i = 0;
 	CPU_FOREACH(cpu) {
-		cpuset_t mask;
-
-		snprintf(name, sizeof(name), "pair_task_%d", cpu);
-		pair_tasks.pt_tq[i] = taskqueue_create(name, M_WAITOK,
-		    taskqueue_thread_enqueue, &pair_tasks.pt_tq[i]);
-		CPU_SETOF(cpu, &mask);
-		taskqueue_start_threads_cpuset(&pair_tasks.pt_tq[i], 1,
-		    PI_NET, &mask, "%s", name);
-		i++;
+		if (i++ == n)
+			return (cpu);
 	}
-	pair_tasks.pt_count = i;
+	return (curcpu);	/* not reached: mp_ncpus present CPUs */
 }
-SYSINIT(pair_pool_init, SI_SUB_TASKQ, SI_ORDER_ANY, pair_pool_init, NULL);
-
-static void
-pair_pool_uninit(const void *unused __unused)
-{
-	int i;
-
-	for (i = 0; i < pair_tasks.pt_count; i++) {
-		taskqueue_drain_all(pair_tasks.pt_tq[i]);
-		taskqueue_free(pair_tasks.pt_tq[i]);
-	}
-}
-SYSUNINIT(pair_pool_uninit, SI_SUB_TASKQ, SI_ORDER_ANY,
-    pair_pool_uninit, NULL);
 
 /*
  * The mbuf crosses the pair with its transmit checksum requests KEPT
@@ -427,9 +300,9 @@ pair_csum_vouch(struct mbuf *m, uint32_t af __unused)
 
 /*
  * Deliver one packet into the receiving side's protocol input.  Runs
- * in a pool worker with the network epoch held (NET_TASK_INIT tasks
- * are wrapped in NET_EPOCH by the taskqueue) and the side's vnet set
- * by the caller.  There is no link-layer header, so the address
+ * in a kwq NET worker with the network epoch held (kwq enters it
+ * around every pass, KWQ.md S6) and the side's vnet set by
+ * pair_handler().  There is no link-layer header, so the address
  * family is recovered from the IP version nibble.
  */
 static void
@@ -486,144 +359,62 @@ pair_input(if_t ifp, struct mbuf *m)
 }
 
 /*
- * Has a hardclock tick boundary passed since this thread last gave
- * up a CPU voluntarily?  td_swvoltick is stamped by mi_switch() on
- * every voluntary switch - our own yields, the wait-retry's
- * pause(), and the taskqueue idle sleep - so the measurement spans
- * worker passes and resets exactly when the monopoly it measures
- * is broken.  This is should_yield(9)'s mechanism recalibrated
- * from two scheduler timeslices to one tick; reading the field
- * unlocked for curthread follows should_yield() itself.
- */
-static inline bool
-pair_ticked(void)
-{
-	return ((u_int)ticks - (u_int)curthread->td_swvoltick >= 1);
-}
-
-/*
- * Donate the CPU for one scheduling decision, then re-assert
- * interrupt-class service.  kern_yield() demotes via sched_prio(9),
- * which rewrites td_base_pri - the anchor every priority
- * restoration mechanism (turnstile unlending, sched_userret())
- * unwinds to - and a pure taskqueue kthread has no restoration
- * net: no userret, and the taskqueue idle sleep passes priority 0.
- * Without the re-assert the first yield would demote the worker to
- * timeshare for the thread's lifetime.
- */
-static void
-pair_yield(void)
-{
-	kern_yield(PRI_USER);
-	thread_lock(curthread);
-	sched_prio(curthread, PI_NET);
-	thread_unlock(curthread);
-}
-
-/*
- * Pool worker: flush this queue once and deliver each packet.  The
- * single flush per task run (rescheduling if more arrived meanwhile)
- * is epair's guard against starving other pairs sharing the worker.
- * if_ref() pins the ifnet across the run, matching epair.
+ * The kwq handler: one pass over this side's list on the worker's CPU.
+ * `head' is a private FIFO chain of `n' mbufs linked through m_nextpkt
+ * (the kwq item), owned by this call.  n < 0 is the drain of a
+ * destroyed pair (KWQ_F_DISCARD): the backlog is freed, never
+ * delivered, and nothing of the interface is touched, since the drain
+ * may run after the side's detach has begun.
  *
- * The worker yields (pair_yield()) on the earlier of two budgets:
- * every net.link.pair.batch packets, or as soon as a hardclock
- * tick boundary has passed since the thread's last voluntary
- * switch (pair_ticked() - a tick fired, so callouts may be pending
- * behind this thread).  The tick budget deliberately spans passes:
- * it is anchored to td_swvoltick rather than to pass entry, so
- * back-to-back passes each individually under both budgets cannot
- * chain into unbounded PI_NET occupancy - the end-of-pass check
- * below closes that gap, and the anchor resets automatically at
- * every yield and at the taskqueue idle sleep.
- * Workers run at PI_NET, which outranks all of userland and - one
- * priority step below - the per-CPU callout threads, so a saturated
- * worker starves timers on its CPU; see pair_yield() for why the
- * priority must be re-asserted after every yield.  Measured on a 128-core arm64
- * server (samples/starve.log): ~35 workers at 99.8% left the clock
- * threads ~30% of a CPU, TCP timers stalled machine-wide, ssh froze
- * and iperf3 aborted on a control-connection timeout.  Yielding at
- * PRI_USER drops the worker below both for one scheduling decision,
- * bounding callout lateness to one tick plus one packet regardless
- * of per-packet cost or pass pattern (the count budget alone would
- * stretch with MTU - 64 x ~20 us at mtu 65535 overruns the 1 ms
- * tick), for
- * sub-percent throughput cost (an uncontended yield resumes in well
- * under a microsecond).  The count budget still matters: it gives
- * userland sub-tick fairness and remains the effective bound at
- * hz=100 (VM guests), where a tick is 10 ms.  batch <= 0 disables
- * both budgets - the documented off-switch to pre-yield behavior.
- * Tick-triggered yields increment net.link.pair.batch_overruns;
- * count-budget yields are not counted, because yielding between
- * batches is normal under load, while a tick overrun means one
- * batch outlived a callout deadline and is worth noticing.
- * The yield is legal inside the NET_TASK_INIT epoch section:
- * preemptible epochs support being switched out, and a voluntary
- * yield takes the same mi_switch() path as the involuntary
- * preemption they are designed for; it must not, and does not,
- * happen while pq_mtx is held.
+ * Per packet the budget is checked (kwq_budget_left(): CPU time of
+ * this pass against the queue's DRR share, SCHED.md S4.4), at least one
+ * packet per call, and the untouched remainder goes back with
+ * kwq_requeue(), prepended so per-CPU FIFO holds against packets that
+ * arrived meanwhile.  Everything the old pass loop did itself - the
+ * packet and tick budgets, the yield with priority re-assertion, the
+ * emptiness re-check and reschedule - is kwq's now: the worker yields
+ * at tick boundaries and round ends, shares the CPU between all queues
+ * on it by deficit round robin, and a pass that ignored the budget
+ * would be counted (kern.kwq.net.queue.pairNa.cpu.N.overruns) and
+ * penalised.  if_ref() pins the ifnet across the pass, matching
+ * epair(4); the vnet is the receiving interface's at pass time (the
+ * side may have been moved since the queue was created, so the queue's
+ * own vnet, KWQ_F_VNET, would be the wrong one).
  */
 static void
-pair_task_deferred(void *arg, int pending __unused)
+pair_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 {
-	struct pair_queue *q = arg;
-	if_t ifp = q->pq_sc->sc_ifp;
-	struct mbuf *m, *n;
-	int batch, left;
-	bool resched, ticked;
+	struct pair_softc *sc = ctx;
+	struct kwq_item *it, *nx;
+	struct mbuf *m;
+	if_t ifp;
+	int left;
 
+	if (n < 0) {
+		for (it = head; it != NULL; it = nx) {
+			nx = KWQ_ITEM_NEXT(it);
+			m = KWQ_ITEM_MBUF(it);
+			m->m_nextpkt = NULL;
+			m_freem(m);
+		}
+		return;
+	}
+
+	ifp = sc->sc_ifp;
 	if_ref(ifp);
 	CURVNET_SET(if_getvnet(ifp));
-
-	mtx_lock(&q->pq_mtx);
-	m = mbufq_flush(&q->pq_q);
-	q->pq_state = PAIR_QUEUE_RUNNING;
-	mtx_unlock(&q->pq_mtx);
-
-	batch = pair_batch;	/* one consistent value per pass */
-	left = batch;
-	while (m != NULL) {
-		n = STAILQ_NEXT(m, m_stailqpkt);
-		m->m_nextpkt = NULL;
+	left = n;
+	for (it = head; it != NULL; it = nx) {
+		nx = KWQ_ITEM_NEXT(it);
+		m = KWQ_ITEM_MBUF(it);
+		m->m_nextpkt = NULL;		/* the stack expects it clear */
 		pair_input(ifp, m);
-		m = n;
-		if (m != NULL && batch > 0) {
-			ticked = pair_ticked();
-			if (ticked)
-				counter_u64_add(pair_batch_overruns, 1);
-			if (ticked || --left == 0) {
-				pair_yield();
-				left = batch;
-			}
+		left--;
+		if (nx != NULL && kwq_budget_left(q) == 0) {
+			kwq_requeue(q, nx, NULL, left);
+			break;
 		}
 	}
-
-	/* Emptiness re-check under the lock; see struct pair_queue. */
-	mtx_lock(&q->pq_mtx);
-	if (!mbufq_empty(&q->pq_q)) {
-		resched = true;
-		q->pq_state = PAIR_QUEUE_WAKING;
-	} else {
-		resched = false;
-		q->pq_state = PAIR_QUEUE_IDLE;
-	}
-	mtx_unlock(&q->pq_mtx);
-	if (resched) {
-		taskqueue_enqueue(pair_tasks.pt_tq[q->pq_id], &q->pq_task);
-		/*
-		 * Close the chained-small-passes gap: the in-loop
-		 * checks skip a pass's final packet, so back-to-back
-		 * passes each under both budgets would never yield.
-		 * pair_ticked() spans passes, so this fires exactly
-		 * when a tick boundary has passed since the last
-		 * voluntary switch and more work is already queued.
-		 */
-		if (batch > 0 && pair_ticked()) {
-			counter_u64_add(pair_batch_overruns, 1);
-			pair_yield();
-		}
-	}
-
 	CURVNET_RESTORE();
 	if_rele(ifp);
 }
@@ -721,37 +512,37 @@ pair_hash_mbuf(struct mbuf *m, uint32_t af, uint32_t *hashp)
 }
 
 /*
- * Pick the receiving side's queue.  Steer by the mbuf's flow id when
- * it carries one (commit d4b5cae49bff documents the ordering policy
- * this feeds); otherwise compute one (see pair_hash_mbuf()) and write
- * it back as M_HASHTYPE_OPAQUE_HASH ("has hash properties", mbuf(9))
- * so the peer's stack and any further hop inherit it.  Only truly
- * unhashable packets take the side's static default queue.  Same
- * flow -> same worker always, preserving per-flow ordering.
+ * Pick the CPU whose list of the receiving side's queue gets the
+ * packet.  Steer by the mbuf's flow id when it carries one (commit
+ * d4b5cae49bff documents the ordering policy this feeds); otherwise
+ * compute one (see pair_hash_mbuf()) and write it back as
+ * M_HASHTYPE_OPAQUE_HASH ("has hash properties", mbuf(9)) so the peer's
+ * stack and any further hop inherit it.  Only truly unhashable packets
+ * take the side's static default CPU.  Same flow -> same CPU always,
+ * preserving per-flow ordering; kwq_cpu_for_hash() maps a hash onto the
+ * present CPUs.
  */
-static struct pair_queue *
-pair_select_queue(struct pair_softc *sc, struct mbuf *m, uint32_t af)
+static int
+pair_select_cpu(struct pair_softc *sc, struct mbuf *m, uint32_t af)
 {
-	uint32_t hash, qid;
+	uint32_t hash;
 
-	if (M_HASHTYPE_GET(m) != M_HASHTYPE_NONE) {
-		qid = m->m_pkthdr.flowid % pair_tasks.pt_count;
-	} else if (pair_hash_mbuf(m, af, &hash)) {
+	if (M_HASHTYPE_GET(m) != M_HASHTYPE_NONE)
+		return (kwq_cpu_for_hash(m->m_pkthdr.flowid));
+	if (pair_hash_mbuf(m, af, &hash)) {
 		m->m_pkthdr.flowid = hash;
 		M_HASHTYPE_SET(m, M_HASHTYPE_OPAQUE_HASH);
-		qid = hash % pair_tasks.pt_count;
-	} else {
-		qid = sc->sc_defqid;
+		return (kwq_cpu_for_hash(hash));
 	}
-	return (&sc->sc_queues[qid]);
+	return (sc->sc_defcpu);
 }
 
 /*
  * Transmit: validate, tap BPF (DLT_NULL, 4-byte AF pseudo-header, as in
- * lo(4)/gif(4)), then enqueue onto the peer side's receive queue and
- * wake its pinned pool worker.
+ * lo(4)/gif(4)), then enqueue onto the peer side's receive queue at the
+ * flow's CPU; kwq wakes that CPU's worker if it sleeps.
  *
- * The packet is ALWAYS handed to a pool worker; it is never delivered
+ * The packet is ALWAYS handed to a kwq worker; it is never delivered
  * inline.
  * Inline delivery would run the peer's entire input path nested
  * inside the sender's call chain, and for TCP between two local
@@ -768,8 +559,8 @@ pair_select_queue(struct pair_softc *sc, struct mbuf *m, uint32_t af)
  * failure") and why epair(4) decouples transmit from receive with
  * its own queues.  Deferral also bounds kernel stack usage for
  * chained pairs and routing loops, so no stack-depth guard is
- * needed.  Concurrency comes from the pinned per-CPU pool workers,
- * with flows spread across them by pair_select_queue().
+ * needed.  Concurrency comes from kwq's per-CPU workers, with flows
+ * spread across them by pair_select_cpu().
  *
  * Teardown synchronization: every entry path into if_output (the IP
  * stack, netisr and bpfwrite()) runs within the network epoch, and the
@@ -777,24 +568,23 @@ pair_select_queue(struct pair_softc *sc, struct mbuf *m, uint32_t af)
  * sc_peer is ever dereferenced.  pair_clone_destroy() clears
  * IFF_DRV_RUNNING on both sides and then NET_EPOCH_WAIT()s, so no
  * producer can be at or past the peer dereference once teardown
- * proceeds; it then taskqueue_drain()s and flushes every queue before
- * anything is detached or freed, so the raw rcvif pointers queued
- * mbufs carry never outlive their interface.  Packets the workers
- * push onward into netisr (deferred dispatch policy) are covered by
- * netisr's own rcvif serialization (m_rcvif_serialize(), commit
- * 6871de9363e5).  Epoch coverage of the netisr workers themselves is
- * INTR_TYPE_NET (commit 511d1afb6bfe); our pool workers get theirs
- * from NET_TASK_INIT.
+ * proceeds; it then kwq_drain()s both queues, which frees the backlog
+ * through pair_handler()'s discard path, before anything is detached
+ * or freed, so the raw rcvif pointers queued mbufs carry never outlive
+ * their interface.  Packets the workers push onward into netisr
+ * (deferred dispatch policy) are covered by netisr's own rcvif
+ * serialization (m_rcvif_serialize(), commit 6871de9363e5).  Epoch
+ * coverage of the netisr workers themselves is INTR_TYPE_NET (commit
+ * 511d1afb6bfe); kwq's NET workers enter the epoch around every pass.
  */
 static int
 pair_output(if_t ifp, struct mbuf *m, const struct sockaddr *dst,
     struct route *ro __unused)
 {
 	struct pair_softc *sc;
-	struct pair_queue *q;
 	if_t peer_ifp;
 	uint32_t af;
-	int error, len;
+	int cpu, error, len;
 
 	M_ASSERTPKTHDR(m);
 	NET_EPOCH_ASSERT();
@@ -853,16 +643,18 @@ pair_output(if_t ifp, struct mbuf *m, const struct sockaddr *dst,
 	/* Save before the queue owns the mbuf. */
 	len = m->m_pkthdr.len;
 
-	q = pair_select_queue(sc->sc_peer, m, af);
-	mtx_lock(&q->pq_mtx);
-	/* Wake and enqueue in one lock hold; see struct pair_queue. */
-	if (q->pq_state == PAIR_QUEUE_IDLE) {
-		q->pq_state = PAIR_QUEUE_WAKING;
-		taskqueue_enqueue(pair_tasks.pt_tq[q->pq_id], &q->pq_task);
-	}
-	error = mbufq_enqueue(&q->pq_q, m);
-	mtx_unlock(&q->pq_mtx);
-
+	/*
+	 * One kwq_enqueue() per packet: the stack hands us packets one at
+	 * a time, so there is no batch to hand on (KWQ.md S16).  The
+	 * mbuf's m_nextpkt link is the item; a chained packet would lose
+	 * its followers, as mbufq_enqueue() did before.  ENOBUFS is the
+	 * CPU list at PAIR_QLIMIT, ENXIO the peer's queue draining behind
+	 * a teardown that our IFF_DRV_RUNNING check missed; both are
+	 * output-queue drops.
+	 */
+	cpu = pair_select_cpu(sc->sc_peer, m, af);
+	KWQ_ITEM_INIT(KWQ_MBUF_ITEM(m));
+	error = kwq_enqueue(sc->sc_peer->sc_q, cpu, KWQ_MBUF_ITEM(m));
 	if (error != 0) {
 		m_freem(m);
 		if_inc_counter(ifp, IFCOUNTER_OQDROPS, 1);
@@ -944,31 +736,42 @@ pair_ioctl(if_t ifp, u_long cmd, caddr_t data)
 	return (error);
 }
 
+/*
+ * Allocate one side with its receive queue.  The queue is created
+ * inactive and activated by pair_attach_side() just before the side is
+ * marked running, so no producer can reach a queue that refuses; it is
+ * named after the interface, which is a valid kwq name (letters,
+ * digits, at most 31 characters).  kwq_create() fails only for a bad
+ * parameter or a name already in use, which would mean a stale queue
+ * from an earlier pair of this unit; either way the create is refused
+ * rather than papered over.  Returns NULL then, with kwq's log line
+ * naming the reason.
+ */
 static struct pair_softc *
 pair_alloc_side(int unit, enum pair_side side)
 {
 	struct pair_softc *sc;
+	struct kwq_params p;
 	if_t ifp;
 	char name[IFNAMSIZ];
 
 	sc = malloc(sizeof(*sc), M_PAIR, M_WAITOK | M_ZERO);
 	sc->sc_side = side;
 	sc->sc_unit = unit;
+	sc->sc_defcpu = pair_default_cpu();
 
-	sc->sc_queues = malloc(sizeof(*sc->sc_queues) * pair_tasks.pt_count,
-	    M_PAIR, M_WAITOK | M_ZERO);
-	for (int i = 0; i < pair_tasks.pt_count; i++) {
-		struct pair_queue *q = &sc->sc_queues[i];
-
-		q->pq_id = i;
-		q->pq_state = PAIR_QUEUE_IDLE;
-		mtx_init(&q->pq_mtx, "pairq", NULL, MTX_DEF | MTX_NEW);
-		mbufq_init(&q->pq_q, PAIR_QLIMIT);
-		q->pq_sc = sc;
-		NET_TASK_INIT(&q->pq_task, 0, pair_task_deferred, q);
+	snprintf(name, sizeof(name), "%s%d%c", pairname, unit,
+	    side == PAIR_SIDE_A ? 'a' : 'b');
+	memset(&p, 0, sizeof(p));
+	p.limit = PAIR_QLIMIT;
+	p.weight = 1;
+	p.domain = -1;
+	sc->sc_q = kwq_create(name, KWQ_NET, KWQ_F_INACTIVE | KWQ_F_DISCARD,
+	    &p, pair_handler, sc);
+	if (sc->sc_q == NULL) {
+		free(sc, M_PAIR);
+		return (NULL);
 	}
-	sc->sc_defqid = atomic_fetchadd_int(&pair_next_defq, 1) %
-	    pair_tasks.pt_count;
 
 	ifp = if_alloc(IFT_PPP);
 	sc->sc_ifp = ifp;
@@ -982,8 +785,6 @@ pair_alloc_side(int unit, enum pair_side side)
 	 * if_xname carries the full per-side name, as epair(4) does.
 	 */
 	if_initname(ifp, pairname, IF_DUNIT_NONE);
-	snprintf(name, sizeof(name), "%s%d%c", pairname, unit,
-	    side == PAIR_SIDE_A ? 'a' : 'b');
 	if_setname(ifp, name);
 
 	if_setflags(ifp, IFF_POINTOPOINT | IFF_MULTICAST);
@@ -1058,6 +859,8 @@ pair_attach_side(struct pair_softc *sc)
 
 	if_attach(ifp);
 	bpfattach(ifp, DLT_NULL, sizeof(uint32_t));
+	/* Accept packets before the peer may send them: RUNNING comes last. */
+	kwq_activate(sc->sc_q);
 	pair_set_state(ifp, true);
 }
 
@@ -1080,49 +883,26 @@ pair_detach_side(struct pair_softc *sc)
 	CURVNET_RESTORE();
 }
 
+/* The queue must be drained (pair_drain_queue()) before this. */
 static void
 pair_free_side(struct pair_softc *sc)
 {
+	kwq_destroy(sc->sc_q);
 	if_free(sc->sc_ifp);
-	for (int i = 0; i < pair_tasks.pt_count; i++) {
-		struct pair_queue *q = &sc->sc_queues[i];
-
-		MPASS(mbufq_empty(&q->pq_q));
-		mtx_destroy(&q->pq_mtx);
-	}
-	free(sc->sc_queues, M_PAIR);
 	free(sc, M_PAIR);
 }
 
 /*
- * Drain one side's receive queues.  Producers must already be
- * quiesced (both sides !IFF_DRV_RUNNING + NET_EPOCH_WAIT()), so a
- * worker that reschedules itself settles once its queue is empty and
- * taskqueue_drain() then returns with nothing pending; anything still
- * queued afterward is freed here.
+ * Drain one side's receive queue.  Producers must already be quiesced
+ * (both sides !IFF_DRV_RUNNING + NET_EPOCH_WAIT()); kwq_drain() then
+ * refuses further enqueues, waits for passes in progress and hands the
+ * backlog to pair_handler() with n < 0, which frees it.  Sleeps, so
+ * called from the cloner's destroy method only.
  */
 static void
-pair_drain_queues(struct pair_softc *sc)
+pair_drain_queue(struct pair_softc *sc)
 {
-	struct mbuf *m, *n;
-
-	for (int i = 0; i < pair_tasks.pt_count; i++) {
-		struct pair_queue *q = &sc->sc_queues[i];
-
-		taskqueue_drain(pair_tasks.pt_tq[q->pq_id], &q->pq_task);
-
-		mtx_lock(&q->pq_mtx);
-		m = mbufq_flush(&q->pq_q);
-		q->pq_state = PAIR_QUEUE_IDLE;
-		mtx_unlock(&q->pq_mtx);
-
-		while (m != NULL) {
-			n = STAILQ_NEXT(m, m_stailqpkt);
-			m->m_nextpkt = NULL;
-			m_freem(m);
-			m = n;
-		}
-	}
+	kwq_drain(sc->sc_q);
 }
 
 static int
@@ -1166,7 +946,16 @@ pair_clone_create(struct if_clone *ifc, char *name, size_t len,
 	}
 
 	sca = pair_alloc_side(unit, PAIR_SIDE_A);
-	scb = pair_alloc_side(unit, PAIR_SIDE_B);
+	scb = sca != NULL ? pair_alloc_side(unit, PAIR_SIDE_B) : NULL;
+	if (scb == NULL) {
+		if (sca != NULL) {
+			kwq_drain(sca->sc_q);	/* inactive: nothing to hand back */
+			pair_free_side(sca);
+		}
+		ifc_free_unit(ifc, unit);
+		sx_xunlock(&pair_sx);
+		return (ENOSPC);
+	}
 	sca->sc_peer = scb;
 	scb->sc_peer = sca;
 	sca->sc_ifc = ifc;
@@ -1268,8 +1057,8 @@ pair_clone_destroy(struct if_clone *ifc, if_t ifp, uint32_t flags __unused)
 	if_setsoftc(scb->sc_ifp, NULL);
 	LIST_REMOVE(sca, sc_list);
 
-	pair_drain_queues(scb);
-	pair_drain_queues(sca);
+	pair_drain_queue(scb);
+	pair_drain_queue(sca);
 
 	pair_detach_side(scb);
 	pair_detach_side(sca);
@@ -1413,6 +1202,7 @@ pair_modevent(module_t mod, int type, void *data)
 			pair_sweep();
 		return (0);
 	case MOD_LOAD:
+		pair_hash_seed = arc4random();
 		return (0);
 	default:
 		return (EOPNOTSUPP);
@@ -1427,3 +1217,4 @@ static moduledata_t pair_mod = {
 
 DECLARE_MODULE(if_pair, pair_mod, SI_SUB_PSEUDO, SI_ORDER_ANY);
 MODULE_VERSION(if_pair, 1);
+MODULE_DEPEND(if_pair, kwq, 1, 1, 1);

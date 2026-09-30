@@ -45,6 +45,16 @@ pass() {
 	exit 0
 }
 
+# skip "reason": like pass, but the test did not apply here.  Runs the
+# cleanups too, so a skip after test_init leaves no module loaded.
+skip() {
+	printf '%s\n' "${CLEANUP}" | while IFS= read -r _cmd; do
+		[ -n "$_cmd" ] && eval "$_cmd" >/dev/null 2>&1
+	done
+	log "SKIP: $1"
+	exit 0
+}
+
 # must "description" command...: the command must succeed.
 must() {
 	_desc=$1; shift
@@ -105,11 +115,36 @@ resolve_ko() {
 	return 1
 }
 
+# if_pair depends on kwq.ko; the taskqueue baseline does not.  Load it
+# from KWQ_KO, the source tree, or by name (installed in /boot/modules)
+# and unload it after the driver.
+ensure_kwq() {
+	[ "${PAIR_MOD}" = if_pair ] || return 0
+	kldstat -q -m kwq && return 0
+	for _k in "${KWQ_KO:-}" "${TDIR}/../kwq/kwq/kwq.ko" "${TDIR}/kwq.ko" kwq; do
+		[ -n "$_k" ] || continue
+		if kldload "$_k" 2>/dev/null; then
+			cleanup_push "kldunload kwq"
+			return 0
+		fi
+	done
+	fail "kwq.ko not found (build kwq/ or set KWQ_KO)"
+}
+
 ensure_module() {
 	if kldstat -q -m "${PAIR_MOD}"; then
+		# ifconfig(8) autoloads if_<cloner>.ko from the module path
+		# when a cloner is unknown, so a preloaded if_pair may be an
+		# installed copy rather than the one built here.  The kwq
+		# driver cannot be loaded without kwq.ko: its absence means
+		# the taskqueue version is what is running.
+		if [ "${PAIR_MOD}" = if_pair ] && ! kldstat -q -m kwq; then
+			fail "a preloaded if_pair without kwq.ko: the installed taskqueue driver, not the kwq one (kldunload if_pair, or set PAIR_MOD)"
+		fi
 		MOD_PRELOADED=yes
 		return 0
 	fi
+	ensure_kwq
 	_ko=$(resolve_ko) || \
 	    fail "${PAIR_MOD}.ko not found (build it or set IFPAIR_KO)"
 	must "load ${_ko}" kldload "$_ko"

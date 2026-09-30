@@ -48,10 +48,15 @@ like VXLAN or GENEVE.
 You need FreeBSD 15.0 or newer, the kernel sources installed at
 `/usr/src`, and root access to load the kernel module and manage jails.
 
-Build and load the module:
+Build and load the module.  `if_pair` runs its packet delivery on the
+kernel work queue service in `kwq/`, which is built and loaded first
+(a `make install` of both puts them into `/boot/modules`, after which
+`kldload if_pair` pulls `kwq` in by itself):
 
 ```sh
+make -C kwq
 make
+kldload ./kwq/kwq/kwq.ko
 kldload ./if_pair.ko
 ```
 

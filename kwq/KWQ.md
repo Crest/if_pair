@@ -2306,3 +2306,10 @@ decision deferred until real clients show what fan-in they produce.
   suite under kyua (OBSERVABILITY.md S9); kwq_test's P0 producer bound
   away from its targets, items tagged per rep to prove exactly-once
   delivery (`result_dups`).  P3 closed; P4 next.
+- 2026-09-30 (P4): if_pair is the first client.  One NET queue per
+  side, `kwq_enqueue()` per packet at `kwq_cpu_for_hash()`, the S7
+  handler shape with the vnet set from the receiving ifp per pass,
+  `kwq_drain()`/`kwq_destroy()` in the cloner's destroy path,
+  MODULE_DEPEND on kwq.  The taskqueue driver stays as
+  ../extras/if_pair_tq for A/B runs.  Functional suite green on the
+  guest; a07 throughput pairs pending.

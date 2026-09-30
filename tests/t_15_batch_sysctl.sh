@@ -6,7 +6,7 @@
 test_init
 
 OID=${PAIR_OID}.batch
-orig=$(sysctl -n $OID) || fail "$OID does not exist"
+orig=$(sysctl -n $OID 2>/dev/null) || skip "$OID does not exist (the kwq driver has no batch knob; see kern.kwq.net.quantum_us)"
 log "ok: $OID exists (value: $orig)"
 cleanup_push "sysctl $OID=$orig"
 
