@@ -12,7 +12,8 @@
  * differ: module if_pair_tq, cloner and interfaces "pairtq<N>a/b",
  * sysctls net.link.pairtq.*, malloc type "if_pair_tq", worker threads
  * pairtq_task_<N>.  Do not develop here; `diff ../../if_pair.c
- * if_pair_tq.c` must stay those renames until the baseline is retired.
+ * if_pair_tq.c` must stay those renames, plus the net.link.pairtq.qlimit
+ * knob (the depth dimension of tests/t_29), until the baseline is retired.
  *
  * Like if_epair(4), creating a "pair" yields two interfaces (pairNa
  * and pairNb) whose transmit paths are cross-connected, either side
@@ -239,6 +240,16 @@ static uint32_t pair_hash_seed;
 SYSCTL_DECL(_net_link);
 SYSCTL_NODE(_net_link, OID_AUTO, pairtq, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
     "if_pair(4) point-to-point interface pairs");
+
+/*
+ * Baseline-only knob (the one deviation from a pure rename): the depth
+ * of each per-CPU receive queue, applied to pairs created afterwards,
+ * so tests/t_29_multi_pair.sh can sweep the queue depth on both
+ * drivers (the kwq driver takes kern.kwq.net.queue.<name>.limit).
+ */
+static u_int pairtq_qlimit = PAIR_QLIMIT;
+SYSCTL_UINT(_net_link_pairtq, OID_AUTO, qlimit, CTLFLAG_RWTUN, &pairtq_qlimit, 0,
+    "Receive queue depth per CPU for pairs created afterwards (packets)");
 
 /*
  * Packets a worker delivers per pass before yielding the CPU; see
@@ -972,7 +983,7 @@ pair_alloc_side(int unit, enum pair_side side)
 		q->pq_id = i;
 		q->pq_state = PAIR_QUEUE_IDLE;
 		mtx_init(&q->pq_mtx, "pairq", NULL, MTX_DEF | MTX_NEW);
-		mbufq_init(&q->pq_q, PAIR_QLIMIT);
+		mbufq_init(&q->pq_q, pairtq_qlimit);
 		q->pq_sc = sc;
 		NET_TASK_INIT(&q->pq_task, 0, pair_task_deferred, q);
 	}
