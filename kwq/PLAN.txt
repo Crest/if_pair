@@ -459,6 +459,14 @@ Phases
     tail and the handler's walk to find it spiralled a deep backlog onto
     one CPU (S4.5, tail NULL now).
     Files: if_pair.c, Makefile (MODULE_DEPEND(if_pair, kwq, 1, 1, 1)).
+    - Baseline first (done 2026-09-30, at the user's request): the
+      taskqueue driver is frozen as extras/if_pair_tq (module if_pair_tq,
+      cloner pairtq, sysctls net.link.pairtq, only those names changed)
+      so both drivers load side by side; tests/lib.sh takes PAIR,
+      PAIR_MOD (PAIR_OID follows) and every t_*.sh honours them, so
+      t_17/t_18/t_20/t_21 run unchanged against either driver:
+      `PAIR=pairtq PAIR_MOD=if_pair_tq sh tests/t_17_throughput.sh`.
+      Every P4 number is an A/B pair taken on the same boot.
     - Replace pair_tasks/pair_queue/pair_task_deferred with one NET
       queue per pair side, named "pair<N><a|b>" (KWQ_F_INACTIVE; activated
       at the end of clone create; KWQ_F_DISCARD so drain frees mbufs);

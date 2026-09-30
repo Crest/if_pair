@@ -19,7 +19,7 @@
 #
 # A P=32 default-window run leads the table as the peak reference.
 # Each line also reports the pair's drop-counter deltas and
-# net.link.pair.batch_overruns (as in t_17) plus the network's
+# ${PAIR_OID}.batch_overruns (as in t_17) plus the network's
 # current mbuf allocation sampled mid-run (netstat -m, host-global
 # zones) - the actual buffer footprint, so the working-set axis is
 # measured rather than inferred from the -w value.
@@ -83,7 +83,7 @@ one_run() {
 	n=$1; w=$2
 	wflag=""
 	[ "$w" != "default" ] && wflag="-w $w"
-	ov0=$(sysctl -n net.link.pair.batch_overruns 2>/dev/null || echo 0)
+	ov0=$(sysctl -n ${PAIR_OID}.batch_overruns 2>/dev/null || echo 0)
 	set -- $(ifdrops "$J1" "$PAIRA"); ai0=$1; ao0=$2
 	set -- $(ifdrops "$J2" "$PAIRB"); bi0=$1; bo0=$2
 	jexec "$J2" timeout $((SECS + 30)) iperf3 -f g -c "$A4" \
@@ -107,7 +107,7 @@ one_run() {
 		rate=FAILED
 		failed=$((failed + 1))
 	fi
-	ov1=$(sysctl -n net.link.pair.batch_overruns 2>/dev/null || echo 0)
+	ov1=$(sysctl -n ${PAIR_OID}.batch_overruns 2>/dev/null || echo 0)
 	set -- $(ifdrops "$J1" "$PAIRA"); ai1=$1; ao1=$2
 	set -- $(ifdrops "$J2" "$PAIRB"); bi1=$1; bo1=$2
 	log "$(printf '%5d  %7s  %6s  %9s  %7d  %6d  %8d' "$n" "$w" \

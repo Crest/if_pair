@@ -10,13 +10,13 @@
 . "$(dirname "$0")/lib.sh"
 test_init
 
-if [ -n "$(ifconfig -g pair 2>/dev/null)" ]; then
+if [ -n "$(ifconfig -g ${PAIR} 2>/dev/null)" ]; then
 	log "SKIP: pre-existing pair interfaces; refusing to unload"
 	exit 0
 fi
 KO=$(resolve_ko) || KO=""
 if [ "$MOD_PRELOADED" = yes ] && [ -z "$KO" ]; then
-	log "SKIP: module preloaded and no if_pair.ko found to reload"
+	log "SKIP: module preloaded and no ${PAIR_MOD}.ko found to reload"
 	exit 0
 fi
 
@@ -28,9 +28,9 @@ create_pair
 A2=$PAIRA; B2=$PAIRB
 must "move ${B2} into ${J1}" ifconfig "$B2" vnet "$J1"
 
-must "kldunload with live pairs" kldunload if_pair
+must "kldunload with live pairs" kldunload ${PAIR_MOD}
 mustfail "no leaked-memory warning" \
-    sh -c "dmesg | tail -50 | grep -iq 'if_pair.*leaked'"
+    sh -c "dmesg | tail -50 | grep -iq '${PAIR_MOD}.*leaked'"
 # Worker threads may still be mid-exit for a moment after kldunload
 # returns: taskqueue_terminate() returns once the thread count hits
 # zero, while the threads themselves are still inside kthread_exit()
@@ -38,11 +38,11 @@ mustfail "no leaked-memory warning" \
 # The pattern is anchored on leading whitespace because a bare
 # "pair_task" also matches epair(4)'s "epair_task" thread.
 must_retry 10 "no pair_task worker threads left" \
-    sh -c "! procstat -ta | grep -Eq '[[:space:]]pair_task_[0-9]'"
-[ -z "$(ifconfig -g pair 2>/dev/null)" ] || \
+    sh -c "! procstat -ta | grep -Eq '[[:space:]]${PAIR}_task_[0-9]'"
+[ -z "$(ifconfig -g ${PAIR} 2>/dev/null)" ] || \
     fail "pair group still has members after unload"
 log "ok: pair group is empty"
-mustfail "malloc type unregistered" sh -c "vmstat -m | grep -q if_pair"
+mustfail "malloc type unregistered" sh -c "vmstat -m | grep -qE '(^|[[:space:]])${PAIR_MOD}[[:space:]]'"
 mustfail "${A1} is gone" ifconfig "$A1"
 mustfail "${A2} is gone" ifconfig "$A2"
 mustfail "jailed ${B2} is gone" jexec "$J1" ifconfig "$B2"

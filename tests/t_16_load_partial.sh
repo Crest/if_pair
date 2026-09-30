@@ -40,7 +40,7 @@ must "address side a" jexec "$J1" ifconfig "$PAIRA" inet "${A4}/32" "$B4" up
 must "address side b" jexec "$J2" ifconfig "$PAIRB" inet "${B4}/32" "$A4" up
 must_retry 5 "baseline ping" jexec "$J1" ping -q -o -c 3 -t 2 "$B4"
 
-over0=$(sysctl -n net.link.pair.batch_overruns 2>/dev/null || echo 0)
+over0=$(sysctl -n ${PAIR_OID}.batch_overruns 2>/dev/null || echo 0)
 
 jexec "$J1" iperf3 -s >/dev/null 2>&1 &
 SRV=$!
@@ -75,6 +75,6 @@ if [ "$gap" -gt "$MAXGAP" ]; then
 fi
 log "ok: host stayed responsive"
 
-over1=$(sysctl -n net.link.pair.batch_overruns 2>/dev/null || echo 0)
+over1=$(sysctl -n ${PAIR_OID}.batch_overruns 2>/dev/null || echo 0)
 log "batch_overruns during the run: $((over1 - over0)) (informational)"
 pass

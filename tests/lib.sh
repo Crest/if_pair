@@ -85,9 +85,18 @@ must_retry() {
 	done
 }
 
+# Which driver the tests exercise.  PAIR is the cloner (interfaces
+# ${PAIR}<N>a/b), PAIR_MOD the module, PAIR_OID its sysctl node.  The
+# defaults are if_pair; PAIR=pairtq PAIR_MOD=if_pair_tq selects the
+# frozen taskqueue baseline in extras/if_pair_tq, so the same benchmark
+# runs against both drivers, even loaded side by side.
+: "${PAIR:=pair}"
+: "${PAIR_MOD:=if_pair}"
+PAIR_OID=net.link.${PAIR}
+
 resolve_ko() {
-	for _k in "${IFPAIR_KO:-}" "${TDIR}/../if_pair.ko" \
-	    "${TDIR}/if_pair.ko"; do
+	for _k in "${IFPAIR_KO:-}" "${TDIR}/../${PAIR_MOD}.ko" \
+	    "${TDIR}/${PAIR_MOD}.ko" "${TDIR}/../extras/${PAIR_MOD}/${PAIR_MOD}.ko"; do
 		if [ -n "$_k" ] && [ -f "$_k" ]; then
 			echo "$_k"
 			return 0
@@ -97,14 +106,14 @@ resolve_ko() {
 }
 
 ensure_module() {
-	if kldstat -q -m if_pair; then
+	if kldstat -q -m "${PAIR_MOD}"; then
 		MOD_PRELOADED=yes
 		return 0
 	fi
 	_ko=$(resolve_ko) || \
-	    fail "if_pair.ko not found (build it or set IFPAIR_KO)"
+	    fail "${PAIR_MOD}.ko not found (build it or set IFPAIR_KO)"
 	must "load ${_ko}" kldload "$_ko"
-	cleanup_push "kldunload if_pair"
+	cleanup_push "kldunload ${PAIR_MOD}"
 }
 
 test_init() {
@@ -117,9 +126,9 @@ test_init() {
 
 # create_pair: sets PAIRA and PAIRB, schedules destruction for pass.
 create_pair() {
-	PAIRA=$(ifconfig pair create) || fail "'ifconfig pair create' failed"
+	PAIRA=$(ifconfig "${PAIR}" create) || fail "'ifconfig ${PAIR} create' failed"
 	case "$PAIRA" in
-	pair*a)	;;
+	${PAIR}*a)	;;
 	*)	fail "unexpected name from create: '${PAIRA}'" ;;
 	esac
 	PAIRB="${PAIRA%a}b"

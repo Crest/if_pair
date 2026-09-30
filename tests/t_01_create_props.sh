@@ -15,6 +15,6 @@ for i in "$PAIRA" "$PAIRB"; do
 	must "$i default mtu is 16384" \
 	    sh -c "ifconfig $i | head -1 | grep -qw 16384"
 	must "$i is in group pair" \
-	    sh -c "ifconfig -g pair | grep -qx $i"
+	    sh -c "ifconfig -g ${PAIR} | grep -qx $i"
 done
 pass

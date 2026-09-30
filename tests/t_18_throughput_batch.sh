@@ -1,13 +1,13 @@
 #!/bin/sh
 # Extended throughput sweep: the t_17 connection sweep (1..128 in
-# powers of two, 5 seconds each) repeated for net.link.pair.batch
+# powers of two, 5 seconds each) repeated for ${PAIR_OID}.batch
 # sizes 16, 64 and 256, ending in one pivot table of receiver-side
 # averages - the batch-size tuning instrument.  The original batch
 # size is restored on success.  Runs for roughly three minutes.
 #
 # Each run line carries the per-run deltas of the pair's drop
 # counters (oqdrops, idrop; both sides summed) and of
-# net.link.pair.batch_overruns; with a small batch the count budget
+# ${PAIR_OID}.batch_overruns; with a small batch the count budget
 # should fire first (few overruns), with a large one the tick budget
 # takes over.
 #
@@ -23,7 +23,7 @@ fi
 test_init
 
 SECS=${BENCH_SECS:-5}
-OID=net.link.pair.batch
+OID=${PAIR_OID}.batch
 orig=$(sysctl -n $OID) || fail "$OID does not exist"
 cleanup_push "sysctl $OID=$orig"
 
@@ -50,7 +50,7 @@ failed=0
 for b in 16 64 256; do
 	must "set batch size to ${b}" sysctl "${OID}=${b}"
 	for n in 1 2 4 8 16 32 64 128; do
-		ov0=$(sysctl -n net.link.pair.batch_overruns 2>/dev/null || \
+		ov0=$(sysctl -n ${PAIR_OID}.batch_overruns 2>/dev/null || \
 		    echo 0)
 		set -- $(ifdrops "$J1" "$PAIRA"); ai0=$1; ao0=$2
 		set -- $(ifdrops "$J2" "$PAIRB"); bi0=$1; bo0=$2
@@ -71,7 +71,7 @@ for b in 16 64 256; do
 			rate=FAILED
 			failed=$((failed + 1))
 		fi
-		ov1=$(sysctl -n net.link.pair.batch_overruns 2>/dev/null || \
+		ov1=$(sysctl -n ${PAIR_OID}.batch_overruns 2>/dev/null || \
 		    echo 0)
 		set -- $(ifdrops "$J1" "$PAIRA"); ai1=$1; ao1=$2
 		set -- $(ifdrops "$J2" "$PAIRB"); bi1=$1; bo1=$2

@@ -6,12 +6,15 @@ set -eu
 
 JAIL_A=pairtest_a
 JAIL_B=pairtest_b
-PAIR=""
+BASE=""
+# PAIR=pairtq PAIR_MOD=if_pair_tq selects the taskqueue baseline (lib.sh).
+: "${PAIR:=pair}"
+: "${PAIR_MOD:=if_pair}"
 
 cleanup() {
 	jail -r ${JAIL_A} 2>/dev/null || true
 	jail -r ${JAIL_B} 2>/dev/null || true
-	[ -n "${PAIR}" ] && ifconfig "${PAIR}a" destroy 2>/dev/null || true
+	[ -n "${BASE}" ] && ifconfig "${BASE}a" destroy 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -20,14 +23,17 @@ if [ "$(id -u)" -ne 0 ]; then
 	exit 1
 fi
 
-if ! kldstat -q -m if_pair; then
-	kldload "$(dirname "$0")/../if_pair.ko"
+if ! kldstat -q -m ${PAIR_MOD}; then
+	d=$(dirname "$0")
+	for ko in "$d/../${PAIR_MOD}.ko" "$d/../extras/${PAIR_MOD}/${PAIR_MOD}.ko" "$d/${PAIR_MOD}.ko"; do
+		[ -f "$ko" ] && { kldload "$ko"; break; }
+	done
 fi
 
 # ifconfig prints the name of the created 'a' side, e.g. pair0a.
-side_a=$(ifconfig pair create)
-PAIR=${side_a%a}
-side_b="${PAIR}b"
+side_a=$(ifconfig ${PAIR} create)
+BASE=${side_a%a}
+side_b="${BASE}b"
 echo "created ${side_a} / ${side_b}"
 
 jail -c name=${JAIL_A} vnet persist
@@ -56,7 +62,7 @@ elif jexec ${JAIL_A} ifconfig "${side_a}" >/dev/null 2>&1; then
 	echo "ERROR: ${side_a} still exists after destroying ${side_b}" >&2
 	fail=1
 else
-	PAIR=""	# pair is gone; nothing for the cleanup trap to destroy
+	BASE=""	# pair is gone; nothing for the cleanup trap to destroy
 fi
 
 if [ ${fail} -eq 0 ]; then

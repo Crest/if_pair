@@ -12,7 +12,7 @@ test_init
 U=89
 SECS=${RACE_SECS:-20}
 mustfail "unit ${U} is free before the test" ifconfig "pair${U}a"
-cleanup_push "ifconfig pair${U}a destroy"
+cleanup_push "ifconfig ${PAIR}${U}a destroy"
 
 end=$(( $(date +%s) + SECS ))
 (
@@ -34,7 +34,7 @@ wait "$churn" "$hammer"
 ifconfig "pair${U}a" destroy >/dev/null 2>&1	# reap a survivor
 mustfail "pair${U}a is gone" ifconfig "pair${U}a"
 mustfail "pair${U}b is gone" ifconfig "pair${U}b"
-for m in $(ifconfig -g pair 2>/dev/null); do
+for m in $(ifconfig -g ${PAIR} 2>/dev/null); do
 	must "group member $m exists" ifconfig "$m"
 done
 log "ok: no ghost members in the pair group"

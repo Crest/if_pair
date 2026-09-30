@@ -4,7 +4,7 @@
 # with the receiver-side average throughput plus the per-run deltas
 # of the pair's drop counters (oqdrops: receive queue full; idrop:
 # discarded on input, e.g. netisr backpressure; both sides summed)
-# and of net.link.pair.batch_overruns - so a scaling falloff carries
+# and of ${PAIR_OID}.batch_overruns - so a scaling falloff carries
 # its own evidence of whether packet loss or tick overruns were
 # involved.  A measurement harness more than a pass/fail test, but a
 # run that does not complete (the historic starvation failure mode)
@@ -45,7 +45,7 @@ sleep 1
 failed=0
 log "conns  Gbit/s  oqdrops   idrop  overruns  (${SECS}s runs, mtu ${MTU})"
 for n in 1 2 4 8 16 32 64 128; do
-	ov0=$(sysctl -n net.link.pair.batch_overruns 2>/dev/null || echo 0)
+	ov0=$(sysctl -n ${PAIR_OID}.batch_overruns 2>/dev/null || echo 0)
 	set -- $(ifdrops "$J1" "$PAIRA"); ai0=$1; ao0=$2
 	set -- $(ifdrops "$J2" "$PAIRB"); bi0=$1; bo0=$2
 	if out=$(jexec "$J2" timeout $((SECS + 30)) iperf3 -f g -c "$A4" \
@@ -65,7 +65,7 @@ for n in 1 2 4 8 16 32 64 128; do
 		rate=FAILED
 		failed=$((failed + 1))
 	fi
-	ov1=$(sysctl -n net.link.pair.batch_overruns 2>/dev/null || echo 0)
+	ov1=$(sysctl -n ${PAIR_OID}.batch_overruns 2>/dev/null || echo 0)
 	set -- $(ifdrops "$J1" "$PAIRA"); ai1=$1; ao1=$2
 	set -- $(ifdrops "$J2" "$PAIRB"); bi1=$1; bo1=$2
 	log "$(printf '%5d  %6s  %7d  %6d  %8d' "$n" "$rate" \

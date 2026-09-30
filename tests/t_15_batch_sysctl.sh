@@ -1,11 +1,11 @@
 #!/bin/sh
-# Corner case: the net.link.pair.batch sysctl - default value,
+# Corner case: the ${PAIR_OID}.batch sysctl - default value,
 # runtime changes, and the clamp-with-warning for values above the
 # queue limit (4096).
 . "$(dirname "$0")/lib.sh"
 test_init
 
-OID=net.link.pair.batch
+OID=${PAIR_OID}.batch
 orig=$(sysctl -n $OID) || fail "$OID does not exist"
 log "ok: $OID exists (value: $orig)"
 cleanup_push "sysctl $OID=$orig"
@@ -27,9 +27,9 @@ must_retry 3 "clamp warning reached the console buffer" \
     sh -c "dmesg | tail -5 | grep -q 'if_pair: batch size 8192'"
 
 must "batch_overruns is readable and numeric" \
-    sh -c "sysctl -n net.link.pair.batch_overruns | grep -qE '^[0-9]+$'"
+    sh -c "sysctl -n ${PAIR_OID}.batch_overruns | grep -qE '^[0-9]+$'"
 mustfail "batch_overruns is read-only" \
-    sysctl net.link.pair.batch_overruns=0
+    sysctl ${PAIR_OID}.batch_overruns=0
 
 must "restore original value" sysctl "$OID=$orig"
 pass

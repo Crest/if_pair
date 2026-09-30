@@ -6,12 +6,12 @@
 test_init
 
 N=${CHURN_N:-30}
-before=$(ifconfig -g pair 2>/dev/null | sort)
+before=$(ifconfig -g ${PAIR} 2>/dev/null | sort)
 
 made=""
 i=0
 while [ "$i" -lt "$N" ]; do
-	a=$(ifconfig pair create) || fail "create number $i failed"
+	a=$(ifconfig ${PAIR} create) || fail "create number $i failed"
 	made="$made $a"
 	i=$((i + 1))
 done
@@ -22,7 +22,7 @@ for a in $made; do
 done
 log "ok: destroyed all $N pairs via their b sides"
 
-after=$(ifconfig -g pair 2>/dev/null | sort)
+after=$(ifconfig -g ${PAIR} 2>/dev/null | sort)
 if [ "$before" != "$after" ]; then
 	fail "pair group changed: before [$before] after [$after]"
 fi

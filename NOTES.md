@@ -4264,3 +4264,40 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   a07 scratch clone ~/kwq-ifpair-scratch is still there for the user to
   remove.  tc_cpu_ticks() in 15.1 is DPCPU (verified), so the a07
   glitch is the counter, not a shared static.
+
+2026-09-29 (late): P3, the ATF harness.  kwq/tests/kwq_test.sh (atf-sh)
+  and Kyuafile, 14 cases asserting the properties the scenarios prove;
+  run with `kyua -v test_suites.kwq.moddir=<dir> test -k Kyuafile` as
+  root, 4+ CPUs.  Determinism fix in kwq_test.ko: the P0 producer binds
+  itself to a CPU that is never a target (kt_pcpu skipped by the
+  round robin) and items carry a per-rep seen tag (result_dups); the
+  reject/discard cases use one target list, because on 128 CPUs the
+  round-robin cycle is longer than an item's service and no list ever
+  fills, whatever the producer does.  Results: guest GENERIC-DEBUG
+  14/14, guest GENERIC 13/14 + yield skipped (VM callout stall, 39 ms),
+  a07 14/14 one case per kyua run.  kyua quirks: a07's FreeBSD-kyua
+  package has no /usr/share/kyua/store (KYUA_STOREDIR at a copy), and
+  kyua aborts on "PID already in all_exec_data" when a whole suite runs
+  there (kern.randompid).  Cleanup races the module's "done" (published
+  before the scenario thread exits): kldunload retried.
+
+2026-09-30: P4 groundwork, the A/B baseline.  Before if_pair moves to
+  kwq, the taskqueue driver is frozen as extras/if_pair_tq: a sed copy
+  of if_pair.c in which only the externally visible names differ
+  (module if_pair_tq, cloner and interfaces pairtq<N>a/b, sysctls
+  net.link.pairtq.*, malloc type if_pair_tq, threads pairtq_task_<N>,
+  sx name), so both drivers load at once.  Verified in the guest: both
+  modules loaded, pair0a and pairtq0a created together, separate
+  groups, sysctls and worker threads, smoke.sh and t_05 pass through
+  each.  tests/lib.sh takes PAIR (cloner, default pair) and PAIR_MOD
+  (module, default if_pair), derives PAIR_OID, searches
+  extras/<mod>/<mod>.ko; every t_*.sh, smoke.sh and cleanup.sh use the
+  variables, so t_17/t_18/t_20/t_21 run unchanged against either
+  driver: PAIR=pairtq PAIR_MOD=if_pair_tq sh tests/t_17_throughput.sh.
+  Rule for P4: every number is an A/B pair on the same boot.
+  Seen on the first unload in the guest (WITNESS): "lock order
+  vnet_sxlock -> ifnet_detach_sx" from kldunload -> linker_file_sysuninit
+  -> vnet_deregister_sysuninit -> if_clone_detach (if_clone.c:685): the
+  kernel's own cloner-detach path under the vnet sx, identical code in
+  both drivers, first time this guest's console log shows it (it had not
+  unloaded if_pair before).  Kernel-side; noted, not acted on.

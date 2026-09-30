@@ -10,13 +10,13 @@ mustfail "unit ${U} is free before the test" ifconfig "pair${U}a"
 out=$(ifconfig "pair${U}" create) || fail "explicit-unit create failed"
 [ "$out" = "pair${U}a" ] || fail "expected pair${U}a, got '${out}'"
 log "ok: explicit-unit create reports pair${U}a"
-cleanup_push "ifconfig pair${U}a destroy"
+cleanup_push "ifconfig ${PAIR}${U}a destroy"
 must "pair${U}b exists too" ifconfig "pair${U}b"
 
 mustfail "duplicate unit is refused" ifconfig "pair${U}" create
 mustfail "side name is not a clone name" ifconfig "pair${U}a" create
-mustfail "junk name is refused" ifconfig pairXY create
-mustfail "destroying nonexistent pair9999a" ifconfig pair9999a destroy
+mustfail "junk name is refused" ifconfig ${PAIR}XY create
+mustfail "destroying nonexistent pair9999a" ifconfig ${PAIR}9999a destroy
 
 must "destroy pair${U}a" ifconfig "pair${U}a" destroy
 mustfail "pair${U}b is gone" ifconfig "pair${U}b"
