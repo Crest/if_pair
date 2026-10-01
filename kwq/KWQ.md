@@ -2312,7 +2312,7 @@ decision deferred until real clients show what fan-in they produce.
 - 2026-09-29 (late, P3): tests/kwq_test.sh and tests/Kyuafile, the ATF
   suite under kyua (OBSERVABILITY.md S9); kwq_test's P0 producer bound
   away from its targets, items tagged per rep to prove exactly-once
-  delivery (`result_dups`).  P3 closed; P4 next.
+  delivery (`result_dups`).  P3 closed.
 - 2026-09-30 (P4): if_pair is the first client.  One NET queue per
   side, `kwq_enqueue()` per packet at `kwq_cpu_for_hash()`, the S7
   handler shape with the vnet set from the receiving ifp per pass,

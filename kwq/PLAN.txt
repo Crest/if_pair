@@ -427,7 +427,13 @@ Phases
     Exit: kyua test kwq/tests passes on the arm64 VM and on the Ampere;
     GENERIC and GENERIC-DEBUG (INVARIANTS/WITNESS) both.
 
-[TODO] P4  if_pair as first client (1-2 days + Ampere measurement)
+[DONE 2026-09-30] P4  if_pair as first client (1-2 days + Ampere measurement)
+    Exit: tests/run_all.sh green on the guest (28/28; on a07 the host<->jail
+    tests fail for both drivers behind the host's pf, an environment
+    finding); a07 t_17 495 Gbit/s peak (recorded 479) and 338 at P=128
+    (>= 337) on parity with the taskqueue baseline; t_20 no callout
+    contention; t_19 shows kwq_net/N.  P4b (LRO, cheaper passes, quantum
+    vs latency) stays optional and open.
     P4.0 (added 2026-09-29, from the fan-in sweep, SCHED.md S15.7; scope
     set by the user the same day): the producer side of the (queue, CPU)
     handoff collapses beyond ~8 producing CPUs (39 -> 11 M items/s at

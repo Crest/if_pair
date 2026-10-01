@@ -4497,3 +4497,21 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   a core that fails to start), but hint.lapic.N.disabled and
   hyperthreading_allowed=0 on amd64 still number densely.  KWQ.md S3
   updated.
+
+2026-10-01: regression round after P4, HEAD 1bc7f2d + the P4-done
+  status edits, pf unloaded on a07 by the user.  Simulator ALL PASSED
+  (9.76 M steps).  Guest GENERIC-DEBUG: kwq ATF suite 14/14, if_pair
+  run_all.sh 29 passed 0 failed (t_15/t_18 skip on the kwq driver,
+  t_23-t_27 skip for want of the TSO patches), baseline smoke/t_05
+  pass, t_17 kwq vs baseline 9.1-13.9 vs 7.5-14.0 Gbit/s (4-vCPU
+  ceiling).  a07 15.1-p4, timers=1: kwq ATF 14/14; run_all.sh 29
+  passed 0 failed INCLUDING the host<->jail tests (t_05-t_09) that pf
+  had blocked, t_16-t_22 and t_28/t_29 pass.  A/B same boot: t_17 kwq
+  36/68/115/212/330/446/353/337 vs baseline 21/63/106/223/363/491/355/
+  339 (1..128 conns; the 32-connection point 446 vs 491 is one run,
+  earlier rounds gave 495 for both; 128-connection 337 vs 339); t_29 at
+  depth 4096: 214/357/335 vs 216/356/335 Gbit/s, RTT avg 0.05/1.0/7.1
+  ms vs 0.05/1.6/35.4 ms, max 0.4/64/89 vs 0.3/48/785 ms, no drops.
+  No regressions; the 256-connection RTT tail again shows the DRR's
+  bound (89 ms) against the baseline's 785 ms.  Log:
+  samples/reg_a07_2026-10-01.txt.

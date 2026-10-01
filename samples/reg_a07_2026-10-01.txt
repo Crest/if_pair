@@ -1,0 +1,91 @@
+start 00:56:03 12:56AM  up 1 day, 8 mins, 1 user, load averages: 0.06, 0.07, 0.01
+FreeBSD 15.1-RELEASE-p4 releng/15.1-n283627-db6066678b33 GENERIC
+ 9    1 0xffff0007bd600000    31000 tmpfs.ko
+34    1 0xffff0007c42aa000    27000 if_epair.ko
+== kwq ATF suite (one case per kyua run)
+kwq_test.sh:lifecycle  ->  passed  [0.463s]
+kwq_test.sh:fifo  ->  passed  [0.459s]
+kwq_test.sh:reject  ->  passed  [0.260s]
+kwq_test.sh:discard  ->  passed  [0.261s]
+kwq_test.sh:notify  ->  passed  [0.256s]
+kwq_test.sh:bad_names  ->  passed  [1.393s]
+kwq_test.sh:fairness  ->  passed  [3.083s]
+kwq_test.sh:fairness_2to1  ->  passed  [3.083s]
+kwq_test.sh:latency  ->  passed  [3.285s]
+kwq_test.sh:gaming  ->  passed  [3.286s]
+kwq_test.sh:overrun  ->  passed  [3.286s]
+kwq_test.sh:yield  ->  passed  [3.284s]
+kwq_test.sh:cost  ->  passed  [3.295s]
+kwq_test.sh:ifpair  ->  passed  [3.086s]
+kwq unloaded after the suite
+== if_pair suite on the kwq driver
+t_01_create_props: PASS
+t_02_destroy_either: PASS
+t_03_names_units: PASS
+t_04_mtu_bounds: PASS
+t_05_ping4: PASS
+t_06_ping6: PASS
+t_07_ping_jails: PASS
+t_08_vmove_group: PASS
+t_09_updown: PASS
+t_10_txcsum: PASS
+t_11_destroy_load: PASS
+t_12_churn: PASS
+t_13_race: PASS
+t_14_unload: PASS
+t_15_batch_sysctl: SKIP: net.link.pair.batch does not exist (the kwq driver has no batch knob; see kern.kwq.net.quantum_us)
+t_16_load_partial: PASS
+t_17_throughput: PASS
+t_18_throughput_batch: SKIP: net.link.pair.batch does not exist (the kwq driver has no batch knob; see kern.kwq.net.quantum_us)
+t_19_profile: PASS
+t_20_lockstat: PASS
+t_21_workingset: PASS
+t_22_tso: PASS
+t_23_kpi: SKIP: tso_wrap.ko not found (set TSO_WRAP_KO)
+t_24_phaseA: SKIP: kernel lacks tcp_tso_chop (Phase A patch not installed)
+t_25_epair_tso: SKIP: epair1a does not advertise TSO4 (unpatched if_epair)
+t_26_gif_tso: SKIP: gif0 does not advertise TSO4 (unpatched gif)
+t_27_gif_profile: SKIP: gif0 does not advertise TSO4 (unpatched gif)
+t_28_pair_matrix: PASS
+t_29_multi_pair: PASS
+passed 29, failed 0
+34    1 0xffff0007c42aa000    27000 if_epair.ko
+82    2 0xffff0007be1c1000    2e000 kwq.ko
+83    1 0xffff0007c4200000    24000 if_pair.ko
+ifp_26_gif_tso_1: removed
+ifp_26_gif_tso_2: removed
+ifp_27_gif_profile_1: removed
+ifp_27_gif_profile_2: removed
+== A/B: t_17 kwq vs baseline, t_29 both (8 pairs, depth 4096)
+kldload: can't load /home/crest/if_pair-p4-scratch/kwq/kwq/kwq.ko: module already loaded or in kernel
+kldload: can't load /home/crest/if_pair-p4-scratch/if_pair.ko: module already loaded or in kernel
+-- t_17 kwq
+t_17_throughput:     1    36.4        0       0         0
+t_17_throughput:     2    68.4        0       0         0
+t_17_throughput:     4     115        0       0         0
+t_17_throughput:     8     212        0       0         0
+t_17_throughput:    16     330        0       0         0
+t_17_throughput:    32     446        0       0         0
+t_17_throughput:    64     353        0       0         0
+t_17_throughput:   128     337        0       0         0
+-- t_17 baseline
+t_17_throughput:     1    21.2        0       0      1865
+t_17_throughput:     2    63.1        0       0      9555
+t_17_throughput:     4     106        0       0     14467
+t_17_throughput:     8     223        0       0     38204
+t_17_throughput:    16     363        0       0     71705
+t_17_throughput:    32     491        0       0    130270
+t_17_throughput:    64     355        0       0    191408
+t_17_throughput:   128     339        0       0    198751
+-- t_29 kwq
+t_29_multi_pair: depth 4096   8 conns (1 per pair): total 213.6 Gbit/s; per pair min/avg/max 23.3/26.7/30.3; rtt avg 0.048 ms max 0.397 ms; oqdrops 0; kwq items/pass 2, passes/s 946020
+t_29_multi_pair: depth 4096  64 conns (8 per pair): total 356.8 Gbit/s; per pair min/avg/max 43.4/44.6/46.1; rtt avg 1.040 ms max 64.249 ms; oqdrops 0; kwq items/pass 4, passes/s 1347971
+t_29_multi_pair: depth 4096 256 conns (32 per pair): total 335.1 Gbit/s; per pair min/avg/max 40.6/41.9/42.6; rtt avg 7.116 ms max 88.513 ms; oqdrops 0; kwq items/pass 10, passes/s 846141
+-- t_29 baseline
+t_29_multi_pair: depth 4096   8 conns (1 per pair): total 215.6 Gbit/s; per pair min/avg/max 22.8/27.0/30.7; rtt avg 0.051 ms max 0.328 ms; oqdrops 0
+t_29_multi_pair: depth 4096  64 conns (8 per pair): total 355.6 Gbit/s; per pair min/avg/max 37.5/44.5/49.2; rtt avg 1.583 ms max 47.511 ms; oqdrops 0
+t_29_multi_pair: depth 4096 256 conns (32 per pair): total 335.0 Gbit/s; per pair min/avg/max 39.8/41.9/45.1; rtt avg 35.424 ms max 785.114 ms; oqdrops 0
+34    1 0xffff0007c42aa000    27000 if_epair.ko
+jails left: 0
+end 01:13:21  1:13AM  up 1 day, 25 mins, 1 user, load averages: 8.83, 36.67, 30.00
+== reg done
