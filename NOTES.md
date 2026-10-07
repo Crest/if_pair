@@ -4515,3 +4515,239 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   No regressions; the 256-connection RTT tail again shows the DRR's
   bound (89 ms) against the baseline's 785 ms.  Log:
   samples/reg_a07_2026-10-01.txt.
+
+2026-10-01 (later): kwq/docs/ written (overview with a tutorial,
+  cheatsheet, reference, whitepaper, plus an index), and the
+  verification turned up six facts the design docs had wrong or stale:
+  - struct kwq_cpu is 384 bytes (three KWQ_LINE blocks), not 256 (two),
+    and struct kwq_worker likewise, so a queue costs 48 KB on 128 CPUs,
+    not 32-33 KB.  Measured by compiling CTASSERTs on both sizes; the
+    private half outgrew two blocks as counters were added.  Corrected
+    in SCHED.md S15.5, KWQ.md S4 (GELI), PLAN.txt P4.0 and P4's
+    one-queue-per-side rationale.  The P4.0 comparison is unaffected
+    (48 KB against 2 MB for per-source sublists).
+  - penalty_rounds, budget_check_every, cap_pct, cap_sleep_us and
+    cap_window_us are RWTUN, not RW; only yield_prio is RW.
+    OBSERVABILITY.md S2 is vague in the same direction.
+  - kwq_budget_left() has no tick-boundary condition: it returns 0 for
+    a higher class waiting, the budget spent, or a glitched clock.  The
+    tick guard lives between passes in the worker.
+  - kwq_create() refuses no limit value (0 = class default, above
+    INT_MAX clamped), and only three failures are logged (bad name,
+    duplicate name, BLOCKING); bad class, flags, weight and nreserve
+    are KASSERTs.
+  - a zeroed kwq_params gives domain 0, which is taken literally, not
+    "the CPU's own domain"; only -1 means that.  Both if_pair and the
+    tutorial set it explicitly, so no client is affected.
+  - kwq_name_valid() is declared in kwq.h but missing from the module's
+    EXPORT_SYMS, so a client cannot link it.  Documented as such; the
+    export list is the half that should change.
+  Also: KWQ_CPU_ANY probes at most 4 CPUs (the header's "shallowest in
+  the domain" is over-strong), no kwq_blocking/N threads exist, and
+  kwq_test has 17 scenarios.  The tutorial in docs/overview.md was
+  verified by building it, loading it in the guest and running its
+  documented commands; its two experiments are measured, and one
+  corrected the draft (a 2 ms item necessarily overruns a 200 us
+  quantum under the progress rule, and requeues can push depth above
+  limit, which is by design).
+  Second review round (2026-10-01, consistency/correctness/completeness
+  sweep of docs/): one measurement defect, three stale figures in the
+  normative docs, three broken relative paths and one broken table.
+  - whitepaper 6.1 mixed two builds in one column: the 16-per-call
+    throughput was the post-budget-check 47.4 M while the cycle,
+    instruction, stall and cache rows beside it came from the 24.5 M
+    build.  Table restored to SCHED.md S15.7 with the post-check row
+    kept separate and labelled.
+  - the eight-pair t_29 results differ between the 09-30 and 10-01 runs
+    in the direction of the conclusion: the maximum RTT favours kwq in
+    both runs (89 vs 785 ms, 54 vs 67 ms), but the average favours kwq
+    on 10-01 (7.1 vs 35.4 ms) and the baseline on 09-30 (4.5 vs 3.2).
+    Both runs are now in the paper with their dates and the narrower
+    conclusion: the round reliably bounds the tail, the mean does not
+    reproduce.  PLAN.txt P4's summary quotes the 09-30 run only.
+  - "384 bytes each" for the three kwq_cpu blocks was wrong (384 total);
+    SCHED.md S15.5 had it right after yesterday's fix.
+  - sim scenario count was 13 in SCHED.md S10.1 and PLAN.txt P1a and is
+    17 in the code; both corrected.
+  - the five range-checked knobs are RWTUN, which SCHED.md S8 had as RW
+    and OBSERVABILITY.md S2 left unmarked; both corrected, and
+    OBSERVABILITY's park argument is now "zero or negative" to match
+    the code's kc_deficit <= 0 test.
+  - docs/overview.md pointed at ../NOTES.md and samples/starve.log from
+    a directory one level deeper than it thought; whitepaper.md pointed
+    at ../../SCHED.md.  All three fixed.
+  - reference.md's probe table had a prose paragraph between its last
+    two rows, so the steal/worker-* row rendered outside the table.
+  - the doorbell condition was "empty" in whitepaper 3 and 4.2 and
+    "idle, explicitly not empty" everywhere else; the Windows citation
+    now says where kwq's predicate differs from the quoted rule.
+  - terminology: "consumers" used for clients, and "bands", "rescuer"
+    and "concurrency management" kept from citations without the kwq
+    term in parentheses, which GLOSSARY H requires.
+  Also verified by running them: every sysctl diagnosis recipe, and the
+  queueing-delay DTrace recipe, which is silent on a saturated queue by
+  design (arg3 is 0 on later passes of one backlog: 8471 firings, empty
+  histogram) and fills in at once against a light queue beside a flood.
+  The cheat sheet now warns about that.
+  Completeness sweep of docs/ (2026-10-01): the mechanical inventories
+  came back complete - 49 public KPI items, 44 sysctl leaf names, 19
+  probes, all documented, nothing documented that does not exist - but
+  it found rules in KWQ.md/SCHED.md that none of the four files carried,
+  and one place where the docs taught something the spec rules out:
+  - within a pass every pending notifier is delivered BEFORE the item
+    list (kwq_worker.c:224-232), and SCHED.md S14 case 4 says not to mix
+    notifiers and items on one queue: a notifier handler that eats the
+    budget leaves the items requeued pass after pass (requeued grows,
+    items does not).  reference.md S5 was teaching how to serve both and
+    cheatsheet S3's example did so; both now carry the warning.
+  - a queue created but never activated must STILL be kwq_drain()ed
+    before kwq_destroy() (the KASSERT at kwq.c:928 does not care);
+    kwq_create's own error paths set kwq_drained by hand, and if_pair's
+    partial-create rollback drains an inactive queue.  A client that
+    checks kwq_create() then fails its own next step would have
+    panicked.  Documented with the error-path shape.
+  - kwq_requeue() is not a return barrier: if_pair requeues, breaks, and
+    still runs CURVNET_RESTORE/if_rele.  Both examples in the docs
+    returned immediately, implying the opposite.
+  - the handler-context tables were missing the epoch rule (NET already
+    inside and may nest, BULK enters it itself), "touch user memory:
+    never", and kwq_scatter being legal from a handler.
+  - teardown was missing three rules: drain before releasing hardware
+    (the last pass may touch the device) or use KWQ_F_DISCARD; a
+    notifier client must empty its own list first, because a notify from
+    the handler's final run returns false and counts as rejected; and a
+    notifier needs no cancel after a drain.
+  - if_pair idioms with no pattern behind them: if_ref across the whole
+    pass (a refcount, legal in a NET handler), and a fixed per-queue
+    fallback CPU for unhashable items rather than curcpu.
+  - the tutorial's MOD_UNLOAD teardown is right for a standalone module
+    but wrong for a cloner-based client (MOD_UNLOAD runs before a file's
+    SYSUNINITs, KWQ.md S4); noted in the tutorial.
+  - smaller: kern.kwq.blocking.* knobs exist although the class has no
+    workers; `cycles` is wall cpu_ticks and diverges from busy_ns under
+    interrupt load; kwq:::reject does NOT fire for EINVAL (detected
+    before the lock); the steal and worker-* probes have documented
+    argument lists in KWQ.md S10.1; kwqinfo_t's class renders as a
+    string and kwq_addr is for correlating with lockstat.
+  Two findings against the project rather than the docs, recorded here
+  and not acted on: KWQ.md S10.5 promises WITNESS_WARN at handler entry
+  and a lock-leak check at exit, and neither exists in kwq_worker.c; and
+  what happens when a handler panics is specified nowhere.
+  netisr comparison added to docs/whitepaper.md as section 3.2, after
+  reading sys/net/netisr.c (1562 lines), netisr.h, netisr_internal.h and
+  the IP/IPv6 registrations in the 15.x tree at /usr/src (af58d0db156a,
+  March 2026).  Section 3 gained a 3.1/3.2 split rather than a new
+  top-level section, so no section numbers moved and overview.md's
+  reference to whitepaper 5.4 still resolves.  The finding, in one line:
+  netisr has kwq's shape and stops short of the policy.  It already has
+  per-CPU workstreams, m_nextpkt-linked queues, per-protocol bounds,
+  batched dequeue and a flow-to-CPU mapping; it has no unit of account,
+  no bound per invocation (swi_net loops while pendingbits != 0 and the
+  bit is set even while the worker runs, so a fed protocol is redrained
+  in the same call; worst case 2 x qlimit x 16 slots = 8192 packets at
+  the default, 327,680 at maxqlimit), one mutex per workstream covering
+  every protocol's queue, maxthreads=1 RDTUN with bindthreads=0 by
+  default, a drop that frees the mbuf instead of returning it, placement
+  fallbacks that silently change the CPU, packet counts and zero SDT
+  probes, and a compile-time table of 16 protocol numbers fixed in a
+  public header.  Two nuances worth keeping straight: a netisr SWI runs
+  at PI_SOFT (PI_SWI(x) == PI_SOFT), so it is softclock's peer rather
+  than its superior, which is NOT the if_pair starvation shape; and the
+  default dispatch policy is DIRECT, so most packets run inline in the
+  caller at the caller's priority, which moves the budget question
+  rather than answering it.  The structural blocker is the taxonomy:
+  netisr accounts per protocol, so it cannot express a queue per
+  interface, provider or tunnel, which is why if_pair, epair, if_wg and
+  GELI all built private pools.  Credited to netisr in the section:
+  direct and hybrid dispatch with no context switch at all, the
+  m2cpuid/m2flow hooks, DEVICE_POLLING, and that it carries IP input
+  today.  All 15 file:line citations in the section were verified
+  against the tree.
+
+2026-10-07: trade-offs of a netisr-first path, recorded, not decided.
+  Context: the kwq and if_pair state was presented to FreeBSD network
+  stack developers.  Their advice: buy-in for kwq's full scope will be
+  hard and slow; improve the netisr(9) implementation first, keep the
+  diffs small, limit the scope to the network stack for now.  This entry
+  records what that path WOULD keep, lose and defer, so the decision can
+  be made against something written down.  PLAN.txt P5-P7 are unchanged;
+  the fork is only marked there.
+  The dividing line.  kwq's goals split on one question.  Goals about
+  HOW a CPU's deferred work runs (the bound, the accounting, the
+  observability, the placement rules) can be delivered inside netisr in
+  small diffs, because netisr already has per-CPU workstreams,
+  m_nextpkt-linked queues, per-protocol per-CPU limits and a flow-to-CPU
+  mapping (docs/whitepaper.md 3.2).  Goals about WHO may have a queue
+  (per-client queues, classes, pools outside the network stack) cannot,
+  because netisr's unit is the protocol, 16 compile-time slots with the
+  numbers fixed in a public header.  The advice amounts to doing the
+  first half now and leaving the second half unargued.
+  What the path keeps, in the order that keeps each diff small; every
+  step can carry a before/after number from the same boot by the A/B
+  method built for if_pair, which is what would make them reviewable:
+  1. Observability: an SDT provider for netisr (queue, drop, direct
+     dispatch, drain start/end, per protocol and CPU), CPU time per
+     workstream-protocol, a queueing-latency high-water mark.  Pure
+     addition, no behaviour change; first because it also measures the
+     case for the rest.  Today netisr.c has zero probes and counts
+     packets only.
+  2. A bounded drain: swi_net() loops while pendingbits != 0
+     (netisr.c:969) and the bit is set even while the worker runs
+     (netisr.c:1009), so a fed protocol is redrained in the same call;
+     worst case 2 x qlimit x 16 slots.  A per-invocation budget with the
+     remainder spliced back at the HEAD of the global queue (order kept)
+     and a re-signal is kwq's quantum plus requeue in a few dozen lines.
+     Opt-in, defaulting to today's behaviour.  It also bounds how long
+     the network epoch is held: the ithread machinery enters it once per
+     handler execution (kern_intr.c:1291-1306, re-entered only every
+     hw.intr_epoch_batch = 1000 executions), and one swi_net() call is
+     one execution, so today the epoch spans the whole drain.
+  3. Time as the unit: the budget in 2 must be CPU time, not packets
+     (the if_pair batch counter stretched with MTU); the estimated clock
+     read (SCHED.md S4.4) and the clock glitch guard transfer unchanged.
+  4. Runtime depth knobs: maxqlimit and defaultqlimit from RDTUN to
+     writable, plus a per-protocol node (today only IP wraps
+     netisr_setqlimit() in a sysctl, ip_input.c:237).
+  5. Concurrency defaults: net.isr.maxthreads=1 and bindthreads=0 to
+     per-CPU and bound.  Two lines, the hardest to land because they
+     change every machine; the starvation and scaling measurements are
+     the argument; bindthreads first may be the staging.
+  6. if_pair onto netisr_queue(): with per-CPU netisr, if_pair delivers
+     each packet with its flowid set and needs neither its own pool nor
+     kwq.  Zero netisr diff.  lo(4), if_ovpn and the ip_output/ip6_output
+     loopback already do this (netisr_queue callers in the tree).  A
+     destroyed side is already handled: m_rcvif_restore() returns NULL
+     for a dying ifnet (kern_mbuf.c:1697) and netisr frees the packet
+     (netisr.c:921).  Depends on 5 for throughput and on 2 for the
+     bound; without 5 every pair's packets funnel to one unbound thread.
+  What the path loses, to be said plainly to the reviewers:
+  - per-pair bounds, drops and latency: if_pair's packets become
+    indistinguishable from NIC IP traffic in the counters, since the
+    accounting is per protocol;
+  - fairness between clients, which is the fairness that mattered;
+    fairness between PROTOCOLS stays possible but buys little with a
+    handful of trusted protocols, so DRR between IP and IPv6 is not
+    worth its review cost and the anti-gaming apparatus (boost, grace,
+    debt) becomes unnecessary;
+  - the BULK and BLOCKING classes, and with them the if_wg crypto, GELI
+    and iflib conversions; those pools stay;
+  - admission that returns the item instead of freeing it: every
+    netisr_queue() caller assumes the free (netisr.c:1021), so it
+    cannot be retrofitted compatibly;
+  - any bound on the direct-dispatch path, which is the default
+    (NETISR_DISPATCH_DIRECT, netisr.c:151) and carries most packets; it
+    runs in the NIC ithread's context and is not netisr's to fix.
+  What stays in reserve rather than being abandoned: the scheduler and
+  its simulator (the budget half transfers now; DRR waits for per-client
+  queues to be fair between); kwq.ko as the out-of-tree measurement
+  platform and the proof that the full design holds, which is a
+  stronger position in a slow argument than a document; the docs set,
+  which needs reframing, not discarding (whitepaper 3.2 already states
+  the thesis the reviewers endorsed).
+  The one real risk in the path: hybrid dispatch keeps ordering with the
+  NWS_RUNNING/DISPATCHING/SCHEDULED handshake (netisr.c:1177-1206), and
+  a direct dispatcher must never skip ahead of queued work.  A budget
+  that stops between protocols, or splices the remainder back at the
+  head under nws_mtx, preserves that; one that lets two parties drain
+  one protocol's queue does not.  Small change, but the ordering
+  argument has to be written down with it.

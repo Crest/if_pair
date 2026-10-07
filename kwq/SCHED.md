@@ -626,12 +626,12 @@ client's `c_max`; `Y` the time the yielded-to threads run at a yield
 | `kern.kwq.<class>.quantum_us` | class, RWTUN | 200 / 1000 / 5000 | `Q`; the throughput/latency dial: larger = fewer yields and lock hand-offs per item, longer B4/B5.  Validated to `[10, 1000000]` us by the sysctl handler: 0 would park every queue forever (S13) |
 | `kwq_params.weight` | queue, create time | 1 | share within the class on a CPU, 1..8, read as "this queue gets `w` quanta per round".  Clients are reviewed kernel code, not tenants, so a weight above 1 is a declaration reviewed with the client, not a privilege kwq enforces (KWQ.md S1 corrected 2026-09-28) |
 | `kern.kwq.<class>.yield_prio` | class, RW | `PUSER` | who may run at a yield (S6.2) |
-| `kern.kwq.<class>.cap_pct` | class, RW | 100 (off) | CPU-share cap threshold; values above 100 read as off |
-| `kern.kwq.<class>.cap_window_us` | class, RW | 10000 | cap measurement window |
-| `kern.kwq.<class>.cap_sleep_us` | class, RW | 100 | cap sleep, the jitter it adds |
+| `kern.kwq.<class>.cap_pct` | class, RWTUN | 100 (off) | CPU-share cap threshold; values above 100 read as off |
+| `kern.kwq.<class>.cap_window_us` | class, RWTUN | 10000 | cap measurement window |
+| `kern.kwq.<class>.cap_sleep_us` | class, RWTUN | 100 | cap sleep, the jitter it adds |
 | `GRACE_ROUNDS` | compile-time | 1 | anti-gaming window; the P1a sweep found 1 and 2 indistinguishable (S12) |
-| `kern.kwq.<class>.budget_check_every` | class, RW | 8 | `K` of S4.4: `kwq_budget_left()` reads the clock at least every `K` calls; 1 = read on every call (exact B1, expensive with cheap items); validated to `[1, 64]` |
-| `kern.kwq.<class>.penalty_rounds` | class, RW | 32 | debt clamp in quanta: how many rounds an overrunning queue can be parked at most (S4.3).  Validated to `[1, 1024]` by the sysctl handler: 0 would make overruns free, since the deficit could never go negative |
+| `kern.kwq.<class>.budget_check_every` | class, RWTUN | 8 | `K` of S4.4: `kwq_budget_left()` reads the clock at least every `K` calls; 1 = read on every call (exact B1, expensive with cheap items); validated to `[1, 64]` |
+| `kern.kwq.<class>.penalty_rounds` | class, RWTUN | 32 | debt clamp in quanta: how many rounds an overrunning queue can be parked at most (S4.3).  Validated to `[1, 1024]` by the sysctl handler: 0 would make overruns free, since the deficit could never go negative |
 
 Choosing `Q`: one to two orders of magnitude above the heaviest common
 item (a TSO chain through `ip_input` ~10 us -> 200 us is ~20 chains), at
@@ -689,7 +689,7 @@ them (S15.6); one saturated CPU, the test thread bound elsewhere.
 
 ### 10.1 Simulator results (P1a, 2026-09-28)
 
-`kwq/sim/kwqsim suite` on the host, 13 scenarios, 100 random seeds, in
+`kwq/sim/kwqsim suite` on the host, 17 scenarios, 100 random seeds, in
 about a second; all invariants hold, no bound violated.  Numbers to
 compare the guest against in P1b:
 
@@ -1197,10 +1197,13 @@ check per item and ~200 ns per pass.
 
 ### 15.5 Memory
 
-Per (queue, CPU): two `KWQ_LINE` blocks (shared and private), 256 bytes;
-per queue on a 128-CPU machine 32 KB plus the header; a thousand
-per-side pair queues, 32 MB.  Per worker: two blocks, 256 bytes.  No
-per-item state.
+Per (queue, CPU): three `KWQ_LINE` blocks (one shared, two private),
+384 bytes; per queue on a 128-CPU machine 48 KB plus the 256-byte
+header; a thousand per-side pair queues, 48 MB.  Per worker: three
+blocks, 384 bytes.  No per-item state.  (Corrected 2026-10-01: the
+figures above said two blocks and 256 bytes, which the private half
+outgrew as counters were added; measured by compiling a `CTASSERT` on
+`sizeof(struct kwq_cpu)` and `sizeof(struct kwq_worker)`.)
 
 ### 15.6 Measuring it (P1 exit, added to S10)
 

@@ -41,12 +41,12 @@ handler rejects values outside its range with EINVAL.
 |---|---|---|---|
 | `quantum_us` (RWTUN) | 10 .. 1000000 | 200 / 1000 / 5000 | CPU time a queue of weight 1 may use per round before its turn ends.  Larger: fewer yields and lock hand-offs per item, longer worst-case wait for the other queues on the CPU |
 | `limit` (RWTUN) | any | 4096 | per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards.  A queue at its limit refuses enqueues with ENOBUFS and counts them in `rejected` |
-| `penalty_rounds` | 1 .. 1024 | 32 | how many rounds a queue can be parked for overrunning its budget, in quanta of debt.  Smaller forgives a misbehaving handler sooner |
-| `budget_check_every` | 1 .. 64 | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; between reads it estimates.  1 = a clock read per call (exact, expensive with cheap items) |
-| `yield_prio` | class priority .. 223 | 56 (PUSER) | the priority the worker yields at after a round when something else is runnable.  223 lets every user thread run a full time slice per round |
-| `cap_pct` | 1 .. 1000 | 100 (off) | CPU-share cap: when the worker's busy fraction over `cap_window_us` exceeds this and other threads are runnable, it sleeps `cap_sleep_us`.  100 or more = off |
-| `cap_sleep_us` | 1 .. 1000000 | 100 | length of that sleep |
-| `cap_window_us` | 100 .. 10000000 | 10000 | window of the busy-fraction measurement |
+| `penalty_rounds` (RWTUN) | 1 .. 1024 | 32 | how many rounds a queue can be parked for overrunning its budget, in quanta of debt.  Smaller forgives a misbehaving handler sooner |
+| `budget_check_every` (RWTUN) | 1 .. 64 | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; between reads it estimates.  1 = a clock read per call (exact, expensive with cheap items) |
+| `yield_prio` (RW) | class priority .. 223 | 56 (PUSER) | the priority the worker yields at after a round when something else is runnable.  223 lets every user thread run a full time slice per round |
+| `cap_pct` (RWTUN) | 1 .. 1000 | 100 (off) | CPU-share cap: when the worker's busy fraction over `cap_window_us` exceeds this and other threads are runnable, it sleeps `cap_sleep_us`.  100 or more = off |
+| `cap_sleep_us` (RWTUN) | 1 .. 1000000 | 100 | length of that sleep |
+| `cap_window_us` (RWTUN) | 100 .. 10000000 | 10000 | window of the busy-fraction measurement |
 
 Examples:
 
@@ -180,7 +180,7 @@ definition is available".
 | `pass-start` | list swapped, handler about to run | `arg1` cpu, `arg2` items, `arg3` doorbell-to-pass latency ns (0 on later passes of one backlog) |
 | `pass-end` | handler returned | `arg1` cpu, `arg2` items, `arg3` CPU time ns, `arg4` items requeued |
 | `overrun` | a pass exceeded budget + one quantum | `arg1` cpu, `arg2` ns over |
-| `park` | a queue skipped for owing time | `arg1` cpu, `arg2` deficit ns (negative) |
+| `park` | a queue skipped for owing time | `arg1` cpu, `arg2` deficit ns (zero or negative) |
 | `budget-hit` | `kwq_budget_left()` answered 0 | `arg1` cpu |
 | `round-end` (no `args[0]`) | worker finished a round | `arg0` class, `arg1` cpu, `arg2` ring entries, `arg3` wall ns since the previous round end |
 | `yield` (no `args[0]`) | worker yielded | `arg0` class, `arg1` cpu, `arg2` 0 end of round, 1 tick guard |

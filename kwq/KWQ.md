@@ -359,8 +359,8 @@ cannot arise: notifiers are exempt from the limit (`kwq_notify()`, S2),
 so a GELI queue shared by thousands of providers holds one notifier per
 provider per CPU and never refuses one.  GELI still gets one queue PER
 PROVIDER in the design, for per-provider accounting and a per-provider
-`kwq_drain()` on detach, at O(ncpu) per queue (roughly 32 KB per queue
-on 128 CPUs); a system with thousands of providers may use one queue and
+`kwq_drain()` on detach, at O(ncpu) per queue (48 KB per queue
+on 128 CPUs, measured 2026-10-01); a system with thousands of providers may use one queue and
 keep per-provider counters on the GELI side, and loses nothing in
 reliability by doing so.
 

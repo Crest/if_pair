@@ -199,7 +199,7 @@ Phases
     simulator runs under `make -C kwq/sim test` in under a minute.
     Status 2026-09-28: done.  kwq/kwq/kwq_sched.{h,c} (~280 lines) and
     kwq/sim/{sim.c,kwq_sched_env.h,Makefile} (~1000 lines); `make test`
-    runs 13 scenarios and 100 random seeds x 36 s of simulated time, about
+    runs 17 scenarios and 100 random seeds x 36 s of simulated time, about
     1e7 scheduler steps, in about 25 s (the step count is printed).  Findings, all folded into SCHED.md: penalty cap
     raised from 2 to 32 quanta as a knob (overrunner share 13.4 -> 1.22);
     hand-back only after a pass (BULK was starved completely); overrun =
@@ -442,7 +442,7 @@ Phases
     list, so this must be revisited - but only once real clients exist
     and show what fan-in they actually produce.  Options recorded, none
     chosen: (a) keep the single mutex-protected list (today; FIFO across
-    producers, 33 KB per queue at 128 CPUs, fine to ~8 producers);
+    producers, 48 KB per queue at 128 CPUs, fine to ~8 producers);
     (b) per-source-CPU sublists (no producer shares a line: ncpu^2 lines
     = 2 MB per queue at 128 CPUs, ruled out on footprint; FIFO only per
     source, reordering at the swap when a sender migrates); (c) the
@@ -551,6 +551,18 @@ Phases
     contention regression, t_19 profile shows kwq_net/N workers where
     pair_task_N were.  Record in NOTES.md and samples/.
 
+[OPEN 2026-10-07] Fork: a netisr-first path was recommended by FreeBSD
+    network stack developers after a presentation of P0-P4 (small diffs,
+    network stack scope only, improve netisr(9) before arguing for kwq).
+    The trade-offs it WOULD imply are recorded in ../NOTES.md 2026-10-07:
+    what transfers into netisr (probes and time counters, a time-bounded
+    drain with head requeue, writable limits, per-CPU defaults, if_pair
+    onto netisr_queue()), what is lost (per-client queues and counters,
+    client fairness, BULK/BLOCKING and the wg/GELI/iflib conversions,
+    admission that returns the item), and what stays in reserve (the
+    scheduler and simulator, kwq.ko as the measurement platform).  Not
+    decided; P5-P7 below stand until it is.
+
 [TODO] P5  epair as second client (2 days)
     - Out-of-tree patched if_epair.ko: epair_tasks -> one NET queue per
       pair side; unconditional per-CPU (no RSS gate); keep epair's
@@ -609,8 +621,16 @@ Phases
     only after this phase, as a separate plan.
 
 [TODO] P8  Documentation and graduation
-    - kwq(9) and dtrace_kwq(4) man pages; examples/kwq compiled in CI;
-      KWQ.md updated to "as built".
+    - docs/ written 2026-10-01 (partial credit for this phase): docs/
+      overview.md (model, five rules, a tutorial module verified by
+      building and running it in the guest), docs/cheatsheet.md (12
+      patterns with recommendations, warnings and anti-patterns),
+      docs/reference.md (KPI, errors, contexts, sysctl, probes, status),
+      docs/whitepaper.md (rationale, prior art, measurements, rejected
+      alternatives).  Still open below.
+    - kwq(9) and dtrace_kwq(4) man pages; examples/kwq compiled in CI
+      (the tutorial in docs/overview.md S6 is the obvious first
+      example, deferred.c); KWQ.md updated to "as built".
     - Proposal to freebsd-arch: kwq.ko as the reference, the two scheduler
       patches, netisr-on-kwq as the first in-tree conversion.
 
@@ -740,7 +760,8 @@ Risks and decisions to take early
 - One queue per pair side (decided): matches the driver's per-side queues,
   lets clone destroy drain exactly the dying side's items (KWQ.md S4 VNET
   contract), and gives per-pair counters.  Cost is O(ncpu) per queue
-  (~32 KB on 128 CPUs); a host with thousands of pairs pays tens of MB,
+  (48 KB on 128 CPUs, measured 2026-10-01); a host with thousands of
+  pairs pays tens of MB,
   acceptable.  A shared queue would need a purge-by-predicate operation
   the API deliberately lacks.
 - Quantum defaults: measure, do not guess - the sweep of 50/100/200/500

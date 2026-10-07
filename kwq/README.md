@@ -18,6 +18,13 @@ if_pair Makefile in the parent directory.
     GLOSSARY.md   canonical terms (FreeBSD's where they exist), aliases
                   from other systems, and the words deliberately avoided
     PLAN.txt      phased implementation plan with exit criteria
+    docs/         technical documentation for client developers and
+                  reviewers: overview.md (the model, five rules and a
+                  tutorial), cheatsheet.md (patterns, warnings,
+                  anti-patterns), reference.md (every function, flag,
+                  error, sysctl and probe), whitepaper.md (design
+                  rationale, prior art and measurements); start at
+                  docs/README.md.  KWQ.md and SCHED.md stay normative
     kwq/          kwq.ko - the service (kwq.h public KPI, kwq.c,
                   kwq_worker.c; P2 adds kwq_sdt.c, kwq_ddb.c, kwq.d)
     sim/          userspace simulator of the scheduler: links
