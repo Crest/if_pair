@@ -1,0 +1,42 @@
+start 12:47:27 12:47PM  up 9 days, 11:59, 2 users, load averages: 0.08, 0.02, 0.01
+1
+== round 1: kwq (shared list)
+t_17_throughput:     1    32.6        0       0         0
+t_17_throughput:     2    65.7        0       0         0
+t_17_throughput:     4     109        0       0         0
+t_17_throughput:     8     202        0       0         0
+t_17_throughput:    16     358        0       0         0
+t_17_throughput:    32     492        0       0         0
+t_17_throughput:    64     353        0       0         0
+t_17_throughput:   128     339        0       0         0
+== round 1: taskqueue baseline
+t_17_throughput:     1    32.9        0       0      4819
+t_17_throughput:     2    64.2        0       0      9520
+t_17_throughput:     4     115        0       0     18617
+t_17_throughput:     8     228        0       0     38223
+t_17_throughput:    16     365        0       0     76886
+t_17_throughput:    32     498        0       0    139193
+t_17_throughput:    64     357        0       0    213124
+t_17_throughput:   128     340        0       0    205013
+== round 2: kwq (shared list)
+t_17_throughput:     1    36.8        0       0         0
+t_17_throughput:     2    57.1        0       0         0
+t_17_throughput:     4     116        0       0         0
+t_17_throughput:     8     190        0       0         0
+t_17_throughput:    16     369        0       0         0
+t_17_throughput:    32     497        0       0         0
+t_17_throughput:    64     353        0       0         0
+t_17_throughput:   128     338        0       0         0
+== round 2: taskqueue baseline
+t_17_throughput:     1    36.4        0       0      4822
+t_17_throughput:     2    54.8        0       0      6270
+t_17_throughput:     4    99.6        0       0     16947
+t_17_throughput:     8     231        0       0     38349
+t_17_throughput:    16     361        0       0     64967
+t_17_throughput:    32     499        0       0    137635
+t_17_throughput:    64     358        0       0    206400
+t_17_throughput:   128     339        0       0    200225
+all unloaded
+jails left: 0
+end 12:51:05 12:51PM  up 9 days, 12:03, 2 users, load averages: 47.27, 23.94, 10.23
+== t17 done

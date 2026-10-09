@@ -4881,3 +4881,30 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   their jails behind when they skip (unpatched gif), which fails the next
   run_all with "jail already exists": a pre-existing cleanup gap in those
   two tests, unrelated to kwq.  Logs: samples/mix_{guest,a07}_phase{1,2}_*.
+
+2026-10-09: t_17 on a07 with the shared item+notifier list (HEAD
+  a3a9ca4), two rounds of each driver on the same boot, timers=1, pf not
+  loaded (my first check said it was: `grep pf` matched tmpfs.ko; use
+  `kldstat -q -m pf`).  Receiver Gbit/s at 1/2/4/8/16/32/64/128
+  connections:
+    kwq, shared list   32.6/65.7/109/202/358/492/353/339
+                       36.8/57.1/116/190/369/497/353/338
+    taskqueue baseline 32.9/64.2/115/228/365/498/357/340
+                       36.4/54.8/99.6/231/361/499/358/339
+    two-list kwq, recorded (09-30 x2, 10-01):
+                       37.5/60.1/123/226/351/495/357/338
+                       36.6/73.2/109/209/360/495/356/338
+                       36.4/68.4/115/212/330/446/353/337
+  No significant difference: from 16 connections up everything is inside
+  the earlier design's run-to-run spread, the 32-connection peak is back
+  at 492-497 after the single 446/454 dips, and 128 connections sits at
+  337-340 for both designs and the baseline.  Below 8 connections the
+  spread between two rounds of one driver (57 vs 66 at 2) exceeds any
+  difference between drivers or designs.  kwq's ~10 % gap to the
+  baseline at 8 connections (190/202 vs 228/231) existed before the
+  change in the same proportion (209-226 vs 215-240), so it is not the
+  shared list's.  Expected: if_pair enqueues items only, so the change
+  touches its hot path in one bit test per element, measured at under
+  1 ns on 10-08.  a07 up 9 d 11:59 before, 12:03 after; built from a
+  `git archive` of HEAD in ~/if_pair-scratch.  Log:
+  samples/t17_a07_2026-10-09_shared_list_ab.txt.
