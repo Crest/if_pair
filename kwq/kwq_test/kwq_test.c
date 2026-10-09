@@ -89,6 +89,7 @@ static u_int	kt_ifaces = 1;
 static u_int	kt_spread = 1;
 static u_int	kt_prod_ns = 1000;	/* sender's stack work per packet before the enqueue */
 static u_int	kt_cons_ns = 1500;	/* receiver's stack work per packet in the handler */
+static u_int	kt_nnf = 64;		/* mix: notifiers in use (<= 64) */
 
 /* Results. */
 static char	kt_state[16] = "idle";
@@ -104,6 +105,13 @@ static uint64_t	kt_r_enq_slow;		/* enqueues over 2 us */
 static uint64_t	kt_r_enq_pct;		/* share of producer CPU time inside kwq_enqueue */
 static uint64_t	kt_r_cons_pct;		/* share of consumer CPU time in packet work */
 static uint64_t	kt_r_pool_waits;	/* producers found their window empty */
+static uint64_t	kt_r_inversions;	/* mix: notifier/item deliveries out of arrival order */
+static uint64_t	kt_r_exact_errors;	/* mix: notifiers delivered other than exactly once */
+static uint64_t	kt_r_calls;		/* mix: handler invocations */
+static uint64_t	kt_r_requeues;		/* mix: kwq_requeue() calls by the handler */
+static uint64_t	kt_r_patterns;		/* mix: patterns checked */
+static uint64_t	kt_r_with, kt_r_without;	/* mixstarve: items with/without the notifier */
+static uint64_t	kt_r_wcpu;		/* mix: the worker CPU */
 
 /* Per-run state shared with handlers. */
 static struct mtx kt_mtx;
@@ -123,7 +131,8 @@ SYSCTL_NODE(_kern, OID_AUTO, kwq_test, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "kwq test harness");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, scenario, CTLFLAG_RW, kt_scenario,
     sizeof(kt_scenario), "lifecycle fifo notify reject discard sleep | "
-    "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline | ifpair");
+    "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline | ifpair | "
+    "mixorder mixpattern mixbudget mixstarve mixrearm mixcancel mixrequeue mixdrain mixdrain_discard");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, items, CTLFLAG_RW, &kt_items, 0,
     "items per repetition (P0), pool size per flood (P1b)");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, reps, CTLFLAG_RW, &kt_reps, 0,
@@ -159,6 +168,8 @@ SYSCTL_UINT(_kern_kwq_test, OID_AUTO, prod_ns, CTLFLAG_RW, &kt_prod_ns, 0,
     "ifpair scenario: sender-side busy work per packet before the enqueue, ns");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, cons_ns, CTLFLAG_RW, &kt_cons_ns, 0,
     "ifpair scenario: receiver-side busy work per packet in the handler, ns");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, nnf, CTLFLAG_RW, &kt_nnf, 0,
+    "mix: notifiers in use, 1..64");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, qname, CTLFLAG_RW, kt_qname, sizeof(kt_qname),
     "queue name used by the P0 scenarios (invalid names such as a.b or a/b must be refused)");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, result_state, CTLFLAG_RD, kt_state,
@@ -205,6 +216,22 @@ SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_cons_pct, CTLFLAG_RD,
     &kt_r_cons_pct, 0, "ifpair: percent of the worker CPUs' wall time spent in packet work");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_pool_waits, CTLFLAG_RD,
     &kt_r_pool_waits, 0, "ifpair: times a sender found its whole window in flight");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_inversions, CTLFLAG_RD,
+    &kt_r_inversions, 0, "mix: notifier/item deliveries out of arrival order");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_exact_errors, CTLFLAG_RD,
+    &kt_r_exact_errors, 0, "mix: notifiers delivered other than exactly once");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_calls, CTLFLAG_RD,
+    &kt_r_calls, 0, "mix: handler invocations");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_requeues, CTLFLAG_RD,
+    &kt_r_requeues, 0, "mix: kwq_requeue() calls by the handler");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_patterns, CTLFLAG_RD,
+    &kt_r_patterns, 0, "mixpattern: patterns checked");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_with, CTLFLAG_RD,
+    &kt_r_with, 0, "mixstarve: items delivered beside the re-arming notifier");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_without, CTLFLAG_RD,
+    &kt_r_without, 0, "mixstarve: items delivered alone");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_wcpu, CTLFLAG_RD,
+    &kt_r_wcpu, 0, "mix: the worker CPU used");
 
 static void
 kt_fail(const char *fmt, ...)
@@ -1831,6 +1858,821 @@ kt_run_switch_baseline(void)
 
 /* ================================================================ runner */
 
+/* ================================================================ mix */
+
+/*
+ * Notifiers and items on one queue.  Do they interleave in arrival order,
+ * are notifiers budgeted, does a self-re-arming notifier starve the items
+ * (SCHED.md S14 case 4), and do re-arm, cancel, requeue and drain keep
+ * every notifier exactly-once?  Every scenario here runs one queue on one
+ * worker CPU with the producer (this thread) bound to another CPU, and
+ * builds exact lists behind a GATE: an item whose handler spins until
+ * released, so that the next pass swaps out precisely what was built in
+ * the meantime.  The handler reads only the run struct, never a knob
+ * (the 2026-09-29 lesson); a delivery log written by the worker CPU alone
+ * records the order the handler saw.
+ */
+#define	KT_MIX_NNF		64
+#define	KT_MIX_LOG		16384
+#define	KT_MIX_POOL		1024
+#define	KT_MIX_GATE_MAGIC	0x6761746531323334ULL
+
+struct kt_mixlog { u_int kind; u_int idx; };	/* 0 item, 1 notifier, 2 gate */
+
+struct kt_mix {
+	struct kwq	*q;
+	int		wcpu, pcpu;
+	struct kwq_notifier nf[KT_MIX_NNF];
+	struct titem	*items;
+	u_int		nitems;
+	struct titem	gate;
+	/* Behaviour, fixed before the run; the handler never reads a knob. */
+	uint64_t	item_spin, nf_spin;	/* cpu_ticks */
+	u_int		stop_after;	/* elements per call before a requeue; 0 = by budget */
+	bool		coop;		/* honour kwq_budget_left() */
+	/* Control flags the producer flips during a run (not knobs). */
+	volatile int	rearm;		/* nf[0]'s handler re-arms nf[0] */
+	volatile int	gate_hold, in_gate;
+	/* Written by the handler, i.e. by the worker CPU only. */
+	struct kt_mixlog *log __aligned(KT_LINE);
+	u_int		nlog;
+	uint64_t	calls, nf_runs, item_runs, discarded, requeues;
+	uint64_t	level_seen;
+	volatile int	in_nf;		/* nf[0]'s handler is running */
+	sbintime_t	nf_exit;	/* sbinuptime() when it last returned */
+	/* Written by the producer. */
+	volatile uint64_t level __aligned(KT_LINE);
+};
+
+static void
+kt_mix_log(struct kt_mix *m, u_int kind, u_int idx)
+{
+	if (m->nlog < KT_MIX_LOG) {
+		m->log[m->nlog].kind = kind;
+		m->log[m->nlog].idx = idx;
+		m->nlog++;
+	}
+}
+
+static void
+kt_mix_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
+{
+	struct kt_mix *m = ctx;
+	struct kwq_item *it, *next;
+	struct titem *ti;
+	uintptr_t off;
+	uint64_t t0, lim;
+	u_int done = 0, idx;
+	int left = n < 0 ? -n : n;
+
+	m->calls++;
+	for (it = head; it != NULL; it = next) {
+		next = KWQ_ITEM_NEXT(q, it);
+		off = (uintptr_t)it - (uintptr_t)m->nf;
+		if (off < sizeof(m->nf) &&
+		    off % sizeof(struct kwq_notifier) == 0) {
+			idx = off / sizeof(struct kwq_notifier);
+			kt_mix_log(m, 1, idx);
+			if (n < 0) {
+				m->discarded++;
+			} else {
+				m->nf_runs++;
+				if (idx == 0)
+					m->in_nf = 1;
+				if (m->nf_spin != 0)
+					kt_spin_ticks(m->nf_spin);
+				/* Level semantics: read the state, not "one event". */
+				m->level_seen = m->level;
+				if (idx == 0) {
+					if (m->rearm)
+						kwq_notify(q, &m->nf[0]);
+					m->nf_exit = sbinuptime();
+					m->in_nf = 0;
+				}
+			}
+		} else {
+			KWQ_ITEM_INIT(it);
+			ti = __containerof(it, struct titem, ti_item);
+			if (ti->ti_magic == KT_MIX_GATE_MAGIC) {
+				kt_mix_log(m, 2, 0);
+				if (n > 0) {
+					/* Hold this pass until released, 100 ms at most. */
+					t0 = cpu_ticks();
+					lim = kt_ns2ticks(100000000ULL);
+					m->in_gate = 1;
+					while (m->gate_hold && cpu_ticks() - t0 < lim)
+						cpu_spinwait();
+					m->in_gate = 0;
+				}
+			} else {
+				if (ti->ti_magic != TITEM_MAGIC)
+					panic("kwq_test: mix: bad item %p", ti);
+				kt_mix_log(m, 0, (u_int)(ti - m->items));
+				if (n < 0) {
+					m->discarded++;
+				} else {
+					m->item_runs++;
+					if (m->item_spin != 0)
+						kt_spin_ticks(m->item_spin);
+				}
+				atomic_store_rel_int(&ti->ti_seen, 0);	/* back to the pool */
+			}
+		}
+		left--;
+		done++;
+		if (n > 0 && next != NULL &&
+		    (m->stop_after != 0 ? done >= m->stop_after :
+		    (m->coop && kwq_budget_left(q) == 0))) {
+			m->requeues++;
+			kwq_requeue(q, next, NULL, left);
+			return;
+		}
+	}
+}
+
+static struct kt_mix *
+kt_mix_init(uint32_t flags)
+{
+	struct kt_mix *m;
+	u_int i;
+	int pcpu;
+
+	pcpu = kt_cpu >= 0 ? kt_other_cpu(kt_cpu) : (int)mp_maxid;
+	while (CPU_ABSENT(pcpu) && pcpu > 0)
+		pcpu--;
+	thread_lock(curthread);
+	sched_bind(curthread, pcpu);
+	thread_unlock(curthread);
+
+	m = malloc(sizeof(*m), M_KWQ_TEST, M_WAITOK | M_ZERO);
+	m->pcpu = pcpu;
+	m->wcpu = kt_cpu >= 0 ? kt_cpu : kt_other_cpu(pcpu);
+	m->nitems = KT_MIX_POOL;
+	m->items = malloc(sizeof(*m->items) * m->nitems, M_KWQ_TEST,
+	    M_WAITOK | M_ZERO);
+	m->log = malloc(sizeof(*m->log) * KT_MIX_LOG, M_KWQ_TEST,
+	    M_WAITOK | M_ZERO);
+	m->item_spin = kt_ns2ticks((uint64_t)kt_cost_us * 1000);
+	m->nf_spin = kt_ns2ticks((uint64_t)kt_cost_a * 1000);
+	m->coop = true;
+	m->gate.ti_magic = KT_MIX_GATE_MAGIC;
+	m->q = kt_create(kt_qname, flags, 1, kt_mix_handler, m);
+	if (m->q == NULL) {
+		kt_fail("kwq_create failed");
+		free(m->log, M_KWQ_TEST);
+		free(m->items, M_KWQ_TEST);
+		free(m, M_KWQ_TEST);
+		return (NULL);
+	}
+	for (i = 0; i < KT_MIX_NNF; i++)
+		kwq_notifier_init(&m->nf[i], m->wcpu);
+	kwq_activate(m->q);
+	return (m);
+}
+
+static void
+kt_mix_fini(struct kt_mix *m)
+{
+	m->rearm = 0;
+	m->gate_hold = 0;
+	kwq_drain(m->q);
+	kwq_destroy(m->q);
+	free(m->log, M_KWQ_TEST);
+	free(m->items, M_KWQ_TEST);
+	free(m, M_KWQ_TEST);
+}
+
+/*
+ * Wait for a flag the handler flips, polling well under a tick: a handler
+ * run of a few ms is shorter than one pause(9) at hz=100, so pause(1)
+ * missed it every time in the guest.  Returns false after about a second.
+ */
+static bool
+kt_mix_wait_flag(volatile int *flag, int want)
+{
+	sbintime_t end = sbinuptime() + SBT_1S;
+
+	while (*flag != want) {
+		if (sbinuptime() > end)
+			return (false);
+		pause_sbt("kwqflg", 50 * SBT_1US, 0, C_PREL(1));
+	}
+	return (true);
+}
+
+/* Wait until the log holds `want' entries; false after about a second. */
+static bool
+kt_mix_wait_log(struct kt_mix *m, u_int want)
+{
+	int i;
+
+	for (i = 0; i < 1000 && m->nlog < want; i++)
+		pause("kwqmix", 1);
+	return (m->nlog >= want);
+}
+
+/* Open the gate: a pass is now spinning on it with the list behind it empty. */
+static bool
+kt_mix_gate_open(struct kt_mix *m)
+{
+	m->gate_hold = 1;
+	m->in_gate = 0;
+	KWQ_ITEM_INIT(&m->gate.ti_item);
+	if (kwq_enqueue(m->q, m->wcpu, &m->gate.ti_item) != 0) {
+		kt_fail("gate enqueue failed");
+		return (false);
+	}
+	if (!kt_mix_wait_flag(&m->in_gate, 1)) {
+		kt_fail("gate never reached");
+		m->gate_hold = 0;
+		return (false);
+	}
+	return (true);
+}
+
+static int
+kt_mix_enq(struct kt_mix *m, u_int i)
+{
+	struct titem *ti = &m->items[i];
+
+	ti->ti_magic = TITEM_MAGIC;
+	ti->ti_seq = i;
+	atomic_store_rel_int(&ti->ti_seen, 1);
+	KWQ_ITEM_INIT(&ti->ti_item);
+	return (kwq_enqueue(m->q, m->wcpu, &ti->ti_item));
+}
+
+/*
+ * Compare the delivery log from `from' with an arrival list.  Counts, for
+ * every notifier delivered, the items that arrived before it but were
+ * delivered after it and the items that arrived after it but were
+ * delivered before it; and the notifiers delivered other than exactly
+ * once.  Item-vs-item order is FIFO in every design and checked by the
+ * fifo scenario, so only pairs involving a notifier are counted.
+ */
+static void
+kt_mix_check(struct kt_mix *m, u_int from, const struct kt_mixlog *arr,
+    u_int narr, uint64_t *inversions, uint64_t *exact_errors)
+{
+	u_int a, d, seen, apos_nf, dpos_nf, apos_it, dpos_it;
+
+	for (a = 0; a < narr; a++) {
+		if (arr[a].kind != 1)
+			continue;
+		apos_nf = a;
+		seen = 0;
+		dpos_nf = 0;
+		for (d = from; d < m->nlog; d++)
+			if (m->log[d].kind == 1 && m->log[d].idx == arr[a].idx) {
+				seen++;
+				dpos_nf = d;
+			}
+		if (seen != 1) {
+			(*exact_errors)++;
+			continue;
+		}
+		for (apos_it = 0; apos_it < narr; apos_it++) {
+			if (arr[apos_it].kind != 0)
+				continue;
+			for (dpos_it = from; dpos_it < m->nlog; dpos_it++)
+				if (m->log[dpos_it].kind == 0 &&
+				    m->log[dpos_it].idx == arr[apos_it].idx)
+					break;
+			if (dpos_it >= m->nlog)
+				continue;	/* not delivered: counted elsewhere */
+			if ((apos_it < apos_nf && dpos_it > dpos_nf) ||
+			    (apos_it > apos_nf && dpos_it < dpos_nf))
+				(*inversions)++;
+		}
+	}
+}
+
+/*
+ * mixorder: K items, one signal, K items, built behind the gate; the
+ * signal must be delivered between the two halves.
+ */
+static void
+kt_run_mixorder(void)
+{
+	struct kt_mix *m;
+	struct kt_mixlog *arr;
+	u_int rep, i, k, narr, from;
+
+	k = kt_items;
+	if (k == 0 || 2 * k + 8 > KT_MIX_POOL) {
+		kt_fail("items must be 1..%u", (KT_MIX_POOL - 8) / 2);
+		return;
+	}
+	if ((m = kt_mix_init(0)) == NULL)
+		return;
+	arr = malloc(sizeof(*arr) * (2 * k + 1), M_KWQ_TEST, M_WAITOK);
+	for (rep = 0; rep < kt_reps; rep++) {
+		from = m->nlog;
+		if (!kt_mix_gate_open(m))
+			break;
+		from++;		/* the gate entry itself */
+		narr = 0;
+		for (i = 0; i < k; i++) {
+			if (kt_mix_enq(m, i) == 0) {
+				arr[narr].kind = 0; arr[narr++].idx = i;
+			} else
+				kt_r_rejected++;	/* a tiny limit: refused, not an error */
+		}
+		kt_r_in += k;
+		if (kwq_notify(m->q, &m->nf[0])) {
+			arr[narr].kind = 1; arr[narr++].idx = 0;
+		} else
+			kt_r_coalesced++;
+		kt_r_in++;
+		for (i = k; i < 2 * k; i++) {
+			if (kt_mix_enq(m, i) == 0) {
+				arr[narr].kind = 0; arr[narr++].idx = i;
+			} else
+				kt_r_rejected++;
+		}
+		kt_r_in += k;
+		m->gate_hold = 0;
+		if (!kt_mix_wait_log(m, from + narr)) {
+			kt_fail("rep %u: %u of %u delivered", rep, m->nlog - from, narr);
+			break;
+		}
+		kt_mix_check(m, from, arr, narr, &kt_r_inversions, &kt_r_exact_errors);
+		if (m->nlog > KT_MIX_LOG - 2 * k - 8)
+			m->nlog = 0;	/* log full: start over, reps are independent */
+	}
+	free(arr, M_KWQ_TEST);
+	kt_r_out = m->item_runs;
+	kt_r_runs = m->nf_runs;
+	kt_r_calls = m->calls;
+	kt_r_wcpu = m->wcpu;
+	kt_mix_fini(m);
+}
+
+/*
+ * mixpattern: every pattern of length 1..4 over {item, N0, N1}, built
+ * behind the gate and checked for arrival order and exactly-once.  A
+ * notifier signalled twice in one pattern coalesces, so the arrival list
+ * holds it once.  Patterns ending in a notifier are the tail-tag case.
+ */
+static void
+kt_run_mixpattern(void)
+{
+	struct kt_mix *m;
+	struct kt_mixlog arr[4];
+	u_int len, code, pos, sym, narr, from, nit, c;
+
+	if ((m = kt_mix_init(0)) == NULL)
+		return;
+	for (len = 1; len <= 4 && kt_state[0] != 'f'; len++) {
+		for (code = 0; code < (1u << (2 * len)) && kt_state[0] != 'f'; code++) {
+			/* 2 bits per position: 0 item, 1 N0, 2 N1, 3 skip */
+			for (pos = 0, c = code; pos < len; pos++, c >>= 2)
+				if ((c & 3) == 3)
+					break;
+			if (pos < len)
+				continue;
+			from = m->nlog;
+			if (!kt_mix_gate_open(m))
+				break;
+			from++;
+			narr = nit = 0;
+			for (pos = 0, c = code; pos < len; pos++, c >>= 2) {
+				sym = c & 3;
+				if (sym == 0) {
+					if (kt_mix_enq(m, nit) == 0) {
+						arr[narr].kind = 0; arr[narr++].idx = nit;
+					} else
+						kt_r_rejected++;
+					nit++;
+				} else {
+					if (kwq_notify(m->q, &m->nf[sym - 1])) {
+						arr[narr].kind = 1; arr[narr++].idx = sym - 1;
+					} else
+						kt_r_coalesced++;
+				}
+				kt_r_in++;
+			}
+			m->gate_hold = 0;
+			if (!kt_mix_wait_log(m, from + narr)) {
+				kt_fail("pattern %u/%u: %u of %u delivered", len, code,
+				    m->nlog - from, narr);
+				break;
+			}
+			kt_mix_check(m, from, arr, narr, &kt_r_inversions, &kt_r_exact_errors);
+			kt_r_patterns++;
+			if (m->nlog > KT_MIX_LOG - 16)
+				m->nlog = 0;
+		}
+	}
+	kt_r_out = m->item_runs;
+	kt_r_runs = m->nf_runs;
+	kt_r_calls = m->calls;
+	kt_r_wcpu = m->wcpu;
+	kt_mix_fini(m);
+}
+
+/*
+ * mixbudget: `nnf' notifiers of cost_a us each and K items, built behind
+ * the gate.  A budget-honouring handler must spread them over passes;
+ * the ATF case reads overruns, parks and requeued on wcpu before and after.
+ */
+static void
+kt_run_mixbudget(void)
+{
+	struct kt_mix *m;
+	u_int rep, i, nnf, from, want;
+
+	nnf = kt_nnf;
+	if (nnf == 0 || nnf > KT_MIX_NNF || kt_items + 8 > KT_MIX_POOL) {
+		kt_fail("nnf 1..%u, items <= %u", KT_MIX_NNF, KT_MIX_POOL - 8);
+		return;
+	}
+	if ((m = kt_mix_init(0)) == NULL)
+		return;
+	for (rep = 0; rep < kt_reps; rep++) {
+		from = m->nlog;
+		if (!kt_mix_gate_open(m))
+			break;
+		from++;
+		want = 0;
+		for (i = 0; i < nnf; i++) {
+			if (kwq_notify(m->q, &m->nf[i]))
+				want++;
+			kt_r_in++;
+		}
+		for (i = 0; i < kt_items; i++) {
+			if (kt_mix_enq(m, i) == 0)
+				want++;
+			else
+				kt_r_rejected++;
+			kt_r_in++;
+		}
+		m->gate_hold = 0;
+		if (!kt_mix_wait_log(m, from + want)) {
+			kt_fail("rep %u: %u of %u delivered", rep, m->nlog - from, want);
+			break;
+		}
+		if (m->nlog > KT_MIX_LOG - nnf - kt_items - 8)
+			m->nlog = 0;
+	}
+	kt_r_out = m->item_runs;
+	kt_r_runs = m->nf_runs;
+	kt_r_calls = m->calls;
+	kt_r_requeues = m->requeues;
+	kt_r_wcpu = m->wcpu;
+	kt_mix_fini(m);
+}
+
+/*
+ * mixstarve (SCHED.md S14 case 4): a flood of cost_us items from this CPU
+ * for `secs', once alone and once beside a notifier of cost_a us that
+ * re-arms itself in its own handler.  Reports items delivered in each
+ * phase.
+ */
+static uint64_t
+kt_mix_flood(struct kt_mix *m, u_int secs)
+{
+	struct titem *ti;
+	sbintime_t end;
+	uint64_t before, spins = 0;
+	u_int i = 0;
+
+	before = m->item_runs;
+	end = sbinuptime() + (sbintime_t)secs * SBT_1S;
+	while (sbinuptime() < end) {
+		ti = &m->items[i];
+		if (atomic_load_acq_int(&ti->ti_seen) == 0) {
+			if (kt_mix_enq(m, i) != 0) {
+				atomic_store_rel_int(&ti->ti_seen, 0);
+				kt_r_rejected++;
+			} else
+				kt_r_in++;
+		} else if (++spins % 64 == 0)
+			cpu_spinwait();
+		i = (i + 1) % m->nitems;
+	}
+	/* Let the backlog drain so the phases do not overlap. */
+	for (i = 0; i < 2000; i++) {
+		for (spins = 0; spins < m->nitems; spins++)
+			if (atomic_load_acq_int(&m->items[spins].ti_seen) != 0)
+				break;
+		if (spins == m->nitems)
+			break;
+		pause("kwqstv", 1);
+	}
+	return (m->item_runs - before);
+}
+
+static void
+kt_run_mixstarve(void)
+{
+	struct kt_mix *m;
+
+	if ((m = kt_mix_init(0)) == NULL)
+		return;
+	kt_r_without = kt_mix_flood(m, kt_secs);
+	m->rearm = 1;
+	if (!kwq_notify(m->q, &m->nf[0])) {
+		kt_fail("first signal refused");
+		kt_mix_fini(m);
+		return;
+	}
+	kt_r_with = kt_mix_flood(m, kt_secs);
+	m->rearm = 0;
+	(void)kt_mix_wait_flag(&m->in_nf, 0);
+	kt_r_out = m->item_runs;
+	kt_r_runs = m->nf_runs;
+	kt_r_calls = m->calls;
+	kt_r_wcpu = m->wcpu;
+	kt_mix_fini(m);
+}
+
+/*
+ * mixrearm: a signal that lands while the notifier's handler is running
+ * must produce exactly one further run, which sees the final level.
+ */
+static void
+kt_run_mixrearm(void)
+{
+	struct kt_mix *m;
+	uint64_t runs0;
+	u_int rep, s;
+	int i;
+
+	if ((m = kt_mix_init(0)) == NULL)
+		return;
+	if (m->nf_spin == 0)
+		m->nf_spin = kt_ns2ticks(2000000);	/* 2 ms so the race is reachable */
+	for (rep = 0; rep < kt_reps; rep++) {
+		runs0 = m->nf_runs;
+		m->level++;
+		if (!kwq_notify(m->q, &m->nf[0])) {
+			kt_fail("rep %u: signal on an idle notifier refused", rep);
+			break;
+		}
+		kt_r_in++;
+		if (!kt_mix_wait_flag(&m->in_nf, 1)) {
+			kt_fail("rep %u: handler did not start", rep);
+			break;
+		}
+		for (s = 0; s < (kt_batch ? kt_batch : 1); s++) {
+			m->level++;
+			if (!kwq_notify(m->q, &m->nf[0]))
+				kt_r_coalesced++;
+			kt_r_in++;
+		}
+		for (i = 0; i < 1000 && m->nf_runs < runs0 + 2; i++)
+			pause("kwqrea", 1);
+		(void)kt_mix_wait_flag(&m->in_nf, 0);
+		if (m->nf_runs != runs0 + 2) {
+			kt_fail("rep %u: %ju runs, expected exactly 2", rep,
+			    (uintmax_t)(m->nf_runs - runs0));
+			break;
+		}
+		if (m->level_seen != m->level) {
+			kt_fail("rep %u: final level %ju not observed (saw %ju)", rep,
+			    (uintmax_t)m->level, (uintmax_t)m->level_seen);
+			break;
+		}
+	}
+	kt_r_runs = m->nf_runs;
+	kt_r_calls = m->calls;
+	kt_r_wcpu = m->wcpu;
+	kt_mix_fini(m);
+}
+
+/*
+ * mixcancel: (a) cancel while the handler runs returns only after it has
+ * returned, the cancelled notifier refuses signals, and re-init revives
+ * it; (b) a kthread signals nf[1] flat out while this thread cancels and
+ * re-inits it for `secs'.
+ */
+static volatile int kt_mix_hammer_stop;
+static uint64_t kt_mix_hammer_signals;
+static sbintime_t kt_mix_hammer_end;
+
+/*
+ * A signaller with about a microsecond of work between signals, which is
+ * the least any real producer does.  Without that work the loop takes
+ * and drops the per-CPU mutex back to back and, FreeBSD mutexes being
+ * unfair, starves both the worker and the canceller on it indefinitely
+ * (seen in the guest 2026-10-08: the canceller slept in
+ * kwq_notify_cancel's mtx_lock for minutes).  The thread also has a
+ * deadline of its own, so a stuck producer cannot leave it spinning.
+ */
+static void
+kt_mix_hammer(void *arg)
+{
+	struct kt_mix *m = arg;
+	uint64_t spin = kt_ns2ticks(1000);
+
+	while (!kt_mix_hammer_stop && sbinuptime() < kt_mix_hammer_end) {
+		kwq_notify(m->q, &m->nf[1]);
+		kt_mix_hammer_signals++;
+		kt_spin_ticks(spin);
+	}
+	kthread_exit();
+}
+
+static void
+kt_run_mixcancel(void)
+{
+	struct kt_mix *m;
+	struct thread *td;
+	sbintime_t t1;
+	uint64_t runs0, cancels = 0;
+	u_int rep;
+	int i;
+
+	if ((m = kt_mix_init(0)) == NULL)
+		return;
+	if (m->nf_spin == 0)
+		m->nf_spin = kt_ns2ticks(2000000);
+	for (rep = 0; rep < kt_reps; rep++) {
+		runs0 = m->nf_runs;
+		if (!kwq_notify(m->q, &m->nf[0])) {
+			kt_fail("rep %u: signal refused", rep);
+			break;
+		}
+		if (!kt_mix_wait_flag(&m->in_nf, 1)) {
+			kt_fail("rep %u: handler did not start", rep);
+			break;
+		}
+		kwq_notify_cancel(m->q, &m->nf[0]);
+		t1 = sbinuptime();
+		cancels++;
+		if (m->in_nf || t1 < m->nf_exit) {
+			kt_fail("rep %u: cancel returned before the handler", rep);
+			break;
+		}
+		if (kwq_notify(m->q, &m->nf[0])) {
+			kt_fail("rep %u: cancelled notifier accepted a signal", rep);
+			break;
+		}
+		kwq_notifier_init(&m->nf[0], m->wcpu);
+		if (!kwq_notify(m->q, &m->nf[0])) {
+			kt_fail("rep %u: re-initialised notifier refused", rep);
+			break;
+		}
+		for (i = 0; i < 1000 && m->nf_runs < runs0 + 2; i++)
+			pause("kwqcan", 1);
+		(void)kt_mix_wait_flag(&m->in_nf, 0);
+		if (m->nf_runs != runs0 + 2) {
+			kt_fail("rep %u: %ju runs, expected 2", rep,
+			    (uintmax_t)(m->nf_runs - runs0));
+			break;
+		}
+	}
+	if (kt_state[0] != 'f' && kt_secs > 0) {
+		m->nf_spin = 0;
+		kt_mix_hammer_stop = 0;
+		kt_mix_hammer_signals = 0;
+		kt_mix_hammer_end = sbinuptime() + (sbintime_t)(kt_secs + 2) * SBT_1S;
+		if (kthread_add(kt_mix_hammer, m, NULL, &td, 0, 0, "kwq_test_hammer") != 0) {
+			kt_fail("kthread_add");
+		} else {
+			sbintime_t end = sbinuptime() + (sbintime_t)kt_secs * SBT_1S;
+
+			while (sbinuptime() < end) {
+				kwq_notify_cancel(m->q, &m->nf[1]);
+				kwq_notifier_init(&m->nf[1], m->wcpu);
+				cancels++;
+			}
+			kt_mix_hammer_stop = 1;
+			pause("kwqham", hz / 10);
+			kwq_notify_cancel(m->q, &m->nf[1]);
+			kwq_notifier_init(&m->nf[1], m->wcpu);
+			runs0 = m->nf_runs;
+			if (!kwq_notify(m->q, &m->nf[1]))
+				kt_fail("nf[1] refused after the hammer");
+			for (i = 0; i < 1000 && m->nf_runs < runs0 + 1; i++)
+				pause("kwqham", 1);
+			if (m->nf_runs != runs0 + 1)
+				kt_fail("nf[1]: %ju runs after the hammer, expected 1",
+				    (uintmax_t)(m->nf_runs - runs0));
+		}
+	}
+	kt_r_in = cancels;
+	kt_r_coalesced = kt_mix_hammer_signals;
+	kt_r_runs = m->nf_runs;
+	kt_r_calls = m->calls;
+	kt_r_wcpu = m->wcpu;
+	kt_mix_fini(m);
+}
+
+/*
+ * mixrequeue: K items with a notifier after every third, built behind the
+ * gate, delivered by a handler that requeues after `batch' elements: a
+ * remainder that contains notifiers must still deliver each exactly once
+ * and in arrival order.
+ */
+static void
+kt_run_mixrequeue(void)
+{
+	struct kt_mix *m;
+	struct kt_mixlog *arr;
+	u_int rep, i, k, nf, narr, from;
+
+	k = kt_items;
+	if (k == 0 || k + 8 > KT_MIX_POOL) {
+		kt_fail("items 1..%u", KT_MIX_POOL - 8);
+		return;
+	}
+	if ((m = kt_mix_init(0)) == NULL)
+		return;
+	m->stop_after = kt_batch;
+	arr = malloc(sizeof(*arr) * (k + KT_MIX_NNF), M_KWQ_TEST, M_WAITOK);
+	for (rep = 0; rep < kt_reps; rep++) {
+		from = m->nlog;
+		if (!kt_mix_gate_open(m))
+			break;
+		from++;
+		narr = nf = 0;
+		for (i = 0; i < k; i++) {
+			if (kt_mix_enq(m, i) == 0) {
+				arr[narr].kind = 0; arr[narr++].idx = i;
+			} else
+				kt_r_rejected++;
+			kt_r_in++;
+			if (i % 3 == 2 && nf < KT_MIX_NNF) {
+				if (kwq_notify(m->q, &m->nf[nf])) {
+					arr[narr].kind = 1; arr[narr++].idx = nf;
+				}
+				nf++;
+				kt_r_in++;
+			}
+		}
+		m->gate_hold = 0;
+		if (!kt_mix_wait_log(m, from + narr)) {
+			kt_fail("rep %u: %u of %u delivered", rep, m->nlog - from, narr);
+			break;
+		}
+		kt_mix_check(m, from, arr, narr, &kt_r_inversions, &kt_r_exact_errors);
+		if (m->nlog > KT_MIX_LOG - k - KT_MIX_NNF - 8)
+			m->nlog = 0;
+	}
+	free(arr, M_KWQ_TEST);
+	kt_r_out = m->item_runs;
+	kt_r_runs = m->nf_runs;
+	kt_r_calls = m->calls;
+	kt_r_requeues = m->requeues;
+	kt_r_wcpu = m->wcpu;
+	kt_mix_fini(m);
+}
+
+/*
+ * mixdrain: pending notifiers among items when the queue is drained, run
+ * or discarded; afterwards every notifier is idle and a signal is refused.
+ * Four shapes per rep: [N0 I N1 I I N2], [N0], [I N0], [N0 N1 N2].
+ */
+static void
+kt_run_mixdrain(uint32_t flags)
+{
+	static const char *shapes[] = { "NININ", "N", "IN", "NNN" };
+	struct kt_mix *m;
+	u_int rep, s, i, nf, nit;
+	const char *p;
+
+	for (rep = 0; rep < kt_reps && kt_state[0] != 'f'; rep++) {
+		for (s = 0; s < nitems(shapes) && kt_state[0] != 'f'; s++) {
+			if ((m = kt_mix_init(flags)) == NULL)
+				return;
+			if (!kt_mix_gate_open(m)) {
+				kt_mix_fini(m);
+				return;
+			}
+			nf = nit = 0;
+			for (p = shapes[s]; *p != '\0'; p++) {
+				if (*p == 'I') {
+					if (kt_mix_enq(m, nit++) != 0)
+						kt_r_rejected++;
+				} else if (kwq_notify(m->q, &m->nf[nf++]))
+					;
+				kt_r_in++;
+			}
+			m->gate_hold = 0;
+			kwq_drain(m->q);
+			for (i = 0; i < nf; i++)
+				if ((m->nf[i].kn_state & 3) != 0) {	/* low bits: KWQ_NF_IDLE */
+					kt_fail("rep %u shape %s: nf[%u] state %u after drain",
+					    rep, shapes[s], i, m->nf[i].kn_state);
+					kt_r_exact_errors++;
+				}
+			if (kwq_notify(m->q, &m->nf[0]))
+				kt_fail("signal accepted after drain");
+			kt_r_out += m->item_runs;
+			kt_r_discarded += m->discarded;
+			kt_r_runs += m->nf_runs;
+			kt_r_calls += m->calls;
+			kt_r_wcpu = m->wcpu;
+			kwq_destroy(m->q);
+			free(m->log, M_KWQ_TEST);
+			free(m->items, M_KWQ_TEST);
+			free(m, M_KWQ_TEST);
+		}
+	}
+}
+
 static void
 kt_thread(void *arg __unused)
 {
@@ -1845,6 +2687,8 @@ kt_thread(void *arg __unused)
 	kt_r_cycles_a = kt_r_cycles_b = kt_r_maxlat_a_us = kt_r_maxlat_b_us = 0;
 	kt_r_ns_per_item = kt_r_prod_ns_per_item = kt_r_glitches = kt_r_dups = 0;
 	kt_r_enq_slow = kt_r_enq_pct = kt_r_cons_pct = kt_r_pool_waits = 0;
+	kt_r_inversions = kt_r_exact_errors = kt_r_calls = kt_r_requeues = 0;
+	kt_r_patterns = kt_r_with = kt_r_without = kt_r_wcpu = 0;
 	kt_msg[0] = '\0';
 
 	if (strcmp(kt_scenario, "lifecycle") == 0 ||
@@ -1876,6 +2720,24 @@ kt_thread(void *arg __unused)
 		kt_run_fanin();
 	else if (strcmp(kt_scenario, "ifpair") == 0)
 		kt_run_ifpair();
+	else if (strcmp(kt_scenario, "mixorder") == 0)
+		kt_run_mixorder();
+	else if (strcmp(kt_scenario, "mixpattern") == 0)
+		kt_run_mixpattern();
+	else if (strcmp(kt_scenario, "mixbudget") == 0)
+		kt_run_mixbudget();
+	else if (strcmp(kt_scenario, "mixstarve") == 0)
+		kt_run_mixstarve();
+	else if (strcmp(kt_scenario, "mixrearm") == 0)
+		kt_run_mixrearm();
+	else if (strcmp(kt_scenario, "mixcancel") == 0)
+		kt_run_mixcancel();
+	else if (strcmp(kt_scenario, "mixrequeue") == 0)
+		kt_run_mixrequeue();
+	else if (strcmp(kt_scenario, "mixdrain") == 0)
+		kt_run_mixdrain(0);
+	else if (strcmp(kt_scenario, "mixdrain_discard") == 0)
+		kt_run_mixdrain(KWQ_F_DISCARD);
 	else if (strcmp(kt_scenario, "cost") == 0)
 		kt_run_cost();
 	else if (strcmp(kt_scenario, "tq_baseline") == 0)

@@ -273,6 +273,8 @@ case where this grows (SCHED.md S15.7).  `fbt::kwq_enqueue:entry` with
 
     scenario   lifecycle fifo notify reject discard sleep fairness latency gaming
                overrun yield cost scale fanin tq_baseline switch_baseline ifpair
+               mixorder mixpattern mixbudget mixstarve mixrearm mixcancel
+               mixrequeue mixdrain mixdrain_discard
     items reps cost_us limit cpu allow_panic secs     (P0 knobs)
     weight_a weight_b cost_a cost_b                    (fairness and overrun)
     batch      items per kwq_enqueue_list() in the flood producers (1 = kwq_enqueue)
@@ -283,6 +285,7 @@ case where this grows (SCHED.md S15.7).  `fbt::kwq_enqueue:entry` with
                ifpair: interfaces (one queue each), worker CPUs each interface's
                flows are hashed over, busy work per packet on the sending and
                the receiving side (ns); items is each sender's window
+    nnf        mix: notifiers in use (1..64)
     run        write 1 to start; result_state, result_msg, result_* hold the outcome
 
 `ifpair` is the shape of if_pair on kwq: worker CPUs 1 .. ifaces x spread,
@@ -304,6 +307,32 @@ the previous one.
         kern.kwq_test.limit=1000000 kern.kwq_test.secs=5 kern.kwq_test.run=1
     sysctl kern.kwq_test.result_state kern.kwq_test.result_msg
 
+The `mix*` scenarios (2026-10-08) put notifiers and items on one queue and
+check how they interact.  All run one queue on one worker CPU (`cpu`, or
+the CPU after the producer's) with the producer bound to another CPU,
+and most build an exact list behind a *gate*, an item whose handler
+spins until released, so the next pass swaps out precisely what was
+built.  A delivery log written by the worker CPU records the order the
+handler saw; `result_inversions` counts items delivered on the wrong
+side of a notifier relative to arrival order, `result_exact_errors`
+notifiers delivered other than once, `result_calls` handler
+invocations, `result_requeues` the handler's `kwq_requeue()` calls,
+`result_wcpu` the worker CPU.  `mixorder`: `items` items, one signal,
+`items` items.  `mixpattern`: every pattern of length 1..4 over
+{item, N0, N1}, 120 of them, including tail and head notifiers and
+repeated signals (which coalesce).  `mixbudget`: `nnf` notifiers of
+`cost_a` us each plus `items` items behind one doorbell; the handler
+honours the budget.  `mixstarve` (SCHED.md S14 case 4): a flood of
+`cost_us` items for `secs`, alone (`result_without`) and beside a
+notifier of `cost_a` us that re-arms itself (`result_with`).
+`mixrearm`: `batch` signals landing while the notifier's handler runs
+must give exactly one further run that sees the final level.
+`mixcancel`: cancel during a run, refusal afterwards, revival by
+re-init, then a signal/cancel hammer for `secs`.  `mixrequeue`: a
+notifier after every third item with a handler that requeues after
+`batch` elements.  `mixdrain` and `mixdrain_discard`: pending notifiers
+among items at drain time, every notifier idle afterwards.
+
 `tests/run_p1b.sh` runs the scenarios with their standard knobs and
 prints the results and the relevant counters.  It reaches the machine
 through `KWQ_SSH` (default: the bhyve guest via `tests/kwqvm.sh ssh`)
@@ -320,11 +349,12 @@ kwq source tree after an in-tree build:
     FANIN=8 PROD_NS=500 CONS_NS=500 LOCKSTAT=1 tests/run_p1b.sh ifpair
 
 `tests/kwq_test.sh` is the ATF test program and `tests/Kyuafile` its
-suite: fourteen cases that load the two modules, run a scenario and
+suite: twenty-two cases that load the two modules, run a scenario and
 assert the property it proves (per-CPU FIFO and exactly-once delivery,
 rejects and discards, notifier coalescing, name validation, fairness
 within 10 %, the light queue's latency bound, the grace rule, overrun
-parking, tick yields, and two flow smoke tests).  It needs root and at
+parking, tick yields, two flow smoke tests, and the eight `mix` cases on
+notifiers among items).  It needs root and at
 least 4 CPUs and skips otherwise; each case unloads what it loaded.
 Run it as root on the test machine, pointing `moddir` at a flat module
 directory or the source tree, or leave it unset to load installed

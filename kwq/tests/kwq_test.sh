@@ -334,6 +334,141 @@ ifpair_body() {
 }
 ifpair_cleanup() { kwq_cleanup; }
 
+# ---- notifiers and items on one queue (the "mix" scenarios) ----------
+# The assertions state the wanted behaviour: arrival-order delivery of
+# notifiers among items, notifiers under the budget, no starvation of the
+# item list by a re-arming notifier.  Where the implementation does not
+# yet provide it the case fails, which is the point.
+
+atf_test_case mixorder cleanup
+mixorder_head() {
+	atf_set descr "a notifier signalled between two groups of items is delivered between them (arrival order, not notifiers-first)"
+	atf_set require.user root
+}
+mixorder_body() {
+	kwq_setup
+	kwq_run mixorder items=50 reps=20
+	kwq_done mixorder
+	echo "inversions=$(R inversions) exact_errors=$(R exact_errors) calls=$(R calls) runs=$(R runs)"
+	atf_check_equal "$(R exact_errors)" 0
+	[ "$(R runs)" -eq 20 ] || atf_fail "notifier ran $(R runs) times for 20 signals"
+	[ "$(R inversions)" -eq 0 ] || atf_fail "$(R inversions) items delivered on the wrong side of the notifier"
+}
+mixorder_cleanup() { kwq_cleanup; }
+
+atf_test_case mixpattern cleanup
+mixpattern_head() {
+	atf_set descr "every pattern of up to four items and two notifiers is delivered in arrival order, each notifier exactly once (tail and head notifiers included)"
+	atf_set require.user root
+}
+mixpattern_body() {
+	kwq_setup
+	kwq_run mixpattern
+	kwq_done mixpattern
+	echo "patterns=$(R patterns) inversions=$(R inversions) exact_errors=$(R exact_errors)"
+	atf_check_equal "$(R patterns)" 120
+	atf_check_equal "$(R exact_errors)" 0
+	[ "$(R inversions)" -eq 0 ] || atf_fail "$(R inversions) out-of-order deliveries over 120 patterns"
+}
+mixpattern_cleanup() { kwq_cleanup; }
+
+atf_test_case mixbudget cleanup
+mixbudget_head() {
+	atf_set descr "64 notifiers of 50 us each behind one doorbell are spread over passes by the budget: no overrun, a requeue; not all run in one pass"
+	atf_set require.user root
+}
+mixbudget_body() {
+	kwq_setup
+	kwq_run mixbudget nnf=64 cost_a=50 items=16 reps=10 cpu=1
+	kwq_done mixbudget
+	echo "calls=$(R calls) runs=$(R runs) requeues=$(R requeues) wcpu=$(R wcpu)"
+	[ "$(R runs)" -eq 640 ] || atf_fail "$(R runs) notifier runs for 640 signals"
+	[ "$(R requeues)" -gt 0 ] || atf_fail "64 x 50 us against a 200 us quantum and the handler never requeued: notifiers are not budgeted"
+}
+mixbudget_cleanup() { kwq_cleanup; }
+
+atf_test_case mixstarve cleanup
+mixstarve_head() {
+	atf_set descr "a notifier of one quantum that re-arms itself does not starve the item flood on the same queue (SCHED.md S14 case 4): items keep at least a tenth of their solo rate"
+	atf_set require.user root
+	atf_set timeout 120
+}
+mixstarve_body() {
+	kwq_setup
+	kwq_run mixstarve secs=2 cost_us=1 cost_a=200
+	kwq_done mixstarve
+	echo "without=$(R without) with=$(R with) runs=$(R runs) calls=$(R calls)"
+	[ "$(R without)" -gt 1000 ] || atf_fail "flood alone delivered only $(R without) items"
+	[ $(( $(R with) * 10 )) -ge "$(R without)" ] || \
+	    atf_fail "items fell to $(R with) of $(R without) beside the re-arming notifier"
+}
+mixstarve_cleanup() { kwq_cleanup; }
+
+atf_test_case mixrearm cleanup
+mixrearm_head() {
+	atf_set descr "signals landing while the notifier's handler runs yield exactly one further run that sees the final level (no lost wakeup, no duplicate)"
+	atf_set require.user root
+}
+mixrearm_body() {
+	kwq_setup
+	kwq_run mixrearm reps=20 cost_a=2000 batch=3
+	kwq_done mixrearm
+	echo "runs=$(R runs) coalesced=$(R coalesced) in=$(R in)"
+	atf_check_equal "$(R runs)" 40
+}
+mixrearm_cleanup() { kwq_cleanup; }
+
+atf_test_case mixcancel cleanup
+mixcancel_head() {
+	atf_set descr "cancel during a run returns after the handler, the cancelled notifier refuses signals, re-init revives it; and a signal/cancel hammer for 2 s leaves it working"
+	atf_set require.user root
+	atf_set timeout 120
+}
+mixcancel_body() {
+	kwq_setup
+	kwq_run mixcancel reps=10 cost_a=2000 secs=2
+	kwq_done mixcancel
+	echo "cancels=$(R in) hammer_signals=$(R coalesced) runs=$(R runs)"
+	[ "$(R in)" -gt 10 ] || atf_fail "hammer did not run"
+}
+mixcancel_cleanup() { kwq_cleanup; }
+
+atf_test_case mixrequeue cleanup
+mixrequeue_head() {
+	atf_set descr "a handler that requeues after every element delivers a list with notifiers among the items exactly once and in arrival order"
+	atf_set require.user root
+}
+mixrequeue_body() {
+	kwq_setup
+	kwq_run mixrequeue items=30 batch=1 reps=20
+	kwq_done mixrequeue
+	echo "requeues=$(R requeues) inversions=$(R inversions) exact_errors=$(R exact_errors) runs=$(R runs)"
+	atf_check_equal "$(R exact_errors)" 0
+	[ "$(R requeues)" -gt 0 ] || atf_fail "the handler never requeued"
+	atf_check_equal "$(R runs)" 200
+	[ "$(R inversions)" -eq 0 ] || atf_fail "$(R inversions) out-of-order deliveries"
+}
+mixrequeue_cleanup() { kwq_cleanup; }
+
+atf_test_case mixdrain cleanup
+mixdrain_head() {
+	atf_set descr "pending notifiers among items at drain time are run (or discarded, on a KWQ_F_DISCARD queue), every notifier is idle afterwards and a later signal is refused"
+	atf_set require.user root
+}
+mixdrain_body() {
+	kwq_setup
+	kwq_run mixdrain reps=5
+	kwq_done mixdrain
+	echo "runs=$(R runs) out=$(R out) exact_errors=$(R exact_errors)"
+	atf_check_equal "$(R exact_errors)" 0
+	kwq_run mixdrain_discard reps=5
+	kwq_done mixdrain_discard
+	echo "discarded=$(R discarded) exact_errors=$(R exact_errors)"
+	atf_check_equal "$(R exact_errors)" 0
+	[ "$(R discarded)" -gt 0 ] || atf_fail "nothing was discarded on the KWQ_F_DISCARD queue"
+}
+mixdrain_cleanup() { kwq_cleanup; }
+
 atf_init_test_cases() {
 	atf_add_test_case lifecycle
 	atf_add_test_case fifo
@@ -349,4 +484,12 @@ atf_init_test_cases() {
 	atf_add_test_case yield
 	atf_add_test_case cost
 	atf_add_test_case ifpair
+	atf_add_test_case mixorder
+	atf_add_test_case mixpattern
+	atf_add_test_case mixbudget
+	atf_add_test_case mixstarve
+	atf_add_test_case mixrearm
+	atf_add_test_case mixcancel
+	atf_add_test_case mixrequeue
+	atf_add_test_case mixdrain
 }

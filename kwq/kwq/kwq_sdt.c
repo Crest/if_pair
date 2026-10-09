@@ -27,10 +27,10 @@ SDT_PROBE_DEFINE4_XLATE(kwq, , , enqueue, "struct kwq *", "kwqinfo_t *",
 /* refused enqueue or notify: cpu, errno */
 SDT_PROBE_DEFINE3_XLATE(kwq, , , reject, "struct kwq *", "kwqinfo_t *",
     "int", "int", "int", "int");
-/* list swapped: cpu, items, doorbell-to-pass latency ns (first pass only) */
+/* list swapped: cpu, elements (notifiers included), doorbell-to-pass latency ns (first pass only) */
 SDT_PROBE_DEFINE4_XLATE(kwq, , , pass__start, "struct kwq *", "kwqinfo_t *",
     "int", "int", "int", "int", "uint64_t", "uint64_t");
-/* handler returned: cpu, items, CPU time ns, items requeued */
+/* handler returned: cpu, elements, CPU time ns, elements requeued */
 SDT_PROBE_DEFINE5_XLATE(kwq, , , pass__end, "struct kwq *", "kwqinfo_t *",
     "int", "int", "int", "int", "uint64_t", "uint64_t", "int", "int");
 /* cpu, ns beyond the budget */
