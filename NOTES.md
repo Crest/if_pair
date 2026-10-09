@@ -4908,3 +4908,10 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   1 ns on 10-08.  a07 up 9 d 11:59 before, 12:03 after; built from a
   `git archive` of HEAD in ~/if_pair-scratch.  Log:
   samples/t17_a07_2026-10-09_shared_list_ab.txt.
+
+2026-10-09: the fork of 10-07 is decided: continue with kwq, and
+  reimplement netisr on top of it eventually (the conversion KWQ.md S8
+  lists as migration step 2 and PLAN P8 names as the first in-tree one),
+  rather than improve netisr on its own.  The netisr-first trade-offs
+  stay in the 10-07 entry as the alternative considered.  Open sequencing
+  question: epair (P5) before the netisr conversion, or netisr first.

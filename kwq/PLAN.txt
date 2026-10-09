@@ -569,7 +569,15 @@ Phases
     `signals` counter added.  Results and the harness lessons in
     ../NOTES.md 2026-10-08.
 
-[OPEN 2026-10-07] Fork: a netisr-first path was recommended by FreeBSD
+[DECIDED 2026-10-09] Fork resolved: continue with kwq; netisr is to be
+    reimplemented on top of kwq (KWQ.md S8 migration step 2, PLAN P8's
+    "first in-tree conversion") rather than improved on its own.  The
+    netisr-first trade-offs below stay recorded as the alternative that
+    was considered.  P5-P7 stand; the netisr conversion needs a phase of
+    its own, between P5 and P6 if epair comes first (same class, same
+    shape, a smaller diff) or before P5 if the netisr work is to lead.
+
+[CONSIDERED 2026-10-07] Fork: a netisr-first path was recommended by FreeBSD
     network stack developers after a presentation of P0-P4 (small diffs,
     network stack scope only, improve netisr(9) before arguing for kwq).
     The trade-offs it WOULD imply are recorded in ../NOTES.md 2026-10-07:
