@@ -114,9 +114,11 @@ more.  "kwq:" marks terms this project defines.
 - **notifier** (kwq) - `struct kwq_notifier`: a preallocated, client-owned
   item with a pending state kept by kwq and a CPU fixed at init (so one
   (queue, CPU) lock protects the state).  `kwq_notify()` queues it if
-  idle and is a no-op if pending; it cannot fail and is exempt from the
-  limit.  kwq clears the pending state before the handler runs, so a
-  signal arriving during handling causes another pass.  Aliases: *task*
+  idle and is a no-op if pending; it cannot fail and is never refused by
+  the limit (it does count toward `depth`).  It is a member of the item
+  list at its arrival position (since 2026-10-08); kwq clears the pending
+  state when the handler fetches its successor with `KWQ_ITEM_NEXT()`, so
+  a signal arriving after that causes another pass.  Aliases: *task*
   (taskqueue(9), `ta_pending`), *work item* (Windows), *work_struct*
   (Linux, `WORK_STRUCT_PENDING`).  KWQ.md S2, S3.
 - **notifier pattern** (kwq) - using kwq only as the execution context:

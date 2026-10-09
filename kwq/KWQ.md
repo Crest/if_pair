@@ -120,7 +120,7 @@ defined in GLOSSARY.md.
     enum kwq_class { KWQ_NET = 0, KWQ_BULK = 1, KWQ_BLOCKING = 2 };
     #define KWQ_NCLASS 3
     #define KWQ_NAMELEN 32
-    #define KWQ_ITEM_NEXT(it)  STAILQ_NEXT((it), kwi_link)   /* walk a batch */
+    #define KWQ_ITEM_NEXT(q, it)  /* walk a batch; fetching a notifier's successor consumes it */
     #define KWQ_ITEM_INIT(it)  /* link = NULL: required before re-enqueue */
     /* KWQ_MBUF_ITEM(m) / KWQ_ITEM_MBUF(it): mbuf <-> item via m_stailqpkt */
 
@@ -452,26 +452,38 @@ bounded by the number of notifiers that exist, which the client
 allocated); if it is already pending the call is a no-op and returns
 `false`.  It cannot fail, exactly as `taskqueue_enqueue(9)` cannot
 (`subr_taskqueue.c`, `ta_pending`): there is nobody who could retry a
-refused signal.  Ordering contract: kwq clears the pending state when it
-removes the notifier from the list, before the handler runs, under the
-same lock the producer used, so a producer that updates its state and
+refused signal.  Ordering contract: kwq clears the pending state when the
+handler fetches the notifier's successor with `KWQ_ITEM_NEXT(q, it)`,
+before the handler acts on it, under the same lock the producer used, so
+a producer that updates its state and
 then calls `kwq_notify()` is guaranteed one of two things: the handler
 that is about to run will see the state, or a new pass will be scheduled.
 The handler treats the notifier as a level: it processes everything the
-client's state says is outstanding, never "one event".  Notifiers are
-delivered to the handler one per call with `n == 1` (or `-1` on a
-discarding drain), never as members of the item list: a notifier that is
-re-signalled while its handler runs is relinked into the live list at
-that moment, so its link cannot be part of a list the handler is still
-walking - the same reason `taskqueue(9)` unlinks a task before calling
-it.  Within a pass the pending notifiers are released and run first, then
-the items as one list.  A notifier is allowed to be pending again while
-its previous instance is being handled (once in the live list at most).  Callable from every context `kwq_enqueue()` is,
-including interrupt filters on `KWQ_F_SPIN` queues.
+client's state says is outstanding, never "one event".  Since 2026-10-08
+a notifier is a member of the item list, at its arrival position and
+counted in `n`, so items and signals are delivered in one FIFO (before
+that, notifiers came first, one per call).  Its own outgoing link carries
+`KWQ_LINK_TAG`; the handler's `KWQ_ITEM_NEXT(q, it)`, fetching the
+successor before acting on the element, is the pending -> idle flip, so
+a notifier re-signalled after that fetch is relinked at the live list's
+tail while the handler still holds the old link, which the handler has
+already read - the same reason `taskqueue(9)` unlinks a task before
+calling it, moved to the walk.  A notifier is budgeted like an item and
+may be handed back with `kwq_requeue()` as part of a remainder (never
+after its successor was fetched).  A handler that returns without walking
+leaves a notifier pending; the worker settles an unwalked head or tail
+of the pass (recognised by an unchanged state word, kwq_internal.h) and
+asserts under INVARIANTS, so a notifier-only client that ignores its
+list still works; a notifier in the middle of a batch is the handler's
+to reach.  A notifier is allowed to be pending again while its previous
+instance is being handled (once in the live list at most).  Callable
+from every context `kwq_enqueue()` is, including interrupt filters on
+`KWQ_F_SPIN` queues.
 
 *Signalled again while its handler is running.*  The pending state was
-cleared when the notifier left the list, so the new `kwq_notify()` finds
-it idle, appends it to its CPU's live list and returns `true`; the
+cleared when the handler fetched the notifier's successor, so the new
+`kwq_notify()` finds it idle, appends it to its CPU's live list (at the
+tail, behind whatever arrived since) and returns `true`; the
 handler currently running is not interrupted and does not see the new
 signal.  When it returns, the worker finishes the pass and the notifier
 is in the next pass on that CPU.  Two outcomes are possible and both are
@@ -542,9 +554,10 @@ waits [L8].
   may process, enqueue elsewhere, requeue, free, or hand them on.  It must consume every
   item (the service keeps no reference).  `n < 0` on `KWQ_F_DISCARD`
   queues means "release these without processing" during drain.
-  Notifiers arrive one per call with `n == 1` (or `-1`), before the
-  item list of the same pass (S3 `kwq_notify`).  A handler processes at
-  least one item per call before honouring a zero budget (SCHED.md S5).
+  Notifiers arrive inside the list at their arrival positions, counted
+  in `n`, and are consumed by the handler's `KWQ_ITEM_NEXT(q, it)` (S3
+  `kwq_notify`).  A handler processes at least one element per call
+  before honouring a zero budget (SCHED.md S5).
 - Runs on the worker of the CPU the items were enqueued to (NET, and BULK
   unless stolen), with the class's priority, inside the network epoch for
   NET (the `NET_TASK_INIT` convention), with `CURVNET_SET` to the queue's
@@ -835,7 +848,7 @@ A component that today creates a taskqueue or a thread does this:
         struct kwq_item *it, *nx;
         int left = n;
         for (it = head; it != NULL; it = nx, left--) {
-            nx = KWQ_ITEM_NEXT(it);
+            nx = KWQ_ITEM_NEXT(q, it);
             KWQ_ITEM_INIT(it);                   /* link must be NULL again */
             pair_input(ifp_of(KWQ_ITEM_MBUF(it)), KWQ_ITEM_MBUF(it));
             if (nx != NULL && kwq_budget_left(q) == 0) {
@@ -1913,10 +1926,11 @@ implements, with `CTASSERT`s on both boundaries:
     struct kwq_cpu {
         /* block 0, first 64 bytes: every enqueue and every pass */
         struct mtx      kc_mtx;
-        STAILQ_HEAD(, kwq_item) kc_list;
+        STAILQ_HEAD(, kwq_item) kc_list;     /* items and notifiers, arrival order
+                                                (notifier links tagged, 2026-10-08) */
         u_int           kc_depth, kc_state, kc_nnotify, kc_flags;
-        /* block 0, second 64 bytes: burst start, signals, rare paths */
-        STAILQ_HEAD(, kwq_item) kc_notify;
+        /* block 0, second 64 bytes: burst start, rare paths; 16 bytes free
+           since the separate notifier list went (2026-10-08) */
         u_short         kc_waiters; u_char kc_onlist, kc_warm;   /* P1 */
         u_int           kc_idle_round;   /* P1, 32-bit: only the difference
                                             to kw_round matters (SCHED.md S13) */
@@ -1927,7 +1941,7 @@ implements, with `CTASSERT`s on both boundaries:
         struct kwq     *kc_q __aligned(KWQ_LINE);
         int             kc_cpu;
         int64_t         kc_deficit;
-        uint64_t        kc_items, kc_passes, kc_cycles, kc_requeued,
+        uint64_t        kc_items, kc_signals, kc_passes, kc_cycles, kc_requeued,
                         kc_maxdepth, kc_maxlat_ns, kc_overruns,
                         kc_parks, kc_steals_in;
     } __aligned(KWQ_LINE);
@@ -2120,8 +2134,9 @@ decision deferred until real clients show what fan-in they produce.
   clients with their own lists and for drivers that touch hardware.
 - 2026-09-25 (later): P0 code landed in `kwq/kwq/` (kwq.h,
   kwq_internal.h, kwq.c, kwq_worker.c, Makefile), builds against
-  15.0-RELEASE-p12.  Implementation details folded back: notifiers are
-  delivered one per handler call (S3); the shared block is `KWQ_LINE` =
+  15.0-RELEASE-p12.  Implementation details folded back: notifiers were
+  delivered one per handler call (S3; since 2026-10-08 they are members
+  of the item list, see that date below); the shared block is `KWQ_LINE` =
   max(CACHE_LINE_SIZE, 128) with the per-enqueue fields in its first 64
   bytes (S17); the worker's doorbell lock is a spin mutex.  P0 stubs:
   `kwq_budget_left()` returns a constant, `kwq_scatter()` EOPNOTSUPP,
@@ -2325,3 +2340,15 @@ decision deferred until real clients show what fan-in they produce.
   falling back to the caller's CPU, so a flow stays on one CPU on a
   machine with holes in its CPU numbering; dense machines unchanged.
   Per-queue `limit` writable at run time (S10.7).
+- 2026-10-08: notifiers join the item list in arrival order instead of a
+  second per-CPU list served first.  A notifier's own outgoing link
+  carries `KWQ_LINK_TAG`; `KWQ_ITEM_NEXT(q, it)` (now taking the queue)
+  consumes a notifier as the handler fetches its successor;
+  `kwq_notify_cancel()` waits for that consumption, ringing the doorbell
+  if needed; the worker settles an unwalked head or tail notifier using a
+  generation in the spare bits of `kn_state`.  Notifiers are budgeted,
+  requeueable and count toward `depth` (never refused).  `kc_notify` and
+  the per-pass notifier loop are gone; `signals` counter added.  Driven
+  by the eight `mix` ATF cases, which showed notifiers-first delivery
+  (1000 of 1000 inversions), unbudgeted signals (64 x 50 us in one pass)
+  and SCHED.md S14 case 4 at one item per pass on the old design.

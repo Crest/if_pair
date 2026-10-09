@@ -322,6 +322,36 @@ later walks off the end of an mbuf chain and panics.  The queue is the
 reentrancy break.  A `dispatch_sync` equivalent would be that panic
 offered as an API.
 
+### 4.5 Why notifiers share the item list
+
+The first design kept a second per-CPU list for notifiers and delivered
+them first, one per call, because the worker had to flip each one from
+pending to idle under the lock before the handler saw it, and could not
+find notifiers inside a swapped-out item list without walking it.  The
+cost was non-FIFO delivery, unbudgeted signals, and the starvation case
+the scheduler specification records as case 4: measured on the two-list
+code, every item enqueued before a signal was delivered after it, 64
+signals of 50 us ran in one pass against a 200 us quantum, and a
+self-re-arming signal held an item flood to one item per pass, 0.6 % of
+its solo rate on the 128-core machine.
+
+The replacement puts a notifier on the item list at its arrival position
+and marks it with the low bit of its *own* outgoing link, which is free
+because every element is pointer-aligned and which no mbuf ever carries,
+since an mbuf is never a notifier.  The handler's `KWQ_ITEM_NEXT(q, it)`
+fetches an element's successor before the handler acts on it, and for a
+tagged element that fetch is the flip, so the lost-wakeup argument is
+unchanged and the flip costs one bit test per element.  Notifiers are
+thereby budgeted and requeueable like items, and the per-CPU structure
+lost a list head.  The one new obligation, that a handler must walk its
+list, is met by every item handler already; for the notifier-only client
+that ignores its list, the worker settles an unwalked head or tail
+itself, telling "never consumed" from "consumed and re-armed" by a
+generation kept in the spare bits of the state word.  The eight `mix`
+test cases that failed on the old design pass on this one, with the
+item flood beside a re-arming signal back above a tenth of its solo
+rate and the 64 signals spread over passes by the budget.
+
 ## 5. The scheduler
 
 ### 5.1 CPU time as the unit

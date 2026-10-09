@@ -49,7 +49,7 @@ enqueueing an item that is already queued.
 
 | macro | meaning |
 |---|---|
-| `KWQ_ITEM_NEXT(it)` | the next item of a handler's list, `NULL` at the end |
+| `KWQ_ITEM_NEXT(q, it)` | the next element of a handler's list, `NULL` at the end.  Call it before acting on `it`; for a notifier that call is the pending-to-idle flip (section 5) |
 | `KWQ_ITEM_INIT(it)` | clear the link; call before every enqueue |
 | `KWQ_MBUF_ITEM(m)` | the item inside an mbuf (its `m_stailqpkt` link) |
 | `KWQ_ITEM_MBUF(it)` | the mbuf an item belongs to |
@@ -250,7 +250,11 @@ void kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf);
 `KWQ_CPU_ANY` is refused (asserted), because one CPU's list lock is what
 protects the notifier's state.
 
-`kwq_notify()` cannot fail.  It returns `true` if the notifier was idle
+`kwq_notify()` cannot fail.  The signal joins the item list of the
+notifier's CPU at the tail and counts toward that list's `depth`, though
+it is never refused by the limit; at most one instance of each notifier
+is ever pending, so the slots signals can take are bounded by the number
+of notifier objects.  It returns `true` if the notifier was idle
 and is now queued, and `false` otherwise: already pending (counted in
 `coalesced`), the queue draining or inactive (counted in `rejected`,
 with a `kwq:::reject` probe carrying `ENXIO`), a cancelled notifier (not
@@ -259,9 +263,16 @@ from `limit`.  Legal
 from any context the queue's lock type allows, including from inside the
 handler for the notifier being handled.
 
-`kwq_notify_cancel()` unlinks a pending notifier and waits for a pass
-that holds it.  **May sleep**; teardown only.  It is not needed after
-`kwq_drain()`: the drain runs or discards every pending notifier, so
+`kwq_notify_cancel()` marks a pending notifier cancelled and waits until
+the handler has consumed it, ringing the doorbell if the list was idle
+so that a pass comes, and then waits for the pass in progress on that
+CPU to end, so a run already under way has returned when the cancel
+returns.  A notifier found idle, which includes one the handler is
+running right now, is marked dead at once.  Either way the notifier
+refuses signals until `kwq_notifier_init()` is called again.  On a queue
+that is continuously busy the wait for a pass boundary can take tens of
+milliseconds, as it did in the two-list design.  **May sleep**; teardown
+only.  It is not needed after `kwq_drain()`: the drain runs or discards every pending notifier, so
 when it returns each one is idle and not running, and the client may
 free the memory directly.  Cancel is for releasing one notifier while
 the queue stays in service.
@@ -352,12 +363,27 @@ void fn(struct kwq *q, struct kwq_item *head, int n, void *ctx);
   back with `kwq_requeue()`.  It cannot refuse work.
 - `n > 0`: run them.  `n < 0`: release `-n` items without running them;
   this happens only during `kwq_drain()` of a `KWQ_F_DISCARD` queue.
-- Notifiers are delivered one per call, `n == 1` or `-1`, so that
-  re-arming during the call is safe.  Within one pass every pending
-  notifier is delivered *before* the item list, each in its own call.
-  A handler that receives both distinguishes them by pointer identity
-  against its own notifier objects, but see the warning below: one queue
-  should carry one or the other.
+- Pending notifiers are *in* the list, at their arrival positions and
+  counted in `n`, so items and signals are delivered in one arrival
+  order (since 2026-10-08; before that notifiers came first, one per
+  call).  The handler tells a notifier from an item by pointer identity
+  against its own notifier objects.  Fetching an element's successor
+  with `KWQ_ITEM_NEXT(q, it)` before acting on it, which the usual walk
+  does, is what flips a notifier from pending to idle, so a signal that
+  lands after that fetch is a fresh arrival and one that landed before
+  is covered by the level the handler reads next; re-arming from inside
+  the handler is therefore safe.  A notifier is budgeted like an item:
+  the handler may stop before it and hand it back with `kwq_requeue()`
+  as part of the remainder, as long as it has not yet fetched that
+  element's successor.  Never `KWQ_ITEM_INIT()` a notifier.
+- A handler that returns without walking leaves a notifier pending.  The
+  worker settles an unwalked *head or tail* of the pass on the handler's
+  behalf, recognising it by a state word unchanged since the swap-out
+  (a consume bumps a generation kept in the spare bits of `kn_state`),
+  and asserts under INVARIANTS so a test shows the mistake at once.  That
+  covers a lone signal, which is the notifier-only client's whole case;
+  a notifier in the middle of a batch is reached only by the walk, and
+  the drain asserts that none is left pending.
 - At least one item is processed per call: the progress rule guarantees
   the first item has budget even if the queue is in debt.
 - NET and BULK handlers run with `THREAD_NO_SLEEPING()` in force; a NET
@@ -403,7 +429,7 @@ are leaves.
 |---|---|---|
 | `kwq_enqueue` to another queue, or this one | yes | to this queue it is new work, behind what is already queued |
 | `kwq_notify` to any queue, including its own notifier | yes | the way to say "still not empty" |
-| `kwq_requeue` the pass's remainder | yes | prepends, FIFO kept |
+| `kwq_requeue` the pass's remainder | yes | prepends, FIFO kept, notifiers among it; never an element whose successor the handler has already fetched |
 | `kwq_budget_left` | yes | 0 means requeue and return |
 | sleep mutex, rwlock, rmlock | yes, briefly | |
 | spin mutex, `critical_enter`, `sched_pin` | yes, release before return | while held, only `KWQ_F_SPIN` queues may be enqueued to |
@@ -538,9 +564,10 @@ The anti-gaming grace window (one round) is compile time.
 
 | node | meaning |
 |---|---|
-| `depth` | items queued now (gauge) |
+| `depth` | elements queued now, pending signals included (gauge) |
 | `state` | 0 idle, 1 waking, 2 running, 3 parked (gauge) |
-| `items` | items and notifiers handed to the handler |
+| `items` | elements handed to the handler, notifiers included |
+| `signals` | of those, notifiers, counted as the handler consumes them |
 | `passes` | handler invocations for this queue on this CPU |
 | `cycles` | wall-clock `cpu_ticks()` spent in those passes, not CPU time: under interrupt load it exceeds the worker's `busy_ns` share, which is what makes it useful for latency diagnosis |
 | `rejected` | enqueues refused: `ENOBUFS` at the bound, `ENXIO` after drain began |
@@ -655,6 +682,7 @@ or installed so the dependency resolves.
 | sysctl tree, 19 DTrace probes, translator, `show kwq` | implemented |
 | writable per-queue `limit` | implemented |
 | `kwq_cpu_for_hash()` remap for sparse CPU ids | implemented; the sparse path itself is **untested**, no such machine being available |
+| notifiers on the item list in arrival order, budgeted, requeueable (tagged link, 2026-10-08) | implemented, tested by the eight `mix` cases |
 | `KWQ_F_STEALABLE` | accepted, inert: no worker steals (P6) |
 | `kwq_scatter()` | `EOPNOTSUPP` (P6) |
 | `KWQ_BLOCKING` | refused at create with a log line; no workers of that class exist (P7) |

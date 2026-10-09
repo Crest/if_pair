@@ -91,7 +91,7 @@ Its name appears verbatim in sysctl, in the lock name and in DTrace, so
 `pair0a` and `wg_crypto` are the names an operator sees.
 
 **Per-CPU list.**  Each queue has, on every CPU, one intrusive FIFO list
-of items and one of pending notifiers.  The list is the unit of
+holding its items and its pending notifiers in arrival order.  The list is the unit of
 ordering: items on one (queue, CPU) list are handed to the handler in
 the order they were enqueued, and nothing is promised between CPUs.  The
 bound (`limit`, default 4096) is per list, so a hot CPU can refuse while
@@ -105,7 +105,8 @@ mbuf's `m_nextpkt` link is layout-identical to a `kwq_item`.
 
 **Handler.**  One function per queue, called with a whole list:
 `fn(q, head, n, ctx)`.  It owns those `n` items and must consume them,
-by processing, freeing, handing on or giving back.  A negative `n` means
+by processing, freeing, handing on or giving back.  Pending notifiers
+are among them at their arrival positions.  A negative `n` means
 "release these without running them", which is how a drain hands back a
 backlog.
 
@@ -221,7 +222,7 @@ tut_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx __unused)
 	int left = n < 0 ? -n : n;
 
 	for (it = head; it != NULL; it = next) {
-		next = KWQ_ITEM_NEXT(it);	/* save it: we are about to free */
+		next = KWQ_ITEM_NEXT(q, it);	/* save it: we are about to free */
 		w = __containerof(it, struct tut_work, tw_item);
 		if (n > 0)			/* n < 0: a drain, do not run */
 			tut_total += w->tw_value;

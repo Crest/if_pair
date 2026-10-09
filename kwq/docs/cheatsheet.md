@@ -46,13 +46,13 @@ my_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 
 	if (n < 0) {				/* drain: release, do not run */
 		for (it = head; it != NULL; it = next) {
-			next = KWQ_ITEM_NEXT(it);
+			next = KWQ_ITEM_NEXT(q, it);
 			m_freem(KWQ_ITEM_MBUF(it));
 		}
 		return;
 	}
 	for (it = head; it != NULL; it = next) {
-		next = KWQ_ITEM_NEXT(it);
+		next = KWQ_ITEM_NEXT(q, it);
 		m = KWQ_ITEM_MBUF(it);
 		m->m_nextpkt = NULL;		/* the stack expects it clear */
 		my_input(sc->sc_ifp, m);
@@ -128,20 +128,33 @@ if (kwq_notify(q, &nf))
 else
 	/* already pending (coalesced), or the queue is draining */;
 
-/* handler: notifiers arrive one per call, n == 1 */
+/* handler: a notifier arrives in the batch, at its arrival position */
 static void
 my_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 {
-	if (head == &my_nf.kn_item) {
-		state = atomic_load_64(&shared_state);	/* read the LEVEL */
-		do_work_for(state);
-		if (still_more_to_do)
-			kwq_notify(q, &my_nf);		/* re-arm: legal, coalesces */
-		return;
+	struct kwq_item *it, *next;
+
+	for (it = head; it != NULL; it = next) {
+		next = KWQ_ITEM_NEXT(q, it);	/* fetch first: this consumes a notifier */
+		if (it == &my_nf.kn_item) {
+			state = atomic_load_64(&shared_state);	/* read the LEVEL */
+			do_work_for(state);
+			if (still_more_to_do)
+				kwq_notify(q, &my_nf);	/* re-arm: legal, coalesces */
+			continue;
+		}
+		/* ... an item ... */
 	}
-	/* ... items ... */
 }
 ```
+
+**Recommended:** walk the list even when only the signal matters.
+Fetching an element's successor with `KWQ_ITEM_NEXT(q, it)` is what
+consumes a notifier; a handler that returns without walking leaves it
+pending, and it never fires again.  kwq settles an unwalked head or tail
+on your behalf, which covers a lone signal, and asserts under
+INVARIANTS so a test shows the mistake at once; a notifier in the middle
+of a batch is yours to reach.
 
 **Recommended:** treat a notifier as level-triggered, not
 edge-triggered.  Read the current state in the handler rather than
@@ -157,13 +170,16 @@ to signal, or use items.
 **Warning:** `kwq_notify_cancel()` may sleep: teardown only, and it is
 not needed after `kwq_drain()`, which leaves every notifier idle.
 
-**Warning:** give a queue notifiers *or* items, not both.  Every pending
-notifier of a pass is delivered before the item list, so a notifier
-handler that consumes the whole budget leaves the items requeued
-untouched, pass after pass: `requeued` grows while `items` does not.
-The progress rule keeps it from being total starvation, but the
-specification's advice is not to mix them on one queue, and two queues
-cost 48 KB each on a 128-CPU machine.
+**Recommended:** mixing notifiers and items on one queue is fine since
+2026-10-08: a signal is delivered at its arrival position among the
+items and is budgeted like one, so a handler stops before it and hands
+it back when the budget is gone.  The `mix` ATF cases hold this.  What
+remains true is that a signal's handler costs what it costs: a notifier
+handler that spends a quantum still delays the items behind it by that
+quantum, once, where before the change it starved them to one item per
+pass.  In the handler, call `KWQ_ITEM_NEXT(q, it)` before acting on an
+element, as the walk above does; for a notifier that call is what makes
+re-arming safe.
 
 ## 4. Choosing the CPU
 

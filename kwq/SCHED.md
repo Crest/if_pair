@@ -122,9 +122,10 @@ falls out for pseudo-interfaces is a side effect, not the design goal.
 ## 2. Definitions and units
 
 - **Pass**: one swap-out of a (queue, CPU) list followed by one handler
-  invocation per notifier and one for the item list (kwq_worker.c
-  `kwq_pass()`).  A pass is the unit of scheduling; the scheduler never
-  interrupts a handler.
+  invocation for the whole list, notifiers among the items at their
+  arrival positions (kwq_worker.c `kwq_pass()`; until 2026-10-08
+  notifiers were a separate list run first, one call each).  A pass is
+  the unit of scheduling; the scheduler never interrupts a handler.
 - **Round**: one traversal of the worker's ring with new-list passes
   interleaved (S4.2).  Rounds are the unit of refill and of yielding.
 - **Quantum `Q`**: nanoseconds, per class, `kern.kwq.<class>.quantum_us`
@@ -242,14 +243,15 @@ nanoseconds plus the end-of-round yield.
 
 ### 4.3 Pass (worker, `kwq_pass()` as in P0 plus accounting)
 
-    lock kc; swap out items and notifiers; kc_state = RUNNING
+    lock kc; swap out the list (items and notifiers, arrival order); kc_state = RUNNING
     t0 = cpu_ticks()
     if kc_empty_since != 0:              # first pass since the doorbell
         sample maxlat_ns = now - kc_empty_since; kc_empty_since = 0
     unlock
     r0 = cputime_self()                 # td_runtime + (cpu_ticks() - switchtime)
     kw_pass_start = r0; kw_pass_budget = kc_deficit
-    run notifiers one by one, then the item list (P0 rules)
+    run the list as one handler call; the handler's KWQ_ITEM_NEXT() consumes
+    each notifier as it fetches its successor; settle an unwalked head/tail
     dt = ns(cputime_self() - r0)        # CPU time the worker ran, S1a.4
     kc_cycles += cpu_ticks() - t0       # wall time, for latency diagnosis
     kw_win_busy += dt; kw_busy_ns += dt
@@ -308,8 +310,9 @@ exhausts the budget overshoots by one item, which is the design working
 as intended, not an overrun; the first draft counted it and every
 cooperative pass showed as one.
 
-Notifiers are charged like items: the time their handler calls take is
-part of `dt`.  A queue that was served from the new list and still has
+Notifiers are charged like items: the time the handler spends on them is
+part of `dt`, and since they sit in the list they are also budgeted like
+items, requeued with the remainder when `kwq_budget_left()` says stop.  A queue that was served from the new list and still has
 work joins the ring tail: it has had its boost, it is now bulk
 (fq_codel's move-to-old, CAKE's sparse->bulk).
 
@@ -1072,6 +1075,7 @@ true difference is far below half the type's range.
 | `kw_win_busy`, `kw_busy_ns`, `kw_idle_ns`, `kc_cycles`, all counters | `uint64_t` | at 1e9/s, 584 years | wrap | monotonic counters; readers difference them |
 | `kc_depth` | `u_int` | bounded by `limit` | `KWQ_LIMIT_NONE` = `UINT_MAX` would let `depth++` wrap at 2^32 queued items (~100 GB of queued objects, but not impossible on a large machine) | the limit check runs for every queue including unbounded ones, in the overflow-safe form `n > limit - depth`; `limit` is capped at `INT_MAX` in `kwq_create()`, so the 2^31st item is refused instead of wrapping anything, and that refusal is the fault signal the design wants |
 | `kc_nnotify`, `kc_waiters`, `kw_nactive` | `u_int` | bounded by objects that exist | none | |
+| notifier generation (`kn_state >> 2`, 2026-10-08) | 30 bits of a `u_int` | one bump per consume of that notifier; wraps modulo 2^30 after ~1.07e9 consumes | wrap (defined, unsigned) | compared only between a pass's swap-out and its end, during which the notifier is consumed at most once (one instance pending at a time; a re-signal lands on the live list), so the value moves by 0 or 1 and a false "unconsumed" would need exactly 2^30 bumps; a single bit would suffice |
 | `n` in `kwq_pass()` / handler `int n` | `int` | `<= limit <= INT_MAX` | `sign x n` would overflow `int` above 2^31 items in one batch | excluded by the `INT_MAX` cap on `limit` |
 | cap arithmetic | `uint64_t` | window <= 1 s, busy <= window | `busy x 100` and `window_ns x pct` <= 1e11 | no overflow |
 | `hz`, `mp_maxid`, CPU ids | `int` | fixed at boot | none | |
@@ -1104,7 +1108,7 @@ case 4 added the progress rule (S5); the rest are documented limits.
 | 1 | a queue becomes active while the worker is in the ring part of a round | it waited for the rest of the round: B4 depended on ring length after all | `maxlat_ns` of light queues ~ round length | new list checked after every ring pass (S4.2 alternation) |
 | 2 | a sustained stream of newly active queues (a broadcast waking thousands of idle pairs, or a client creating queues in a loop) | pure new-first service starves the ring for `sum(Qw)` of the new entries; fq_codel and CAKE have this property | ring queues' `maxlat_ns` grows with the number of new arrivals per round | alternation: the ring gets at least every other pass |
 | 3 | NET yields while the BULK worker is runnable | BULK runs a whole round (up to `n_bulk x 2 Q_bulk`) before NET re-asserts `PI_NET`: 2 ms holes per 200 us NET round; and the first version of the hand-back flag starved BULK completely (it handed back before its first pass) | NET `maxlat_ns` ~ BULK round length; BULK `handbacks` counts the rounds it ended early | class hand-back flags after at least one pass (S6.4); simulated: BULK gets one item per NET round, 0.32 of NET's service in the `handback` scenario |
-| 4 | a notifier's handler consumes the whole budget every pass, or the carried budget is tiny | the item list of the same queue is requeued untouched pass after pass: zero progress while the notifier keeps re-arming | `requeued` grows, `items` does not | progress rule (S5); also: do not mix notifiers and items on one queue |
+| 4 | a notifier's handler consumes the whole budget every pass, or the carried budget is tiny | (old two-list design) the item list of the same queue is requeued untouched pass after pass: zero progress while the notifier keeps re-arming; measured 2026-10-08 as one item per pass, items at 0.6 % of their solo rate on a07 | `requeued` grows, `items` does not | progress rule (S5); and since 2026-10-08 notifiers sit in the item list at their arrival position and are budgeted, so a re-armed notifier waits behind the items that arrived before it (the `mixstarve` case) |
 | 5 | `Qw < c_max` (a client's single item exceeds the quantum) | every pass overruns and the queue is parked for `ceil(c_max/Qw) - 1` rounds after each; every pass of it stalls the others by `c_max` | `overruns == passes`, `parks` ~ `passes x (c_max/Qw - 1)` (simulated: 500 us items at Q = 200 us: overruns 2999 = passes, parks 4500) | not preventable without preemption; S8 recommends `Q >= c_max` and the counters name the client; fairness by weight still held (ratio 0.999 and 1.998 in the `fairness` scenario) |
 | 6 | yield at `PUSER` hands the CPU to a user thread scored interactive that turned CPU-bound | a hole of one ULE slice (16-94 ms) per round for the seconds the score takes to decay | NET `maxlat_ns` spikes with no kwq counter explaining them; `yields` normal | documented (S6.2); `yield_prio = PRI_MAX_KERN` closes it |
 | 7 | thousands of lightly active queues on one CPU | the per-pass fixed cost (S15.2, 200-300 ns) plus each handler's per-call cost dominates; batching efficiency falls; a round of 1000 one-item queues is 0.3-1 ms before the items' own work | `passes ~ items`, `busy_ns / items` high | a property of per-client queues (S1a.6); the cost is per active queue, idle queues cost nothing; per-side pair queues accept this (KWQ.md S7) |

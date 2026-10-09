@@ -122,9 +122,10 @@ Per CPU, `kern.kwq.<class>.queue.<queue>.cpu.<N>.`:
 
 | node | meaning |
 |---|---|
-| `depth` | items queued now (sampled) |
+| `depth` | elements queued now, pending signals included (sampled) |
 | `state` | 0 idle, 1 waking, 2 running, 3 parked (sampled) |
-| `items` | items and notifiers handed to the handler |
+| `items` | elements handed to the handler, notifiers included |
+| `signals` | of those, notifiers, counted as the handler consumes them |
 | `passes` | handler invocations |
 | `cycles` | `cpu_ticks()` spent in passes (divide by the worker's `busy_ns` for this queue's share of the worker) |
 | `rejected` | enqueues refused: ENOBUFS at the limit, ENXIO after drain began |
