@@ -154,12 +154,13 @@ static void
 kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 {
 	struct kwq *q;
-	struct kwq_item *items, *nfs, *it, *next;
-	struct kwq_notifier *nf;
+	struct kwq_item *items;
 	struct epoch_tracker et;
 	sbintime_t now;
-	uint64_t t0, age = 0, requeued0 __unused;	/* SDT argument */
-	u_int n, nnf;
+	uint64_t t0, age = 0, requeued0;
+	u_int head_word = 0, tail_word = 0;
+	bool head_nf = false, tail_nf = false;
+	u_int n;
 	int sign;
 	bool net, has_work;
 	uint64_t t1, cpu_now;
@@ -178,12 +179,23 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	 * S10.3, the ifpair layouts).
 	 */
 	kw->kw_pass_tail = STAILQ_LAST(&kc->kc_list, kwq_item, kwi_link);
+	/*
+	 * The handler consumes a notifier by fetching its successor with
+	 * KWQ_ITEM_NEXT(); a handler that does not walk, because it only
+	 * wanted the signal, would leave it pending for ever.  The head and
+	 * the tail are known here without a walk, so remember their state
+	 * words and settle them after the pass (below).
+	 */
+	if (items != NULL) {
+		head_nf = KWQ_TAGBIT(items->kwi_link.stqe_next) != 0;
+		if (head_nf)
+			head_word = __containerof(items, struct kwq_notifier, kn_item)->kn_state;
+		tail_nf = KWQ_TAGBIT(kw->kw_pass_tail->kwi_link.stqe_next) != 0;
+		if (tail_nf)
+			tail_word = __containerof(kw->kw_pass_tail, struct kwq_notifier, kn_item)->kn_state;
+	}
 	STAILQ_INIT(&kc->kc_list);
 	kc->kc_depth = 0;
-	nfs = STAILQ_FIRST(&kc->kc_notify);
-	nnf = kc->kc_nnotify;
-	STAILQ_INIT(&kc->kc_notify);
-	kc->kc_nnotify = 0;
 	/* Discard only ever happens on a drained queue. */
 	sign = (!q->kwq_active && (q->kwq_flags & KWQ_F_DISCARD)) ? -1 : 1;
 	/*
@@ -191,7 +203,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	 * latency and mark the stamp used, so later passes over the same
 	 * backlog do not report its age as a latency (SCHED.md S4.3, S9).
 	 */
-	if (n + nnf > 0 && kc->kc_empty_since != 0) {
+	if (n > 0 && kc->kc_empty_since != 0) {
 		now = sbinuptime();
 		if (now > kc->kc_empty_since) {
 			age = kwq_sbt2ns(now - kc->kc_empty_since);
@@ -215,21 +227,32 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 		CURVNET_SET_QUIET(q->kwq_vnet);
 #endif
 
-	for (it = nfs; it != NULL; it = next) {
-		nf = __containerof(it, struct kwq_notifier, kn_item);
-		kwq_kc_lock(kc);
-		next = STAILQ_NEXT(it, kwi_link);
-		KWQ_ITEM_INIT(it);
-		if (nf->kn_state == KWQ_NF_PENDING)
-			nf->kn_state = KWQ_NF_IDLE;
-		else
-			it = NULL;	/* cancelled: skip */
-		kwq_kc_unlock(kc);
-		if (it != NULL)
-			q->kwq_fn(q, it, sign, q->kwq_ctx);
-	}
 	if (items != NULL)
 		q->kwq_fn(q, items, sign * (int)n, q->kwq_ctx);
+	/*
+	 * Settle a head or tail notifier the handler left unconsumed: its
+	 * generation is still the one read at swap-out (every consume bumps
+	 * it, a re-arm needs a consume first, a cancel changes only the state
+	 * bits) and nothing was requeued, so it is neither re-armed nor back
+	 * on the list.  A bug in the handler under INVARIANTS; consumed on
+	 * its behalf otherwise, so a notifier-only client that ignores its
+	 * list keeps working.
+	 */
+	if (items != NULL && kc->kc_requeued == requeued0) {
+		if (head_nf && KWQ_NF_GEN(__containerof(items, struct kwq_notifier,
+		    kn_item)->kn_state) == KWQ_NF_GEN(head_word)) {
+			KASSERT(0, ("kwq: %s: handler left the head notifier "
+			    "unconsumed (walk with KWQ_ITEM_NEXT)", q->kwq_name));
+			kwq_notifier_consumed(q, items);
+		}
+		if (tail_nf && kw->kw_pass_tail != items &&
+		    KWQ_NF_GEN(__containerof(kw->kw_pass_tail, struct kwq_notifier,
+		    kn_item)->kn_state) == KWQ_NF_GEN(tail_word)) {
+			KASSERT(0, ("kwq: %s: handler left the tail notifier "
+			    "unconsumed (walk with KWQ_ITEM_NEXT)", q->kwq_name));
+			kwq_notifier_consumed(q, kw->kw_pass_tail);
+		}
+	}
 
 #ifdef VIMAGE
 	if (q->kwq_flags & KWQ_F_VNET)
@@ -238,11 +261,11 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	if (net)
 		NET_EPOCH_EXIT(et);
 	THREAD_SLEEPING_OK();
-	kc->kc_items += n + nnf;
+	kc->kc_items += n;
 
 	/* Emptiness re-check under the lock; the core re-places the queue. */
 	kwq_kc_lock(kc);
-	has_work = !STAILQ_EMPTY(&kc->kc_list) || !STAILQ_EMPTY(&kc->kc_notify);
+	has_work = !STAILQ_EMPTY(&kc->kc_list);
 	mtx_lock_spin(&kw->kw_mtx);
 	cpu_now = kwq_cputime_ns_tick(kw, &t1);
 	kc->kc_cycles += t1 - t0;

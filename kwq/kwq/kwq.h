@@ -31,15 +31,47 @@ struct kwq;
 struct kwq_item {
 	STAILQ_ENTRY(kwq_item)	kwi_link;
 };
-#define	KWQ_ITEM_NEXT(it)	STAILQ_NEXT((it), kwi_link)
 #define	KWQ_ITEM_INIT(it)	((it)->kwi_link.stqe_next = NULL)
 
 /*
- * The handler.  `head' is a private list of `n' items in FIFO order
+ * Notifiers share the item list and are delivered in arrival order among
+ * the items.  A notifier's own outgoing link carries KWQ_LINK_TAG in its
+ * low bit (every item is at least pointer-aligned, so the bit is free;
+ * an item's link is never tagged, so an mbuf never carries it).  The
+ * handler walks its list with KWQ_ITEM_NEXT(q, it), fetching an
+ * element's successor BEFORE acting on the element, as the usual
+ * save-next-first walk does; for a notifier that fetch is the pending ->
+ * idle flip, so the level the handler reads afterwards covers every
+ * signal up to that instant and a later signal is a fresh arrival for
+ * the next pass.  An element already passed to KWQ_ITEM_NEXT() must not
+ * be handed back with kwq_requeue(); the remainder from `next' on is
+ * fine.  Never call KWQ_ITEM_INIT() on a notifier: its link is kwq's.
+ */
+#define	KWQ_LINK_TAG	((uintptr_t)1)
+void		 kwq_notifier_consumed(struct kwq *q, struct kwq_item *it);
+
+static inline struct kwq_item *
+kwq_item_next(struct kwq *q, struct kwq_item *it)
+{
+	uintptr_t p = (uintptr_t)it->kwi_link.stqe_next;
+
+	if (__predict_false(p & KWQ_LINK_TAG))
+		kwq_notifier_consumed(q, it);
+	return ((struct kwq_item *)(p & ~KWQ_LINK_TAG));
+}
+#define	KWQ_ITEM_NEXT(q, it)	kwq_item_next((q), (it))
+CTASSERT(__alignof(struct kwq_item) >= 2);
+
+/*
+ * The handler.  `head' is a private list of `n' elements in FIFO order
  * which the handler owns and must consume (process, free, requeue or
- * hand on).  n < 0 means "release these -n items without running them"
- * (drain of a KWQ_F_DISCARD queue).  Notifiers are delivered one per
- * call, n == 1 (or -1), so that a re-notify during the call is safe.
+ * hand on).  n < 0 means "release these -n elements without running
+ * them" (drain of a KWQ_F_DISCARD queue).  Pending notifiers are among
+ * the elements, at their arrival positions and counted in n; the
+ * handler tells them from items by pointer identity against its own
+ * notifier objects, and walks with KWQ_ITEM_NEXT(q, it), which consumes
+ * a notifier as the handler fetches its successor (above).  A notifier
+ * may be handed back with kwq_requeue() like any element.
  */
 typedef void kwq_handler_t(struct kwq *q, struct kwq_item *head, int n,
     void *ctx);
@@ -79,6 +111,11 @@ struct kwq_params {
 /*
  * Idempotent signal.  Preallocated and owned by the client, bound to one
  * CPU for its lifetime; kwq keeps kn_state.  kwq_notify() cannot fail.
+ * A pending signal counts toward the list's depth but is never refused
+ * by the limit; at most one instance of each notifier is pending.
+ * kwq_notify_cancel() returns once the notifier is consumed and the pass
+ * in progress has ended, which may be after one more delivery if it was
+ * already queued; afterwards the notifier refuses signals until re-init.
  */
 struct kwq_notifier {
 	struct kwq_item	kn_item;
@@ -114,10 +151,10 @@ bool		 kwq_notify(struct kwq *q, struct kwq_notifier *nf);
 void		 kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf);
 
 /*
- * Handler only.  kwq_requeue() prepends already-admitted leftovers to the
- * current (queue, CPU) list (FIFO kept, no limit check); tail NULL means
- * the leftovers run to the end of the list this pass handed over, so the
- * handler does not walk to find it.  kwq_budget_left()
+ * Handler only.  kwq_requeue() prepends already-admitted leftovers,
+ * notifiers among them, to the current (queue, CPU) list (FIFO kept, no
+ * limit check); tail NULL means the leftovers run to the end of the list
+ * this pass handed over, so the handler does not walk to find it.  kwq_budget_left()
  * returns the nanoseconds of this pass's budget still unspent, 0 when the
  * handler should requeue and return; P0 returns a constant, P1 implements
  * SCHED.md S4.4.  A handler processes at least one item per call.

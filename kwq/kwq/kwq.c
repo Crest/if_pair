@@ -368,7 +368,7 @@ kwq_target_cpu(struct kwq *q, int cpu)
 static inline bool
 kwq_kc_added(struct kwq_cpu *kc, u_int added)
 {
-	if (kc->kc_depth + kc->kc_nnotify == added)
+	if (kc->kc_depth == added)
 		kc->kc_empty_since = sbinuptime();
 	if (kc->kc_state == KWQ_CPU_IDLE) {
 		kc->kc_state = KWQ_CPU_WAKING;
@@ -408,7 +408,7 @@ kwq_enqueue(struct kwq *q, int cpu, struct kwq_item *it)
 		SDT_PROBE3(kwq, , , reject, q, cpu, ENOBUFS);
 		return (ENOBUFS);
 	}
-	STAILQ_INSERT_TAIL(&kc->kc_list, it, kwi_link);
+	kwq_list_append(kc, it, false);
 	depth = ++kc->kc_depth;
 	woke = kwq_kc_added(kc, 1);
 	kwq_kc_unlock(kc);
@@ -420,7 +420,6 @@ int
 kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
     struct kwq_item *tail, int n)
 {
-	STAILQ_HEAD(, kwq_item) tmp;
 	struct kwq_cpu *kc;
 	u_int depth __unused;	/* SDT arguments */
 	bool woke __unused;
@@ -434,8 +433,6 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 		return (EINVAL);
 	kc = q->kwq_pcpu[cpu];
 
-	tmp.stqh_first = head;
-	tmp.stqh_last = &tail->kwi_link.stqe_next;
 
 	kwq_kc_lock(kc);
 	if (__predict_false(!q->kwq_active)) {
@@ -451,7 +448,7 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 		SDT_PROBE3(kwq, , , reject, q, cpu, ENOBUFS);
 		return (ENOBUFS);
 	}
-	STAILQ_CONCAT(&kc->kc_list, &tmp);
+	kwq_list_concat(kc, head, tail);
 	kc->kc_depth += n;
 	depth = kc->kc_depth;
 	woke = kwq_kc_added(kc, n);
@@ -488,10 +485,7 @@ kwq_requeue(struct kwq *q, struct kwq_item *head, struct kwq_item *tail,
 	}
 
 	kwq_kc_lock(kc);
-	tail->kwi_link.stqe_next = kc->kc_list.stqh_first;
-	if (kc->kc_list.stqh_first == NULL)
-		kc->kc_list.stqh_last = &tail->kwi_link.stqe_next;
-	kc->kc_list.stqh_first = head;
+	kwq_list_prepend(kc, head, tail);
 	kc->kc_depth += n;
 	kc->kc_requeued += n;
 	kwq_kc_unlock(kc);
@@ -563,14 +557,15 @@ kwq_notify(struct kwq *q, struct kwq_notifier *nf)
 		SDT_PROBE3(kwq, , , reject, q, nf->kn_cpu, ENXIO);
 		return (false);
 	}
-	if (nf->kn_state != KWQ_NF_IDLE) {
-		if (nf->kn_state == KWQ_NF_PENDING)
+	if (KWQ_NF_ST(nf->kn_state) != KWQ_NF_IDLE) {
+		if (KWQ_NF_ST(nf->kn_state) == KWQ_NF_PENDING)
 			kc->kc_coalesced++;
 		kwq_kc_unlock(kc);
 		return (false);
 	}
-	nf->kn_state = KWQ_NF_PENDING;
-	STAILQ_INSERT_TAIL(&kc->kc_notify, &nf->kn_item, kwi_link);
+	nf->kn_state = KWQ_NF_SET(nf->kn_state, KWQ_NF_PENDING);
+	kwq_list_append(kc, &nf->kn_item, true);
+	kc->kc_depth++;
 	kc->kc_nnotify++;
 	kwq_kc_added(kc, 1);
 	kwq_kc_unlock(kc);
@@ -583,31 +578,83 @@ kwq_notify(struct kwq *q, struct kwq_notifier *nf)
  * already holds it in its batch skips it (kwq_worker.c) and we wait for
  * that pass to end.
  */
+/*
+ * Called by KWQ_ITEM_NEXT(q, it) when the handler fetches a notifier's
+ * successor: the pending -> idle transition, under the list lock that
+ * kwq_notify() and kwq_notify_cancel() use for the same word.  A
+ * cancelled notifier becomes dead instead (refusing signals until
+ * re-init, as before), and the canceller sleeping on kc is woken.
+ */
+void
+kwq_notifier_consumed(struct kwq *q, struct kwq_item *it)
+{
+	struct kwq_notifier *nf = __containerof(it, struct kwq_notifier, kn_item);
+	struct kwq_worker *kw __diagused;
+	struct kwq_cpu *kc;
+
+	kw = kwq_workers[q->kwq_class][curcpu];
+	KASSERT(kw != NULL && kw->kw_td == curthread && kw->kw_cur != NULL &&
+	    kw->kw_cur->kc_q == q,
+	    ("kwq_notifier_consumed: not from a handler of %s", q->kwq_name));
+	kc = q->kwq_pcpu[nf->kn_cpu];
+	kwq_kc_lock(kc);
+	KASSERT(KWQ_NF_ST(nf->kn_state) != KWQ_NF_IDLE,
+	    ("kwq_notifier_consumed: %s: notifier %p idle", q->kwq_name, nf));
+	KASSERT(kc->kc_nnotify > 0,
+	    ("kwq_notifier_consumed: %s: no notifier pending on cpu %d", q->kwq_name, nf->kn_cpu));
+	/* Idle again, or dead if it was cancelled: a signal is refused until re-init. */
+	nf->kn_state = KWQ_NF_BUMP(nf->kn_state,
+	    KWQ_NF_ST(nf->kn_state) == KWQ_NF_CANCELLED ? KWQ_NF_DEAD : KWQ_NF_IDLE);
+	kc->kc_nnotify--;
+	kc->kc_signals++;
+	if (kc->kc_waiters != 0)
+		wakeup(kc);
+	kwq_kc_unlock(kc);
+}
+
+/*
+ * Cancel: mark the notifier and wait until the handler has consumed it,
+ * which happens in the pass that reaches it.  If its CPU's list is idle
+ * no pass is coming on its own, so ring the doorbell; the pass then
+ * delivers the whole list, which is real work anyway.  The handler may
+ * see the cancelled notifier once more before consuming it; the cancel
+ * returns only after that.
+ */
 void
 kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf)
 {
 	struct kwq_cpu *kc;
-	struct kwq_item *it;
 
 	KASSERT(THREAD_CAN_SLEEP(), ("kwq_notify_cancel: non-sleepable"));
 	kc = q->kwq_pcpu[nf->kn_cpu];
 
 	kwq_kc_lock(kc);
-	if (nf->kn_state == KWQ_NF_PENDING) {
-		STAILQ_FOREACH(it, &kc->kc_notify, kwi_link) {
-			if (it == &nf->kn_item) {
-				STAILQ_REMOVE(&kc->kc_notify, it, kwq_item,
-				    kwi_link);
-				kc->kc_nnotify--;
-				KWQ_ITEM_INIT(it);
-				break;
-			}
+	/*
+	 * Pending: cancelled now, dead when the handler consumes it.  Idle,
+	 * which includes "consumed, handler still running": dead at once.
+	 * Either way the notifier refuses signals until re-init, as the
+	 * two-list design's cancel did regardless of the state it found.
+	 */
+	if (KWQ_NF_ST(nf->kn_state) == KWQ_NF_PENDING)
+		nf->kn_state = KWQ_NF_SET(nf->kn_state, KWQ_NF_CANCELLED);
+	else if (KWQ_NF_ST(nf->kn_state) == KWQ_NF_IDLE)
+		nf->kn_state = KWQ_NF_SET(nf->kn_state, KWQ_NF_DEAD);
+	/*
+	 * Wait for the consumption, then for the pass in progress on this
+	 * CPU to end: consumption happens when the handler fetches the
+	 * notifier's successor, before it acts on it, so the handler may
+	 * still be using the client's state when the word turns idle.  A
+	 * run that is under way when we are called is covered by the same
+	 * wait, as in the two-list design.
+	 */
+	while (KWQ_NF_ST(nf->kn_state) == KWQ_NF_CANCELLED ||
+	    kc->kc_state == KWQ_CPU_RUNNING) {
+		if (kc->kc_state == KWQ_CPU_IDLE) {
+			kc->kc_state = KWQ_CPU_WAKING;
+			kwq_doorbell(kc);
 		}
-		/* Not on the live list: in a batch being handled. */
-	}
-	nf->kn_state = KWQ_NF_CANCELLED;
-	while (kc->kc_state == KWQ_CPU_RUNNING)
 		kwq_kc_wait(kc, "kwqncl");
+	}
 	kwq_kc_unlock(kc);
 }
 
@@ -732,16 +779,17 @@ kwq_sysctl_register(struct kwq *q)
 		SYSCTL_ADD_UINT(&q->kwq_sysctl, cchildren, OID_AUTO, "state",
 		    CTLFLAG_RD, &kc->kc_state, 0,
 		    "0 idle, 1 waking, 2 running, 3 parked");
-		KC_U64(kc_items, "items", "items and notifiers handed to the handler");
+		KC_U64(kc_items, "items", "elements handed to the handler, notifiers included");
+		KC_U64(kc_signals, "signals", "notifiers consumed by the handler (a subset of items)");
 		KC_U64(kc_passes, "passes", "handler invocations");
 		KC_U64(kc_cycles, "cycles", "cpu_ticks spent in the handler");
 		KC_U64(kc_rejected, "rejected",
 		    "enqueues refused (ENOBUFS, or ENXIO after drain began)");
 		KC_U64(kc_coalesced, "coalesced",
 		    "kwq_notify() calls that found the notifier pending");
-		KC_U64(kc_requeued, "requeued", "items requeued by the handler");
+		KC_U64(kc_requeued, "requeued", "elements requeued by the handler, notifiers included");
 		KC_U64(kc_maxdepth, "maxdepth", "high-water mark of depth at pass start");
-		KC_U64(kc_maxlat_ns, "maxlat_ns", "largest oldest-item age seen at pass start");
+		KC_U64(kc_maxlat_ns, "maxlat_ns", "largest oldest-element age seen at pass start");
 		KC_U64(kc_overruns, "overruns", "passes that exceeded their budget by more than one quantum x weight");
 		KC_U64(kc_parks, "parks", "rounds skipped for a deficit <= 0");
 		KC_U64(kc_debts, "debts", "doorbells sent to the ring because the queue went idle owing time");
@@ -816,7 +864,6 @@ kwq_create(const char *name, enum kwq_class cls, uint32_t flags,
 		mtx_init(&kc->kc_mtx, q->kwq_lockname, NULL,
 		    (flags & KWQ_F_SPIN) ? MTX_SPIN : MTX_DEF);
 		STAILQ_INIT(&kc->kc_list);
-		STAILQ_INIT(&kc->kc_notify);
 		ks_queue_init(kc);
 		if (flags & KWQ_F_SPIN)
 			kc->kc_flags |= KWQ_KC_SPIN;
@@ -904,14 +951,17 @@ kwq_drain(struct kwq *q)
 		kwq_kc_lock(kc);
 		for (;;) {
 			if (kc->kc_state == KWQ_CPU_IDLE) {
-				if (STAILQ_EMPTY(&kc->kc_list) &&
-				    STAILQ_EMPTY(&kc->kc_notify))
+				if (STAILQ_EMPTY(&kc->kc_list))
 					break;
 				kc->kc_state = KWQ_CPU_WAKING;
 				kwq_doorbell(kc);
 			}
 			kwq_kc_wait(kc, "kwqdrn");
 		}
+		KASSERT(kc->kc_nnotify == 0,
+		    ("kwq_drain: %s: %u notifiers pending on cpu %d after the drain:"
+		    " a handler walked without KWQ_ITEM_NEXT()", q->kwq_name,
+		    kc->kc_nnotify, cpu));
 		kwq_kc_unlock(kc);
 	}
 	q->kwq_drained = 1;
@@ -940,7 +990,7 @@ kwq_destroy(struct kwq *q)
 		if (kc == NULL)
 			continue;
 		KASSERT(kc->kc_state == KWQ_CPU_IDLE &&
-		    STAILQ_EMPTY(&kc->kc_list) && STAILQ_EMPTY(&kc->kc_notify),
+		    STAILQ_EMPTY(&kc->kc_list) && kc->kc_nnotify == 0,
 		    ("kwq_destroy: %s cpu%d not idle", q->kwq_name, cpu));
 		mtx_destroy(&kc->kc_mtx);
 		free(kc, M_KWQ);

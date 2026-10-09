@@ -392,7 +392,7 @@ pair_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 
 	if (n < 0) {
 		for (it = head; it != NULL; it = nx) {
-			nx = KWQ_ITEM_NEXT(it);
+			nx = KWQ_ITEM_NEXT(q, it);
 			m = KWQ_ITEM_MBUF(it);
 			m->m_nextpkt = NULL;
 			m_freem(m);
@@ -405,7 +405,7 @@ pair_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 	CURVNET_SET(if_getvnet(ifp));
 	left = n;
 	for (it = head; it != NULL; it = nx) {
-		nx = KWQ_ITEM_NEXT(it);
+		nx = KWQ_ITEM_NEXT(q, it);
 		m = KWQ_ITEM_MBUF(it);
 		m->m_nextpkt = NULL;		/* the stack expects it clear */
 		pair_input(ifp, m);

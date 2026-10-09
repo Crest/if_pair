@@ -280,7 +280,7 @@ kt_other_cpu(int cpu)
 /* ================================================================ P0 */
 
 static void
-kt_item_handler(struct kwq *q __unused, struct kwq_item *head, int n,
+kt_item_handler(struct kwq *q, struct kwq_item *head, int n,
     void *ctx __unused)
 {
 	struct kwq_item *it, *next;
@@ -291,7 +291,7 @@ kt_item_handler(struct kwq *q __unused, struct kwq_item *head, int n,
 	cpu = curcpu;
 	cnt = 0;
 	for (it = head; it != NULL; it = next) {
-		next = KWQ_ITEM_NEXT(it);
+		next = KWQ_ITEM_NEXT(q, it);
 		KWQ_ITEM_INIT(it);
 		ti = __containerof(it, struct titem, ti_item);
 		if (ti->ti_magic != TITEM_MAGIC)
@@ -319,13 +319,13 @@ kt_item_handler(struct kwq *q __unused, struct kwq_item *head, int n,
 }
 
 static void
-kt_sleep_handler(struct kwq *q __unused, struct kwq_item *head, int n,
+kt_sleep_handler(struct kwq *q, struct kwq_item *head, int n,
     void *ctx __unused)
 {
 	struct kwq_item *it, *next;
 
 	for (it = head; it != NULL; it = next) {
-		next = KWQ_ITEM_NEXT(it);
+		next = KWQ_ITEM_NEXT(q, it);
 		KWQ_ITEM_INIT(it);
 	}
 	if (n > 0)
@@ -334,9 +334,19 @@ kt_sleep_handler(struct kwq *q __unused, struct kwq_item *head, int n,
 }
 
 static void
-kt_notify_handler(struct kwq *q __unused, struct kwq_item *head __unused,
-    int n, void *ctx __unused)
+kt_notify_handler(struct kwq *q, struct kwq_item *head, int n,
+    void *ctx __unused)
 {
+	struct kwq_item *it, *next;
+
+	/*
+	 * Walk even though only the signal matters: fetching an element's
+	 * successor is what consumes a notifier.  (The worker settles an
+	 * unwalked head or tail itself, but that is a safety net, not the
+	 * contract.)
+	 */
+	for (it = head; it != NULL; it = next)
+		next = KWQ_ITEM_NEXT(q, it);
 	if (n < 0)
 		return;
 	atomic_add_64(&kt_nf_runs, 1);
@@ -659,7 +669,7 @@ kt_flood_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 	left = n < 0 ? -n : n;
 	if (n < 0) {
 		for (it = head; it != NULL; it = next) {
-			next = KWQ_ITEM_NEXT(it);
+			next = KWQ_ITEM_NEXT(f->q, it);
 			KWQ_ITEM_INIT(it);
 			if (f->fanin) {
 				ti = __containerof(it, struct titem, ti_item);
@@ -719,7 +729,7 @@ kt_ifpair_handler(struct kt_flood *f, struct kwq_item *head, int n)
 	t0 = cpu_ticks();
 	now = (uint64_t)sbinuptime();
 	for (it = head; it != NULL; it = next) {
-		next = KWQ_ITEM_NEXT(it);
+		next = KWQ_ITEM_NEXT(f->q, it);
 		ti = __containerof(it, struct titem, ti_item);
 		if (ti->ti_magic != TITEM_MAGIC || (u_int)ti->ti_qidx - base >= nprod)
 			panic("kwq_test: bad ifpair item %p", ti);
@@ -771,7 +781,7 @@ kt_fanin_handler(struct kt_flood *f, struct kwq_item *head, int n)
 	}
 	t0 = cpu_ticks();
 	for (it = head; it != NULL; it = next) {
-		next = KWQ_ITEM_NEXT(it);
+		next = KWQ_ITEM_NEXT(f->q, it);
 		ti = __containerof(it, struct titem, ti_item);
 		if (ti->ti_magic != TITEM_MAGIC || (u_int)ti->ti_qidx >= kt_nscale)
 			panic("kwq_test: bad fanin item %p", ti);
@@ -803,7 +813,7 @@ kt_flood_handler_one(struct kt_flood *f, struct kwq_item *head, int n)
 
 	t0 = cpu_ticks();
 	for (it = head; it != NULL; it = next) {
-		next = KWQ_ITEM_NEXT(it);
+		next = KWQ_ITEM_NEXT(f->q, it);
 		ti = __containerof(it, struct titem, ti_item);
 		if (ti->ti_magic != TITEM_MAGIC)
 			panic("kwq_test: bad flood item %p", ti);
@@ -896,7 +906,7 @@ kt_flood_producer(void *arg)
 				STAILQ_FIRST(&f->free) = nx;
 			f->nfree -= k;
 			mtx_unlock(&f->mtx);
-			KWQ_ITEM_NEXT(tail) = NULL;
+			KWQ_ITEM_INIT(tail);
 			t0 = cpu_ticks();
 			error = kwq_enqueue_list(f->q, f->cpu, it, tail, (int)k);
 			f->prod_ticks += kt_tickdelta(t0);
@@ -905,7 +915,7 @@ kt_flood_producer(void *arg)
 
 				STAILQ_INIT(&back);
 				for (; it != NULL; it = nx) {
-					nx = KWQ_ITEM_NEXT(it);
+					nx = STAILQ_NEXT(it, kwi_link);
 					KWQ_ITEM_INIT(it);
 					STAILQ_INSERT_TAIL(&back, it, kwi_link);
 				}
@@ -979,7 +989,7 @@ kt_ifpair_producer(struct kt_flood *f)
 			STAILQ_FIRST(&f->free) = nx;
 		f->nfree -= k;
 		mtx_unlock(&f->mtx);
-		KWQ_ITEM_NEXT(tail) = NULL;
+		KWQ_ITEM_INIT(tail);
 		/*
 		 * The stack's work for k packets, then the flow hash to a
 		 * worker.  Each sender's flow sequence is mixed with its own
@@ -995,7 +1005,7 @@ kt_ifpair_producer(struct kt_flood *f)
 		h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
 		target = f->cpu + (int)(h % f->spread);
 		now = (uint64_t)sbinuptime();
-		for (nx = it; nx != NULL; nx = KWQ_ITEM_NEXT(nx)) {
+		for (nx = it; nx != NULL; nx = STAILQ_NEXT(nx, kwi_link)) {
 			ti = __containerof(nx, struct titem, ti_item);
 			ti->ti_cpu = target;
 			ti->ti_seq = now;	/* enqueue stamp: queue latency */
@@ -1014,7 +1024,7 @@ kt_ifpair_producer(struct kt_flood *f)
 
 			STAILQ_INIT(&back);
 			for (; it != NULL; it = nx) {
-				nx = KWQ_ITEM_NEXT(it);
+				nx = STAILQ_NEXT(it, kwi_link);
 				KWQ_ITEM_INIT(it);
 				STAILQ_INSERT_TAIL(&back, it, kwi_link);
 			}
@@ -1670,7 +1680,7 @@ kt_tq_run(void *arg __unused, int pending __unused)
 	kt_tq_scheduled = false;
 	mtx_unlock(&kt_tq_mtx);
 	for (it = head; it != NULL; it = next) {
-		next = KWQ_ITEM_NEXT(it);
+		next = STAILQ_NEXT(it, kwi_link);
 		KWQ_ITEM_INIT(it);
 		kt_flood_return(f, it);
 		n++;

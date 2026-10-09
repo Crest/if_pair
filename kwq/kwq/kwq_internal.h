@@ -36,8 +36,28 @@ struct kwq_sched_knobs;
 enum kwq_nf_state {
 	KWQ_NF_IDLE = 0,
 	KWQ_NF_PENDING,		/* on the live list or in a batch not yet released */
-	KWQ_NF_CANCELLED,	/* kwq_notify_cancel() ran; not run again until re-init */
+	KWQ_NF_CANCELLED,	/* kwq_notify_cancel() ran; waiting to be consumed */
+	KWQ_NF_DEAD,		/* cancelled and consumed: refuses signals until re-init */
+	/*
+	 * kn_state holds the state in its low two bits and a generation,
+	 * bumped on every consume, above them.  The generation lets the
+	 * worker tell a notifier the handler never consumed (same generation
+	 * as at swap-out) from one it consumed and re-armed (new generation),
+	 * in O(1), for the head and tail of a pass: see kwq_pass().  It wraps
+	 * modulo 2^30 (unsigned arithmetic, so defined), which is harmless:
+	 * the two reads it is compared between are the swap-out and the end
+	 * of the same pass, and a notifier is consumed at most once per pass
+	 * (at most one instance is ever pending; a re-signal joins the live
+	 * list, not the batch), so the generation moves by 0 or 1 between
+	 * them and a false match would need exactly 2^30 bumps.  One bit
+	 * would do; the width is what the word has spare.
+	 */
 };
+
+#define	KWQ_NF_ST(w)		((w) & 3)
+#define	KWQ_NF_SET(w, st)	(((w) & ~3u) | (st))
+#define	KWQ_NF_BUMP(w, st)	(((((w) >> 2) + 1) << 2) | (st))	/* next generation */
+#define	KWQ_NF_GEN(w)		((w) >> 2)
 
 /* kc_flags */
 #define	KWQ_KC_SPIN	0x01	/* kc_mtx is MTX_SPIN */
@@ -53,12 +73,11 @@ struct kwq_cpu {
 	 * kc_onlist, kc_warm and kc_idle_round are under kw_mtx.
 	 */
 	struct mtx		kc_mtx;
-	STAILQ_HEAD(, kwq_item)	kc_list;	/* items */
-	u_int			kc_depth;	/* items on kc_list */
+	STAILQ_HEAD(, kwq_item)	kc_list;	/* items and notifiers, arrival order */
+	u_int			kc_depth;	/* elements on kc_list */
 	u_int			kc_state;	/* enum kwq_cpu_state (kwq_sched.h) */
-	u_int			kc_nnotify;	/* notifiers on kc_notify */
+	u_int			kc_nnotify;	/* notifiers pending: on kc_list or handed over */
 	u_int			kc_flags;	/* ---- 64 bytes up to here ---- */
-	STAILQ_HEAD(, kwq_item)	kc_notify;	/* pending notifiers */
 	u_short			kc_waiters;	/* drain/cancel sleepers on kc */
 	u_char			kc_onlist;	/* enum kwq_onlist */
 	u_char			kc_warm;	/* KWQ_WARM | KWQ_DEBT (SCHED.md S4.3, S4.6) */
@@ -73,7 +92,8 @@ struct kwq_cpu {
 	int			kc_cpu;
 	u_int			kc_src;		/* enum kwq_src: list of the pass in progress */
 	int64_t			kc_deficit;	/* DRR deficit, ns */
-	uint64_t		kc_items;	/* items + notifiers handed to the handler */
+	uint64_t		kc_items;	/* elements handed to the handler, notifiers included */
+	uint64_t		kc_signals;	/* of those, notifiers (counted as the handler consumes them) */
 	uint64_t		kc_passes;
 	uint64_t		kc_cycles;	/* wall cpu_ticks spent in passes */
 	uint64_t		kc_requeued;
@@ -89,7 +109,7 @@ struct kwq_cpu {
 	uint64_t		kc_steals_in;	/* P6 */
 } __aligned(KWQ_LINE);
 
-CTASSERT(__offsetof(struct kwq_cpu, kc_notify) <= 64);	/* item path in line 0 */
+CTASSERT(__offsetof(struct kwq_cpu, kc_flags) < 64);	/* enqueue path in line 0 */
 CTASSERT(__offsetof(struct kwq_cpu, kc_q) == KWQ_LINE);
 
 /* kwq_state */
@@ -222,5 +242,44 @@ void	kwq_doorbell(struct kwq_cpu *kc);	/* kc locked, state IDLE */
 bool	kwq_higher_waiting(enum kwq_class cls);	/* hand-back flags, this CPU */
 uint64_t kwq_cputime_ns(const struct kwq_worker *kw);
 uint64_t kwq_cputime_ns_tick(const struct kwq_worker *kw, uint64_t *tick);
+
+
+/*
+ * The per-CPU list holds items and notifiers in arrival order.  A
+ * notifier's own outgoing link carries KWQ_LINK_TAG (kwq.h); the head
+ * pointer and every item's link are plain.  Only these helpers touch
+ * the links, since the STAILQ macros would lose or misread the tag.
+ */
+#define	KWQ_TAGBIT(p)	((uintptr_t)(p) & KWQ_LINK_TAG)
+
+/* Append `it' (a notifier if `tag') as the last element. */
+static inline void
+kwq_list_append(struct kwq_cpu *kc, struct kwq_item *it, bool tag)
+{
+	it->kwi_link.stqe_next = (struct kwq_item *)(tag ? KWQ_LINK_TAG : 0);
+	*kc->kc_list.stqh_last = (struct kwq_item *)((uintptr_t)it |
+	    KWQ_TAGBIT(*kc->kc_list.stqh_last));
+	kc->kc_list.stqh_last = &it->kwi_link.stqe_next;
+}
+
+/* Append a client's list of items (plain links, tail->next == NULL). */
+static inline void
+kwq_list_concat(struct kwq_cpu *kc, struct kwq_item *head, struct kwq_item *tail)
+{
+	*kc->kc_list.stqh_last = (struct kwq_item *)((uintptr_t)head |
+	    KWQ_TAGBIT(*kc->kc_list.stqh_last));
+	kc->kc_list.stqh_last = &tail->kwi_link.stqe_next;
+}
+
+/* Prepend head..tail, keeping tail's own tag; for kwq_requeue(). */
+static inline void
+kwq_list_prepend(struct kwq_cpu *kc, struct kwq_item *head, struct kwq_item *tail)
+{
+	tail->kwi_link.stqe_next = (struct kwq_item *)
+	    ((uintptr_t)kc->kc_list.stqh_first | KWQ_TAGBIT(tail->kwi_link.stqe_next));
+	if (kc->kc_list.stqh_first == NULL)
+		kc->kc_list.stqh_last = &tail->kwi_link.stqe_next;
+	kc->kc_list.stqh_first = head;
+}
 
 #endif /* !_KWQ_INTERNAL_H_ */
