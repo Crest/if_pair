@@ -4751,3 +4751,133 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   head under nws_mtx, preserves that; one that lets two parties drain
   one protocol's queue does not.  Small change, but the ordering
   argument has to be written down with it.
+
+2026-10-08: notifiers and items on one queue, phase 1 (tests against
+  the current two-list design).  Nine kwq_test scenarios (mixorder,
+  mixpattern, mixbudget, mixstarve, mixrearm, mixcancel, mixrequeue,
+  mixdrain, mixdrain_discard; OBSERVABILITY.md S9) and eight ATF cases
+  whose assertions state the WANTED behaviour, so they fail where the
+  implementation lacks it.  All build exact lists behind a gate item
+  whose handler spins until released, and log delivery order from the
+  worker CPU.  Guest (GENERIC-DEBUG, 4 vCPUs), ATF knobs:
+    mixorder    inversions 1000 of 1000: every item enqueued before the
+                signal was delivered after it (notifiers first), 3 calls
+                per pass (gate, notifier, items)                FAIL
+    mixpattern  120 patterns, 82 inversions, exact-once held     FAIL
+    mixbudget   64 x 50 us notifiers: 640 runs, 0 requeues, so all
+                of them ran unbudgeted in one pass each rep     FAIL
+    mixstarve   items alone 271,749 in 2 s; beside a self-re-arming
+                200 us notifier 10,393, with 10,395 notifier runs:
+                exactly one item per pass, SCHED.md S14 case 4  FAIL
+    mixrequeue  580 requeues, exact-once held, 3300 inversions  FAIL
+    mixrearm    40 runs for 20 reps: exactly one further run per
+                in-handler signal, final level seen            pass
+    mixcancel   cancel returns after the handler, refuses, revives;
+                hammer 4.8 M cancel/init cycles vs 23 M signals pass
+    mixdrain    idle after drain, refusal after drain, discard  pass
+  Whole suite with the new module 16/22 (the five above fail, yield
+  skips on the VM as always, the fourteen old cases unchanged).
+  Harness lessons: (1) a producer polling for a 2 ms handler run with
+  pause(1) misses it at hz=100 (10 ms ticks); poll sub-tick with
+  pause_sbt.  (2) A signaller in a tight loop with NO work between
+  kwq_notify() calls takes and drops the per-CPU mutex back to back
+  and, FreeBSD mutexes being unfair, starved both the worker
+  (__mtx_lock_flags in kwq_worker_main) and the canceller (mtx_lock
+  in kwq_notify_cancel) for minutes: a livelock of my test, not a kwq
+  bug, but the same unfairness as the fan-in collapse of SCHED.md
+  S15.7 in its purest form.  The hammer now does ~1 us of work per
+  signal, as any real producer does, and has its own deadline.  The
+  guest had to be restarted to clear it and came back at init's
+  single-user prompt (kenv boot_single=YES, not from loader.conf; not
+  seen on earlier restarts; answered on the console).  Knob loop
+  (4 CPU choices x 4 knob sets x 9 scenarios): 213 runs, no fault.
+  Phase 2 (2026-10-08): notifiers on the item list.  The change
+  (kwq.h, kwq_internal.h, kwq.c, kwq_worker.c, Makefile; if_pair.c and
+  kwq_test.c for the accessor): a notifier's own outgoing link carries
+  KWQ_LINK_TAG (bit 0; every element is pointer-aligned, an item's link
+  is never tagged, so no mbuf ever carries it); kc_notify and the
+  per-pass notifier loop are gone and kwq_notify() appends to kc_list,
+  counted in kc_depth (never refused by the limit; kc_nnotify now counts
+  pending notifiers anywhere, decremented on consume); the list is
+  touched only through kwq_list_append/concat/prepend, which keep the
+  tag STAILQ would lose; KWQ_ITEM_NEXT(q, it) = kwq_item_next() tests
+  the bit and calls the exported kwq_notifier_consumed(), the pending ->
+  idle flip under the kc lock of kn_cpu, bumping a generation kept in
+  kn_state's upper bits (KWQ_NF_ST/SET/BUMP/GEN); the worker records
+  the head's and tail's state words at swap-out and, after a pass with
+  no requeue, consumes an unwalked head or tail whose generation is
+  unchanged (KASSERT under INVARIANTS), so a notifier-only handler that
+  ignores its list keeps working; kwq_notify_cancel() marks pending ->
+  CANCELLED (or idle -> DEAD at once), rings the doorbell if the list is
+  idle, and waits until the state leaves CANCELLED AND the running pass
+  ends; a consumed CANCELLED notifier becomes KWQ_NF_DEAD, refusing
+  signals until re-init, as before; kwq_drain() asserts kc_nnotify == 0
+  per CPU afterwards; kwq_destroy() likewise; new per-CPU counter
+  `signals` (notifiers consumed).  sizeof(struct kwq_cpu) unchanged at
+  384 (16 bytes freed in block 0).  Simulator unaffected (scheduler
+  untouched), ALL PASSED.
+  Three semantic lessons the tests taught, in order of discovery:
+  (1) the simplest notifier handler, kt_notify_handler and my own
+  cheatsheet example, never walks its list, so under "consume at the
+  successor fetch" it never consumed, the new drain assertion fired and
+  panicked the guest (vmcore.2 there) - hence the head/tail settle with
+  the generation (a plain word compare would misread "consumed and
+  re-armed" as "never consumed", and a cancel in between changes the
+  state bits, so compare generations only).  (2) consumption happens
+  BEFORE the handler acts, so a cancel racing a run found the word idle
+  and returned while the handler still used the client's state; cancel
+  now also waits for the running pass, as the two-list cancel did.
+  (3) the two-list cancel marked a notifier CANCELLED whatever state it
+  found, so a signal after cancel was refused until re-init; the first
+  rewrite only marked PENDING ones and left an idle one reusable - hence
+  KWQ_NF_DEAD, set directly when cancel finds idle, or at consume when
+  it finds pending.
+  Results, ATF knobs (guest = GENERIC-DEBUG 4 vCPUs, a07 = 15.1-p4,
+  128 cores; old = phase 1 above, new = this):
+                    guest old   guest new   a07 old    a07 new
+    mixorder inv.   1000        0           1000       0
+    mixpattern inv. 82/120      0/120       82/120     0/120
+    mixbudget       0 requeues  169 req.    0 requeues 150 req.
+                    1 pass/rep  ~19 passes  1 pass/rep ~17 passes
+    mixstarve       10,393 of   252,980 of  10,995 of  1,600,242 of
+     items w/ vs    271,749     260,983     1,898,389  1,897,685
+     without        (3.8 %)     (97 %)      (0.6 %)    (84 %)
+     notifier runs  10,395      260         10,953     1,567
+    mixrequeue inv. 3300        0           3300       0
+    mixrearm        40/40 both; mixdrain(+discard) both; mixcancel both
+  kyua: guest 8/8 mix, 21/22 whole suite (gaming, below), knob loop
+  213/213, if_pair run_all 29/0 with KWQ_ITEM_NEXT(q, it); a07 21/22 by
+  case (bad_names hit kyua's "PID already in all_exec_data" crash, the
+  known a07 kyua quirk, not a test result), all 9 scenarios and 28 knob
+  variations done, if_pair run_all 29/0, t_17 A/B same boot kwq
+  32.6/59.8/132/206/348/454/357/338 vs baseline 33.0/66.3/118/219/351/
+  493/359/339 Gbit/s (parity; 454 vs 493 at 32 is the usual spread,
+  cf. 10-01), cost 16/call 45.4 M items/s = 22 ns/item (recorded 47.4 M,
+  21 ns; the tag test is one AND and a branch per element), 1/call
+  2.53 M (recorded 1.8-2.2 M bimodal).  No reboot on a07 (up 8 d 14:44
+  before, 14:59 after).  Observability mid-run on a07 (mixstarve, cpu
+  5): items 20.2 M, signals 782, requeued 16.6 M, passes 19,982,
+  maxdepth 1025, depth 31; dtrace pass-start arg2 now counts signals
+  among the 512-2047 elements per pass; the translator must be given
+  with -L from an uninstalled tree.
+  Harness and environment notes: (a) phase-2 runs left kwq.ko and
+  if_pair.ko loaded (run_all does), my kldunload of kwq then failed on
+  the dependency and both a "fixed" mixcancel and a gaming "A/B"
+  silently ran the stale pre-fix module - check `kldstat` before trusting
+  a module swap; redone with the kernel verified empty.  (b) gaming
+  failed 3 of 8 whole-suite/repeat runs in the guest today (3-4 boosts,
+  limit 2); a genuine interleaved A/B against the committed design built
+  in a worktree gave old 1/6 and new 1/6 failures, the same first
+  iteration, so it is the guest's jitter (my concurrent host builds steal
+  its vCPUs), not the change; gaming passed on a07.  (c) the hammer
+  phase of mixcancel is a contention artifact in both directions: in the
+  guest 17.9 M cancel/init cycles vs 2,734 signals (the producer starved
+  the hammer), on a07 31 cycles vs 3.7 M signals (each cancel waited for
+  a pass boundary on a saturated queue, ~65 ms); both finished and the
+  final single-signal check passed.  (d) once on a07 phase 1 a gate was
+  not reached within a second (mixpattern, 84 of 120); not reproduced in
+  phase 2's 120 + 480 gates; the worker never sleeps with a parked ring
+  (ks_next keeps rounding), so it was not that.  (e) t_26/t_27 leave
+  their jails behind when they skip (unpatched gif), which fails the next
+  run_all with "jail already exists": a pre-existing cleanup gap in those
+  two tests, unrelated to kwq.  Logs: samples/mix_{guest,a07}_phase{1,2}_*.

@@ -82,7 +82,8 @@ Phases
     - kwq_notifier_init(nf, cpu)/kwq_notify(q, nf)/kwq_notify_cancel:
       pending state under the notifier's fixed (queue, CPU) mutex,
       limit-exempt, cleared at swap-out
-      before the handler runs; cancel unlinks and waits for a pass
+      before the handler runs (so in P0; since 2026-10-08 consumed by the
+      handler's KWQ_ITEM_NEXT(), see that entry); cancel unlinks and waits for a pass
       holding it (KWQ.md S3).  Test: a notifier signalled 1e6 times from
       two CPUs while the handler counts runs -> runs <= signals, every
       state change observed, zero rejects, `coalesced` accounts for the
@@ -112,7 +113,8 @@ Phases
     root ssh by a dedicated key, crash dumps on; 'mods' builds both
     modules against that kernel and copies them in.  Deviations from the
     bullets above:
-    notifiers are handed to the handler one per call (n == 1), items as
+    notifiers were handed to the handler one per call (n == 1; since
+    2026-10-08 they sit in the item list, see that entry), items as
     one list; the shared block is KWQ_LINE = max(CACHE_LINE_SIZE, 128)
     with the per-enqueue fields in its first 64 bytes; KWQ_CPU_ANY picks
     the shallowest list within the caller's NUMA domain (cache domain
@@ -550,6 +552,22 @@ Phases
     the 479 Gbit/s peak and >= 337 at P=128, t_20 shows no callout
     contention regression, t_19 profile shows kwq_net/N workers where
     pair_task_N were.  Record in NOTES.md and samples/.
+
+[DONE 2026-10-08] Notifiers on the item list, in arrival order.
+    Asked for FIFO delivery of notifications and items on one queue
+    without more memory.  Eight ATF cases (mix*) first showed the old
+    two-list design: notifiers first (1000 of 1000 inversions), one per
+    call and unbudgeted (64 x 50 us in one pass), SCHED.md S14 case 4 at
+    one item per pass (items at 3.8 % of their solo rate in the guest,
+    0.6 % on a07).  Then the change: a notifier's own outgoing link
+    carries KWQ_LINK_TAG; KWQ_ITEM_NEXT(q, it) consumes a notifier as the
+    handler fetches its successor; kwq_notify_cancel() waits for the
+    consumption and the running pass; the worker settles an unwalked
+    head or tail notifier by a generation kept in kn_state's spare bits;
+    a cancelled notifier becomes KWQ_NF_DEAD when consumed.  kc_notify
+    and the per-pass notifier loop are gone (16 bytes per kwq_cpu),
+    `signals` counter added.  Results and the harness lessons in
+    ../NOTES.md 2026-10-08.
 
 [OPEN 2026-10-07] Fork: a netisr-first path was recommended by FreeBSD
     network stack developers after a presentation of P0-P4 (small diffs,

@@ -1,0 +1,57 @@
+start 15:32:06  3:32PM  up 47 mins, 0 users, load averages: 0.89, 13.33, 18.62
+== kyua: mix cases
+kwq_test.sh:mixbudget  ->  passed  [0.313s]
+kwq_test.sh:mixcancel  ->  passed  [2.342s]
+kwq_test.sh:mixdrain  ->  passed  [0.539s]
+kwq_test.sh:mixorder  ->  passed  [0.301s]
+kwq_test.sh:mixpattern  ->  passed  [1.536s]
+kwq_test.sh:mixrearm  ->  passed  [0.295s]
+kwq_test.sh:mixrequeue  ->  passed  [0.306s]
+kwq_test.sh:mixstarve  ->  passed  [4.181s]
+8/8 passed (0 broken, 0 failed, 0 skipped)
+== kyua: whole suite
+kwq_test.sh:gaming  ->  failed: gaming queue collected 3 boosts  [3.152s]
+21/22 passed (0 broken, 1 failed, 0 skipped)
+== scenarios, ATF knobs
+== mixorder: done 
+   inversions=0 exact_errors=0 runs=20 calls=40
+== mixpattern: done 
+   patterns=120 inversions=0 exact_errors=0 calls=240 coalesced=104
+== mixbudget: done 
+   runs=640 calls=189 requeues=169
+== mixstarve: done 
+   without=260983 with=252980 runs=260 calls=20017
+== mixrearm: done 
+   runs=40 coalesced=40
+== mixcancel: done 
+   cancels=17931559 hammer_signals=2734 runs=642
+== mixrequeue: done 
+   requeues=780 inversions=0 exact_errors=0 runs=200
+== mixdrain: done 
+   runs=40 out=15 exact_errors=0
+== mixdrain_discard: done 
+   discarded=55 exact_errors=0
+== mixorder: done 
+   tiny limit: rejected=80 out=20 runs=5 inversions=0
+== mixbudget: done 
+   tiny limit: rejected=300 runs=192
+== observability: signals counter on the queue after a mixorder run
+== mixorder: done 
+== knob loop
+loop runs: 213 not-done: 0
+== gaming repeated 6x (one 3-boost failure seen once)
+kwq_test.sh:gaming  ->  passed  [3.092s]
+kwq_test.sh:gaming  ->  failed: gaming queue collected 3 boosts  [3.158s]
+kwq_test.sh:gaming  ->  passed  [3.155s]
+kwq_test.sh:gaming  ->  passed  [3.093s]
+kwq_test.sh:gaming  ->  passed  [3.165s]
+kwq_test.sh:gaming  ->  failed: gaming queue collected 3 boosts  [3.152s]
+== if_pair suite on the new accessor
+passed 29, failed 0
+71    1 0xffffffff82e9b000     539c if_epair.ko
+262    2 0xffffffff82e8b000     a750 kwq.ko
+263    1 0xffffffff82e96000     3338 if_pair.ko
+lock order reversal:
+lock order ifnet_detach_sx -> vnet_sysinit_sxlock attempted at:
+end 15:43:41  3:43PM  up 59 mins, 0 users, load averages: 64.41, 34.19, 24.57
+== phase2 done

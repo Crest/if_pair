@@ -1,0 +1,123 @@
+start 15:32:09  3:32PM  up 8 days, 14:44, 0 users, load averages: 0.00, 0.00, 0.00
+34    1 0xffff0007c42aa000    27000 if_epair.ko
+== kyua: all 22 cases, one per invocation
+kwq_test.sh:lifecycle  ->  passed  [0.464s]
+kwq_test.sh:fifo  ->  passed  [0.460s]
+kwq_test.sh:reject  ->  passed  [0.263s]
+kwq_test.sh:discard  ->  passed  [0.263s]
+kwq_test.sh:notify  ->  passed  [0.258s]
+kwq_test.sh:bad_names  ->  *** /usr/src/contrib/kyua/engine/scheduler.cpp:1062: Invariant check failed: PID 41 already in all_exec_data; not properly cleaned up or reused too fast
+Abort trap (core dumped)
+kwq_test.sh:fairness  ->  passed  [3.284s]
+kwq_test.sh:fairness_2to1  ->  passed  [3.084s]
+kwq_test.sh:latency  ->  passed  [3.286s]
+kwq_test.sh:gaming  ->  passed  [3.289s]
+kwq_test.sh:overrun  ->  passed  [3.286s]
+kwq_test.sh:yield  ->  passed  [3.285s]
+kwq_test.sh:cost  ->  passed  [3.287s]
+kwq_test.sh:ifpair  ->  passed  [3.288s]
+kwq_test.sh:mixorder  ->  passed  [0.261s]
+kwq_test.sh:mixpattern  ->  passed  [0.259s]
+kwq_test.sh:mixbudget  ->  passed  [0.268s]
+kwq_test.sh:mixstarve  ->  passed  [4.107s]
+kwq_test.sh:mixrearm  ->  passed  [0.260s]
+kwq_test.sh:mixcancel  ->  passed  [4.299s]
+kwq_test.sh:mixrequeue  ->  passed  [0.264s]
+kwq_test.sh:mixdrain  ->  passed  [0.481s]
+kwq unloaded after kyua
+== scenarios, ATF knobs
+== mixorder: done 
+   inversions=0 exact_errors=0 runs=20 calls=40
+== mixpattern: done 
+   patterns=120 inversions=0 exact_errors=0 calls=240
+== mixbudget: done 
+   runs=640 calls=170 requeues=150
+== mixstarve: done 
+   without=1897685 with=1600242 runs=1567 calls=19989
+== mixrearm: done 
+   runs=40 coalesced=40
+== mixcancel: done 
+   cancels=31 hammer_signals=3723680 runs=22
+== mixrequeue: done 
+   requeues=780 inversions=0 exact_errors=0
+== mixdrain: done 
+   runs=40 out=15 exact_errors=0
+== mixdrain_discard: done 
+   discarded=55 exact_errors=0
+== knob variations
+== mixorder: done 
+== mixpattern: done 
+== mixbudget: done 
+== mixrequeue: done 
+== mixrearm: done 
+== mixcancel: done 
+== mixdrain: done 
+== mixorder: done 
+== mixpattern: done 
+== mixbudget: done 
+== mixrequeue: done 
+== mixrearm: done 
+== mixcancel: done 
+== mixdrain: done 
+== mixorder: done 
+== mixpattern: done 
+== mixbudget: done 
+== mixrequeue: done 
+== mixrearm: done 
+== mixcancel: done 
+== mixdrain: done 
+== mixorder: done 
+== mixpattern: done 
+== mixbudget: done 
+== mixrequeue: done 
+== mixrearm: done 
+== mixcancel: done 
+== mixdrain: done 
+== observability mid-run: signals counter and pass probes (translator from the tree)
+maxdepth: 1025 requeued: 16551157 passes: 19982 signals: 782 items: 20201411 depth: 31 
+
+  elements per pass                                 
+           value  ------------- Distribution ------------- count    
+             256 |                                         0        
+             512 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@     2589     
+            1024 |@@@@                                     295      
+            2048 |                                         0        
+
+  signals consumed                                                451
+   mixstarve cpu=5: without=2848949 with=2399760 runs=2348
+== cost: per-item path with the tag test (16 per call, 5 s, vs the 47.4 M recorded)
+== cost: done 
+   
+== cost: done 
+   
+== if_pair suite
+passed 29, failed 0
+ifp_26_gif_tso_1: removed
+ifp_26_gif_tso_2: removed
+ifp_27_gif_profile_1: removed
+ifp_27_gif_profile_2: removed
+== A/B t_17: kwq (new accessor) vs the taskqueue baseline, same boot
+kldload: can't load /home/crest/if_pair-p4-scratch/kwq/kwq/kwq.ko: module already loaded or in kernel
+kldload: can't load /home/crest/if_pair-p4-scratch/if_pair.ko: module already loaded or in kernel
+-- kwq
+t_17_throughput:     1    32.6        0       0         0
+t_17_throughput:     2    59.8        0       0         0
+t_17_throughput:     4     132        0       0         0
+t_17_throughput:     8     206        0       0         0
+t_17_throughput:    16     348        0       0         0
+t_17_throughput:    32     454        0       0         0
+t_17_throughput:    64     357        0       0         0
+t_17_throughput:   128     338        0       0         0
+-- baseline
+t_17_throughput:     1    33.0        0       0      4805
+t_17_throughput:     2    66.3        0       0      9416
+t_17_throughput:     4     118        0       0     18864
+t_17_throughput:     8     219        0       0     38118
+t_17_throughput:    16     351        0       0     67889
+t_17_throughput:    32     493        0       0    144671
+t_17_throughput:    64     359        0       0    206460
+t_17_throughput:   128     339        0       0    196898
+34    1 0xffff0007c42aa000    27000 if_epair.ko
+jails left: 0
+end 15:46:21  3:46PM  up 8 days, 14:58, 0 users, load averages: 33.32, 40.90, 26.47
+== mix2 done

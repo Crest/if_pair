@@ -1,0 +1,24 @@
+start 13:53:13  1:53PM  up 12 mins, 0 users, load averages: 0.30, 0.23, 0.12
+== kyua: mix cases
+kwq_test.sh:mixbudget  ->  failed: 64 x 50 us against a 200 us quantum and the handler never requeued: notifiers are not budgeted  [0.288s]
+kwq_test.sh:mixcancel  ->  passed  [2.725s]
+kwq_test.sh:mixdrain  ->  passed  [0.520s]
+kwq_test.sh:mixorder  ->  failed: 1000 items delivered on the wrong side of the notifier  [0.283s]
+kwq_test.sh:mixpattern  ->  failed: 82 out-of-order deliveries over 120 patterns  [1.314s]
+kwq_test.sh:mixrearm  ->  passed  [0.273s]
+kwq_test.sh:mixrequeue  ->  failed: 3300 out-of-order deliveries  [0.286s]
+kwq_test.sh:mixstarve  ->  failed: items fell to 10398 of 261669 beside the re-arming notifier  [4.461s]
+3/8 passed (0 broken, 5 failed, 0 skipped)
+== kyua: whole suite (regression of the old cases with the new module)
+kwq_test.sh:mixbudget  ->  failed: 64 x 50 us against a 200 us quantum and the handler never requeued: notifiers are not budgeted  [0.302s]
+kwq_test.sh:mixorder  ->  failed: 1000 items delivered on the wrong side of the notifier  [0.277s]
+kwq_test.sh:mixpattern  ->  failed: 82 out-of-order deliveries over 120 patterns  [1.313s]
+kwq_test.sh:mixrequeue  ->  failed: 3300 out-of-order deliveries  [0.285s]
+kwq_test.sh:mixstarve  ->  failed: items fell to 10400 of 265763 beside the re-arming notifier  [4.382s]
+kwq_test.sh:yield  ->  skipped: VM callout stall: callout late by 32537 us (bound: one tick + one pass)  [3.334s]
+16/22 passed (0 broken, 5 failed, 1 skipped)
+== knob loop
+-- cpu=-1 items=1 reps=50 cost_a=1
+mixorder         done  
+mixpattern       done  
+/root/mixloop.sh: arithmetic expression: expecting EOF: "1 + cpu * 0 + 50 cost_a=1 % 64"
