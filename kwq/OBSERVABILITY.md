@@ -247,6 +247,13 @@ a serial console: `sysctl debug.kdb.enter=1`, `show kwq`, `c`.
 
 ## 8. lockstat, fbt and profile
 
+A caution before any of them: `lockstat -P` instruments every lock
+acquisition kernel-wide and cost a single if_pair TCP flow on a07 about
+15 % (29-32 instead of 33-38 Gbit/s, ../NOTES.md 2026-10-09).  Take a
+lock profile in a run of its own, never in the run whose throughput is
+being compared; hwpmc counting and the sched probes were not seen to
+move the result.
+
 Workers are threads named `kwq_net/N`, `kwq_bulk/N`, so the usual tools
 attribute to them by name:
 

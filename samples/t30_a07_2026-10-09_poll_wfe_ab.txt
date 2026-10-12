@@ -1,0 +1,227 @@
+# Origin: the kwq-spin-experiment branch (commit 007f0f4), a kwq with the
+# bounded idle poll (kern.kwq.net.idle_spin_us) and its hardware wait
+# (kern.kwq.poll_hw).  The kwq branch has neither, so the runs with the
+# poll set cannot be reproduced from it; rows with idle_spin_us=0 and the
+# taskqueue baseline rows can.
+kern.kwq.poll_mode: wfe (in use)
+kern.kwq.poll_hw: 1
+kern.kwq.poll_period_ns: 10240
+== rtt KWQ_HW=0 16:53:21
+t_31_rtt: ok: load ./../if_pair.ko
+t_31_rtt: created pair0a + pair0b
+t_31_rtt: ok: create jail ifp_31_rtt_s1
+t_31_rtt: ok: create jail ifp_31_rtt_c1
+t_31_rtt: ok: move pair0a
+t_31_rtt: ok: move pair0b
+t_31_rtt: ok: addresses
+t_31_rtt: ok: reachable
+t_31_rtt: ok: icmplim in ifp_31_rtt_s1
+t_31_rtt: ok: poll_hw=0
+t_31_rtt: poll: wfe (available, not in use), period 10240 ns
+t_31_rtt: ok: idle_spin_us=50
+t_31_rtt: idle_spin_us=50 flood (50000): rtt us min 6 avg 7 max 23 stddev 0, loss 0.0%; kwq per packet: wakeups 0.00, polls 1.00 (hit 100%)
+t_31_rtt: idle_spin_us=50 1 kHz (5000): rtt us min 10 avg 22 max 72 stddev 6, loss 0.0%; kwq per packet: wakeups 1.00, polls 0.00 (hit 0%)
+t_31_rtt: PASS
+== rtt KWQ_HW=1 16:53:42
+t_31_rtt: ok: load ./../if_pair.ko
+t_31_rtt: created pair0a + pair0b
+t_31_rtt: ok: create jail ifp_31_rtt_s1
+t_31_rtt: ok: create jail ifp_31_rtt_c1
+t_31_rtt: ok: move pair0a
+t_31_rtt: ok: move pair0b
+t_31_rtt: ok: addresses
+t_31_rtt: ok: reachable
+t_31_rtt: ok: icmplim in ifp_31_rtt_s1
+t_31_rtt: ok: poll_hw=1
+t_31_rtt: poll: wfe (in use), period 10240 ns
+t_31_rtt: ok: idle_spin_us=50
+t_31_rtt: idle_spin_us=50 flood (50000): rtt us min 6 avg 7 max 20 stddev 0, loss 0.0%; kwq per packet: wakeups 0.00, polls 1.00 (hit 100%)
+t_31_rtt: idle_spin_us=50 1 kHz (5000): rtt us min 9 avg 21 max 90 stddev 6, loss 0.0%; kwq per packet: wakeups 1.00, polls 0.00 (hit 0%)
+t_31_rtt: PASS
+== t30 KWQ_SPIN=50 KWQ_HW=0 16:54:00
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=50
+t_30_wakeups: ok: poll_hw=0
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {1}, modes {clean}, idle_spin_us 50, poll wfe (available, not in use)
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 34.3 Gbit/s; worker kwq_net/99 on-cpu 0.93 s/s; kwq: passes/s 132298, items/pass 3.0, wakeups/s 1, yields/s 0+1001, busy 83%, spins/s 32498 (hit 100%, 0.13 s/s); dtrace: wakeups/s 0, switches/s 2, sleeps/s 0 (<20us 50%, <50us 50%, <100us 50%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 2731; cpu 99 idle 0.0%; iperf3 pid@cpu 33984@107 50903@124 33984@103 
+      sleep gaps:
+            4 us 2
+          128 us 2
+      yield gaps:
+            2 us 3
+            4 us 4
+            8 us 1
+           16 us 1
+      yields -> pmcstat 1.33333/s
+      yields -> its6,58: 0/s
+      hwpmc cpu 99: 3.00 G cycles/s, 3.18 G instr/s, IPC 1.06
+t_30_wakeups: timers=1 clean: 33.0 Gbit/s; worker kwq_net/99 on-cpu 0.93 s/s; kwq: passes/s 126273, items/pass 3.0, wakeups/s 0, yields/s 0+1001, busy 81%, spins/s 31198 (hit 100%, 0.15 s/s); dtrace: wakeups/s 0, switches/s 1, sleeps/s 0 (<20us 50%, <50us 50%, <100us 50%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 8310; cpu 99 idle 0.0%; iperf3 pid@cpu 33984@107 82998@101 33984@91 
+      sleep gaps:
+            2 us 2
+          128 us 2
+      yield gaps:
+            2 us 2
+            4 us 4
+      yields -> pmcstat 1/s
+      hwpmc cpu 99: 3.00 G cycles/s, 3.18 G instr/s, IPC 1.06
+t_30_wakeups: profile of cpu 55 (timers=1, 31.9 Gbit/s), top symbols by samples:
+      13.06%  [31756]    get_cntxct @ /boot/kernel/kernel
+       92.65%  [29422]     arm_tmr_get_timecount
+        98.06%  [28852]      binuptime
+         98.38%  [28384]       fork_exit
+          100.0%  [28384]        fork_trampoline
+         01.62%  [468]         ip_output_send
+          100.0%  [468]          ip_output
+           100.0%  [468]           tcp_default_output
+            53.42%  [250]            tcp_output
+             100.0%  [250]             tcp_do_segment
+              100.0%  [250]              tcp_input_with_port
+               100.0%  [250]               tcp_input
+                100.0%  [250]                ip_input
+                 100.0%  [250]                 netisr_dispatch_src
+t_30_wakeups: PASS
+== t30 KWQ_SPIN=50 KWQ_HW=1 16:54:42
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=50
+t_30_wakeups: ok: poll_hw=1
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {1}, modes {clean}, idle_spin_us 50, poll wfe (in use)
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 34.7 Gbit/s; worker kwq_net/15 on-cpu 0.93 s/s; kwq: passes/s 136623, items/pass 3.0, wakeups/s 0, yields/s 0+1001, busy 83%, spins/s 33651 (hit 100%, 0.13 s/s); dtrace: wakeups/s 0, switches/s 1, sleeps/s 0 (<20us 50%, <50us 50%, <100us 50%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 2163; cpu 15 idle 0.0%; iperf3 pid@cpu 67832@38 76255@52 76255@32 
+      sleep gaps:
+            4 us 1
+          128 us 1
+      yield gaps:
+            2 us 5
+            4 us 2
+            8 us 1
+      yields -> pmcstat 1.33333/s
+      hwpmc cpu 15: 2.76 G cycles/s, 2.80 G instr/s, IPC 1.02
+t_30_wakeups: timers=1 clean: 35.7 Gbit/s; worker kwq_net/114 on-cpu 0.93 s/s; kwq: passes/s 134146, items/pass 3.1, wakeups/s 1, yields/s 0+1001, busy 84%, spins/s 32579 (hit 100%, 0.11 s/s); dtrace: wakeups/s 1, switches/s 2, sleeps/s 1 (<20us 50%, <50us 50%, <100us 50%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 90%, off-cpu 0.00 s/s); vmstat cs/s 2618; cpu 114 idle 0.0%; iperf3 pid@cpu 22837@96 76255@113 22837@6 76255@52 
+      sleep gaps:
+            4 us 2
+            8 us 1
+          128 us 3
+      yield gaps:
+            2 us 1
+            4 us 6
+            8 us 3
+           16 us 1
+      yields -> pmcstat 1.33333/s
+      yields -> its6,131:-vme3:io57 0.5/s
+      hwpmc cpu 114: 2.78 G cycles/s, 2.81 G instr/s, IPC 1.01
+t_30_wakeups: profile of cpu 31 (timers=1, 35.6 Gbit/s), top symbols by samples:
+      25.42%  [54679]    lock_delay @ /boot/kernel/kernel
+       96.63%  [52836]     __rw_wlock_hard
+        100.0%  [52836]      _inp_smr_lock
+         100.0%  [52836]       in_pcblookup_hash_smr
+          100.0%  [52836]        tcp_input_with_port
+           100.0%  [52836]         tcp_input
+            100.0%  [52836]          ip_input
+             100.0%  [52836]           netisr_dispatch_src
+              100.0%  [52836]            fork_exit
+               100.0%  [52836]             fork_trampoline
+       03.32%  [1814]      __mtx_lock_sleep
+        100.0%  [1814]       tcp_do_segment
+         100.0%  [1814]        tcp_input_with_port
+          100.0%  [1814]         tcp_input
+t_30_wakeups: PASS
+== t30 KWQ_SPIN=0 16:55:25
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=0
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {1}, modes {clean}, idle_spin_us 0, poll wfe (in use)
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 34.4 Gbit/s; worker kwq_net/28 on-cpu 0.68 s/s; kwq: passes/s 145034, items/pass 2.8, wakeups/s 23646, yields/s 1+992, busy 65%; dtrace: wakeups/s 20931, switches/s 20934, sleeps/s 20931 (<20us 84%, <50us 98%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 2 (<20us 88%, off-cpu 0.00 s/s); vmstat cs/s 49289; cpu 28 idle 23.2%; iperf3 pid@cpu 47735@47 42@120 47735@66 42@119 
+      sleep gaps:
+            2 us 6334
+            4 us 86701
+            8 us 8180
+           16 us 16512
+           32 us 6657
+           64 us 1193
+          128 us 10
+          256 us 1
+      lock blocks:
+            8 us 2
+      yield gaps:
+            2 us 4
+            4 us 8
+            8 us 3
+           64 us 1
+          128 us 1
+      yields -> z_wr_int_6_6 0.166667/s
+      yields -> softirq_28 0.5/s
+      yields -> pmcstat 1.16667/s
+      yields -> jail_remove 0/s
+      yields -> its6,88: 0/s
+      blocks -> idle: 0/s
+      hwpmc cpu 28: 2.72 G cycles/s, 3.78 G instr/s, IPC 1.39
+t_30_wakeups: timers=1 clean: 23.9 Gbit/s; worker kwq_net/98 on-cpu 0.42 s/s; kwq: passes/s 64970, items/pass 3.0, wakeups/s 16140, yields/s 32657+533, busy 32%; dtrace: wakeups/s 44004, switches/s 44005, sleeps/s 15048 (<20us 3%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 28955 (off-cpu 0.18 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 168386; cpu 98 idle 0.0%; iperf3 pid@cpu 47735@115 47735@76 47735@99 42@98 
+      sleep gaps:
+            2 us 161
+            4 us 3014
+            8 us 241
+           16 us 86494
+           32 us 353
+           64 us 24
+          128 us 4
+          256 us 1
+      lock blocks:
+            2 us 86046
+            4 us 741
+            8 us 86698
+           16 us 228
+           32 us 16
+          128 us 3
+      yield gaps:
+            2 us 3
+            4 us 3
+            8 us 1
+      yields -> pmcstat 1/s
+      yields -> its6,123:-vme3:io49 0.166667/s
+      blocks -> its6,123:-vme3:io49 0.166667/s
+      blocks -> iperf3 28955.2/s
+      hwpmc cpu 98: 3.00 G cycles/s, 3.48 G instr/s, IPC 1.16
+t_30_wakeups: profile of cpu 6 (timers=1, 31.8 Gbit/s), top symbols by samples:
+      20.29%  [52476]    lock_delay @ /boot/kernel/kernel
+       97.80%  [51321]     __rw_wlock_hard
+        100.0%  [51321]      _inp_smr_lock
+         100.0%  [51321]       in_pcblookup_hash_smr
+          100.0%  [51321]        tcp_input_with_port
+           100.0%  [51321]         tcp_input
+            100.0%  [51321]          ip_input
+             100.0%  [51321]           netisr_dispatch_src
+              100.0%  [51321]            fork_exit
+               100.0%  [51321]             fork_trampoline
+       02.16%  [1133]      __mtx_lock_sleep
+        99.65%  [1129]       tcp_do_segment
+         100.0%  [1129]        tcp_input_with_port
+          100.0%  [1129]         tcp_input
+t_30_wakeups: PASS
+== end 16:56:08
+net.inet.tcp.per_cpu_timers: 1
+ 4:56PM  up 9 days, 16:08, 2 users, load averages: 1.58, 0.67, 0.28

@@ -1,0 +1,726 @@
+# Origin: the kwq-spin-experiment branch (commit 007f0f4), a kwq with the
+# bounded idle poll (kern.kwq.net.idle_spin_us) and its hardware wait
+# (kern.kwq.poll_hw).  The kwq branch has neither, so the runs with the
+# poll set cannot be reproduced from it; rows with idle_spin_us=0 and the
+# taskqueue baseline rows can.
+== kwq KWQ_SPIN=0 15:46:41
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=0
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}, idle_spin_us 0
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: 31.0 Gbit/s; worker kwq_net/17 on-cpu 0.66 s/s; kwq: passes/s 126536, items/pass 2.7, wakeups/s 12011, yields/s 0+997, busy 67%; dtrace: wakeups/s 9167, switches/s 9168, sleeps/s 9167 (<20us 34%, <50us 86%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 41447; cpu 17 idle 31.7%; iperf3 pid@cpu 91782@41 91782@76 
+      sleep gaps:
+            2 us 214
+            4 us 4237
+            8 us 8116
+           16 us 23841
+           32 us 15665
+           64 us 2923
+          128 us 8
+      yield gaps:
+            4 us 7
+      yields -> pmcstat 1.16667/s
+      hwpmc cpu 17: 2.41 G cycles/s, 3.45 G instr/s, IPC 1.43
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   385   0% 100% 0.00      297 kwq pair0b             fork_exit+0x8c          
+      lockstat:   235   0% 100% 0.00      201 kwq pair0b             pair_output+0x288       
+      lockstat:    44   0% 100% 0.00      255 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    38   0% 100% 0.00      231 kwq pair0a             pair_output+0x288       
+      lockstat:    20   0% 100% 0.00      162 mbuf                   cache_free+0x158        
+      lockstat:     6   0% 100% 0.00      173 kwq pair0a             fork_exit+0x8c          
+      lockstat:     1   0% 100% 0.00      200 mbuf_jumbo_page        cache_alloc_retry+0x38  
+t_30_wakeups: timers=0 clean: 30.5 Gbit/s; worker kwq_net/74 on-cpu 0.64 s/s; kwq: passes/s 124878, items/pass 2.7, wakeups/s 12504, yields/s 0+997, busy 65%; dtrace: wakeups/s 9484, switches/s 9485, sleeps/s 9484 (<20us 32%, <50us 84%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 40142; cpu 74 idle 30.3%; iperf3 pid@cpu 71679@80 71679@111 
+      sleep gaps:
+            2 us 231
+            4 us 4325
+            8 us 7865
+           16 us 24378
+           32 us 16688
+           64 us 3407
+          128 us 10
+      yield gaps:
+            2 us 1
+            4 us 3
+            8 us 2
+      yields -> pmcstat 0.833333/s
+      yields -> its6,111:-vme3:io37 0.166667/s
+      hwpmc cpu 74: 2.37 G cycles/s, 3.43 G instr/s, IPC 1.45
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   352   0% 100% 0.00      318 kwq pair0b             fork_exit+0x8c          
+      lockstat:   224   0% 100% 0.00      301 kwq pair0b             pair_output+0x288       
+      lockstat:    47   0% 100% 0.00      294 kwq pair0a             pair_output+0x288       
+      lockstat:    39   0% 100% 0.00      175 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    32   0% 100% 0.00      166 mbuf                   cache_free+0x158        
+      lockstat:     5   0% 100% 0.00      240 kwq pair0a             fork_exit+0x8c          
+      lockstat:     2   0% 100% 0.00      160 mbuf_jumbo_page        cache_free+0x158        
+t_30_wakeups: timers=0 clean: 29.3 Gbit/s; worker kwq_net/110 on-cpu 0.64 s/s; kwq: passes/s 117875, items/pass 2.7, wakeups/s 9247, yields/s 2202+949, busy 65%; dtrace: wakeups/s 8218, switches/s 8220, sleeps/s 8137 (<20us 30%, <50us 84%, <100us 99%, <500us 100%), lock blocks/s 80 (off-cpu 0.00 s/s), yields/s 2 (<20us 91%, off-cpu 0.00 s/s); vmstat cs/s 53276; cpu 110 idle 28.6%; iperf3 pid@cpu 98291@91 98291@84 
+      sleep gaps:
+            2 us 169
+            4 us 2284
+            8 us 6684
+           16 us 20776
+           32 us 16122
+           64 us 2782
+          128 us 8
+          256 us 1
+      lock blocks:
+            2 us 475
+            4 us 7
+            8 us 1
+           16 us 1
+      yield gaps:
+            2 us 1
+            4 us 8
+            8 us 2
+          256 us 1
+      yields -> softirq_110 0.5/s
+      yields -> pmcstat 0.833333/s
+      yields -> jail_remove 0/s
+      yields -> its6,129:-vme3:io55 0.5/s
+      blocks -> iperf3 80.6667/s
+      hwpmc cpu 110: 2.40 G cycles/s, 3.36 G instr/s, IPC 1.40
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   420   0% 100% 0.00      264 kwq pair0b             fork_exit+0x8c          
+      lockstat:   274   0% 100% 0.00      188 kwq pair0b             pair_output+0x288       
+      lockstat:    46   0% 100% 0.00      198 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    30   0% 100% 0.00      278 kwq pair0a             pair_output+0x288       
+      lockstat:    42   0% 100% 0.00      161 mbuf                   cache_free+0x158        
+      lockstat:    10   0% 100% 0.00      188 kwq pair0a             fork_exit+0x8c          
+      lockstat:     3   0% 100% 0.00      186 mbuf_jumbo_page        cache_free+0x158        
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 30.6 Gbit/s; worker kwq_net/7 on-cpu 0.65 s/s; kwq: passes/s 129218, items/pass 2.6, wakeups/s 12474, yields/s 0+996, busy 65%; dtrace: wakeups/s 9688, switches/s 9689, sleeps/s 9688 (<20us 36%, <50us 87%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 40937; cpu 7 idle 29.6%; iperf3 pid@cpu 73175@111 73175@116 
+      sleep gaps:
+            2 us 309
+            4 us 4456
+            8 us 9313
+           16 us 25662
+           32 us 15669
+           64 us 2709
+          128 us 11
+      yield gaps:
+            2 us 1
+            4 us 6
+            8 us 1
+      yields -> pmcstat 1.33333/s
+      hwpmc cpu 7: 2.40 G cycles/s, 3.55 G instr/s, IPC 1.48
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   246   0% 100% 0.00      429 kwq pair0b             pair_output+0x288       
+      lockstat:   330   0% 100% 0.00      270 kwq pair0b             fork_exit+0x8c          
+      lockstat:    37   0% 100% 0.00      179 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    33   0% 100% 0.00      197 kwq pair0a             pair_output+0x288       
+      lockstat:    30   0% 100% 0.00      158 mbuf                   cache_free+0x158        
+      lockstat:     6   0% 100% 0.00      140 kwq pair0a             fork_exit+0x8c          
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+t_30_wakeups: timers=1 clean: 31.1 Gbit/s; worker kwq_net/8 on-cpu 0.65 s/s; kwq: passes/s 125484, items/pass 2.7, wakeups/s 12438, yields/s 2+997, busy 66%; dtrace: wakeups/s 9452, switches/s 9456, sleeps/s 9452 (<20us 33%, <50us 87%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 4 (<20us 84%, off-cpu 0.00 s/s); vmstat cs/s 40328; cpu 8 idle 26.8%; iperf3 pid@cpu 60200@51 60200@14 
+      sleep gaps:
+            2 us 288
+            4 us 4446
+            8 us 7821
+           16 us 25600
+           32 us 16052
+           64 us 2496
+          128 us 9
+      yield gaps:
+            2 us 7
+            4 us 7
+            8 us 5
+           16 us 5
+           32 us 1
+      yields -> pmcstat 1.16667/s
+      yields -> its6,78: 0/s
+      yields -> if_io_tqg_8 2.66667/s
+      hwpmc cpu 8: 2.40 G cycles/s, 3.48 G instr/s, IPC 1.45
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   322   0% 100% 0.00      370 kwq pair0b             fork_exit+0x8c          
+      lockstat:   218   0% 100% 0.00      524 kwq pair0b             pair_output+0x288       
+      lockstat:    33   0% 100% 0.00      227 kwq pair0a             pair_output+0x288       
+      lockstat:    36   0% 100% 0.00      169 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    25   0% 100% 0.00      172 mbuf                   cache_free+0x158        
+      lockstat:     5   0% 100% 0.00      344 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:     5   0% 100% 0.00      144 kwq pair0a             fork_exit+0x8c          
+t_30_wakeups: timers=1 clean: 30.6 Gbit/s; worker kwq_net/42 on-cpu 0.68 s/s; kwq: passes/s 121896, items/pass 2.8, wakeups/s 11175, yields/s 0+996, busy 68%; dtrace: wakeups/s 8435, switches/s 8437, sleeps/s 8435 (<20us 33%, <50us 86%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 38038; cpu 42 idle 27.4%; iperf3 pid@cpu 41@115 41@29 
+      sleep gaps:
+            2 us 207
+            4 us 3685
+            8 us 7006
+           16 us 22594
+           32 us 14237
+           64 us 2872
+          128 us 10
+      yield gaps:
+            2 us 1
+            4 us 7
+            8 us 2
+      yields -> swi1: 0/s
+      yields -> pmcstat 1.33333/s
+      yields -> its6,95: 0/s
+      hwpmc cpu 42: 2.43 G cycles/s, 3.36 G instr/s, IPC 1.38
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   423   0% 100% 0.00      318 kwq pair0b             fork_exit+0x8c          
+      lockstat:   232   0% 100% 0.00      323 kwq pair0b             pair_output+0x288       
+      lockstat:    32   0% 100% 0.00      301 kwq pair0a             pair_output+0x288       
+      lockstat:    39   0% 100% 0.00      186 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    29   0% 100% 0.00      175 mbuf                   cache_free+0x158        
+      lockstat:     9   0% 100% 0.00      213 kwq pair0a             fork_exit+0x8c          
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+t_30_wakeups: profile of cpu 51 (timers=1, 35.2 Gbit/s), top symbols by samples:
+      23.77%  [59489]    lock_delay @ /boot/kernel/kernel
+       96.02%  [57121]     __rw_wlock_hard
+        100.0%  [57121]      _inp_smr_lock
+         100.0%  [57121]       in_pcblookup_hash_smr
+          100.0%  [57121]        tcp_input_with_port
+           100.0%  [57121]         tcp_input
+            100.0%  [57121]          ip_input
+             100.0%  [57121]           netisr_dispatch_src
+              100.0%  [57121]            fork_exit
+               100.0%  [57121]             fork_trampoline
+       03.93%  [2336]      __mtx_lock_sleep
+        99.83%  [2332]       tcp_do_segment
+         100.0%  [2332]        tcp_input_with_port
+          100.0%  [2332]         tcp_input
+t_30_wakeups: raw output kept in /home/crest/if_pair-scratch/t30out/spin0
+t_30_wakeups: PASS
+== kwq KWQ_SPIN=20 15:48:06
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=20
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}, idle_spin_us 20
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: 29.6 Gbit/s; worker kwq_net/116 on-cpu 0.71 s/s; kwq: passes/s 117404, items/pass 2.7, wakeups/s 7572, yields/s 0+974, busy 69%, spins/s 2664 (hit 56%, 0.04 s/s); dtrace: wakeups/s 7070, switches/s 7072, sleeps/s 7070 (<20us 32%, <50us 86%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 2 (<20us 75%, off-cpu 0.00 s/s); vmstat cs/s 33417; cpu 116 idle 25.0%; iperf3 pid@cpu 84947@103 84947@100 
+      sleep gaps:
+            2 us 782
+            4 us 2110
+            8 us 5756
+           16 us 18744
+           32 us 12886
+           64 us 2137
+          128 us 7
+      yield gaps:
+            2 us 1
+            4 us 7
+            8 us 1
+           16 us 1
+         1024 us 2
+      yields -> swi1: 0/s
+      yields -> pmcstat 1.33333/s
+      yields -> its6,132:-vme3:io58 0.333333/s
+      hwpmc cpu 116: 2.47 G cycles/s, 3.23 G instr/s, IPC 1.31
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   392   0% 100% 0.00      448 kwq pair0b             fork_exit+0x8c          
+      lockstat:   255   0% 100% 0.00      208 kwq pair0b             pair_output+0x288       
+      lockstat:    54   0% 100% 0.00      291 kwq pair0a             pair_output+0x288       
+      lockstat:    16   0% 100% 0.00      562 kwq pair0a             fork_exit+0x8c          
+      lockstat:    35   0% 100% 0.00      219 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    26   0% 100% 0.00      183 mbuf                   cache_free+0x158        
+      lockstat:     3   0% 100% 0.00      200 mbuf_jumbo_page        cache_alloc_retry+0x38  
+t_30_wakeups: timers=0 clean: 25.4 Gbit/s; worker kwq_net/95 on-cpu 0.56 s/s; kwq: passes/s 72497, items/pass 3.3, wakeups/s 10398, yields/s 17458+661, busy 49%, spins/s 3828 (hit 91%, 0.02 s/s); dtrace: wakeups/s 27794, switches/s 27794, sleeps/s 10635 (<20us 7%, <50us 97%, <100us 99%, <500us 100%), lock blocks/s 17158 (off-cpu 0.06 s/s), yields/s 0 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 83320; cpu 95 idle 5.1%; iperf3 pid@cpu 84945@38 42@95 
+      sleep gaps:
+            2 us 346
+            4 us 816
+            8 us 2043
+           16 us 28163
+           32 us 31954
+           64 us 486
+          128 us 5
+          256 us 1
+      lock blocks:
+            2 us 101742
+            4 us 1111
+            8 us 1
+           16 us 95
+          128 us 3
+      yield gaps:
+            4 us 1
+            8 us 2
+      yields -> pmcstat 0.333333/s
+      yields -> its6,56: 0/s
+      blocks -> iperf3 17158.7/s
+      hwpmc cpu 95: 2.87 G cycles/s, 3.93 G instr/s, IPC 1.37
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   108   0% 100% 0.00      514 kwq pair0b             fork_exit+0x8c          
+      lockstat:    72   0% 100% 0.00      149 kwq pair0b             pair_output+0x288       
+      lockstat:    22   0% 100% 0.00      263 kwq pair0a             pair_output+0x288       
+      lockstat:     9   0% 100% 0.00      337 mbuf                   cache_alloc_retry+0x38  
+      lockstat:     9   0% 100% 0.00      168 mbuf                   cache_free+0x158        
+      lockstat:     4   0% 100% 0.00      170 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:     2   0% 100% 0.00      200 mbuf_jumbo_page        cache_free+0x158        
+t_30_wakeups: timers=0 clean: 28.7 Gbit/s; worker kwq_net/10 on-cpu 0.69 s/s; kwq: passes/s 116387, items/pass 2.7, wakeups/s 7752, yields/s 0+974, busy 67%, spins/s 4766 (hit 76%, 0.04 s/s); dtrace: wakeups/s 7919, switches/s 7920, sleeps/s 7919 (<20us 32%, <50us 86%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 32344; cpu 10 idle 20.1%; iperf3 pid@cpu 71389@65 71389@52 
+      sleep gaps:
+            2 us 942
+            4 us 2613
+            8 us 6557
+           16 us 20604
+           32 us 14414
+           64 us 2379
+          128 us 6
+      lock blocks:
+          128 us 1
+      yield gaps:
+            4 us 7
+            8 us 1
+           16 us 1
+      yields -> pmcstat 1/s
+      yields -> its6,79: 0/s
+      yields -> if_io_tqg_10 0.166667/s
+      blocks -> idle: 0/s
+      hwpmc cpu 10: 2.45 G cycles/s, 3.24 G instr/s, IPC 1.32
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   215   0% 100% 0.00     1090 kwq pair0b             pair_output+0x288       
+      lockstat:   278   0% 100% 0.00      205 kwq pair0b             fork_exit+0x8c          
+      lockstat:    30   0% 100% 0.00     1622 mbuf                   cache_free+0x158        
+      lockstat:    37   0% 100% 0.00      179 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    10   0% 100% 0.00      239 kwq pair0a             pair_output+0x288       
+      lockstat:    10   0% 100% 0.00      204 mbuf_jumbo_page        cache_free+0x158        
+      lockstat:     9   0% 100% 0.00      195 mbuf_jumbo_page        cache_alloc_retry+0x38  
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 29.5 Gbit/s; worker kwq_net/34 on-cpu 0.69 s/s; kwq: passes/s 120568, items/pass 2.6, wakeups/s 8763, yields/s 0+967, busy 65%, spins/s 2393 (hit 40%, 0.04 s/s); dtrace: wakeups/s 8000, switches/s 8002, sleeps/s 8000 (<20us 32%, <50us 86%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 37662; cpu 34 idle 25.9%; iperf3 pid@cpu 88489@33 88489@70 
+      sleep gaps:
+            2 us 942
+            4 us 2712
+            8 us 6668
+           16 us 20577
+           32 us 14808
+           64 us 2287
+          128 us 10
+      yield gaps:
+            2 us 1
+            4 us 5
+            8 us 1
+      yields -> pmcstat 0.833333/s
+      yields -> its6,91: 0/s
+      hwpmc cpu 34: 2.40 G cycles/s, 3.27 G instr/s, IPC 1.36
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   354   0% 100% 0.00      406 kwq pair0b             fork_exit+0x8c          
+      lockstat:   200   0% 100% 0.00      673 kwq pair0b             pair_output+0x288       
+      lockstat:    43   0% 100% 0.00      194 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    19   0% 100% 0.00      200 mbuf                   cache_free+0x158        
+      lockstat:    10   0% 100% 0.00      308 kwq pair0a             pair_output+0x288       
+      lockstat:     8   0% 100% 0.00      185 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:     5   0% 100% 0.00      192 mbuf_jumbo_page        cache_free+0x158        
+t_30_wakeups: timers=1 clean: 31.6 Gbit/s; worker kwq_net/78 on-cpu 0.68 s/s; kwq: passes/s 129866, items/pass 2.7, wakeups/s 8059, yields/s 0+965, busy 67%, spins/s 5874 (hit 76%, 0.05 s/s); dtrace: wakeups/s 8247, switches/s 8249, sleeps/s 8247 (<20us 37%, <50us 88%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 2 (<20us 93%, off-cpu 0.00 s/s); vmstat cs/s 32325; cpu 78 idle 24.4%; iperf3 pid@cpu 31445@66 31445@106 
+      sleep gaps:
+            2 us 1268
+            4 us 3470
+            8 us 8074
+           16 us 21631
+           32 us 13217
+           64 us 1812
+          128 us 8
+          256 us 2
+      lock blocks:
+            8 us 1
+          128 us 1
+      yield gaps:
+            2 us 3
+            4 us 7
+            8 us 4
+          128 us 1
+      yields -> softirq_78 0.666667/s
+      yields -> pmcstat 1.33333/s
+      yields -> jail_remove 0/s
+      blocks -> idle: 0/s
+      hwpmc cpu 78: 2.48 G cycles/s, 3.45 G instr/s, IPC 1.39
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   337   0% 100% 0.00      367 kwq pair0b             fork_exit+0x8c          
+      lockstat:   239   0% 100% 0.00      202 kwq pair0b             pair_output+0x288       
+      lockstat:    49   0% 100% 0.00      178 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    13   0% 100% 0.00      231 kwq pair0a             pair_output+0x288       
+      lockstat:    16   0% 100% 0.00      179 mbuf                   cache_free+0x158        
+      lockstat:     2   0% 100% 0.00      219 kwq pair0a             fork_exit+0x8c          
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+t_30_wakeups: timers=1 clean: 30.3 Gbit/s; worker kwq_net/0 on-cpu 0.68 s/s; kwq: passes/s 121987, items/pass 2.7, wakeups/s 8355, yields/s 2+965, busy 66%, spins/s 5379 (hit 75%, 0.05 s/s); dtrace: wakeups/s 8541, switches/s 8561, sleeps/s 8541 (<20us 34%, <50us 87%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 19 (<20us 48%, off-cpu 0.00 s/s); vmstat cs/s 32899; cpu 0 idle 21.4%; iperf3 pid@cpu 93586@57 93586@40 
+      sleep gaps:
+            2 us 1150
+            4 us 3268
+            8 us 7628
+           16 us 21941
+           32 us 15098
+           64 us 2154
+          128 us 8
+          256 us 1
+      yield gaps:
+            2 us 41
+            4 us 13
+            8 us 4
+           16 us 2
+           32 us 56
+           64 us 3
+      yields -> zerotier-one 0.5/s
+      yields -> pmcstat 1.33333/s
+      yields -> its6,74: 0/s
+      yields -> if_io_tqg_0 1/s
+      yields -> clock 0/s
+      hwpmc cpu 0: 2.45 G cycles/s, 3.37 G instr/s, IPC 1.38
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   305   0% 100% 0.00      376 kwq pair0b             fork_exit+0x8c          
+      lockstat:   208   0% 100% 0.00      210 kwq pair0b             pair_output+0x288       
+      lockstat:    49   0% 100% 0.00      219 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    29   0% 100% 0.00      197 mbuf                   cache_free+0x158        
+      lockstat:    23   0% 100% 0.00      236 kwq pair0a             pair_output+0x288       
+      lockstat:     6   0% 100% 0.00      213 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:     4   0% 100% 0.00      129 kwq pair0a             fork_exit+0x8c          
+t_30_wakeups: profile of cpu 125 (timers=1, 36.3 Gbit/s), top symbols by samples:
+      11.21%  [26496]    tcp_default_output @ /boot/kernel/kernel
+       74.26%  [19675]     tcp_do_segment
+        100.0%  [19675]      tcp_input_with_port
+         100.0%  [19675]       tcp_input
+          100.0%  [19675]        ip_input
+           100.0%  [19675]         netisr_dispatch_src
+            100.0%  [19675]          fork_exit
+             100.0%  [19675]           fork_trampoline
+       25.66%  [6798]      tcp_output
+        100.0%  [6798]       tcp_do_segment
+         100.0%  [6798]        tcp_input_with_port
+          100.0%  [6798]         tcp_input
+           100.0%  [6798]          ip_input
+            100.0%  [6798]           netisr_dispatch_src
+t_30_wakeups: raw output kept in /home/crest/if_pair-scratch/t30out/spin20
+t_30_wakeups: PASS
+== kwq KWQ_SPIN=50 15:49:29
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=50
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}, idle_spin_us 50
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: 31.3 Gbit/s; worker kwq_net/45 on-cpu 0.86 s/s; kwq: passes/s 131419, items/pass 2.6, wakeups/s 2433, yields/s 0+941, busy 68%, spins/s 11664 (hit 90%, 0.23 s/s); dtrace: wakeups/s 2483, switches/s 2484, sleeps/s 2483 (<20us 54%, <50us 93%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 23449; cpu 45 idle 5.4%; iperf3 pid@cpu 86024@27 86024@69 
+      sleep gaps:
+            2 us 1032
+            4 us 1691
+            8 us 3407
+           16 us 6120
+           32 us 2199
+           64 us 443
+          128 us 8
+      yield gaps:
+            2 us 1
+            4 us 3
+            8 us 1
+      yields -> pmcstat 0.5/s
+      yields -> its6,31: 0/s
+      hwpmc cpu 45: 2.88 G cycles/s, 3.80 G instr/s, IPC 1.32
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   425   0% 100% 0.00      359 kwq pair0b             fork_exit+0x8c          
+      lockstat:   230   0% 100% 0.00      174 kwq pair0b             pair_output+0x288       
+      lockstat:     4   0% 100% 0.00     6090 kwq pair0a             fork_exit+0x8c          
+      lockstat:    50   0% 100% 0.00      179 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    21   0% 100% 0.00      377 kwq pair0a             pair_output+0x288       
+      lockstat:    25   0% 100% 0.00      164 mbuf                   cache_free+0x158        
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+t_30_wakeups: timers=0 clean: 30.2 Gbit/s; worker kwq_net/69 on-cpu 0.86 s/s; kwq: passes/s 129851, items/pass 2.6, wakeups/s 2747, yields/s 0+932, busy 65%, spins/s 11949 (hit 89%, 0.25 s/s); dtrace: wakeups/s 2806, switches/s 2807, sleeps/s 2806 (<20us 54%, <50us 93%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 24322; cpu 69 idle 6.4%; iperf3 pid@cpu 42748@113 42748@25 
+      sleep gaps:
+            2 us 1039
+            4 us 1965
+            8 us 4058
+           16 us 6884
+           32 us 2395
+           64 us 491
+          128 us 7
+      yield gaps:
+            4 us 5
+      yields -> pmcstat 0.833333/s
+      hwpmc cpu 69: 2.86 G cycles/s, 3.78 G instr/s, IPC 1.32
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   277   0% 100% 0.00      666 kwq pair0b             fork_exit+0x8c          
+      lockstat:   188   0% 100% 0.00      208 kwq pair0b             pair_output+0x288       
+      lockstat:    36   0% 100% 0.00      182 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    28   0% 100% 0.00      207 kwq pair0a             pair_output+0x288       
+      lockstat:    19   0% 100% 0.00      168 mbuf                   cache_free+0x158        
+      lockstat:    14   0% 100% 0.00      194 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:     8   0% 100% 0.00      200 mbuf_jumbo_page        cache_free+0x158        
+t_30_wakeups: timers=0 clean: 30.5 Gbit/s; worker kwq_net/120 on-cpu 0.88 s/s; kwq: passes/s 127091, items/pass 2.7, wakeups/s 2129, yields/s 0+945, busy 71%, spins/s 10408 (hit 91%, 0.21 s/s); dtrace: wakeups/s 2182, switches/s 2183, sleeps/s 2182 (<20us 56%, <50us 93%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 20980; cpu 120 idle 4.5%; iperf3 pid@cpu 7816@63 7816@110 
+      sleep gaps:
+            2 us 879
+            4 us 1560
+            8 us 3168
+           16 us 5204
+           32 us 1941
+           64 us 334
+          128 us 6
+      yield gaps:
+            2 us 1
+            4 us 5
+            8 us 2
+      yields -> pmcstat 1.16667/s
+      yields -> its6,134:-vme3:io60 0.166667/s
+      hwpmc cpu 120: 2.90 G cycles/s, 3.73 G instr/s, IPC 1.29
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   384   0% 100% 0.00      330 kwq pair0b             fork_exit+0x8c          
+      lockstat:   212   0% 100% 0.00      231 kwq pair0b             pair_output+0x288       
+      lockstat:    54   0% 100% 0.00      204 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    36   0% 100% 0.00      215 mbuf                   cache_free+0x158        
+      lockstat:    21   0% 100% 0.00      211 kwq pair0a             pair_output+0x288       
+      lockstat:    13   0% 100% 0.00      206 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:    11   0% 100% 0.00      207 mbuf_jumbo_page        cache_free+0x158        
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 30.4 Gbit/s; worker kwq_net/25 on-cpu 0.87 s/s; kwq: passes/s 126622, items/pass 2.6, wakeups/s 2575, yields/s 0+937, busy 68%, spins/s 11290 (hit 90%, 0.23 s/s); dtrace: wakeups/s 2632, switches/s 2633, sleeps/s 2632 (<20us 55%, <50us 93%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 23423; cpu 25 idle 6.3%; iperf3 pid@cpu 66858@40 66858@37 
+      sleep gaps:
+            2 us 954
+            4 us 1861
+            8 us 3765
+           16 us 6517
+           32 us 2230
+           64 us 460
+          128 us 7
+      yield gaps:
+            2 us 3
+            4 us 4
+            8 us 1
+      yields -> pmcstat 1.33333/s
+      hwpmc cpu 25: 2.87 G cycles/s, 3.72 G instr/s, IPC 1.29
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   360   0% 100% 0.00      316 kwq pair0b             fork_exit+0x8c          
+      lockstat:   207   0% 100% 0.00      435 kwq pair0b             pair_output+0x288       
+      lockstat:    33   0% 100% 0.00      212 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    19   0% 100% 0.00      279 kwq pair0a             pair_output+0x288       
+      lockstat:    27   0% 100% 0.00      174 mbuf                   cache_free+0x158        
+      lockstat:     7   0% 100% 0.00      211 mbuf_jumbo_page        cache_free+0x158        
+      lockstat:     4   0% 100% 0.00      270 mbuf_jumbo_page        cache_alloc_retry+0x38  
+t_30_wakeups: timers=1 clean: 30.6 Gbit/s; worker kwq_net/102 on-cpu 0.86 s/s; kwq: passes/s 128290, items/pass 2.6, wakeups/s 2727, yields/s 0+935, busy 66%, spins/s 11773 (hit 89%, 0.24 s/s); dtrace: wakeups/s 2794, switches/s 2795, sleeps/s 2794 (<20us 53%, <50us 93%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 23880; cpu 102 idle 5.1%; iperf3 pid@cpu 92758@103 92758@101 
+      sleep gaps:
+            2 us 989
+            4 us 1872
+            8 us 3935
+           16 us 7230
+           32 us 2291
+           64 us 443
+          128 us 5
+      yield gaps:
+            2 us 2
+            4 us 5
+            8 us 1
+      yields -> pmcstat 1.33333/s
+      hwpmc cpu 102: 2.87 G cycles/s, 3.77 G instr/s, IPC 1.31
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   331   0% 100% 0.00     1893 kwq pair0b             fork_exit+0x8c          
+      lockstat:   208   0% 100% 0.00      184 kwq pair0b             pair_output+0x288       
+      lockstat:    33   0% 100% 0.00      189 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    27   0% 100% 0.00      211 kwq pair0a             pair_output+0x288       
+      lockstat:    20   0% 100% 0.00      180 mbuf                   cache_free+0x158        
+      lockstat:     4   0% 100% 0.00      220 kwq pair0a             fork_exit+0x8c          
+      lockstat:     1   0% 100% 0.00      280 mbuf_jumbo_page        cache_alloc_retry+0x38  
+t_30_wakeups: timers=1 clean: 29.6 Gbit/s; worker kwq_net/52 on-cpu 0.88 s/s; kwq: passes/s 123328, items/pass 2.6, wakeups/s 2245, yields/s 1+901, busy 67%, spins/s 8786 (hit 88%, 0.21 s/s); dtrace: wakeups/s 2224, switches/s 2226, sleeps/s 2224 (<20us 58%, <50us 94%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 21111; cpu 52 idle 3.8%; iperf3 pid@cpu 22240@126 33305@54 
+      sleep gaps:
+            2 us 915
+            4 us 1713
+            8 us 3293
+           16 us 5356
+           32 us 1780
+           64 us 284
+          128 us 7
+          256 us 1
+      yield gaps:
+            4 us 7
+            8 us 1
+      yields -> pmcstat 1.33333/s
+      hwpmc cpu 52: 2.90 G cycles/s, 3.78 G instr/s, IPC 1.31
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   448   0% 100% 0.00      285 kwq pair0b             fork_exit+0x8c          
+      lockstat:   221   0% 100% 0.00      444 kwq pair0b             pair_output+0x288       
+      lockstat:    29   0% 100% 0.00      336 kwq pair0a             pair_output+0x288       
+      lockstat:    43   0% 100% 0.00      190 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    39   0% 100% 0.00      197 mbuf                   cache_free+0x158        
+      lockstat:     4   0% 100% 0.00      170 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:     2   0% 100% 0.00      160 mbuf_jumbo_page        cache_free+0x158        
+t_30_wakeups: profile of cpu 48 (timers=1, 36.9 Gbit/s), top symbols by samples:
+      08.91%  [22427]    tcp_default_output @ /boot/kernel/kernel
+       70.01%  [15702]     tcp_do_segment
+        100.0%  [15702]      tcp_input_with_port
+         100.0%  [15702]       tcp_input
+          100.0%  [15702]        ip_input
+           100.0%  [15702]         netisr_dispatch_src
+            100.0%  [15702]          fork_exit
+             100.0%  [15702]           fork_trampoline
+       29.93%  [6712]      tcp_output
+        100.0%  [6712]       tcp_do_segment
+         100.0%  [6712]        tcp_input_with_port
+          100.0%  [6712]         tcp_input
+           100.0%  [6712]          ip_input
+            100.0%  [6712]           netisr_dispatch_src
+t_30_wakeups: raw output kept in /home/crest/if_pair-scratch/t30out/spin50
+t_30_wakeups: PASS
+== kwq KWQ_SPIN=100 15:50:55
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=100
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}, idle_spin_us 100
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: 29.5 Gbit/s; worker kwq_net/54 on-cpu 0.93 s/s; kwq: passes/s 125662, items/pass 2.6, wakeups/s 1, yields/s 0+1001, busy 69%, spins/s 12195 (hit 100%, 0.28 s/s); dtrace: wakeups/s 1, switches/s 1, sleeps/s 1 (<20us 44%, <50us 77%, <100us 77%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 17013; cpu 54 idle 0.0%; iperf3 pid@cpu 21516@104 53170@126 
+      sleep gaps:
+            8 us 4
+           16 us 1
+           32 us 2
+          128 us 2
+      yield gaps:
+            4 us 1
+            8 us 1
+      yields -> pmcstat 0.333333/s
+      hwpmc cpu 54: 3.00 G cycles/s, 3.81 G instr/s, IPC 1.27
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   357   0% 100% 0.00      346 kwq pair0b             fork_exit+0x8c          
+      lockstat:   188   0% 100% 0.00      218 kwq pair0b             pair_output+0x288       
+      lockstat:    49   0% 100% 0.00      207 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    34   0% 100% 0.00      255 kwq pair0a             pair_output+0x288       
+      lockstat:    20   0% 100% 0.00      202 mbuf                   cache_free+0x158        
+      lockstat:     5   0% 100% 0.00      232 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:     3   0% 100% 0.00      213 mbuf_jumbo_page        cache_free+0x158        
+t_30_wakeups: timers=0 clean: 30.8 Gbit/s; worker kwq_net/6 on-cpu 0.93 s/s; kwq: passes/s 138871, items/pass 2.5, wakeups/s 0, yields/s 1+1001, busy 65%, spins/s 14096 (hit 100%, 0.32 s/s); dtrace: wakeups/s 0, switches/s 3, sleeps/s 0 (<20us 50%, <50us 50%, <100us 50%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 3 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 20489; cpu 6 idle 0.0%; iperf3 pid@cpu 7049@123 7049@24 
+      sleep gaps:
+            4 us 1
+          128 us 1
+      yield gaps:
+            2 us 6
+            4 us 9
+            8 us 1
+           16 us 2
+      yields -> pmcstat 1.33333/s
+      yields -> its6,77: 0/s
+      yields -> if_io_tqg_6 1.5/s
+      hwpmc cpu 6: 3.00 G cycles/s, 3.99 G instr/s, IPC 1.33
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   288   0% 100% 0.00      312 kwq pair0b             fork_exit+0x8c          
+      lockstat:   200   0% 100% 0.00      170 kwq pair0b             pair_output+0x288       
+      lockstat:    58   0% 100% 0.00      233 kwq pair0a             pair_output+0x288       
+      lockstat:    38   0% 100% 0.00      169 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    10   0% 100% 0.00      159 mbuf                   cache_free+0x158        
+      lockstat:     5   0% 100% 0.00      176 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:     4   0% 100% 0.00      170 mbuf_jumbo_page        cache_free+0x158        
+t_30_wakeups: timers=0 clean: 29.0 Gbit/s; worker kwq_net/124 on-cpu 0.93 s/s; kwq: passes/s 123924, items/pass 2.6, wakeups/s 2, yields/s 0+1001, busy 69%, spins/s 12081 (hit 100%, 0.28 s/s); dtrace: wakeups/s 2, switches/s 3, sleeps/s 2 (<20us 14%, <50us 64%, <100us 64%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 20213; cpu 124 idle 0.0%; iperf3 pid@cpu 43@112 43@77 
+      sleep gaps:
+            4 us 1
+            8 us 1
+           16 us 5
+           32 us 2
+          128 us 5
+      yield gaps:
+            4 us 3
+            8 us 1
+      yields -> pmcstat 0.666667/s
+      hwpmc cpu 124: 3.00 G cycles/s, 3.80 G instr/s, IPC 1.27
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   355   0% 100% 0.00      442 kwq pair0b             fork_exit+0x8c          
+      lockstat:   184   0% 100% 0.00      241 kwq pair0b             pair_output+0x288       
+      lockstat:    43   0% 100% 0.00      243 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    27   0% 100% 0.00      234 kwq pair0a             pair_output+0x288       
+      lockstat:    28   0% 100% 0.00      184 mbuf                   cache_free+0x158        
+      lockstat:     4   0% 100% 0.00      190 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:     4   0% 100% 0.00      190 kwq pair0a             fork_exit+0x8c          
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 29.5 Gbit/s; worker kwq_net/19 on-cpu 0.93 s/s; kwq: passes/s 131339, items/pass 2.6, wakeups/s 1, yields/s 0+1001, busy 67%, spins/s 13491 (hit 100%, 0.30 s/s); dtrace: wakeups/s 1, switches/s 2, sleeps/s 1 (<20us 27%, <50us 63%, <100us 72%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 19109; cpu 19 idle 0.0%; iperf3 pid@cpu 43@39 43@38 
+      sleep gaps:
+            2 us 1
+            8 us 2
+           16 us 2
+           32 us 2
+           64 us 1
+          128 us 3
+      yield gaps:
+            2 us 2
+            4 us 3
+            8 us 1
+      yields -> pmcstat 1/s
+      hwpmc cpu 19: 3.00 G cycles/s, 3.91 G instr/s, IPC 1.30
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   374   0% 100% 0.00      264 kwq pair0b             fork_exit+0x8c          
+      lockstat:   187   0% 100% 0.00      175 kwq pair0b             pair_output+0x288       
+      lockstat:    43   0% 100% 0.00      204 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    26   0% 100% 0.00      295 kwq pair0a             pair_output+0x288       
+      lockstat:    32   0% 100% 0.00      168 mbuf                   cache_free+0x158        
+      lockstat:    13   0% 100% 0.00      199 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:    12   0% 100% 0.00      173 mbuf_jumbo_page        cache_free+0x158        
+t_30_wakeups: timers=1 clean: 32.0 Gbit/s; worker kwq_net/26 on-cpu 0.93 s/s; kwq: passes/s 135275, items/pass 2.6, wakeups/s 2, yields/s 0+1001, busy 69%, spins/s 12909 (hit 100%, 0.28 s/s); dtrace: wakeups/s 3, switches/s 4, sleeps/s 3 (<20us 22%, <50us 66%, <100us 66%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 18713; cpu 26 idle 0.1%; iperf3 pid@cpu 27594@111 27594@28 
+      sleep gaps:
+            4 us 1
+            8 us 2
+           16 us 5
+           32 us 4
+          128 us 6
+      lock blocks:
+           16 us 1
+      yield gaps:
+            2 us 1
+            4 us 6
+            8 us 2
+      yields -> softirq_26 0.5/s
+      yields -> pmcstat 0.833333/s
+      yields -> jail_remove 0/s
+      blocks -> idle: 0/s
+      hwpmc cpu 26: 3.00 G cycles/s, 3.95 G instr/s, IPC 1.32
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   401   0% 100% 0.00      252 kwq pair0b             fork_exit+0x8c          
+      lockstat:   204   0% 100% 0.00      154 kwq pair0b             pair_output+0x288       
+      lockstat:    44   0% 100% 0.00      195 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    30   0% 100% 0.00      209 kwq pair0a             pair_output+0x288       
+      lockstat:    22   0% 100% 0.00      159 mbuf                   cache_free+0x158        
+      lockstat:     7   0% 100% 0.00      199 kwq pair0a             fork_exit+0x8c          
+      lockstat:     1   0% 100% 0.00      160 mbuf_jumbo_page        cache_alloc_retry+0x38  
+t_30_wakeups: timers=1 clean: 31.1 Gbit/s; worker kwq_net/113 on-cpu 0.93 s/s; kwq: passes/s 129373, items/pass 2.6, wakeups/s 2, yields/s 0+1001, busy 69%, spins/s 12735 (hit 100%, 0.28 s/s); dtrace: wakeups/s 2, switches/s 3, sleeps/s 1 (<20us 27%, <50us 72%, <100us 72%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 18951; cpu 113 idle 0.0%; iperf3 pid@cpu 24961@104 24961@38 
+      sleep gaps:
+            8 us 3
+           16 us 2
+           32 us 3
+          128 us 3
+      lock blocks:
+            8 us 1
+      yield gaps:
+            4 us 5
+            8 us 3
+      yields -> pmcstat 1.33333/s
+      blocks -> idle: 0/s
+      hwpmc cpu 113: 3.00 G cycles/s, 3.87 G instr/s, IPC 1.29
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:   431   0% 100% 0.00      392 kwq pair0b             fork_exit+0x8c          
+      lockstat:   194   0% 100% 0.00      183 kwq pair0b             pair_output+0x288       
+      lockstat:    56   0% 100% 0.00      199 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    25   0% 100% 0.00      188 mbuf                   cache_free+0x158        
+      lockstat:    19   0% 100% 0.00      240 kwq pair0a             pair_output+0x288       
+      lockstat:     3   0% 100% 0.00      226 kwq pair0a             fork_exit+0x8c          
+      lockstat:     2   0% 100% 0.00      200 mbuf_jumbo_page        cache_free+0x158        
+t_30_wakeups: profile of cpu 9 (timers=1, 36.8 Gbit/s), top symbols by samples:
+      25.50%  [64908]    lock_delay @ /boot/kernel/kernel
+       96.97%  [62941]     __rw_wlock_hard
+        100.0%  [62941]      _inp_smr_lock
+         100.0%  [62941]       in_pcblookup_hash_smr
+          100.0%  [62941]        tcp_input_with_port
+           100.0%  [62941]         tcp_input
+            100.0%  [62941]          ip_input
+             100.0%  [62941]           netisr_dispatch_src
+              100.0%  [62941]            fork_exit
+               100.0%  [62941]             fork_trampoline
+       02.99%  [1943]      __mtx_lock_sleep
+        99.95%  [1942]       tcp_do_segment
+         100.0%  [1942]        tcp_input_with_port
+          100.0%  [1942]         tcp_input
+t_30_wakeups: raw output kept in /home/crest/if_pair-scratch/t30out/spin100
+t_30_wakeups: PASS
+== end 15:52:19
+net.inet.tcp.per_cpu_timers: 1
+ 3:52PM  up 9 days, 15:04, 2 users, load averages: 2.40, 2.28, 1.65

@@ -1,0 +1,217 @@
+== kwq
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean spinner timer}
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: 6.16 Gbit/s; worker kwq_net/1 on-cpu 0.45 s/s; kwq: passes/s 19391, items/pass 3.0, wakeups/s 4813, yields/s 10242+55, busy 37%; dtrace: wakeups/s 14230, switches/s 14230, sleeps/s 4748 (<20us 0%, <50us 0%, <100us 90%, <500us 99%), yields/s 9482 (<20us 49%, off-cpu 0.18 s/s); vmstat cs/s 50357; cpu 1 idle 0.0%
+      sleep gaps:
+           16 us 14
+           32 us 6090
+           64 us 21663
+          128 us 711
+          256 us 9
+          512 us 1
+      yield gaps:
+            4 us 22660
+            8 us 5250
+           16 us 24412
+           32 us 4062
+           64 us 495
+          128 us 11
+          256 us 3
+t_30_wakeups: timers=0 spinner: 8.59 Gbit/s; worker kwq_net/1 on-cpu 0.82 s/s; kwq: passes/s 20778, items/pass 4.7, wakeups/s 1820, yields/s 11451+99, busy 79%; dtrace: wakeups/s 1816, switches/s 1816, sleeps/s 1814 (<20us 0%, <50us 11%, <100us 62%, <500us 99%), yields/s 1 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 19339; cpu 1 idle 0.0%; spinner on cpu 1 got 16% of it
+      sleep gaps:
+           16 us 317
+           32 us 2121
+           64 us 6452
+          128 us 1873
+          256 us 105
+          512 us 19
+         1024 us 2
+      yield gaps:
+           16 us 2
+           32 us 6
+           64 us 2
+          256 us 1
+t_30_wakeups: timers=0 timer: 7.92 Gbit/s; worker kwq_net/1 on-cpu 0.79 s/s; kwq: passes/s 20821, items/pass 4.9, wakeups/s 1890, yields/s 976+99, busy 77%; dtrace: wakeups/s 2214, switches/s 3086, sleeps/s 1933 (<20us 0%, <50us 14%, <100us 69%, <500us 99%), yields/s 1153 (<20us 33%, off-cpu 0.03 s/s); vmstat cs/s 11326; cpu 1 idle 13.6%; timer on cpu 1: lateness avg 155 p99 354 max 844 us (idle avg 166 p99 294 max 488)
+      sleep gaps:
+            4 us 2
+            8 us 12
+           16 us 442
+           32 us 2461
+           64 us 7054
+          128 us 1573
+          256 us 53
+          512 us 2
+      yield gaps:
+            4 us 705
+            8 us 1259
+           16 us 4022
+           32 us 898
+           64 us 36
+          128 us 2
+          512 us 1
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 5.77 Gbit/s; worker kwq_net/2 on-cpu 0.45 s/s; kwq: passes/s 19137, items/pass 3.0, wakeups/s 4754, yields/s 10403+55, busy 36%; dtrace: wakeups/s 14123, switches/s 14123, sleeps/s 4707 (<20us 0%, <50us 0%, <100us 90%, <500us 100%), yields/s 9415 (<20us 49%, off-cpu 0.18 s/s); vmstat cs/s 49977; cpu 2 idle 0.0%
+      sleep gaps:
+           32 us 4445
+           64 us 23094
+          128 us 694
+          256 us 14
+      yield gaps:
+            4 us 20804
+            8 us 6877
+           16 us 24027
+           32 us 4275
+           64 us 496
+          128 us 11
+          256 us 5
+t_30_wakeups: timers=1 spinner: 7.60 Gbit/s; worker kwq_net/1 on-cpu 0.81 s/s; kwq: passes/s 20193, items/pass 4.7, wakeups/s 1901, yields/s 11181+98, busy 77%; dtrace: wakeups/s 1774, switches/s 1774, sleeps/s 1772 (<20us 0%, <50us 11%, <100us 60%, <500us 99%), yields/s 1 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 19955; cpu 1 idle 0.0%; spinner on cpu 1 got 17% of it
+      sleep gaps:
+           16 us 271
+           32 us 2009
+           64 us 6232
+          128 us 2008
+          256 us 103
+          512 us 13
+        32768 us 1
+      yield gaps:
+           16 us 3
+           32 us 6
+           64 us 2
+t_30_wakeups: timers=1 timer: 7.80 Gbit/s; worker kwq_net/1 on-cpu 0.80 s/s; kwq: passes/s 20356, items/pass 5.0, wakeups/s 1808, yields/s 944+100, busy 77%; dtrace: wakeups/s 2142, switches/s 3013, sleeps/s 1868 (<20us 0%, <50us 13%, <100us 68%, <500us 99%), yields/s 1144 (<20us 34%, off-cpu 0.03 s/s); vmstat cs/s 10598; cpu 1 idle 14.3%; timer on cpu 1: lateness avg 160 p99 445 max 2243 us (idle avg 178 p99 365 max 8888)
+      sleep gaps:
+            8 us 3
+           16 us 455
+           32 us 2296
+           64 us 6893
+          128 us 1487
+          256 us 69
+          512 us 7
+         2048 us 1
+      yield gaps:
+            4 us 623
+            8 us 1341
+           16 us 3847
+           32 us 1011
+           64 us 41
+          128 us 2
+          256 us 2
+          512 us 1
+t_30_wakeups: PASS
+== baseline
+t_30_wakeups: ok: load ./../extras/if_pair_tq/if_pair_tq.ko
+t_30_wakeups: created pairtq0a + pairtq0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pairtq0a
+t_30_wakeups: ok: move pairtq0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: pairtq: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean spinner timer}
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: 8.97 Gbit/s; worker pairtq_task_3 on-cpu 0.77 s/s; dtrace: wakeups/s 2431, switches/s 2431, sleeps/s 2318 (<20us 0%, <50us 10%, <100us 63%, <500us 99%), yields/s 112 (<20us 98%, off-cpu 0.00 s/s); vmstat cs/s 11206; cpu 3 idle 20.2%
+      sleep gaps:
+            4 us 1
+            8 us 1
+           16 us 418
+           32 us 2566
+           64 us 8821
+          128 us 2009
+          256 us 88
+          512 us 7
+         1024 us 1
+      yield gaps:
+            4 us 275
+            8 us 383
+           16 us 13
+           32 us 4
+         4096 us 2
+t_30_wakeups: timers=0 spinner: 4.55 Gbit/s; worker pairtq_task_0 on-cpu 0.19 s/s; dtrace: wakeups/s 578, switches/s 586, sleeps/s 577 (<20us 0%, <50us 25%, <100us 70%, <500us 99%), yields/s 8 (<20us 0%, off-cpu 0.76 s/s); vmstat cs/s 4150; cpu 0 idle 0.0%; spinner on cpu 0 got 80% of it
+      sleep gaps:
+           16 us 312
+           32 us 955
+           64 us 1729
+          128 us 431
+          256 us 28
+          512 us 10
+         2048 us 2
+      yield gaps:
+           16 us 1
+        65536 us 48
+       131072 us 1
+t_30_wakeups: timers=0 timer: 8.47 Gbit/s; worker pairtq_task_1 on-cpu 0.79 s/s; dtrace: wakeups/s 2349, switches/s 2383, sleeps/s 2298 (<20us 0%, <50us 15%, <100us 69%, <500us 99%), yields/s 84 (<20us 54%, off-cpu 0.00 s/s); vmstat cs/s 11957; cpu 1 idle 15.5%; timer on cpu 1: lateness avg 519 p99 2571 max 41138 us (idle avg 189 p99 304 max 678)
+      sleep gaps:
+            4 us 2
+            8 us 22
+           16 us 520
+           32 us 3169
+           64 us 8243
+          128 us 1784
+          256 us 49
+          512 us 3
+         2048 us 1
+      yield gaps:
+            4 us 94
+            8 us 157
+           16 us 167
+           32 us 79
+           64 us 4
+          128 us 1
+          256 us 1
+          512 us 1
+         4096 us 1
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 7.51 Gbit/s; worker pairtq_task_0 on-cpu 0.65 s/s; dtrace: wakeups/s 6549, switches/s 6549, sleeps/s 3037 (<20us 0%, <50us 4%, <100us 67%, <500us 99%), yields/s 3512 (<20us 98%, off-cpu 0.04 s/s); vmstat cs/s 19159; cpu 0 idle 15.4%
+      sleep gaps:
+            8 us 1
+           16 us 260
+           32 us 1353
+           64 us 13979
+          128 us 2540
+          256 us 80
+          512 us 9
+         1024 us 1
+      yield gaps:
+            4 us 7410
+            8 us 13204
+           16 us 350
+           32 us 104
+           64 us 3
+          256 us 1
+         2048 us 2
+         4096 us 2
+t_30_wakeups: timers=1 spinner: 3.34 Gbit/s; worker pairtq_task_0 on-cpu 0.00 s/s; dtrace: wakeups/s 2, switches/s 12, sleeps/s 2 (<20us 0%, <50us 91%, <100us 91%, <500us 100%), yields/s 10 (<20us 0%, off-cpu 0.98 s/s); vmstat cs/s 382; cpu 0 idle 0.0%; spinner on cpu 0 got 98% of it
+      sleep gaps:
+           16 us 5
+           32 us 6
+           64 us 1
+      yield gaps:
+        65536 us 58
+       131072 us 2
+t_30_wakeups: timers=1 timer: 8.35 Gbit/s; worker pairtq_task_1 on-cpu 0.79 s/s; dtrace: wakeups/s 2155, switches/s 2181, sleeps/s 2152 (<20us 0%, <50us 13%, <100us 66%, <500us 99%), yields/s 29 (<20us 14%, off-cpu 0.00 s/s); vmstat cs/s 11355; cpu 1 idle 17.0%; timer on cpu 1: lateness avg 394 p99 2074 max 4139 us (idle avg 166 p99 283 max 345)
+      sleep gaps:
+            8 us 1
+           16 us 421
+           32 us 2805
+           64 us 7584
+          128 us 1995
+          256 us 99
+          512 us 10
+         1024 us 1
+      yield gaps:
+            4 us 1
+            8 us 11
+           16 us 109
+           32 us 48
+           64 us 4
+          512 us 1
+t_30_wakeups: PASS

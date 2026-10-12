@@ -1,0 +1,225 @@
+# Origin: the kwq-spin-experiment branch (commit 007f0f4), a kwq with the
+# bounded idle poll (kern.kwq.net.idle_spin_us) and its hardware wait
+# (kern.kwq.poll_hw).  The kwq branch has neither, so the runs with the
+# poll set cannot be reproduced from it; rows with idle_spin_us=0 and the
+# taskqueue baseline rows can.
+== kwq KWQ_SPIN=0 15:34:50
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=0
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean spinner timer}, idle_spin_us 0
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: 36.2 Gbit/s; worker kwq_net/34 on-cpu 0.74 s/s; kwq: passes/s 138388, items/pass 3.0, wakeups/s 34115, yields/s 0+993, busy 64%; dtrace: wakeups/s 31736, switches/s 31738, sleeps/s 31736 (<20us 99%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 60855; cpu 34 idle 22.6%
+      sleep gaps:
+            2 us 10357
+            4 us 179466
+            8 us 354
+           16 us 103
+           32 us 133
+          128 us 6
+          256 us 1
+      yield gaps:
+            4 us 9
+            8 us 1
+      yields -> swi1: 0/s
+      yields -> pmcstat 1.33333/s
+      hwpmc cpu 34: 3.00 G cycles/s, 4.13 G instr/s, IPC 1.38
+t_30_wakeups: timers=0 spinner: 32.0 Gbit/s; worker kwq_net/116 on-cpu 0.71 s/s; kwq: passes/s 122309, items/pass 3.0, wakeups/s 30308, yields/s 61529+984, busy 63%; dtrace: wakeups/s 28080, switches/s 28080, sleeps/s 28080 (<20us 99%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 118558; cpu 116 idle 0.0%; spinner on cpu 116 got 16% of it
+      sleep gaps:
+            2 us 376
+            4 us 102339
+            8 us 65408
+           16 us 288
+           32 us 62
+          128 us 7
+          256 us 1
+t_30_wakeups: timers=0 timer: 32.8 Gbit/s; worker kwq_net/40 on-cpu 0.63 s/s; kwq: passes/s 150477, items/pass 2.5, wakeups/s 11171, yields/s 703+995, busy 60%; dtrace: wakeups/s 10163, switches/s 10813, sleeps/s 10163 (<20us 36%, <50us 87%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 650 (<20us 99%, off-cpu 0.00 s/s); vmstat cs/s 39944; cpu 40 idle 34.9%; timer on cpu 40: lateness avg 11 p99 30 max 128 us (idle avg 1 p99 3 max 8)
+      sleep gaps:
+            2 us 383
+            4 us 4276
+            8 us 9751
+           16 us 26878
+           32 us 16446
+           64 us 3231
+          128 us 15
+      yield gaps:
+            2 us 65
+            4 us 3827
+            8 us 9
+          256 us 1
+      yields -> swi1: 0/s
+      yields -> lateness 650.167/s
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 36.4 Gbit/s; worker kwq_net/67 on-cpu 0.73 s/s; kwq: passes/s 139281, items/pass 3.0, wakeups/s 34560, yields/s 0+996, busy 62%; dtrace: wakeups/s 32105, switches/s 32107, sleeps/s 32105 (<20us 99%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 61494; cpu 67 idle 23.3%
+      sleep gaps:
+            2 us 6204
+            4 us 184905
+            8 us 998
+           16 us 23
+           32 us 452
+           64 us 44
+          128 us 6
+      yield gaps:
+            4 us 9
+            8 us 1
+      yields -> swi1: 0/s
+      yields -> pmcstat 1.33333/s
+      hwpmc cpu 67: 3.00 G cycles/s, 4.28 G instr/s, IPC 1.43
+t_30_wakeups: timers=1 spinner: 33.1 Gbit/s; worker kwq_net/52 on-cpu 0.72 s/s; kwq: passes/s 124573, items/pass 3.0, wakeups/s 30565, yields/s 62663+980, busy 64%; dtrace: wakeups/s 28344, switches/s 28344, sleeps/s 28344 (<20us 99%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 110044; cpu 52 idle 0.0%; spinner on cpu 52 got 15% of it
+      sleep gaps:
+            2 us 3422
+            4 us 136817
+            8 us 29607
+           16 us 175
+           32 us 34
+          128 us 8
+          256 us 1
+t_30_wakeups: timers=1 timer: 35.9 Gbit/s; worker kwq_net/48 on-cpu 0.78 s/s; kwq: passes/s 131373, items/pass 3.2, wakeups/s 30936, yields/s 960+982, busy 68%; dtrace: wakeups/s 28801, switches/s 29679, sleeps/s 28801 (<20us 99%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 877 (<20us 97%, off-cpu 0.00 s/s); vmstat cs/s 57257; cpu 48 idle 18.3%; timer on cpu 48: lateness avg 18 p99 82 max 292 us (idle avg 1 p99 3 max 8)
+      sleep gaps:
+            2 us 29094
+            4 us 143471
+            8 us 194
+           16 us 22
+           32 us 18
+          128 us 7
+      lock blocks:
+            4 us 1
+            8 us 1
+          512 us 1
+      yield gaps:
+            2 us 3932
+            4 us 1211
+            8 us 9
+           16 us 74
+           32 us 39
+          256 us 1
+      yields -> swi1: 0/s
+      yields -> lateness 877.5/s
+      blocks -> idle: 0/s
+t_30_wakeups: profile of cpu 126 (timers=1, 34.9 Gbit/s), top symbols by samples:
+      23.17%  [59257]    lock_delay @ /boot/kernel/kernel
+       94.60%  [56059]     __rw_wlock_hard
+        100.0%  [56059]      _inp_smr_lock
+         100.0%  [56059]       in_pcblookup_hash_smr
+          100.0%  [56059]        tcp_input_with_port
+           100.0%  [56059]         tcp_input
+            100.0%  [56059]          ip_input
+             100.0%  [56059]           netisr_dispatch_src
+              100.0%  [56059]            fork_exit
+               100.0%  [56059]             fork_trampoline
+       05.32%  [3153]      __mtx_lock_sleep
+        99.87%  [3149]       tcp_do_segment
+         100.0%  [3149]        tcp_input_with_port
+          100.0%  [3149]         tcp_input
+t_30_wakeups: PASS
+== kwq KWQ_SPIN=20 15:36:19
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=20
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean spinner timer}, idle_spin_us 20
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (37.8 Gbit/s)
+t_30_wakeups: timers=0 spinner: no worker thread of kwq_net/ ran during the lead-in (37.4 Gbit/s)
+t_30_wakeups: timers=0 timer: 32.6 Gbit/s; worker kwq_net/31 on-cpu 0.67 s/s; kwq: passes/s 154795, items/pass 2.4, wakeups/s 10493, yields/s 697+951, busy 59%, spins/s 3593 (hit 40%, 0.06 s/s); dtrace: wakeups/s 9716, switches/s 10352, sleeps/s 9715 (<20us 42%, <50us 89%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 636 (<20us 99%, off-cpu 0.00 s/s); vmstat cs/s 39457; cpu 31 idle 28.7%; timer on cpu 31: lateness avg 11 p99 29 max 388 us (idle avg 1 p99 3 max 22)
+      sleep gaps:
+            2 us 2130
+            4 us 5263
+            8 us 10584
+           16 us 23162
+           32 us 14765
+           64 us 2378
+          128 us 11
+          256 us 1
+      lock blocks:
+            4 us 1
+          256 us 1
+      yield gaps:
+            2 us 154
+            4 us 3656
+            8 us 6
+          256 us 1
+      yields -> swi1: 0/s
+      yields -> lateness 635.833/s
+      yields -> its6,24: 0/s
+      blocks -> iperf3 0.333333/s
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 32.8 Gbit/s; worker kwq_net/93 on-cpu 0.90 s/s; kwq: passes/s 131241, items/pass 3.0, wakeups/s 6, yields/s 0+1001, busy 79%, spins/s 32563 (hit 100%, 0.17 s/s); dtrace: wakeups/s 5, switches/s 6, sleeps/s 5 (<20us 74%, <50us 80%, <100us 80%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 17732; cpu 93 idle 0.0%
+      sleep gaps:
+            2 us 5
+            4 us 14
+            8 us 4
+           16 us 2
+          128 us 6
+      yield gaps:
+            4 us 7
+            8 us 1
+      yields -> pmcstat 1.33333/s
+      hwpmc cpu 93: 3.00 G cycles/s, 3.27 G instr/s, IPC 1.09
+t_30_wakeups: timers=1 spinner: 35.7 Gbit/s; worker kwq_net/36 on-cpu 0.71 s/s; kwq: passes/s 141310, items/pass 2.9, wakeups/s 30305, yields/s 71248+979, busy 64%, spins/s 28872 (hit 0%, 0.00 s/s); dtrace: wakeups/s 27464, switches/s 27465, sleeps/s 27464 (<20us 94%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 87%, off-cpu 0.00 s/s); vmstat cs/s 119167; cpu 36 idle 0.0%; spinner on cpu 36 got 16% of it
+      sleep gaps:
+            2 us 5624
+            4 us 146853
+            8 us 2607
+           16 us 5570
+           32 us 3559
+           64 us 558
+          128 us 12
+          256 us 1
+      lock blocks:
+            8 us 1
+          128 us 1
+      yield gaps:
+            4 us 7
+          128 us 1
+      yields -> softirq_36 0.666667/s
+      yields -> jail_remove 0/s
+      blocks -> yes 0.333333/s
+t_30_wakeups: timers=1 timer: no worker thread of kwq_net/ ran during the lead-in (36.4 Gbit/s)
+t_30_wakeups: profile of cpu 92 (timers=1, 35.0 Gbit/s), top symbols by samples:
+      24.59%  [62463]    lock_delay @ /boot/kernel/kernel
+       95.63%  [59733]     __rw_wlock_hard
+        100.0%  [59733]      _inp_smr_lock
+         100.0%  [59733]       in_pcblookup_hash_smr
+          100.0%  [59733]        tcp_input_with_port
+           100.0%  [59733]         tcp_input
+            100.0%  [59733]          ip_input
+             100.0%  [59733]           netisr_dispatch_src
+              100.0%  [59733]            fork_exit
+               100.0%  [59733]             fork_trampoline
+       04.28%  [2674]      __mtx_lock_sleep
+        99.96%  [2673]       tcp_do_segment
+         100.0%  [2673]        tcp_input_with_port
+          100.0%  [2673]         tcp_input
+t_30_wakeups: FAIL: 3 runs did not complete
+t_30_wakeups: state left in place for debugging; inspect with
+    jls; ifconfig -g pair; kldstat -m if_pair
+  and sweep with 'sh ./cleanup.sh' when done.
+== kwq KWQ_SPIN=50 15:37:38
+t_30_wakeups: created pair1a + pair1b
+t_30_wakeups: FAIL: jail ifp_30_wakeups_s1 already exists (leftover state? run cleanup.sh)
+t_30_wakeups: state left in place for debugging; inspect with
+    jls; ifconfig -g pair; kldstat -m if_pair
+  and sweep with 'sh ./cleanup.sh' when done.
+== kwq KWQ_SPIN=100 15:37:38
+t_30_wakeups: created pair2a + pair2b
+t_30_wakeups: FAIL: jail ifp_30_wakeups_s1 already exists (leftover state? run cleanup.sh)
+t_30_wakeups: state left in place for debugging; inspect with
+    jls; ifconfig -g pair; kldstat -m if_pair
+  and sweep with 'sh ./cleanup.sh' when done.
+== end 15:37:38
+net.inet.tcp.per_cpu_timers: 1
+ 3:37PM  up 9 days, 14:50, 2 users, load averages: 2.51, 1.24, 0.66

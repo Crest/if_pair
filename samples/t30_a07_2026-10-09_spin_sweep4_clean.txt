@@ -1,0 +1,320 @@
+# Origin: the kwq-spin-experiment branch (commit 007f0f4), a kwq with the
+# bounded idle poll (kern.kwq.net.idle_spin_us) and its hardware wait
+# (kern.kwq.poll_hw).  The kwq branch has neither, so the runs with the
+# poll set cannot be reproduced from it; rows with idle_spin_us=0 and the
+# taskqueue baseline rows can.
+== kwq KWQ_SPIN=0 15:53:14
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=0
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}, idle_spin_us 0
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: 33.1 Gbit/s; worker kwq_net/6 on-cpu 0.63 s/s; kwq: passes/s 145911, items/pass 2.7, wakeups/s 22788, yields/s 0+992, busy 58%; dtrace: wakeups/s 21169, switches/s 21170, sleeps/s 21169 (<20us 78%, <50us 95%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 20%, off-cpu 0.00 s/s); vmstat cs/s 52725; cpu 6 idle 29.9%; iperf3 pid@cpu 34781@30 30680@85 
+      sleep gaps:
+            2 us 3363
+            4 us 81577
+            8 us 10183
+           16 us 18580
+           32 us 10722
+           64 us 2578
+          128 us 11
+          256 us 1
+      yield gaps:
+            4 us 1
+         1024 us 3
+         2048 us 1
+      yields -> swi1: 0/s
+      yields -> clock 0/s
+t_30_wakeups: timers=0 clean: 26.4 Gbit/s; worker kwq_net/44 on-cpu 0.51 s/s; kwq: passes/s 95755, items/pass 3.1, wakeups/s 23348, yields/s 16986+712, busy 48%; dtrace: wakeups/s 38172, switches/s 38172, sleeps/s 20883 (<20us 58%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 17288 (off-cpu 0.11 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 114269; cpu 44 idle 9.6%; iperf3 pid@cpu 34781@86 48860@44 
+      sleep gaps:
+            2 us 13665
+            4 us 59474
+            8 us 123
+           16 us 51686
+           32 us 177
+           64 us 171
+          128 us 6
+      lock blocks:
+            2 us 51512
+            4 us 331
+            8 us 51753
+           16 us 48
+           32 us 83
+           64 us 4
+          128 us 1
+      blocks -> iperf3 17288.7/s
+t_30_wakeups: timers=0 clean: 34.6 Gbit/s; worker kwq_net/53 on-cpu 0.67 s/s; kwq: passes/s 132017, items/pass 3.0, wakeups/s 32552, yields/s 0+991, busy 66%; dtrace: wakeups/s 30212, switches/s 30212, sleeps/s 30212 (<20us 99%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 58715; cpu 53 idle 20.6%; iperf3 pid@cpu 53753@119 34781@67 
+      sleep gaps:
+            2 us 10380
+            4 us 165825
+            8 us 4722
+           16 us 159
+           32 us 177
+           64 us 4
+          128 us 7
+      yield gaps:
+            4 us 1
+      yields -> swi1: 0/s
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 20.6 Gbit/s; worker kwq_net/78 on-cpu 0.41 s/s; kwq: passes/s 65138, items/pass 3.0, wakeups/s 16183, yields/s 32763+523, busy 31%; dtrace: wakeups/s 43476, switches/s 43476, sleeps/s 14492 (<20us 0%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 28984 (off-cpu 0.18 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 169090; cpu 78 idle 0.0%; iperf3 pid@cpu 34781@98 42@78 
+      sleep gaps:
+           16 us 86595
+           32 us 266
+           64 us 86
+          128 us 5
+      lock blocks:
+            2 us 86104
+            4 us 767
+            8 us 86767
+           16 us 197
+           32 us 67
+          128 us 2
+      blocks -> its6,113:-vme3:io39 0.166667/s
+      blocks -> iperf3 28983.8/s
+t_30_wakeups: timers=1 clean: 35.0 Gbit/s; worker kwq_net/80 on-cpu 0.66 s/s; kwq: passes/s 133784, items/pass 3.0, wakeups/s 33168, yields/s 0+991, busy 62%; dtrace: wakeups/s 30796, switches/s 30796, sleeps/s 30796 (<20us 99%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 60739; cpu 80 idle 28.0%; iperf3 pid@cpu 73499@110 34781@117 
+      sleep gaps:
+            2 us 4768
+            4 us 134949
+            8 us 44572
+           16 us 141
+           32 us 328
+           64 us 13
+          128 us 7
+      lock blocks:
+            8 us 1
+           16 us 1
+      blocks -> idle: 0/s
+t_30_wakeups: timers=1 clean: 36.6 Gbit/s; worker kwq_net/86 on-cpu 0.71 s/s; kwq: passes/s 139921, items/pass 3.0, wakeups/s 34647, yields/s 0+991, busy 64%; dtrace: wakeups/s 32211, switches/s 32211, sleeps/s 32211 (<20us 99%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 62323; cpu 86 idle 23.7%; iperf3 pid@cpu 52959@124 34781@24 
+      sleep gaps:
+            2 us 8271
+            4 us 176376
+            8 us 8151
+           16 us 54
+           32 us 361
+           64 us 50
+          128 us 7
+      yield gaps:
+            4 us 1
+      yields -> swi1: 0/s
+t_30_wakeups: PASS
+== kwq KWQ_SPIN=50 15:54:27
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=50
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}, idle_spin_us 50
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: 35.5 Gbit/s; worker kwq_net/95 on-cpu 0.93 s/s; kwq: passes/s 135482, items/pass 3.0, wakeups/s 0, yields/s 0+1001, busy 82%, spins/s 33511 (hit 100%, 0.14 s/s); dtrace: wakeups/s 0, switches/s 0, sleeps/s 0 (<20us 0%, <50us 0%, <100us 0%, <500us 0%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 4803; cpu 95 idle 0.0%; iperf3 pid@cpu 86650@98 66592@77 
+t_30_wakeups: timers=0 clean: 37.6 Gbit/s; worker kwq_net/7 on-cpu 0.93 s/s; kwq: passes/s 143575, items/pass 3.0, wakeups/s 0, yields/s 0+1001, busy 82%, spins/s 35442 (hit 100%, 0.13 s/s); dtrace: wakeups/s 0, switches/s 0, sleeps/s 0 (<20us 50%, <50us 50%, <100us 50%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 2120; cpu 7 idle 0.0%; iperf3 pid@cpu 61669@21 66592@69 
+      sleep gaps:
+            4 us 1
+          128 us 1
+      yield gaps:
+           16 us 1
+      yields -> if_io_tqg_7 0.166667/s
+t_30_wakeups: timers=0 clean: 33.3 Gbit/s; worker kwq_net/10 on-cpu 0.93 s/s; kwq: passes/s 127341, items/pass 3.0, wakeups/s 6, yields/s 0+1001, busy 80%, spins/s 31502 (hit 100%, 0.16 s/s); dtrace: wakeups/s 1, switches/s 1, sleeps/s 1 (<20us 42%, <50us 42%, <100us 42%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 10341; cpu 10 idle 0.0%; iperf3 pid@cpu 75762@100 66592@92 
+      sleep gaps:
+            4 us 2
+            8 us 1
+          128 us 4
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 36.1 Gbit/s; worker kwq_net/50 on-cpu 0.89 s/s; kwq: passes/s 169058, items/pass 2.5, wakeups/s 1777, yields/s 0+956, busy 72%, spins/s 16350 (hit 95%, 0.20 s/s); dtrace: wakeups/s 1657, switches/s 1657, sleeps/s 1657 (<20us 67%, <50us 97%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 13528; cpu 50 idle 3.5%; iperf3 pid@cpu 69071@110 69071@2 
+      sleep gaps:
+            2 us 651
+            4 us 1575
+            8 us 2897
+           16 us 4030
+           32 us 688
+           64 us 98
+          128 us 6
+          256 us 1
+t_30_wakeups: timers=1 clean: 31.6 Gbit/s; worker kwq_net/91 on-cpu 0.86 s/s; kwq: passes/s 158696, items/pass 2.3, wakeups/s 3053, yields/s 0+925, busy 59%, spins/s 11888 (hit 88%, 0.31 s/s); dtrace: wakeups/s 2859, switches/s 2859, sleeps/s 2859 (<20us 56%, <50us 95%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 24026; cpu 91 idle 7.7%; iperf3 pid@cpu 8681@7 8681@30 
+      sleep gaps:
+            2 us 981
+            4 us 2393
+            8 us 4206
+           16 us 6810
+           32 us 2390
+           64 us 371
+          128 us 8
+t_30_wakeups: timers=1 clean: 33.2 Gbit/s; worker kwq_net/1 on-cpu 0.89 s/s; kwq: passes/s 164477, items/pass 2.3, wakeups/s 2636, yields/s 2+924, busy 58%, spins/s 14108 (hit 91%, 0.32 s/s); dtrace: wakeups/s 2439, switches/s 2441, sleeps/s 2439 (<20us 61%, <50us 98%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 2 (<20us 75%, off-cpu 0.00 s/s); vmstat cs/s 18504; cpu 1 idle 4.1%; iperf3 pid@cpu 82490@108 82490@124 
+      sleep gaps:
+            2 us 778
+            4 us 1866
+            8 us 4062
+           16 us 6932
+           32 us 887
+           64 us 102
+          128 us 7
+      yield gaps:
+            4 us 5
+            8 us 4
+           16 us 3
+      yields -> zerotier-one 2/s
+t_30_wakeups: PASS
+== kwq KWQ_SPIN=100 15:55:43
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=100
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}, idle_spin_us 100
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: 33.1 Gbit/s; worker kwq_net/77 on-cpu 0.93 s/s; kwq: passes/s 133573, items/pass 3.0, wakeups/s 0, yields/s 0+1001, busy 80%, spins/s 33038 (hit 100%, 0.16 s/s); dtrace: wakeups/s 0, switches/s 0, sleeps/s 0 (<20us 50%, <50us 50%, <100us 50%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 7263; cpu 77 idle 0.0%; iperf3 pid@cpu 96437@103 96437@102 
+      sleep gaps:
+            2 us 1
+          128 us 1
+t_30_wakeups: timers=0 clean: 32.9 Gbit/s; worker kwq_net/40 on-cpu 0.93 s/s; kwq: passes/s 125226, items/pass 3.0, wakeups/s 0, yields/s 0+1001, busy 82%, spins/s 30843 (hit 100%, 0.14 s/s); dtrace: wakeups/s 0, switches/s 0, sleeps/s 0 (<20us 0%, <50us 0%, <100us 0%, <500us 0%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 4555; cpu 40 idle 0.0%; iperf3 pid@cpu 96437@42 96437@31 
+t_30_wakeups: timers=0 clean: 34.0 Gbit/s; worker kwq_net/107 on-cpu 0.93 s/s; kwq: passes/s 137360, items/pass 3.0, wakeups/s 0, yields/s 0+1001, busy 82%, spins/s 33984 (hit 100%, 0.14 s/s); dtrace: wakeups/s 0, switches/s 0, sleeps/s 0 (<20us 50%, <50us 50%, <100us 50%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 2869; cpu 107 idle 0.0%; iperf3 pid@cpu 67139@22 96437@86 
+      sleep gaps:
+            2 us 1
+          128 us 1
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 32.9 Gbit/s; worker kwq_net/39 on-cpu 0.93 s/s; kwq: passes/s 128171, items/pass 3.0, wakeups/s 0, yields/s 0+1001, busy 79%, spins/s 31766 (hit 100%, 0.17 s/s); dtrace: wakeups/s 0, switches/s 0, sleeps/s 0 (<20us 50%, <50us 50%, <100us 50%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 12376; cpu 39 idle 0.0%; iperf3 pid@cpu 96437@94 96437@28 
+      sleep gaps:
+            2 us 1
+            4 us 1
+          128 us 2
+t_30_wakeups: timers=1 clean: 33.0 Gbit/s; worker kwq_net/24 on-cpu 0.93 s/s; kwq: passes/s 143576, items/pass 2.7, wakeups/s 1, yields/s 0+1001, busy 72%, spins/s 25638 (hit 100%, 0.24 s/s); dtrace: wakeups/s 2, switches/s 3, sleeps/s 1 (<20us 50%, <50us 60%, <100us 70%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 23800; cpu 24 idle 0.0%; iperf3 pid@cpu 33887@6 96437@73 
+      sleep gaps:
+            4 us 2
+            8 us 3
+           16 us 1
+           32 us 1
+          128 us 3
+      lock blocks:
+            8 us 1
+          128 us 1
+          256 us 1
+      yield gaps:
+            2 us 2
+            4 us 5
+      yields -> softirq_24 0.833333/s
+      yields -> jail_remove 0/s
+      blocks -> idle: 0/s
+t_30_wakeups: timers=1 clean: 37.7 Gbit/s; worker kwq_net/94 on-cpu 0.93 s/s; kwq: passes/s 141372, items/pass 3.1, wakeups/s 0, yields/s 0+1001, busy 84%, spins/s 34357 (hit 100%, 0.12 s/s); dtrace: wakeups/s 0, switches/s 0, sleeps/s 0 (<20us 50%, <50us 50%, <100us 50%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 2496; cpu 94 idle 0.0%; iperf3 pid@cpu 83201@109 96437@66 
+      sleep gaps:
+            4 us 1
+          128 us 1
+t_30_wakeups: PASS
+== baseline 15:56:54
+t_30_wakeups: ok: load ./../extras/if_pair_tq/if_pair_tq.ko
+t_30_wakeups: created pairtq0a + pairtq0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pairtq0a
+t_30_wakeups: ok: move pairtq0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: pairtq: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: 36.5 Gbit/s; worker pairtq_task_34 on-cpu 0.69 s/s; dtrace: wakeups/s 31830, switches/s 31830, sleeps/s 31830 (<20us 99%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 61457; cpu 34 idle 28.2%; iperf3 pid@cpu 98654@112 67407@33 
+      sleep gaps:
+            2 us 6168
+            4 us 171690
+            8 us 12932
+           16 us 115
+           32 us 73
+          128 us 7
+t_30_wakeups: timers=0 clean: 30.4 Gbit/s; worker pairtq_task_59 on-cpu 0.57 s/s; dtrace: wakeups/s 11758, switches/s 11758, sleeps/s 11758 (<20us 32%, <50us 86%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 42276; cpu 59 idle 38.5%; iperf3 pid@cpu 99826@95 99826@76 
+      sleep gaps:
+            2 us 158
+            4 us 4166
+            8 us 11071
+           16 us 31850
+           32 us 19146
+           64 us 4150
+          128 us 11
+t_30_wakeups: timers=0 clean: 29.9 Gbit/s; worker pairtq_task_28 on-cpu 0.53 s/s; dtrace: wakeups/s 18452, switches/s 18452, sleeps/s 13436 (<20us 29%, <50us 91%, <100us 99%, <500us 100%), lock blocks/s 5016 (off-cpu 0.03 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 67829; cpu 28 idle 30.3%; iperf3 pid@cpu 42@124 42@28 
+      sleep gaps:
+            2 us 125
+            4 us 4897
+            8 us 12019
+           16 us 44616
+           32 us 15596
+           64 us 3357
+          128 us 6
+      lock blocks:
+            2 us 14946
+            4 us 97
+            8 us 15019
+           16 us 4
+           32 us 26
+           64 us 7
+          128 us 1
+      yield gaps:
+         4096 us 1
+      yields -> iperf3 0.166667/s
+      blocks -> iperf3 5016.67/s
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 36.2 Gbit/s; worker pairtq_task_11 on-cpu 0.69 s/s; dtrace: wakeups/s 31720, switches/s 31720, sleeps/s 31720 (<20us 99%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 62048; cpu 11 idle 27.5%; iperf3 pid@cpu 67407@38 67407@73 
+      sleep gaps:
+            2 us 5196
+            4 us 165673
+            8 us 19196
+           16 us 65
+           32 us 168
+           64 us 19
+          128 us 8
+t_30_wakeups: timers=1 clean: 30.1 Gbit/s; worker pairtq_task_75 on-cpu 0.53 s/s; dtrace: wakeups/s 19372, switches/s 19372, sleeps/s 13822 (<20us 31%, <50us 92%, <100us 99%, <500us 100%), lock blocks/s 5549 (off-cpu 0.03 s/s), yields/s 0 (<20us 0%, off-cpu 0.00 s/s); vmstat cs/s 63354; cpu 75 idle 31.1%; iperf3 pid@cpu 67407@83 75849@75 
+      sleep gaps:
+            2 us 171
+            4 us 5136
+            8 us 12951
+           16 us 47908
+           32 us 13899
+           64 us 2865
+          128 us 7
+      lock blocks:
+            2 us 16519
+            4 us 116
+            8 us 16624
+           16 us 30
+           32 us 8
+          128 us 1
+      yield gaps:
+         4096 us 1
+      yields -> iperf3 0.166667/s
+      blocks -> iperf3 5549.67/s
+t_30_wakeups: timers=1 clean: 32.1 Gbit/s; worker pairtq_task_42 on-cpu 0.69 s/s; dtrace: wakeups/s 30048, switches/s 30048, sleeps/s 28528 (<20us 97%, <50us 99%, <100us 99%, <500us 100%), lock blocks/s 1519 (off-cpu 0.01 s/s), yields/s 0 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 69815; cpu 42 idle 19.8%; iperf3 pid@cpu 67407@41 99826@42 
+      sleep gaps:
+            2 us 4444
+            4 us 139041
+            8 us 22840
+           16 us 4502
+           32 us 322
+           64 us 14
+          128 us 7
+      lock blocks:
+            2 us 4530
+            4 us 26
+            8 us 4555
+           32 us 7
+          256 us 1
+      yield gaps:
+            8 us 1
+      yields -> its6,95: 0/s
+      blocks -> iperf3 1519.83/s
+t_30_wakeups: PASS
+== end 15:58:06
+net.inet.tcp.per_cpu_timers: 1
+ 3:58PM  up 9 days, 15:10, 2 users, load averages: 2.37, 2.25, 1.81

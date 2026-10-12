@@ -1,0 +1,21 @@
+t_33_wakepath: created pair0a + pair0b
+t_33_wakepath: pair (kwq_enqueue -> wakeup_one -> pair_handler), ns avg and count:
+      enqueue total, no wake                  825   370065
+      A enqueue entry -> wake call            874   370058
+      B wake call -> runnable                1253   370059
+      D on CPU -> handler entry              1923   370057
+      C runnable -> worker on CPU            2697   370059
+      enqueue total, woke the worker         4129   370058
+      C runnable -> worker on CPU, ns                   
+      D on CPU -> handler entry, ns                     
+t_33_wakepath: PASS
+t_33_wakepath: created pairtq0a + pairtq0b
+t_33_wakepath: pairtq (taskqueue_enqueue -> wakeup_any -> pair_task_deferred), ns avg and count:
+      A enqueue entry -> wake call            475   694850
+      B wake call -> runnable                1200   348018
+      D on CPU -> handler entry              1670   346767
+      C runnable -> worker on CPU            2838   348018
+      enqueue total, woke the worker         3604   694850
+      C runnable -> worker on CPU, ns                   
+      D on CPU -> handler entry, ns                     
+t_33_wakepath: PASS

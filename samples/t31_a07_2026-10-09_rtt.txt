@@ -1,0 +1,36 @@
+# Origin: the kwq-spin-experiment branch (commit 007f0f4), a kwq with the
+# bounded idle poll (kern.kwq.net.idle_spin_us) and its hardware wait
+# (kern.kwq.poll_hw).  The kwq branch has neither, so the runs with the
+# poll set cannot be reproduced from it; rows with idle_spin_us=0 and the
+# taskqueue baseline rows can.
+== kwq
+t_31_rtt: ok: load ./../if_pair.ko
+t_31_rtt: created pair0a + pair0b
+t_31_rtt: ok: create jail ifp_31_rtt_s1
+t_31_rtt: ok: create jail ifp_31_rtt_c1
+t_31_rtt: ok: move pair0a
+t_31_rtt: ok: move pair0b
+t_31_rtt: ok: addresses
+t_31_rtt: ok: reachable
+t_31_rtt: ok: idle_spin_us=0
+t_31_rtt: idle_spin_us=0 flood (50000): rtt us min 7 avg 11 max 152 stddev 6; kwq per packet: wakeups 1.00, polls 0.00 (hit 0%)
+t_31_rtt: idle_spin_us=0 1 kHz (5000): rtt us min 9 avg 20 max 78 stddev 7; kwq per packet: wakeups 1.00, polls 0.00 (hit 0%)
+t_31_rtt: ok: idle_spin_us=50
+t_31_rtt: idle_spin_us=50 flood (50000): rtt us min 6 avg 9 max 107 stddev 6; kwq per packet: wakeups 0.32, polls 0.68 (hit 99%)
+t_31_rtt: idle_spin_us=50 1 kHz (5000): rtt us min 9 avg 21 max 78 stddev 7; kwq per packet: wakeups 1.00, polls 0.00 (hit 0%)
+t_31_rtt: ok: idle_spin_us=100
+t_31_rtt: idle_spin_us=100 flood (50000): rtt us min 6 avg 9 max 99 stddev 6; kwq per packet: wakeups 0.32, polls 0.68 (hit 99%)
+t_31_rtt: idle_spin_us=100 1 kHz (5000): rtt us min 10 avg 22 max 77 stddev 6; kwq per packet: wakeups 1.00, polls 0.00 (hit 0%)
+t_31_rtt: PASS
+== baseline
+t_31_rtt: ok: load ./../extras/if_pair_tq/if_pair_tq.ko
+t_31_rtt: created pairtq0a + pairtq0b
+t_31_rtt: ok: create jail ifp_31_rtt_s1
+t_31_rtt: ok: create jail ifp_31_rtt_c1
+t_31_rtt: ok: move pairtq0a
+t_31_rtt: ok: move pairtq0b
+t_31_rtt: ok: addresses
+t_31_rtt: ok: reachable
+t_31_rtt: pairtq flood (50000): rtt us min 6 avg 10 max 101 stddev 6
+t_31_rtt: pairtq 1 kHz (5000): rtt us min 9 avg 19 max 76 stddev 6
+t_31_rtt: PASS

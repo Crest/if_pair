@@ -1,0 +1,323 @@
+# Origin: the kwq-spin-experiment branch (commit 007f0f4), a kwq with the
+# bounded idle poll (kern.kwq.net.idle_spin_us) and its hardware wait
+# (kern.kwq.poll_hw).  The kwq branch has neither, so the runs with the
+# poll set cannot be reproduced from it; rows with idle_spin_us=0 and the
+# taskqueue baseline rows can.
+== kwq KWQ_SPIN=0 15:39:45
+t_30_wakeups: ok: load ./../if_pair.ko
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=0
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}, idle_spin_us 0
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (38.1 Gbit/s)
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (37.1 Gbit/s)
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (35.5 Gbit/s)
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: no worker thread of kwq_net/ ran during the lead-in (37.6 Gbit/s)
+t_30_wakeups: timers=1 clean: no worker thread of kwq_net/ ran during the lead-in (33.2 Gbit/s)
+t_30_wakeups: timers=1 clean: no worker thread of kwq_net/ ran during the lead-in (37.6 Gbit/s)
+t_30_wakeups: profile of cpu  (timers=1, 20.9 Gbit/s), top symbols by samples:
+t_30_wakeups.sh: cannot open /home/crest/if_pair-scratch/t30out/spin0/pmc.raw: No such file or directory
+t_30_wakeups: profile: pmcstat produced no graph (0 raw bytes)
+t_30_wakeups: raw output kept in /home/crest/if_pair-scratch/t30out/spin0
+t_30_wakeups: FAIL: 6 runs did not complete
+t_30_wakeups: state left in place for debugging; inspect with
+    jls; ifconfig -g pair; kldstat -m if_pair
+  and sweep with 'sh ./cleanup.sh' when done.
+removing jail ifp_30_wakeups_s1
+ifp_30_wakeups_s1: removed
+removing jail ifp_30_wakeups_c1
+ifp_30_wakeups_c1: removed
+if_pair is still loaded; 'kldunload if_pair' removes it
+== kwq KWQ_SPIN=20 15:40:58
+t_30_wakeups: created pair1a + pair1b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair1a
+t_30_wakeups: ok: move pair1b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=20
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}, idle_spin_us 20
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (35.4 Gbit/s)
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (34.5 Gbit/s)
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (37.9 Gbit/s)
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: no worker thread of kwq_net/ ran during the lead-in (39.5 Gbit/s)
+t_30_wakeups: timers=1 clean: no worker thread of kwq_net/ ran during the lead-in (36.5 Gbit/s)
+t_30_wakeups: timers=1 clean: no worker thread of kwq_net/ ran during the lead-in (35.1 Gbit/s)
+t_30_wakeups: profile of cpu  (timers=1, 33.6 Gbit/s), top symbols by samples:
+t_30_wakeups.sh: cannot open /home/crest/if_pair-scratch/t30out/spin20/pmc.raw: No such file or directory
+t_30_wakeups: profile: pmcstat produced no graph (0 raw bytes)
+t_30_wakeups: raw output kept in /home/crest/if_pair-scratch/t30out/spin20
+t_30_wakeups: FAIL: 6 runs did not complete
+t_30_wakeups: state left in place for debugging; inspect with
+    jls; ifconfig -g pair; kldstat -m if_pair
+  and sweep with 'sh ./cleanup.sh' when done.
+removing jail ifp_30_wakeups_s1
+ifp_30_wakeups_s1: removed
+removing jail ifp_30_wakeups_c1
+ifp_30_wakeups_c1: removed
+destroying pair0a
+if_pair is still loaded; 'kldunload if_pair' removes it
+== kwq KWQ_SPIN=50 15:42:13
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=50
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}, idle_spin_us 50
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (34.0 Gbit/s)
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (35.8 Gbit/s)
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (37.2 Gbit/s)
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: no worker thread of kwq_net/ ran during the lead-in (34.9 Gbit/s)
+t_30_wakeups: timers=1 clean: no worker thread of kwq_net/ ran during the lead-in (34.1 Gbit/s)
+t_30_wakeups: timers=1 clean: no worker thread of kwq_net/ ran during the lead-in (34.6 Gbit/s)
+t_30_wakeups: profile of cpu  (timers=1, 35.1 Gbit/s), top symbols by samples:
+t_30_wakeups.sh: cannot open /home/crest/if_pair-scratch/t30out/spin50/pmc.raw: No such file or directory
+t_30_wakeups: profile: pmcstat produced no graph (0 raw bytes)
+t_30_wakeups: raw output kept in /home/crest/if_pair-scratch/t30out/spin50
+t_30_wakeups: FAIL: 6 runs did not complete
+t_30_wakeups: state left in place for debugging; inspect with
+    jls; ifconfig -g pair; kldstat -m if_pair
+  and sweep with 'sh ./cleanup.sh' when done.
+removing jail ifp_30_wakeups_s1
+ifp_30_wakeups_s1: removed
+removing jail ifp_30_wakeups_c1
+ifp_30_wakeups_c1: removed
+destroying pair1a
+destroying pair0a
+if_pair is still loaded; 'kldunload if_pair' removes it
+== kwq KWQ_SPIN=100 15:43:35
+t_30_wakeups: created pair0a + pair0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pair0a
+t_30_wakeups: ok: move pair0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: ok: idle_spin_us=100
+t_30_wakeups: pair: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}, idle_spin_us 100
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (37.6 Gbit/s)
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (34.9 Gbit/s)
+t_30_wakeups: timers=0 clean: no worker thread of kwq_net/ ran during the lead-in (33.6 Gbit/s)
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: no worker thread of kwq_net/ ran during the lead-in (33.9 Gbit/s)
+t_30_wakeups: timers=1 clean: no worker thread of kwq_net/ ran during the lead-in (33.3 Gbit/s)
+t_30_wakeups: timers=1 clean: no worker thread of kwq_net/ ran during the lead-in (36.2 Gbit/s)
+t_30_wakeups: profile of cpu  (timers=1, 32.9 Gbit/s), top symbols by samples:
+t_30_wakeups.sh: cannot open /home/crest/if_pair-scratch/t30out/spin100/pmc.raw: No such file or directory
+t_30_wakeups: profile: pmcstat produced no graph (0 raw bytes)
+t_30_wakeups: raw output kept in /home/crest/if_pair-scratch/t30out/spin100
+t_30_wakeups: FAIL: 6 runs did not complete
+t_30_wakeups: state left in place for debugging; inspect with
+    jls; ifconfig -g pair; kldstat -m if_pair
+  and sweep with 'sh ./cleanup.sh' when done.
+removing jail ifp_30_wakeups_s1
+ifp_30_wakeups_s1: removed
+removing jail ifp_30_wakeups_c1
+ifp_30_wakeups_c1: removed
+if_pair is still loaded; 'kldunload if_pair' removes it
+== baseline 15:44:49
+t_30_wakeups: ok: load ./../extras/if_pair_tq/if_pair_tq.ko
+t_30_wakeups: created pairtq0a + pairtq0b
+t_30_wakeups: ok: create jail ifp_30_wakeups_s1
+t_30_wakeups: ok: create jail ifp_30_wakeups_c1
+t_30_wakeups: ok: move pairtq0a
+t_30_wakeups: ok: move pairtq0b
+t_30_wakeups: ok: mtu
+t_30_wakeups: ok: addresses
+t_30_wakeups: ok: ping
+t_30_wakeups: pairtq: 1 conn, 10s runs, 2s discovery, 6s window, timers in {0 1}, modes {clean}
+t_30_wakeups: ok: per_cpu_timers=0
+t_30_wakeups: timers=0 clean: 31.5 Gbit/s; worker pairtq_task_44 on-cpu 0.63 s/s; dtrace: wakeups/s 10481, switches/s 10483, sleeps/s 10439 (<20us 37%, <50us 85%, <100us 99%, <500us 100%), lock blocks/s 41 (off-cpu 0.00 s/s), yields/s 2 (<20us 78%, off-cpu 0.00 s/s); vmstat cs/s 43802; cpu 44 idle 30.0%; iperf3 pid@cpu 42@106 42@67 
+      sleep gaps:
+            2 us 417
+            4 us 5647
+            8 us 10186
+           16 us 24904
+           32 us 17988
+           64 us 3477
+          128 us 14
+          256 us 2
+      lock blocks:
+            2 us 234
+            4 us 14
+            8 us 2
+          128 us 1
+      yield gaps:
+            2 us 1
+            4 us 9
+            8 us 1
+         1024 us 1
+         2048 us 2
+      yields -> softirq_44 1/s
+      yields -> pmcstat 1/s
+      yields -> iperf3 0.333333/s
+      blocks -> softirq_44 0.166667/s
+      blocks -> iperf3 41.3333/s
+      blocks -> idle: 0/s
+      hwpmc cpu 44: 2.36 G cycles/s, 3.54 G instr/s, IPC 1.50
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:    37   0% 100% 0.00      181 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    18   0% 100% 0.00      173 mbuf                   cache_free+0x158        
+      lockstat:    16   0% 100% 0.00      164 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:    13   0% 100% 0.00      147 pairtq_task_44         pair_output+0x2dc       
+      lockstat:    10   0% 100% 0.00      168 mbuf_jumbo_page        cache_free+0x158        
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+t_30_wakeups: timers=0 clean: 30.0 Gbit/s; worker pairtq_task_53 on-cpu 0.62 s/s; dtrace: wakeups/s 9697, switches/s 9698, sleeps/s 9697 (<20us 32%, <50us 84%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 41513; cpu 53 idle 32.2%; iperf3 pid@cpu 51133@84 51133@32 
+      sleep gaps:
+            2 us 264
+            4 us 4210
+            8 us 8248
+           16 us 24650
+           32 us 17195
+           64 us 3607
+          128 us 7
+          256 us 2
+      yield gaps:
+            2 us 1
+            4 us 5
+            8 us 1
+      yields -> pmcstat 1.16667/s
+      hwpmc cpu 53: 2.35 G cycles/s, 3.34 G instr/s, IPC 1.42
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:    21   0% 100% 0.00      430 pairtq_task_53         pair_output+0x2dc       
+      lockstat:    37   0% 100% 0.00      220 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    26   0% 100% 0.00      192 mbuf                   cache_free+0x158        
+      lockstat:    10   0% 100% 0.00      196 mbuf_jumbo_page        cache_free+0x158        
+      lockstat:     7   0% 100% 0.00      194 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+t_30_wakeups: timers=0 clean: 30.0 Gbit/s; worker pairtq_task_96 on-cpu 0.61 s/s; dtrace: wakeups/s 10451, switches/s 10453, sleeps/s 10451 (<20us 33%, <50us 87%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 41378; cpu 96 idle 36.3%; iperf3 pid@cpu 74178@126 74178@79 
+      sleep gaps:
+            2 us 225
+            4 us 4408
+            8 us 9885
+           16 us 27865
+           32 us 17400
+           64 us 2908
+          128 us 18
+          256 us 1
+      yield gaps:
+            2 us 1
+            4 us 5
+            8 us 2
+      yields -> pmcstat 1.33333/s
+      hwpmc cpu 96: 2.37 G cycles/s, 3.54 G instr/s, IPC 1.49
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:    35   0% 100% 0.00      190 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    16   0% 100% 0.00      177 mbuf                   cache_free+0x158        
+      lockstat:     5   0% 100% 0.00      176 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:     5   0% 100% 0.00      176 mbuf_jumbo_page        cache_free+0x158        
+      lockstat:     2   0% 100% 0.00      180 pairtq_task_96         pair_output+0x2dc       
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+t_30_wakeups: ok: per_cpu_timers=1
+t_30_wakeups: timers=1 clean: 28.5 Gbit/s; worker pairtq_task_116 on-cpu 0.61 s/s; dtrace: wakeups/s 10005, switches/s 10006, sleeps/s 10004 (<20us 30%, <50us 84%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 41598; cpu 116 idle 32.2%; iperf3 pid@cpu 35747@127 35747@19 
+      sleep gaps:
+            2 us 156
+            4 us 3295
+            8 us 9324
+           16 us 25896
+           32 us 17573
+           64 us 3778
+          128 us 7
+      lock blocks:
+          128 us 1
+      yield gaps:
+            4 us 7
+           16 us 1
+      yields -> pmcstat 1.33333/s
+      blocks -> idle: 0/s
+      hwpmc cpu 116: 2.34 G cycles/s, 3.37 G instr/s, IPC 1.44
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:    34   0% 100% 0.00      212 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    25   0% 100% 0.00      219 mbuf                   cache_free+0x158        
+      lockstat:    10   0% 100% 0.00      212 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:     8   0% 100% 0.00      200 mbuf_jumbo_page        cache_free+0x158        
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+t_30_wakeups: timers=1 clean: 29.3 Gbit/s; worker pairtq_task_120 on-cpu 0.64 s/s; dtrace: wakeups/s 9429, switches/s 9430, sleeps/s 9429 (<20us 33%, <50us 84%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 0 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 38199; cpu 120 idle 29.7%; iperf3 pid@cpu 84122@3 17719@123 
+      sleep gaps:
+            2 us 165
+            4 us 3303
+            8 us 9273
+           16 us 24242
+           32 us 16155
+           64 us 3416
+          128 us 21
+          256 us 1
+      yield gaps:
+            4 us 4
+      yields -> pmcstat 0.666667/s
+      hwpmc cpu 120: 2.38 G cycles/s, 3.40 G instr/s, IPC 1.43
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:    42   0% 100% 0.00      184 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    29   0% 100% 0.00      168 mbuf                   cache_free+0x158        
+      lockstat:     2   0% 100% 0.00      319 pairtq_task_120        pair_output+0x2dc       
+      lockstat:     1   0% 100% 0.00      200 pairtq_task_120        taskqueue_thread_loop+0x130
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+t_30_wakeups: timers=1 clean: 30.8 Gbit/s; worker pairtq_task_14 on-cpu 0.60 s/s; dtrace: wakeups/s 10334, switches/s 10336, sleeps/s 10334 (<20us 30%, <50us 85%, <100us 99%, <500us 100%), lock blocks/s 0 (off-cpu 0.00 s/s), yields/s 1 (<20us 100%, off-cpu 0.00 s/s); vmstat cs/s 42109; cpu 14 idle 34.9%; iperf3 pid@cpu 24063@98 24063@39 
+      sleep gaps:
+            2 us 145
+            4 us 3066
+            8 us 9180
+           16 us 27653
+           32 us 18092
+           64 us 3863
+          128 us 9
+      yield gaps:
+            4 us 6
+            8 us 1
+      yields -> pmcstat 1.16667/s
+      hwpmc cpu 14: 2.29 G cycles/s, 3.44 G instr/s, IPC 1.50
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat:     5   0% 100% 0.00    16648 pairtq_task_14         pair_output+0x2dc       
+      lockstat:    33   0% 100% 0.00      185 mbuf                   cache_alloc_retry+0x38  
+      lockstat:    23   0% 100% 0.00      180 mbuf                   cache_free+0x158        
+      lockstat:    11   0% 100% 0.00      174 mbuf_jumbo_page        cache_alloc_retry+0x38  
+      lockstat:     4   0% 100% 0.00      179 mbuf_jumbo_page        cache_free+0x158        
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+      lockstat: Count indv cuml rcnt     nsec Lock                   Caller                  
+t_30_wakeups: profile of cpu 113 (timers=1, 34.5 Gbit/s), top symbols by samples:
+      11.49%  [24026]    tcp_default_output @ /boot/kernel/kernel
+       75.43%  [18122]     tcp_do_segment
+        100.0%  [18122]      tcp_input_with_port
+         100.0%  [18122]       tcp_input
+          100.0%  [18122]        ip_input
+           100.0%  [18122]         netisr_dispatch_src
+            100.0%  [18122]          taskqueue_run_locked
+             100.0%  [18122]           taskqueue_thread_loop
+              100.0%  [18122]            fork_exit
+               100.0%  [18122]             fork_trampoline
+       24.49%  [5884]      tcp_output
+        100.0%  [5884]       tcp_do_segment
+         100.0%  [5884]        tcp_input_with_port
+          100.0%  [5884]         tcp_input
+t_30_wakeups: raw output kept in /home/crest/if_pair-scratch/t30out/base
+t_30_wakeups: PASS
+== end 15:46:15
+net.inet.tcp.per_cpu_timers: 1
+ 3:46PM  up 9 days, 14:58, 2 users, load averages: 2.28, 2.11, 1.32
