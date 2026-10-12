@@ -113,6 +113,8 @@ kwq_doorbell(struct kwq_cpu *kc)
 	KASSERT(kc->kc_onlist == KWQ_ON_NONE, ("kwq_doorbell: %s cpu%d on list %u",
 	    kc->kc_q->kwq_name, kc->kc_cpu, kc->kc_onlist));
 	ks_doorbell(kw, kc);
+	SDT_PROBE3(kwq, , , doorbell, kc->kc_q->kwq_class, kc->kc_cpu,
+	    kw->kw_sleeping ? KWQ_DB_ASLEEP : KWQ_DB_AWAKE);
 	if (kw->kw_sleeping) {
 		kw->kw_sleeping = false;
 		wakeup_one(kw->kw_chan);

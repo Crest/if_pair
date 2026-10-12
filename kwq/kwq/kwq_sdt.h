@@ -46,11 +46,17 @@ SDT_PROBE_DECLARE(kwq, , , park);
 SDT_PROBE_DECLARE(kwq, , , round__end);
 SDT_PROBE_DECLARE(kwq, , , yield);
 SDT_PROBE_DECLARE(kwq, , , idle);
+SDT_PROBE_DECLARE(kwq, , , doorbell);
 SDT_PROBE_DECLARE(kwq, , , steal);
 SDT_PROBE_DECLARE(kwq, , , worker__block);
 SDT_PROBE_DECLARE(kwq, , , worker__spawn);
 SDT_PROBE_DECLARE(kwq, , , worker__exit);
 SDT_PROBE_DECLARE(kwq, , , budget__hit);
+
+/* kwq:::doorbell worker states */
+#define	KWQ_DB_AWAKE	0
+#define	KWQ_DB_POLLING	1
+#define	KWQ_DB_ASLEEP	2
 
 /* kwq:::yield reasons */
 #define	KWQ_YIELD_ROUND	0

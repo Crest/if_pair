@@ -1,0 +1,110 @@
+# Origin: the kwq-spin-experiment branch (commit 007f0f4), a kwq with the
+# bounded idle poll (kern.kwq.net.idle_spin_us) and its hardware wait
+# (kern.kwq.poll_hw).  The kwq branch has neither, so the runs with the
+# poll set and the "polling" rows cannot be reproduced from it; the
+# idle_spin_us=0 runs can.
+=== flood__idle_spin_us=0_poll_hw=1__wfe__in_use__.txt
+--enqueue ns distribution
+  rang, awake                                       
+           value  ------------- Distribution ------------- count    
+             512 |                                         0        
+            1024 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ 420201   
+            2048 |                                         417      
+            4096 |                                         1        
+            8192 |                                         3        
+           16384 |                                         30       
+           32768 |                                         0        
+  rang, asleep                                      
+           value  ------------- Distribution ------------- count    
+             512 |                                         0        
+            1024 |@@@@@@@@@                                90897    
+            2048 |@@@@@@@@@@@@                             128507   
+            4096 |                                         89       
+            8192 |@@@@@@@@@@@@@@@@@@@                      200431   
+           16384 |                                         137      
+           32768 |                                         577      
+           65536 |                                         0        
+          131072 |                                         3        
+          262144 |                                         0        
+--doorbell-to-first-pass ns distribution
+  rang, awake                                       
+           value  ------------- Distribution ------------- count    
+             512 |                                         0        
+            1024 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@           314457   
+            2048 |@@@@@@@@@@                               106079   
+            4096 |                                         52       
+            8192 |                                         5        
+           16384 |                                         56       
+           32768 |                                         0        
+           65536 |                                         0        
+          131072 |                                         2        
+          262144 |                                         0        
+  rang, asleep                                      
+           value  ------------- Distribution ------------- count    
+             512 |                                         0        
+            1024 |@@@@@@@@@@@@                             125231   
+            2048 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@             294537   
+            4096 |                                         345      
+            8192 |                                         50       
+           16384 |                                         468      
+           32768 |                                         11       
+           65536 |                                         0        
+=== flood__idle_spin_us=50_poll_hw=1__wfe__in_use__.txt
+--enqueue ns distribution
+  rang, asleep                                      
+           value  ------------- Distribution ------------- count    
+            1024 |                                         0        
+            2048 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@    112      
+            4096 |@@                                       6        
+            8192 |@                                        2        
+           16384 |                                         0        
+           32768 |@                                        2        
+           65536 |                                         0        
+  rang, awake                                       
+           value  ------------- Distribution ------------- count    
+             512 |                                         0        
+            1024 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ 489272   
+            2048 |                                         373      
+            4096 |                                         0        
+            8192 |                                         5        
+           16384 |                                         3        
+           32768 |                                         0        
+  rang, polling                                     
+           value  ------------- Distribution ------------- count    
+             512 |                                         0        
+            1024 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ 488208   
+            2048 |                                         1148     
+            4096 |                                         42       
+            8192 |                                         4        
+           16384 |                                         97       
+           32768 |                                         30       
+           65536 |                                         0        
+--doorbell-to-first-pass ns distribution
+  rang, asleep                                      
+           value  ------------- Distribution ------------- count    
+            1024 |                                         0        
+            2048 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@      106      
+            4096 |@@@@@                                    16       
+            8192 |                                         0        
+  rang, awake                                       
+           value  ------------- Distribution ------------- count    
+             512 |                                         0        
+            1024 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ 487852   
+            2048 |                                         1742     
+            4096 |                                         41       
+            8192 |                                         12       
+           16384 |                                         5        
+           32768 |                                         0        
+           65536 |                                         0        
+          131072 |                                         1        
+          262144 |                                         0        
+  rang, polling                                     
+           value  ------------- Distribution ------------- count    
+             512 |                                         0        
+            1024 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ 488744   
+            2048 |                                         547      
+            4096 |                                         169      
+            8192 |                                         9        
+           16384 |                                         12       
+           32768 |                                         48       
+           65536 |                                         0        

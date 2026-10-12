@@ -611,12 +611,13 @@ default build produces.
 | `round-end` | worker finished a round | untranslated: `arg0` class, `arg1` cpu, `arg2` ring entries, `arg3` wall ns since the last round end |
 | `yield` | worker yielded | untranslated: `arg0` class, `arg1` cpu, `arg2` 0 round end, 1 tick guard |
 | `idle` | worker about to sleep | untranslated: `arg0` class, `arg1` cpu, `arg2` busy ns since it woke |
+| `doorbell` | a (queue, CPU) placed with its worker | untranslated: `arg0` class, `arg1` cpu, `arg2` worker state when rung: 0 awake, 1 polling, 2 asleep |
 | `steal` | defined, never fires yet (P6) | `arg1` from cpu, `arg2` to cpu, `arg3` items |
 | `worker-block`, `worker-spawn`, `worker-exit` | defined, never fire yet (P7) | untranslated: `arg0` cpu, `arg1` workers, `arg2` runnable |
 
-`round-end`, `yield` and `idle` are worker probes rather than queue
-probes: they carry no `kwqinfo_t`, so their arguments start at `arg0`
-with the class id.  Nineteen probes in total.
+`round-end`, `yield`, `idle` and `doorbell` are worker probes rather than
+queue probes: they carry no `kwqinfo_t`, so their arguments start at
+`arg0` with the class id.  Twenty probes in total.
 
 Measured cost on a 128-core Neoverse-N1: probes compiled in but disabled
 cost 0.6 % of a saturated worker's throughput; an enabled probe costs

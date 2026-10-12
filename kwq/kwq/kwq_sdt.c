@@ -45,6 +45,8 @@ SDT_PROBE_DEFINE4(kwq, , , round__end, "int", "int", "int", "uint64_t");
 SDT_PROBE_DEFINE3(kwq, , , yield, "int", "int", "int");
 /* class, cpu, busy ns since the last wakeup */
 SDT_PROBE_DEFINE3(kwq, , , idle, "int", "int", "uint64_t");
+/* class, cpu, the worker's state when rung (0 awake, 1 polling, 2 asleep) */
+SDT_PROBE_DEFINE3(kwq, , , doorbell, "int", "int", "int");
 /* P6: from cpu, to cpu, items */
 SDT_PROBE_DEFINE4_XLATE(kwq, , , steal, "struct kwq *", "kwqinfo_t *",
     "int", "int", "int", "int", "int", "int");

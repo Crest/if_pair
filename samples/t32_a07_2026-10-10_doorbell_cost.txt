@@ -1,0 +1,77 @@
+# Origin: the kwq-spin-experiment branch (commit 007f0f4), a kwq with the
+# bounded idle poll (kern.kwq.net.idle_spin_us) and its hardware wait
+# (kern.kwq.poll_hw).  The kwq branch has neither, so the runs with the
+# poll set and the "polling" rows cannot be reproduced from it; the
+# idle_spin_us=0 runs can.
+t_32_doorbell: created pair0a + pair0b
+t_32_doorbell: poll offered: wfe (in use), period 10240 ns
+t_32_doorbell: flood, idle_spin_us=0 poll_hw=1 (wfe (in use)):
+      enqueue ns by what it found (avg, n):
+      rang, awake                1243   420652
+      rang, asleep               6509   420641
+      doorbell-to-first-pass ns (avg, n):
+      rang, awake                1991   420651
+      rang, asleep               2148   420642
+t_32_doorbell: tcp, idle_spin_us=0 poll_hw=1 (wfe (in use)):
+      enqueue ns by what it found (avg, n):
+      live, no doorbell           648  1585301
+      rang, awake                1132   144351
+      rang, asleep               6554      371
+      doorbell-to-first-pass ns (avg, n):
+      rang, asleep               5265      373
+      rang, awake               21292   313396
+t_32_doorbell: flood, idle_spin_us=50 poll_hw=1 (wfe (in use)):
+      enqueue ns by what it found (avg, n):
+      rang, awake                1095   489653
+      rang, polling              1538   489529
+      rang, asleep               3460      122
+      doorbell-to-first-pass ns (avg, n):
+      rang, polling              1218   489529
+      rang, awake                1803   489653
+      rang, asleep               3542      122
+t_32_doorbell: tcp, idle_spin_us=50 poll_hw=1 (wfe (in use)):
+      enqueue ns by what it found (avg, n):
+      live, no doorbell           648  1585070
+      rang, awake                1153   144186
+      rang, polling              2800      249
+      rang, asleep               5853        3
+      doorbell-to-first-pass ns (avg, n):
+      rang, polling              1830      257
+      rang, asleep               4493        3
+      rang, awake               21765   306886
+t_32_doorbell: flood, idle_spin_us=0 poll_hw=0 (wfe (available, not in use)):
+      enqueue ns by what it found (avg, n):
+      rang, awake                1167   442814
+      rang, asleep               2058   442815
+      doorbell-to-first-pass ns (avg, n):
+      rang, awake                1819   442814
+      rang, asleep               2162   442815
+t_32_doorbell: tcp, idle_spin_us=0 poll_hw=0 (wfe (available, not in use)):
+      enqueue ns by what it found (avg, n):
+      live, no doorbell           656  1584509
+      rang, awake                1170   144149
+      rang, asleep               3123      138
+      doorbell-to-first-pass ns (avg, n):
+      rang, asleep               2858      139
+      rang, awake               22455   295245
+t_32_doorbell: flood, idle_spin_us=50 poll_hw=0 (wfe (available, not in use)):
+      enqueue ns by what it found (avg, n):
+      rang, awake                1088   485567
+      rang, polling              1594   485537
+      rang, asleep               5311       29
+      doorbell-to-first-pass ns (avg, n):
+      rang, polling              1230   485537
+      rang, awake                1790   485567
+      rang, asleep               4846       29
+t_32_doorbell: tcp, idle_spin_us=50 poll_hw=0 (wfe (available, not in use)):
+      enqueue ns by what it found (avg, n):
+      live, no doorbell           665  1584341
+      rang, awake                1154   144040
+      rang, polling              1926      132
+      rang, asleep               4834        7
+      doorbell-to-first-pass ns (avg, n):
+      rang, polle                   0        1
+      rang, polling              1514      136
+      rang, asleep               4428        7
+      rang, awake               22516   298478
+t_32_doorbell: PASS

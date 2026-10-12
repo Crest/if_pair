@@ -186,6 +186,7 @@ definition is available".
 | `round-end` (no `args[0]`) | worker finished a round | `arg0` class, `arg1` cpu, `arg2` ring entries, `arg3` wall ns since the previous round end |
 | `yield` (no `args[0]`) | worker yielded | `arg0` class, `arg1` cpu, `arg2` 0 end of round, 1 tick guard |
 | `idle` (no `args[0]`) | worker about to sleep | `arg0` class, `arg1` cpu, `arg2` busy ns since it last woke |
+| `doorbell` (no `args[0]`) | a (queue, CPU) went from idle to placed with the worker | `arg0` class, `arg1` cpu, `arg2` the worker's state when rung: 0 awake, 1 polling, 2 asleep (a `wakeup_one()` follows) |
 | `steal`, `worker-block`, `worker-spawn`, `worker-exit` | defined for later phases, never fire yet | |
 
 One-liners, all verified against the test module:
