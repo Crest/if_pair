@@ -543,11 +543,76 @@ Phases
     - Keep net.link.pair.batch as an alias of the NET quantum? No:
       deprecate it (document), the class quantum replaces it;
       batch_overruns becomes the queues' overruns counters.
-    P4b (optional, measured): software LRO inside the handler -
-      tcp_lro_queue_mbuf() per mbuf, tcp_lro_flush_all() at pass end and
-      before any requeue; per-side struct lro_ctrl; off on a forwarding
-      vnet by the engine's own gate.  Accept only if t_17 at P=128 gains
-      and single-flow latency (t_20) does not lose.
+    P4b (optional, measured), goals as investigated 2026-10-09 (proposal,
+    details in ../NOTES.md of that date):
+    1. Cheaper passes: single-flow parity with the taskqueue baseline in
+       the STOCK regime.  [MEASURED 2026-10-09..11: parity holds; the
+       idle poll was built, measured and DECLINED, kept on the branch
+       kwq-spin-experiment (commits 5084b0c..c9144b8); NOTES.md of those
+       days, tests/t_30..t_33, samples/t30_*, t31_*, t32_*, t33_*.]
+       The premise was wrong in two places: the ~10 % single-flow
+       deficit of 09-30 is inside the run-to-run spread (placement of
+       sender, receiver and the two workers over 128 cores: 3 runs per
+       setting give kwq 33-37 vs taskqueue 30-37 Gbit/s with timers 0 or
+       1, and a receiver on the worker's CPU costs either driver
+       20-40 %), and the flow is not wakeup-bound: a bounded idle poll
+       (knob idle_spin_us; rules: yield to anything runnable, attempt
+       only after a gap shorter than the bound, account apart; plus a
+       WFE/MWAIT wait on the doorbell word) took the worker's wakeups
+       from 21-35 k/s to 0-3 k/s at hit rates of 88-100 % and left
+       throughput unchanged, at 0.13-0.32 s/s of CPU and the worker CPU's
+       idle states.  It bought round-trip latency on dense request-reply
+       traffic (ping flood a07 avg 8 -> 6 us, max 58 -> ~20; guest 27 ->
+       25) and stayed out of sparse traffic (1 kHz ping: 0 polls), but
+       the taskqueue thread reaches 6 us without polling: the poll hid a
+       cost of kwq's own.  Declined as not worth the CPU time or the
+       complexity for the first client.
+       What remains, measured (tests/t_33_wakepath.sh, 2026-10-11): a
+       kwq wakeup costs 0.55 us more than the taskqueue's.  The kernel's
+       part (sleepq, setrunnable, IPI, switch: 4 us) is identical; kwq
+       pays 0.4 us more on the producer before wakeup_one() (kc_mtx, then
+       kw_mtx, ks_doorbell()'s placement and grace check, the probe) and
+       0.25 us more on the worker before the handler (idle accounting,
+       ks_next(), the swap-out under kc_mtx, clock reads).  Goal 1 is
+       therefore: take the producer's 0.4 us off the wake path, e.g. by
+       deferring the placement to the worker when it is asleep (it runs
+       ks_next() on waking anyway), measured with t_33 and t_31 (flood
+       round trip to 6 us), with t_17 P=1 and P=128 and the fairness/
+       latency/yield ATF cases unchanged.  The worker's 0.25 us stays:
+       it is the accounting that makes the scheduler observable.
+       Also found: lockstat -P costs the flow ~15 % (never profile and
+       compare in one run); the guest's single flow loses 18 % of the
+       worker's time to turnstile blocks on the receiver's socket lock
+       when both share a vCPU (the doorbell wakeup preempts the receiver
+       inside its critical section), which a07's 128 cores never show.
+    2. Quantum against the latency tail: choose the NET quantum by data.
+       At 8 pairs x 256 connections the 16 backlogged queues per CPU make
+       a round of ~3.2 ms at 200 us, yet the RTT tail is 89-192 ms, so
+       the backlog (4096 x 16 KB per list) dominates the tail and the
+       quantum's share is unmeasured.  Goal: RTT avg/p99/max and
+       throughput for quantum_us in {50, 100, 200, 500, 1000, 2000} at
+       64 and 256 connections, depths 1024 and 4096, both drivers for
+       the baseline columns; kwq's own maxlat_ns (reset per load) beside
+       the end-to-end RTT, to separate the round from the stack's and
+       socket buffers' share.  Decision rule: the lowest quantum that
+       costs < 2 % throughput at P=32 and P=128.  Needs t_29 to loop over
+       the (RWTUN, runtime-writable) quantum and to record ping
+       percentiles from per-packet output instead of -q's avg/max;
+       about five minutes of a07 time per driver.
+    3. Software LRO in the handler: DROPPED as a P4b goal.  Measured
+       2026-08-15: 64 KB vs 16 KB MTU, i.e. 4x fewer stack traversals,
+       gave +3.8 %, so per-byte costs dominate above 16 KB and LRO's
+       ceiling for pair-local TCP is that ~4 %; the P=128 wall is the
+       mbuf zone lock (byte-rate driven, MTU-immune, t_20), which LRO
+       does not touch; and the engine refuses to aggregate on a
+       forwarding vnet (tcp_lro.c:1295), which is the router case.  The
+       cost would be a per-(side, CPU) struct lro_ctrl (the engine is not
+       MP-safe and handlers run concurrently) and the forwarded-CSUM_TSO
+       verification already judged not worth it.  Stays parked.
+    Considered and left out: hashing a flow's two directions to two
+    CPUs (the pre-kwq pool's accidental pipelining, NOTES 2026-08) would
+    raise the single-flow ceiling but costs the one-CPU-per-connection
+    locality that per_cpu_timers=1 relies on; not a P4b item.
     Exit: tests/run_all.sh green on VM; on the Ampere t_17 within 5 % of
     the 479 Gbit/s peak and >= 337 at P=128, t_20 shows no callout
     contention regression, t_19 profile shows kwq_net/N workers where

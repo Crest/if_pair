@@ -4915,3 +4915,225 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   rather than improve netisr on its own.  The netisr-first trade-offs
   stay in the 10-07 entry as the alternative considered.  Open sequencing
   question: epair (P5) before the netisr conversion, or netisr first.
+
+2026-10-09: P4b goals investigated (recorded in PLAN.txt P4b).  Facts
+  that decided them: (1) net.inet.tcp.per_cpu_timers is 0 by default
+  on non-RSS kernels (tcp_timer.c:193-195, RSS only sets 1), so the
+  single-flow deficit measured with timers=0 (kwq 34.2 vs taskqueue
+  35.8-38.5 Gbit/s, 09-30) is the stock regime, and the parity seen
+  with timers=1 is the tuned one.  (2) kwq_pass() per pass: kc_mtx at
+  swap-out; handler; kc_mtx again with kw_mtx nested for the emptiness
+  re-check and ks_pass_end; two kwq_cputime_ns_tick() reads and one
+  sbinuptime() only on the first pass after a doorbell; epoch enter and
+  exit for NET - nothing left to merge, so the pass cost is structural
+  and the 37 k wakeups/s (one wakeup_one + msleep_spin pair each, no
+  spin before sleep in the idle path) are the attackable part of the
+  ~10 %.  (3) LRO: the 2026-08-15 ceiling measurement (+3.8 % for 4x
+  fewer traversals at 64 KB MTU) and the t_20 finding that the P=128
+  wall is the mbuf zone lock make it a non-goal; tcp_lro.c:1295 refuses
+  aggregation when V_ipforwarding is set.  (4) The 8-pair RTT tail
+  (89-192 ms) is far above the round (16 x 200 us), so the quantum's
+  share is unknown until measured against depth; t_29 reports avg/max
+  from ping -q only, percentiles need per-packet output.
+
+2026-10-09: P4b goal 1, the measurements before any change.  New
+  harness tests/t_30_wakeups.sh with tests/lateness.c: one flow for 10 s,
+  a 6 s window, net.inet.tcp.per_cpu_timers 0 and 1, three modes (clean;
+  a CPU-bound spinner pinned to the worker's CPU; a 1 kHz realtime timer
+  pinned there, reporting its lateness, with an idle rerun as baseline).
+  Per run: Gbit/s, the worker's on-CPU time, kwq's counters, the
+  worker's sleeps, lock blocks and yields from the sched probes with gap
+  histograms, system context switches, the CPU's idle share; on a07
+  hwpmc cycles/instructions on the worker CPU and lockstat.  Raw logs:
+  samples/t30_{a07,guest}_2026-10-09_initial.txt.
+  Harness lessons: (a) sched:::sleep fires on every switch away on this
+  kernel (dtrace -l lists it in module kernel, function none), so the
+  worker's departures are classified by td_inhibitors: TDI_SLEEPING is
+  the idle sleep, TDI_LOCK a turnstile block, the rest yields and
+  preemptions; before that the "wakeups" counted everything.  (b) ps
+  reports no CPU time for kernel threads, and %cpu decays too slowly to
+  tell one 10 s run from the previous one: the worker is found per run
+  by a one-second sched:::on-cpu count by thread-name prefix, and its
+  CPU time summed from on-cpu/off-cpu stamps.  (c) A woken timeshare
+  thread does not preempt a running one under ULE, so the spinner and
+  the timer victim must not share a CPU; the timer runs at rtprio 31.
+  (d) The timer victim's unloaded lateness in the guest is avg ~170 us
+  p99 ~300 us (hz=100 callout granularity), on a07 avg 1 p99 3 max 8 us.
+  a07 (one round, kwq / taskqueue baseline, Gbit/s):
+    clean   timers=0  31.5 / 31.8     timers=1  30.9 / 28.9
+    spinner timers=0  35.9 / 12.7     timers=1  32.4 / 13.4
+      (spinner's share of the CPU: 16 % under kwq, 90 % under the
+      baseline, whose kern_yield(PRI_USER) hands it the CPU per batch)
+    timer   timers=0  31.5 / 37.4     timers=1  37.2 / 35.2
+      lateness avg/p99/max us: kwq 10/28/284 and 14/38/375, baseline
+      15/78/388 and 15/69/448
+  The single flow is bimodal on a07 independently of the driver and of
+  the victim: a fast regime at 35-37 Gbit/s with ~31 k wakeups/s and
+  99 % of the worker's sleep gaps under 20 us, and a slow one at 29-32
+  Gbit/s with ~10 k wakeups/s and gaps of 32-64 us (33 % under 20 us,
+  85 % under 50 us).  Every run sits in one or the other; which one is
+  decided per run, presumably by the placement of the four parties
+  (sender, its worker, receiver, the ACK worker) on the 128 cores, so
+  the harness now logs the iperf3 processes' CPUs and takes REPS runs.
+  The 09-30 single-flow deficit (34.2 vs 35.8-38.5) is inside this
+  spread.  IPC on the worker CPU 1.37-1.52 for both drivers; lockstat
+  shows no contention worth naming; cycles count at 3.00 G/s on the
+  Altra whether the CPU idles or not.
+  Guest (4 vCPUs, hz=100): kwq clean 5.8-6.2 vs baseline 7.5-9.0
+  Gbit/s, but kwq 7.6-8.6 with a spinner or timer present vs 3.3-4.6 for
+  the baseline under the spinner (which takes 80-98 % of the CPU);
+  timer lateness kwq avg 155-160 p99 354-607 max 0.8-2.3 ms, baseline
+  avg 394-519 p99 2.1-2.6 ms max 4-41 ms.  The guest's clean deficit has
+  a cause of its own: the worker (priority PI_NET = 1) blocks ~9.5 k
+  times/s on a sleep mutex that the iperf3 receiver on the same CPU
+  holds (sched:::off-cpu with TDI_LOCK, next thread iperf3 at the lent
+  priority 1), 18-19 % of the worker's time, 50 k context switches/s
+  system-wide.  The worker's doorbell wakeup preempts the receiver
+  inside its socket-lock section, blocks, lends, switches back; the
+  taskqueue thread at the same priority shows 112 blocks/s, because it
+  wakes less often (2.3 k/s) and finishes a longer batch per wake.  With
+  a second thread on the CPU (spinner or timer) kwq's wakeups drop to
+  1.8 k/s, items per pass rise from 3 to 5 and throughput to 8-8.6.  On
+  a07 the receiver sits on another CPU and the blocks are 0/s.
+
+2026-10-09: P4b goal 1, idea 1 implemented and measured: the bounded idle
+  poll.  Built, measured and DECLINED; the code and its SCHED.md S16 live
+  on the branch kwq-spin-experiment (commit 007f0f4), not here.  Knob
+  idle_spin_us per class, default 0; counters spins, spin_hits, spin_ns;
+  probe kwq:::spin; DDB "polling".  Rules:
+  give up at once when sched_runnable(), attempt only after an idle gap
+  shorter than the bound, account the poll apart from busy and idle.
+  Verified mechanically on both machines: with the knob at 50-100 us
+  the a07 worker's wakeups fall from 21-35 k/s to 0-3 k/s (hit rate
+  88-100 %), the poll costs 0.13-0.32 s/s of CPU and the worker CPU's
+  idle share drops from 20-32 % to 0-6 %; when the iperf3 receiver
+  shares the worker's CPU (lock blocks 17-29 k/s) the hit rate is 0 %
+  because rule 1 ends every poll; the 1 kHz ping never polls (rule 2).
+  Throughput (a07, clean, 3 runs per timers setting, no lockstat;
+  samples/t30_a07_2026-10-09_spin_sweep4_clean.txt), Gbit/s:
+    idle_spin_us=0    33.1 26.4* 34.6 | 20.6* 35.0 36.6  (* receiver on
+                                                           the worker CPU)
+    idle_spin_us=50   35.5 37.6 33.3  | 36.1 31.6 33.2
+    idle_spin_us=100  33.1 32.9 34.0  | 32.9 33.0 37.7
+    taskqueue         36.5 30.4 29.9* | 36.2 30.1* 32.1*
+  No gain: 34.8 (kwq off, co-located runs excluded) vs 34.6 / 33.9 with
+  the poll vs 34.4 for the baseline; the spread between runs (placement
+  of sender, receiver and the two workers over 128 cores; a run with
+  the receiver on the worker's CPU loses 20-40 %) is larger than any
+  effect.  Guest: clean 7.44 -> 7.86 / 7.78 when the receiver is
+  elsewhere, unchanged (lock-block regime, hit 0 %) when it is on the
+  worker's CPU; timer mode 8.28 -> 8.32 / 8.06, lateness unchanged.
+  So the single flow is not wakeup-latency-bound: with 0 wakeups/s and
+  the worker never off its CPU it moves the same bytes.  Where the CPU
+  goes instead (hwpmc sampling profile of the worker CPU, fast regime):
+  lock_delay 24-25 % in two of five profiles, 97 % of it from
+  __rw_wlock_hard <- _inp_smr_lock <- in_pcblookup_hash_smr <-
+  tcp_input: the worker spins for the connection's inpcb write lock
+  against the socket owner (tcp_output in sosend, tcp_usr_rcvd) on
+  another CPU; the baseline's one profile showed 0.9 %, kwq's others
+  2.7 and 7 %.  Then m_demote 8 %, tcp_do_segment 7 %, sbcut_internal
+  7 %, spinlock_exit 5 %, sbcompress 4 %; with the poll on, get_cntxct
+  7.6 % and binuptime 6 % are the poll loop's clock reads.  IPC
+  1.27-1.33 with the poll vs 1.38-1.50 without (the poll's cycles).
+  The "slow regime" of the first round (29-32 Gbit/s, ~10 k wakeups/s,
+  gaps 32-64 us) was lockstat: every run with LOCKSTAT=1 landed there,
+  every clean run without it at 33-38 unless the receiver shared the
+  worker's CPU.  Two sweeps had to be discarded for harness faults
+  (worker discovery by sched:::on-cpu misses a worker that never
+  switches; a sysctl field miscount) - the harness now discovers kwq's
+  worker by its pass counter and samples CPU shares with profile-1999.
+  Round-trip latency (tests/t_31_rtt.sh, ping between the jails, the
+  responder's net.inet.icmp.icmplim lifted inside its jail - the knob is
+  per vnet; the first two rounds ran into the 200/s limit, 31 % and 73 %
+  "loss", and are kept only as samples/t31_*_rtt{,_loss}.txt):
+    a07 flood (dense, 50000 packets): avg 8 -> 6 / 7 us with
+      idle_spin_us 50 / 100 (min 7 -> 6, max 58 -> 47 / 21), 0.00
+      wakeups and 1.00 polls per packet at 100 % hits; taskqueue avg 6
+      max 20.  Without the poll kwq's dense round trip is 2 us (a third)
+      longer than the taskqueue thread's, which wakes the same way; the
+      difference is kwq's own per-wakeup work (ks_next, round end,
+      clock reads) and is open.  With the poll the two are level.
+    a07 1 kHz (sparse): 20 / 21 / 20 us, 0 polls (rule 2); taskqueue 18.
+    guest flood: avg 27 -> 25 us (min 13 -> 11), hit 100 %; taskqueue
+      26.  guest 1 kHz: 133 / 139 vs 127, 0 polls.
+  Regression: kwq ATF 22/22 with the knob off, 21/22 with it at 50
+  (gaming, the known flaky case: 3 runs each way give 1-6 boosts for
+  both settings); run_p1b lifecycle fifo notify latency yield cost pass
+  both ways, cost 338 vs 365 ns/item with the poll (bursty producer).
+
+2026-10-09: the idle poll's hardware wait (kwq-spin-experiment commit
+  007f0f4: kwq_poll.c, SCHED.md S16.5 there; declined with the poll).
+  kwq_poll_wait() replaces cpu_spinwait() in the poll loop: arm64 LDAXR
+  on kw_rung then WFE, woken by the doorbell's store (exclusive monitor
+  clear) or by the generic timer's event stream, which kwq enables on
+  the worker's CPU (CNTKCTL_EL1.EVNTEN, EVNTI chosen at load for ~10 us:
+  bit 7 at 25 MHz = 10.24 us) and restores at exit, since FreeBSD leaves
+  it off and nothing else WFEs; WFET where FEAT_WFxT exists (not on the
+  N1); x86 MONITOR/MWAIT C1 with INTRBREAK, selected by
+  cpu_mwait_usable(), bounded only by the next interrupt; cpu_spinwait()
+  elsewhere.  kern.kwq.poll_hw 0/1/2 = spin / hardware wait when its
+  period is bounded within 50 us (default) / also when only interrupts
+  bound it; poll_mode and poll_period_ns report.  The loop re-checks
+  the word, sched_runnable() and the clock after every return, so the
+  wait's period is rule 1's reaction time: 10 us with the stream.
+  a07 A/B, idle_spin_us=50, timers=1, two runs each (samples/
+  t30_a07_2026-10-09_poll_wfe_ab.txt): throughput wfe 34.7/35.7 vs spin
+  34.3/33.0 Gbit/s; ping flood rtt avg 7 max 20 vs avg 7 max 23 us; hit
+  100 % both; hwpmc on the worker CPU: instructions 2.80 vs 3.18 G/s
+  (-12 %, the poll's whole share: the spin's instruction stream is
+  gone), cycles 2.76-2.78 vs 3.00 G/s (-8 %; the N1's cycle counter
+  runs in WFE, the earlier "3.00 G at 0 % idle, 2.3-2.7 G at 25-30 %
+  idle" readings say it also runs in WFI, so cycles are not a power
+  meter here), IPC 1.01 vs 1.06.  The x86 path is compiled (amd64
+  build) but untested: bhyve hides MONITOR (no MON in Features2), the
+  guest reports poll_mode spin, and there is no bare-metal x86 test
+  machine.  kwq ATF in the guest on the new build (spin mode): knob off
+  21/22 with yield skipped (the VM callout stall); knob 50: gaming (the
+  flaky case) and latency failed once ("worst latency 3939 us"), then
+  latency passed 3 of 3 reruns with the knob at 50 and 3 of 3 at 0, so
+  a guest jitter artifact, not the poll; on a07 the poll ran t_30 and
+  t_31 under wfe without incident.  Not exercised: the stop-while-polling path (kw_rung=1 from
+  kwq_workers_stop ends a WFE poll as a doorbell would; at unload no
+  queue exists so workers sleep rather than poll).
+
+2026-10-10: what a wakeup costs, by the worker's state (tests/
+  t_32_doorbell.sh, probe kwq:::doorbell added: class, cpu, state when
+  rung; samples/t32_a07_2026-10-10_doorbell_*.txt; the "polling" rows
+  need the kwq-spin-experiment branch).
+  a07, kwq_enqueue() entry-to-return by fbt (its ~0.3 us included in
+  every row), ping flood with one item per doorbell, 420-490 k calls per
+  5 s run: list live (no doorbell, TCP flow) 650 ns; worker awake 1.1-
+  1.25 us; polling 1.5-1.6 us (spin and wfe alike: the kw_rung line
+  moves to the poller); asleep 2.1-6.5 us (wakeup_one with IPI; the
+  spread is placement, both values from runs with no polling at all).
+  Doorbell-to-first-pass: polling 1.2 us, awake 1.8-2.0, asleep 2.15 -
+  the wake adds under 1 us of latency on this machine; the TCP flow's
+  "awake" 21-22 us is queueing behind the other direction's pass.
+  Guest (debug kernel, bhyve): awake 2.5 us, asleep 16.7 us (the IPI is
+  a VM exit), latency awake 4.2 us, asleep 7.1 us.  Break-even written
+  up in SCHED.md S16.6 of kwq-spin-experiment: a sleep-wake pair costs both sides 2-8 us of CPU, so the
+  plain spin pays off only for gaps under that, while wfe polling costs
+  about what wfi idle does and is bounded by rule 1's reaction time.
+  Judgement (2026-10-11): not worth the CPU time or the complexity for
+  the first client: throughput unchanged, 1 us of latency per hop, a
+  CPU saving only at doorbell rates where 2-8 us per wakeup matters,
+  against ~260 lines, three knobs and a per-CPU timer register written
+  by a module.  Kept on kwq-spin-experiment for the day a client (the
+  netisr conversion's interrupt-to-worker handoff) shows that rate.
+
+2026-10-11: why a kwq wakeup costs more than the taskqueue's (tests/
+  t_33_wakepath.sh, a07, ping flood, 350-370 k wakeups per driver;
+  samples/t33_a07_2026-10-11_wakepath*.txt).  Segments, ns: enqueue
+  entry to wake call kwq 874 vs tq 475; wake call to runnable 1253 vs
+  1200; runnable to worker on CPU 2697 vs 2838; on CPU to handler 1923
+  vs 1670; sum 6747 vs 6183.  The kernel's part (sleepq + setrunnable +
+  IPI + switch, 4 us) is identical; kwq pays 0.4 us more on the producer
+  before the wakeup (kc_mtx, kw_mtx, ks_doorbell placement and grace
+  check, probe) and 0.25 us more on the worker before the handler (idle
+  accounting, ks_next, swap-out under kc_mtx, clock reads).  The
+  remaining ~0.4 us per hop of the flood's 1 us/hop gap is in the pass
+  (epoch, budget, pass end, round end).  Guest numbers are VM-inflated
+  (kwq total 37 us with IPI exits) and not comparable.  This is P4b
+  goal 1 now (PLAN.txt): the producer's 0.4 us before wakeup_one() is
+  the attackable part, the worker's 0.25 us is the accounting that makes
+  the scheduler observable.
