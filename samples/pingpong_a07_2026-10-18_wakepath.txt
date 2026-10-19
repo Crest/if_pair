@@ -1,0 +1,43 @@
+# kwq_test pingpong / pingpong_tq on a07 (128-core Ampere Altra, 15.1-p5
+# GENERIC, hz=1000), 2026-10-18, kwq branch 612f1dd plus the pingpong
+# scenario.  One item handed back and forth between a producer on one CPU
+# and the worker (kwq) or a taskqueue thread (tq) on another, 3 s per run;
+# every enqueue finds the consumer asleep.  In-kernel cpu_ticks() and
+# sbinuptime(), no probes.  Columns: wall ns per round trip, producer ns
+# inside the enqueue call, enqueue-to-handler ns (avg), max us.
+#
+# HEAD, 3 runs each
+pingpong      3729 1120 2268 38
+pingpong_tq   3551  929 1800 35
+pingpong      3721 1048 2179 34
+pingpong_tq   3621  991 1847 40
+pingpong      3726 1087 2220 24
+pingpong_tq   3606  988 1847 12
+switch_baseline 255 ns per switch
+#
+# EXPERIMENT V2: the three timecounter reads on the wake path removed
+# (producer's kc_empty_since stamp, worker's idle_ns read, first pass's
+# maxlat read).  Not committed.
+pingpong      3745 1064 2126 31
+pingpong      3755 1044 2097 14
+pingpong      3751 1071 2132 17
+pingpong_tq   3593  925 1765 23
+#
+# EXPERIMENT V4: V2 plus the worker keeps kw_mtx from msleep_spin() to
+# ks_next() instead of releasing and re-acquiring it.  Not committed.
+pingpong      3677 1012 2118 36
+pingpong      3705 1085 2228 27
+pingpong      3671 1056 2164 32
+pingpong_tq   3645  980 1798 23
+#
+# The lock-keeping wake alone (HEAD + V4 without V2).  Not committed.
+pingpong      3740 1059 2173 38
+pingpong      3736 1114 2233 38
+pingpong      3740 1138 2251 36
+pingpong_tq   3612  975 1830 30
+#
+# Guest (4 vCPU bhyve, GENERIC-DEBUG, hz=100), HEAD, for the ratio only:
+pingpong     11188 1111 5956 1125
+pingpong_tq  11428  914 5260  284
+pingpong     11450 1117 6069 1032
+pingpong_tq  11260 1092 5216  617

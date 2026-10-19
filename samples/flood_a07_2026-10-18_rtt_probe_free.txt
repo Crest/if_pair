@@ -1,0 +1,42 @@
+# Ping flood between two vnet jails over one pair on a07, 2026-10-18, kwq
+# branch 612f1dd: the whole "ping -q -f -c 50000" timed by dtrace
+# BEGIN/END, elapsed / 50000 = ns per round trip (plus ping's own
+# turnaround), no probes on the path.  Then the handler's own duration
+# from two fbt probes (entry, return), the same for both drivers.
+#
+# HEAD
+kwq run 1: 8111 ns per round trip
+kwq run 2: 8292
+kwq run 3: 8225
+kwq handler call: 1707 ns avg, 598587 calls
+tq run 1: 7162
+tq run 2: 7874
+tq run 3: 8087
+tq handler call: 1784 ns avg, 616731 calls
+kwq run 1: 8189
+kwq run 2: 8305
+kwq run 3: 8685
+#
+# with the lock-keeping wake (not committed)
+kwq run 1: 8497
+kwq run 2: 8091
+kwq run 3: 7988
+kwq handler call: 1073 ns avg, 652785 calls
+#
+# Enqueue-to-handler latency under the same flood split by what the
+# enqueue found (kwq from its own kc_empty_since stamp via
+# kwq:::pass-start, no fbt on the path; tq from fbt stamps, ~0.3 us of
+# probe cost included):
+kwq  rang, worker awake    556 ns avg, 441054
+kwq  woke the worker      1858 ns avg, 441050
+tq   woke the worker      2319 ns avg, 659718   (the taskqueue thread was asleep every time)
+#
+# Producer path by fbt interval pairs, one pair per dtrace run, keyless
+# aggregations; P0 contains only mtx_lock_spin's fast path and calibrates
+# the probe pair's own cost (~350 ns):
+P0 doorbell entry -> ks_doorbell entry        382 ns  565102
+P1 ks_doorbell entry -> return (placement)    305 ns  546828
+P2 ks_doorbell return -> wakeup_one entry     300 ns  288247
+P3 enqueue entry -> doorbell entry            421 ns  551407
+P4 wakeup_one entry -> enqueue return         839 ns  302159
+P5 enqueue entry -> return (total, all)       776 ns  584512

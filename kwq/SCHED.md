@@ -813,6 +813,8 @@ CPUs (target 1, producers 2 and 3), three or more runs each.
 | cost: worker / producer / wall per item | 285-337 / 282-335 / 470-515 ns (6-6.8 M items in 3 s) | 96 / 80 / 211 ns | ~20 ns bookkeeping |
 | tq_baseline: producer / wall per item | 391 / 514 ns (5.8 M) | 58 / 193 ns | |
 | switch_baseline | 257 ns per switch | 524 ns | |
+| pingpong (2026-10-18): round trip / producer in the enqueue / enqueue-to-handler | 3721-3729 / 1048-1120 / 2179-2268 ns | 11.2-11.5 us / 1.1 us / 6.0 us | |
+| pingpong_tq, the same through a taskqueue | 3551-3621 / 929-991 / 1800-1847 ns | 11.0-11.4 us / 0.9-1.1 us / 5.2 us | |
 
 The shares and the light queue's latency match the simulator and the
 guest; the callout is 15x closer to its deadline than in the VM and the
@@ -1162,6 +1164,27 @@ average batch of 10 items that is 20-30 ns per item, with 1 item it is
 the whole cost.  Passes with one item are the light-load regime where
 the CPU has time to spare; under load batches grow and the per-pass cost
 amortises (S11's FIFO analysis, Mogul's natural batching).
+
+Measured (2026-10-18, `pingpong` against `pingpong_tq` on a07, three
+runs each, samples/pingpong_a07_2026-10-18_wakepath.txt): a wakeup
+through kwq costs 130-180 ns more per round trip than through a
+taskqueue (3.72 vs 3.55-3.62 us), 60-190 ns of it on the producer inside
+`kwq_enqueue()` (1.05-1.12 vs 0.93-0.99 us) and 330-420 ns in the
+enqueue-to-handler latency (2.18-2.27 vs 1.80-1.85 us).  Two experiments
+bound what the pass structure can give back: removing the three
+timecounter reads on the wake path (the producer's `kc_empty_since`
+stamp, the worker's `idle_ns` read, the first pass's `maxlat` read) took
+100 ns off the latency and 0-50 off the round trip; keeping `kw_mtx`
+from `msleep_spin()` to `ks_next()` instead of releasing and
+re-acquiring it took nothing measurable.  The rest is the DRR
+bookkeeping itself (three lock sections where the taskqueue has one,
+`ks_next()`, two `cpu_ticks()` reads, the epoch), each piece under 100
+ns.  The producer's placement in `ks_doorbell()` costs nothing
+measurable (fbt interval pairs calibrated against the lock fast path),
+so deferring it to the worker, the remedy PLAN P4b goal 1 proposed, has
+no ceiling and was not built.  On the if_pair ping flood the whole
+difference is 0.2-0.3 us per hop (round trip 8.1-8.7 vs 7.2-8.1 us,
+timed probe-free), consistent with the above plus the handler.
 
 ### 15.3 Per round and per burst
 

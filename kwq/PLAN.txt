@@ -567,19 +567,33 @@ Phases
        the taskqueue thread reaches 6 us without polling: the poll hid a
        cost of kwq's own.  Declined as not worth the CPU time or the
        complexity for the first client.
-       What remains, measured (tests/t_33_wakepath.sh, 2026-10-11): a
-       kwq wakeup costs 0.55 us more than the taskqueue's.  The kernel's
-       part (sleepq, setrunnable, IPI, switch: 4 us) is identical; kwq
-       pays 0.4 us more on the producer before wakeup_one() (kc_mtx, then
-       kw_mtx, ks_doorbell()'s placement and grace check, the probe) and
-       0.25 us more on the worker before the handler (idle accounting,
-       ks_next(), the swap-out under kc_mtx, clock reads).  Goal 1 is
-       therefore: take the producer's 0.4 us off the wake path, e.g. by
-       deferring the placement to the worker when it is asleep (it runs
-       ks_next() on waking anyway), measured with t_33 and t_31 (flood
-       round trip to 6 us), with t_17 P=1 and P=128 and the fairness/
-       latency/yield ATF cases unchanged.  The worker's 0.25 us stays:
-       it is the accounting that makes the scheduler observable.
+       What remains, measured (tests/t_33_wakepath.sh 2026-10-11, then
+       the probe-free kwq_test pingpong scenario 2026-10-18, SCHED.md
+       S15.2, samples/pingpong_a07_*): a wakeup through kwq costs 130-180
+       ns more per round trip than through a taskqueue (3.72 vs 3.55-3.62
+       us on a07), 60-190 ns of it on the producer inside kwq_enqueue()
+       and 330-420 ns in the enqueue-to-handler latency; on the if_pair
+       ping flood 0.2-0.3 us per hop (RTT 8.1-8.7 vs 7.2-8.1 us).  The
+       fbt attribution of 10-11 (0.4 us for the producer's placement) was
+       probe overhead: calibrated interval pairs put the placement at
+       zero and the producer's whole pre-wake work at ~100 ns, so the
+       deferred-placement remedy has no ceiling and was not built.  Two
+       candidate changes were built and measured on both machines and
+       neither was kept: removing the three timecounter reads on the wake
+       path (-100 ns latency, 0-50 ns round trip; costs idle_ns and
+       maxlat_ns) and keeping kw_mtx across the wake (nothing).  The
+       remaining 130-180 ns is the DRR bookkeeping, spread over lock
+       sections, ks_next() and clock reads at under 100 ns each.
+       CLOSED 2026-10-19: parity holds within 3-5 % on the pure handoff
+       and within run spread on throughput; the pingpong scenario stays
+       as the A/B tool for any future change to the wake path.  Open
+       observation: with a 1 kHz ping (sparse) kwq's RTT is 20-22 us
+       against the taskqueue driver's 14-18 while its per-hop
+       doorbell-to-handler latency is equal or better (5.0-5.2 vs 5.7
+       us); kwq hashes both directions of the flow to one worker CPU and
+       serves the reply hop right after the request hop (1.8-1.9 us
+       "awake" latency, cold), the taskqueue driver uses two threads.
+       Where the rest of the sparse RTT goes is not measured.
        Also found: lockstat -P costs the flow ~15 % (never profile and
        compare in one run); the guest's single flow loses 18 % of the
        worker's time to turnstile blocks on the receiver's socket lock

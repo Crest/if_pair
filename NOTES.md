@@ -5137,3 +5137,45 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   goal 1 now (PLAN.txt): the producer's 0.4 us before wakeup_one() is
   the attackable part, the worker's 0.25 us is the accounting that makes
   the scheduler observable.
+
+2026-10-18/19: P4b goal 1 worked and CLOSED without a code change
+  (PLAN.txt; SCHED.md S15.2 and S10.3; samples/pingpong_a07_2026-10-18_
+  wakepath.txt, samples/flood_a07_2026-10-18_rtt_probe_free.txt).
+  First the fbt attribution of 10-11 was checked with calibrated
+  interval pairs (one dtrace per interval, two probes, keyless
+  aggregations, a07 flood): the interval holding only mtx_lock_spin's
+  fast path reads 382 ns, so a probe pair costs ~350 ns; against that
+  the ks_doorbell() placement reads 305 and the probe-and-flag segment
+  300: both zero.  The producer's whole work before wakeup_one() is
+  ~100 ns, so the proposed deferral of the placement had nothing to
+  save.  The kw_mtx slow path fired 5 times in 758 k doorbells: no
+  contention.  Then a probe-free in-kernel tool: kwq_test scenarios
+  pingpong / pingpong_tq (one item back and forth, every enqueue a
+  wakeup, cpu_ticks and sbinuptime only; run_p1b.sh prints them).  a07,
+  3 runs each: kwq round trip 3721-3729 ns, producer in the enqueue
+  1048-1120, enqueue-to-handler 2179-2268; taskqueue 3551-3621 /
+  929-991 / 1800-1847.  Experiments built, measured on both machines and
+  reverted: V2 = no timecounter reads on the wake path (kc_empty_since
+  stamp, idle_ns, first-pass maxlat): 3745-3755 / 1044-1071 /
+  2097-2132, i.e. -100 ns latency, nothing on the round trip; V4 = V2
+  plus kw_mtx kept from msleep_spin() to ks_next(): 3671-3705 /
+  1012-1085 / 2118-2228; the lock-keeping alone: 3736-3740 / 1059-1138 /
+  2173-2251 = nothing.  Flood RTT timed probe-free (dtrace BEGIN/END
+  around ping -c 50000, elapsed/count): kwq 8111-8685 ns, taskqueue
+  7162-8087; handler call 1707 vs 1784 ns; so 0.2-0.3 us per hop, and
+  the earlier "8 vs 6 us" came from ping's whole-microsecond printing.
+  Doorbell-to-handler under the flood from kwq's own stamp (no fbt):
+  worker asleep 1858 ns, awake 556 ns; the taskqueue thread 2319 (fbt,
+  ~0.3 us of probe cost in it) and asleep every time.  Half of kwq's
+  doorbells find the worker awake because both directions of the flow
+  hash to one worker CPU and the reply is enqueued from inside the
+  request's handler; the taskqueue driver's two directions land on two
+  threads.  Sparse (1 kHz ping): kwq asleep 4958-5193 ns, awake
+  1827-1890; taskqueue 5700-5747; yet the end-to-end RTT is kwq 20-22
+  us vs 14-18 (t_31), unexplained, recorded in PLAN as open.
+  Mistake on 10-18: a script with a hard-coded pair0a destroyed a
+  pre-existing pair0a/pair0b on a07 (no jails, no addresses seen) and
+  unloaded the installed /boot/modules/if_pair.ko; both were not mine.
+  Scripts take the name from `ifconfig pair create` since.
+  t_31_rtt.sh now times the whole ping with dtrace and reports ns per
+  packet.  kwq ATF 22/22 in the guest with the extended test module.

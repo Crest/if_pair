@@ -1,0 +1,19 @@
+# tests/t_31_rtt.sh on a07, 2026-10-18, kwq branch 612f1dd (HEAD modules),
+# COUNT=50000 SPARSE=5000, after the test gained ns-resolution timing.
+== kwq
+t_31_rtt: pair flood (50000): rtt us min 7 avg 8 max 31 stddev 0, loss 0.0%; elapsed per packet 7707 ns; kwq per packet: wakeups 1.00
+t_31_rtt: pair 1 kHz (5000): rtt us min 9 avg 22 max 66 stddev 6, loss 0.0%; elapsed per packet 1071406 ns; kwq per packet: wakeups 1.00
+== tq
+t_31_rtt: pairtq flood (50000): rtt us min 7 avg 7 max 26 stddev 0, loss 0.0%; elapsed per packet 7609 ns
+t_31_rtt: pairtq 1 kHz (5000): rtt us min 7 avg 14 max 67 stddev 8, loss 0.0%; elapsed per packet 1074789 ns
+== kwq again
+t_31_rtt: pair flood (50000): rtt us min 8 avg 8 max 21 stddev 0, loss 0.0%; elapsed per packet 8262 ns; kwq per packet: wakeups 1.00
+t_31_rtt: pair 1 kHz (5000): rtt us min 10 avg 22 max 66 stddev 6, loss 0.0%; elapsed per packet 1071423 ns; kwq per packet: wakeups 1.00
+#
+# Sparse (1 kHz) enqueue-to-handler latency by what the enqueue found, two
+# runs each (kwq from its own stamp via kwq:::pass-start; tq from fbt
+# stamps with ~0.3 us of probe cost):
+kwq  rang, worker awake   1890 ns   5203     woke the worker  4958 ns  5203
+tq   woke the worker      5747 ns  10378
+kwq  rang, worker awake   1827 ns   5205     woke the worker  5193 ns  5205
+tq   woke the worker      5700 ns  10395
