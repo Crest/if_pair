@@ -281,7 +281,8 @@ case where this grows (SCHED.md S15.7).  `fbt::kwq_enqueue:entry` with
 `kern.kwq_test` and are not part of the KPI:
 
     scenario   lifecycle fifo notify reject discard sleep fairness latency gaming
-               overrun yield cost scale fanin tq_baseline switch_baseline ifpair
+               overrun yield cost scale fanin tq_baseline switch_baseline
+               pingpong pingpong_tq ifpair
                mixorder mixpattern mixbudget mixstarve mixrearm mixcancel
                mixrequeue mixdrain mixdrain_discard
     items reps cost_us limit cpu allow_panic secs     (P0 knobs)
@@ -383,6 +384,17 @@ FreeBSD-kyua package lacks `/usr/share/kyua/store` (copy it from another
 (`kern.randompid` is on); one case per invocation, `kyua test -k
 Kyuafile kwq_test.sh:<case>`, works.  In the bhyve guest the `yield`
 case skips itself when the VM's own 20-40 ms callout stall hits.
+
+`pingpong` and `pingpong_tq` hand one item back and forth between a
+producer on one CPU and the consumer on another, so every enqueue finds
+the consumer asleep and pays the whole wake path; the two variants differ
+only in the request half (kwq against a taskqueue thread).  Results:
+`result_ns_per_item` wall ns per round trip, `result_prod_ns_per_item`
+the producer's ns inside the enqueue call, `result_lat_ns` the average
+and `result_maxlat_a_us` the worst enqueue-to-handler latency.  In-kernel
+timing, no probes: the tool for A/B tests of the wake path at ~20 ns
+resolution (SCHED.md S15.6, S10.3).  `tests/run_p1b.sh pingpong
+pingpong_tq` prints the four numbers.
 
 ## 10. Build defaults
 

@@ -7,7 +7,10 @@
 # restored), otherwise once, as the baseline driver runs.  Per run one line: min, avg,
 # max and standard deviation of the round trip in microseconds, the
 # packet loss (should be 0; a flood that loses packets is throttled by
-# ping to 100 packets per second, so a lossy run is a long one), and for
+# ping to 100 packets per second, so a lossy run is a long one), the
+# elapsed time per packet at ns resolution (dtrace times the whole ping;
+# for the flood this is the round trip plus ping's own turnaround, the
+# number to compare drivers by, since ping prints whole us only), and for
 # kwq the worker wakeups and idle polls per packet summed over all CPUs,
 # which shows whether the poll engaged (dense) or stayed out (sparse,
 # SCHED.md S16 rule 2).  A measurement harness: it fails only if a run
@@ -62,16 +65,20 @@ failed=0
 run() {	# label count ping-options...
 	label=$1; n=$2; shift 2; opts="$*"
 	set -- $(kwq_sum); w0=$1; s0=$2; h0=$3
-	jexec "$JC" ping -q -c "$n" $opts 10.99.1.1 > "$TMPD/ping.out" 2>&1
+	# dtrace times the whole ping: elapsed / count is the round trip at
+	# ns resolution where ping's own summary prints whole microseconds.
+	dtrace -qn 'BEGIN { t = timestamp; } END { printf("elapsed_ns %d\n", timestamp - t); }' \
+	    -c "jexec $JC ping -q -c $n $opts 10.99.1.1" > "$TMPD/ping.out" 2>&1
 	set -- $(kwq_sum); w1=$1; s1=$2; h1=$3
 	rtt=$(rtt_line "$TMPD/ping.out")
 	if [ -z "$rtt" ]; then
 		log "$label: FAILED ($(tail -1 "$TMPD/ping.out"))"; failed=$((failed + 1)); return
 	fi
 	set -- $rtt
+	per=$(awk -v n="$n" '/^elapsed_ns/ { printf("%.0f", $2 / n) }' "$TMPD/ping.out")
 	k=""
 	[ "$PAIR" = pair ] && k=$(echo "$w0 $w1 $s0 $s1 $h0 $h1 $n $HAVE_SPIN" | awk '{ printf("; kwq per packet: wakeups %.2f", ($2 - $1) / $7); if ($8 == 1) printf(", polls %.2f (hit %.0f%%)", ($4 - $3) / $7, ($4 - $3) > 0 ? ($6 - $5) * 100 / ($4 - $3) : 0) }')
-	log "$label: rtt us min $1 avg $2 max $3 stddev $4, loss $5$k"
+	log "$label: rtt us min $1 avg $2 max $3 stddev $4, loss $5; elapsed per packet ${per:-?} ns$k"
 }
 
 TMPD=$(mktemp -d /tmp/${TEST}.XXXXXX); cleanup_push "rm -rf $TMPD"

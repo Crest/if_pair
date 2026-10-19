@@ -1217,6 +1217,7 @@ outgrew as counters were added; measured by compiling a `CTASSERT` on
 | `cost` with `cost_us=1` | the same with a 1 us handler | fraction of CPU in bookkeeping = 1 - (items x 1 us) / busy_ns |
 | `tq_baseline` | the same producer pattern into a `taskqueue(9)` with one task per burst and an mbufq-style list (epair's shape) | items/s and ns per item for the design kwq replaces |
 | `switch_baseline` | two kernel threads on one CPU handing a token back and forth with `wakeup`/`msleep` 1e6 times | ns per thread switch on this machine, the number the pass cost is compared against |
+| `pingpong`, `pingpong_tq` | one item back and forth between a producer CPU and the consumer CPU; every enqueue wakes the consumer; the request half is kwq or a taskqueue, the reply the same `wakeup_one()` | wall ns per round trip, the producer's ns inside the enqueue, enqueue-to-handler ns: the wake path's cost, no probes (2026-10-18) |
 
 The Ampere runs the same four scenarios for the arm64 column, with
 `pmcstat` for the cache-line traffic baseline of KWQ.md S17.

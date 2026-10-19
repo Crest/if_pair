@@ -46,6 +46,7 @@ for s in $scenarios; do
 	overrun) run overrun || rc=1; C ;;
 	yield) run yield || rc=1; C ;;
 	yield0) run yield items=0 || rc=1 ;;	# callout only: VM/timer noise baseline
+	pingpong|pingpong_tq) run \$s || rc=1; echo "    round trip \$(R ns_per_item) ns, producer in the enqueue \$(R prod_ns_per_item) ns, enqueue-to-handler avg \$(R lat_ns) ns max \$(R maxlat_a_us) us" ;;
 	cost16) run cost items=1024 batch=16 || rc=1 ;;	# S16 batching: 16 items per kwq_enqueue_list()
 	scale) run scale items=1024 batch=${BATCH:-16} pairs=${PAIRS:-1} || rc=1 ;;	# PAIRS producer/consumer pairs on disjoint CPUs
 	fanin) run fanin items=1024 batch=${BATCH:-16} fanin=${FANIN:-2} limit=1000000 || rc=1 ;;	# FANIN producers into one (queue, CPU)

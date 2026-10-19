@@ -9,6 +9,7 @@
  *                                             # P1b: fairness latency gaming
  *                                             #     overrun yield cost
  *                                             #     tq_baseline switch_baseline
+ *                                             #     pingpong pingpong_tq
  *                                             # P4 shape: ifpair
  *   sysctl kern.kwq_test.items=1000 kern.kwq_test.reps=1000
  *   sysctl kern.kwq_test.run=1
@@ -99,7 +100,7 @@ static uint64_t	kt_r_in, kt_r_out, kt_r_discarded, kt_r_rejected, kt_r_coalesced
 static uint64_t	kt_r_glitches;	/* cpu_ticks() deltas discarded, see kt_tickdelta() */
 static uint64_t	kt_r_dups;	/* P0: items run or discarded twice in a rep */
 static uint64_t	kt_r_cycles_a, kt_r_cycles_b, kt_r_maxlat_a_us, kt_r_maxlat_b_us,
-		kt_r_ns_per_item, kt_r_prod_ns_per_item;
+		kt_r_ns_per_item, kt_r_prod_ns_per_item, kt_r_lat_ns;
 /* ifpair */
 static uint64_t	kt_r_enq_slow;		/* enqueues over 2 us */
 static uint64_t	kt_r_enq_pct;		/* share of producer CPU time inside kwq_enqueue */
@@ -131,7 +132,7 @@ SYSCTL_NODE(_kern, OID_AUTO, kwq_test, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "kwq test harness");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, scenario, CTLFLAG_RW, kt_scenario,
     sizeof(kt_scenario), "lifecycle fifo notify reject discard sleep | "
-    "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline | ifpair | "
+    "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline pingpong pingpong_tq | ifpair | "
     "mixorder mixpattern mixbudget mixstarve mixrearm mixcancel mixrequeue mixdrain mixdrain_discard");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, items, CTLFLAG_RW, &kt_items, 0,
     "items per repetition (P0), pool size per flood (P1b)");
@@ -208,6 +209,8 @@ SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_ns_per_item, CTLFLAG_RD,
     &kt_r_ns_per_item, 0, "wall ns per item (cost, tq_baseline) or per switch");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_prod_ns_per_item, CTLFLAG_RD,
     &kt_r_prod_ns_per_item, 0, "producer cpu ns per enqueue (cost, tq_baseline, ifpair)");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_lat_ns, CTLFLAG_RD,
+    &kt_r_lat_ns, 0, "pingpong: average enqueue-to-handler ns");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_enq_slow, CTLFLAG_RD,
     &kt_r_enq_slow, 0, "ifpair: enqueue calls that took over 2 us");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_enq_pct, CTLFLAG_RD,
@@ -1856,6 +1859,173 @@ kt_run_switch_baseline(void)
 	mtx_destroy(&kt_sw_mtx);
 }
 
+/*
+ * pingpong, pingpong_tq: one item handed back and forth.  The producer,
+ * bound to another CPU, enqueues the item and sleeps; the handler wakes it;
+ * repeat.  Every enqueue therefore finds the worker asleep and pays the
+ * whole wake path, which the flood scenarios amortise over a batch.  The
+ * reply (a wakeup_one() of the producer) is the same in both variants, so
+ * the difference between them is the request path: kwq_enqueue() with its
+ * doorbell and the worker's way to the handler, against a taskqueue's
+ * list append, taskqueue_enqueue() and the thread's loop.  Measured
+ * in-kernel with cpu_ticks(), no probes: wall ns per round trip
+ * (result_ns_per_item), the producer's ns inside the enqueue call
+ * (result_prod_ns_per_item), and the enqueue-to-handler latency from an
+ * sbinuptime() stamp (result_lat_ns average, result_maxlat_a_us worst).
+ */
+struct kt_pp {
+	struct kwq	*q;
+	struct taskqueue *tq;
+	struct task	task;
+	struct titem	item;
+	int		cpu, pcpu;
+	volatile bool	stop, exited;
+	struct thread	*td;
+	/* Shared under mtx. */
+	struct mtx	mtx __aligned(KT_LINE);
+	volatile int	in_flight;
+	/* Written by the producer. */
+	uint64_t	rounds __aligned(KT_LINE);
+	uint64_t	prod_ticks;
+	sbintime_t	stamp;
+	/* Written by the handler. */
+	uint64_t	lat_sum __aligned(KT_LINE);	/* sbintime units */
+	uint64_t	lat_max;
+	uint64_t	runs;
+};
+
+static struct kt_pp *kt_pp;
+
+static void
+kt_pp_reply(struct kt_pp *pp)
+{
+	sbintime_t d = sbinuptime() - pp->stamp;
+
+	if (d > 0) {
+		pp->lat_sum += (uint64_t)d;
+		if ((uint64_t)d > pp->lat_max)
+			pp->lat_max = (uint64_t)d;
+	}
+	pp->runs++;
+	mtx_lock(&pp->mtx);
+	pp->in_flight = 0;
+	wakeup_one(__DEVOLATILE(void *, &pp->in_flight));
+	mtx_unlock(&pp->mtx);
+}
+
+static void
+kt_pp_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
+{
+	struct kt_pp *pp = ctx;
+	struct kwq_item *it, *next;
+
+	for (it = head; it != NULL; it = next) {
+		next = KWQ_ITEM_NEXT(q, it);
+		KWQ_ITEM_INIT(it);
+	}
+	if (n > 0)
+		kt_pp_reply(pp);
+}
+
+static void
+kt_pp_task(void *ctx, int pending __unused)
+{
+	kt_pp_reply(ctx);
+}
+
+static void
+kt_pp_producer(void *arg)
+{
+	struct kt_pp *pp = arg;
+	uint64_t t0;
+
+	thread_lock(curthread);
+	sched_bind(curthread, pp->pcpu);
+	thread_unlock(curthread);
+	while (!pp->stop) {
+		pp->in_flight = 1;
+		KWQ_ITEM_INIT(&pp->item.ti_item);
+		pp->stamp = sbinuptime();
+		t0 = cpu_ticks();
+		if (pp->tq != NULL)
+			taskqueue_enqueue(pp->tq, &pp->task);
+		else if (kwq_enqueue(pp->q, pp->cpu, &pp->item.ti_item) != 0) {
+			pp->in_flight = 0;
+			continue;
+		}
+		pp->prod_ticks += kt_tickdelta(t0);
+		mtx_lock(&pp->mtx);
+		while (pp->in_flight && !pp->stop)
+			msleep(__DEVOLATILE(void *, &pp->in_flight), &pp->mtx, 0, "ktpp", hz);
+		mtx_unlock(&pp->mtx);
+		pp->rounds++;
+	}
+	pp->exited = true;
+	wakeup(pp);
+	kthread_exit();
+}
+
+static void
+kt_run_pingpong(bool use_tq)
+{
+	struct kt_pp *pp;
+	cpuset_t mask;
+	sbintime_t t0;
+
+	pp = malloc(sizeof(*pp), M_KWQ_TEST, M_WAITOK | M_ZERO);
+	kt_pp = pp;
+	pp->cpu = kt_cpu >= 0 ? kt_cpu : 1;
+	if (CPU_ABSENT(pp->cpu)) pp->cpu = 0;
+	pp->pcpu = kt_other_cpu(pp->cpu);
+	pp->item.ti_magic = TITEM_MAGIC;
+	KWQ_ITEM_INIT(&pp->item.ti_item);
+	mtx_init(&pp->mtx, "kwq_test pp", NULL, MTX_DEF);
+	if (use_tq) {
+		TASK_INIT(&pp->task, 0, kt_pp_task, pp);
+		pp->tq = taskqueue_create("kwq_test_pp", M_WAITOK, taskqueue_thread_enqueue, &pp->tq);
+		CPU_SETOF(pp->cpu, &mask);
+		taskqueue_start_threads_cpuset(&pp->tq, 1, PI_NET, &mask, "kwq_test_pp");
+	} else {
+		pp->q = kt_create("kta", KWQ_F_DISCARD, 1, kt_pp_handler, pp);
+		if (pp->q == NULL) {
+			kt_fail("kwq_create(kta) failed");
+			goto out;
+		}
+		kwq_activate(pp->q);
+	}
+	t0 = sbinuptime();
+	if (kthread_add(kt_pp_producer, pp, NULL, &pp->td, 0, 0, "kwq_test_pp") != 0) {
+		kt_fail("producer thread");
+		goto out;
+	}
+	pause("ktrun", kt_secs * hz);
+	pp->stop = true;
+	mtx_lock(&pp->mtx);
+	wakeup(__DEVOLATILE(void *, &pp->in_flight));
+	mtx_unlock(&pp->mtx);
+	while (!pp->exited)
+		tsleep(pp, 0, "ktpp", hz / 100);
+	kt_r_in = kt_r_out = pp->rounds;
+	kt_r_runs = pp->runs;
+	kt_r_ns_per_item = pp->rounds ? kt_sbt2us(sbinuptime() - t0) * 1000 / pp->rounds : 0;
+	kt_r_prod_ns_per_item = pp->rounds ?
+	    (pp->prod_ticks * 1000000000ULL / cpu_tickrate()) / pp->rounds : 0;
+	kt_r_lat_ns = pp->runs ? kt_sbt2us(pp->lat_sum / pp->runs * 1000) : 0;
+	kt_r_maxlat_a_us = kt_sbt2us(pp->lat_max);
+out:
+	if (pp->tq != NULL) {
+		taskqueue_drain(pp->tq, &pp->task);
+		taskqueue_free(pp->tq);
+	}
+	if (pp->q != NULL) {
+		kwq_drain(pp->q);
+		kwq_destroy(pp->q);
+	}
+	mtx_destroy(&pp->mtx);
+	free(pp, M_KWQ_TEST);
+	kt_pp = NULL;
+}
+
 /* ================================================================ runner */
 
 /* ================================================================ mix */
@@ -2686,6 +2856,7 @@ kt_thread(void *arg __unused)
 	kt_r_runs = kt_r_fifo_errors = 0;
 	kt_r_cycles_a = kt_r_cycles_b = kt_r_maxlat_a_us = kt_r_maxlat_b_us = 0;
 	kt_r_ns_per_item = kt_r_prod_ns_per_item = kt_r_glitches = kt_r_dups = 0;
+	kt_r_lat_ns = 0;
 	kt_r_enq_slow = kt_r_enq_pct = kt_r_cons_pct = kt_r_pool_waits = 0;
 	kt_r_inversions = kt_r_exact_errors = kt_r_calls = kt_r_requeues = 0;
 	kt_r_patterns = kt_r_with = kt_r_without = kt_r_wcpu = 0;
@@ -2744,6 +2915,10 @@ kt_thread(void *arg __unused)
 		kt_run_tq_baseline();
 	else if (strcmp(kt_scenario, "switch_baseline") == 0)
 		kt_run_switch_baseline();
+	else if (strcmp(kt_scenario, "pingpong") == 0)
+		kt_run_pingpong(false);
+	else if (strcmp(kt_scenario, "pingpong_tq") == 0)
+		kt_run_pingpong(true);
 	else
 		kt_fail("unknown scenario %s", kt_scenario);
 
