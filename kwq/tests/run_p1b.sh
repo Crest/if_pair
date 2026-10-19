@@ -19,6 +19,7 @@ $KWQ_SSH 'sh -s' <<GUEST
 kldstat -q -m kwq_test && kldunload kwq_test; kldstat -q -m kwq && kldunload kwq
 if [ -f $MODDIR/kwq/kwq.ko ]; then K=$MODDIR/kwq/kwq.ko; T=$MODDIR/kwq_test/kwq_test.ko; else K=$MODDIR/kwq.ko; T=$MODDIR/kwq_test.ko; fi
 kldload \$K && kldload \$T || { echo LOADFAIL; exit 1; }
+for kv in ${KWQ_KNOBS:-}; do sysctl kern.kwq.\$kv || { echo KNOBFAIL; exit 1; }; done	# e.g. KWQ_KNOBS="net.budget_check_every=1"
 uname -v | sed 's/^/kernel: /'; sysctl -n kern.hz hw.ncpu hw.machine | tr '\\n' ' ' | sed 's/^/hz ncpu machine: /'; echo
 run() { name=\$1; shift
 	sysctl -q kern.kwq_test.cost_us=0 kern.kwq_test.limit=0 kern.kwq_test.cpu=-1 kern.kwq_test.items=1000 kern.kwq_test.reps=10 kern.kwq_test.secs=3 kern.kwq_test.weight_a=1 kern.kwq_test.weight_b=1 kern.kwq_test.cost_a=50 kern.kwq_test.cost_b=500 kern.kwq_test.batch=1 kern.kwq_test.pairs=1 kern.kwq_test.fanin=1 kern.kwq_test.ifaces=1 kern.kwq_test.spread=1 kern.kwq_test.prod_ns=1000 kern.kwq_test.cons_ns=1500 >/dev/null

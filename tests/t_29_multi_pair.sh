@@ -6,13 +6,24 @@
 # total with 8 pairs) for SECS seconds (default 10), all pairs
 # concurrently; the whole set repeated for every depth in DEPTHS
 # (default "4096", the driver default; e.g. "64 128 256 512 1024 2048
-# 4096").  While the load runs, a ping crosses every pair; the
-# round-trip time under load is reported next to the idle baseline.
-# Per depth and load one line: total receiver throughput, the per-pair
-# minimum, average and maximum, the RTT average and maximum over all
-# pairs, and the output-queue drops (ENOBUFS at the depth) summed over
-# the pairs; then the per-pair rates.  On the kwq driver the items per
-# pass and passes per second over all pair queues are added.
+# 4096"), and on the kwq driver for every NET quantum in QUANTA (default:
+# the current kern.kwq.net.quantum_us, restored at the end; e.g. "50 100
+# 200 500 1000 2000" for SCHED.md's quantum-against-latency sweep) and
+# every yield priority in YIELD_PRIOS (default: the current
+# kern.kwq.net.yield_prio, restored; "56 55" compares the PUSER yield
+# with the kernel-only one, SCHED.md S6.2).
+# While the load runs, a ping crosses every pair at 50 Hz; its
+# per-packet round-trip times over all pairs are reduced to the median,
+# the 99th percentile and the maximum, next to the idle baseline.
+# Per depth, quantum and load one line: total receiver throughput, the
+# per-pair minimum, average and maximum, the RTT percentiles, and the
+# output-queue drops (ENOBUFS at the depth) summed over the pairs; then
+# the per-pair rates.  On the kwq driver the items per pass and passes
+# per second over all pair queues are added, the worst
+# doorbell-to-first-pass latency of any pair queue (maxlat_ns, reset
+# before each load), which is kwq's own share of the RTT tail, and the
+# NET workers' yields per second (end of round plus tick guard, all
+# CPUs), the mechanism that hands the CPU to user threads.
 #
 # The depth is set per driver: kwq through the queues' own
 # kern.kwq.net.queue.<name>.limit after creation, the taskqueue baseline
@@ -37,8 +48,21 @@ SECS=${BENCH_SECS:-10}
 MTU=${PAIR_MTU:-16384}
 STREAMS=${STREAMS:-"1 8 32"}
 DEPTHS=${DEPTHS:-4096}
+QUANTA=${QUANTA:-}
+YIELD_PRIOS=${YIELD_PRIOS:-}
 OUT=$(mktemp -d /tmp/${TEST}.XXXXXX)
 cleanup_push "rm -rf $OUT"
+
+if [ "$PAIR" = pair ]; then
+	orig_quantum=$(sysctl -n kern.kwq.net.quantum_us)
+	cleanup_push "sysctl -q kern.kwq.net.quantum_us=$orig_quantum"
+	[ -n "$QUANTA" ] || QUANTA=$orig_quantum
+	orig_yp=$(sysctl -n kern.kwq.net.yield_prio)
+	cleanup_push "sysctl -q kern.kwq.net.yield_prio=$orig_yp"
+	[ -n "$YIELD_PRIOS" ] || YIELD_PRIOS=$orig_yp
+else
+	QUANTA="-"; YIELD_PRIOS="-"
+fi
 
 # The baseline's depth knob is read at pair creation; restore it at the end.
 if [ "$PAIR" != pair ]; then
@@ -51,11 +75,29 @@ rate_of() {	# iperf3 -f g output -> receiver Gbit/s (SUM line for -P > 1)
 	    END { print (s != "" ? s : (r != "" ? r : "FAILED")) }' "$1"
 }
 
-kwq_sums() {	# "items passes" summed over all pair queues (kwq driver only)
-	sysctl kern.kwq.net.queue 2>/dev/null | awk -v p="$PAIR" '
+kwq_sums() {	# "items passes yields" over all pair queues / NET workers (kwq only)
+	{ sysctl kern.kwq.net.queue; sysctl kern.kwq.net.cpu; } 2>/dev/null | awk -v p="$PAIR" '
 	    $1 ~ "^kern.kwq.net.queue." p "[0-9]+[ab].cpu.[0-9]+.items:" { it += $2 }
 	    $1 ~ "^kern.kwq.net.queue." p "[0-9]+[ab].cpu.[0-9]+.passes:" { pa += $2 }
-	    END { print it, pa }'
+	    $1 ~ "^kern.kwq.net.cpu.[0-9]+.(yields|tick_yields):" { y += $2 }
+	    END { print it + 0, pa + 0, y + 0 }'
+}
+
+# kwq: zero every pair queue's maxlat_ns, or print the largest, in us.
+kwq_maxlat() {	# reset | max
+	[ "$PAIR" = pair ] || return 0
+	if [ "$1" = reset ]; then
+		local i=1 a b
+		while [ $i -le $NP ]; do
+			eval "a=\$A_$i; b=\$B_$i"
+			sysctl -q kern.kwq.net.queue.$a.reset=1 kern.kwq.net.queue.$b.reset=1 >/dev/null
+			i=$((i + 1))
+		done
+	else
+		sysctl kern.kwq.net.queue 2>/dev/null | awk -v p="$PAIR" '
+		    $1 ~ "^kern.kwq.net.queue." p "[0-9]+[ab].cpu.[0-9]+.maxlat_ns:" && $2 > m { m = $2 }
+		    END { printf("%.0f", m / 1000) }'
+	fi
 }
 
 # Output-queue drops summed over both sides of every pair.
@@ -140,9 +182,14 @@ for d in $DEPTHS; do
 	done
 	log "depth $d: $NP pairs of $PAIR, ${SECS}s runs, mtu $MTU; idle rtt (worst pair avg) ${idle} ms"
 
+	for yp in $YIELD_PRIOS; do
+	[ "$yp" = "-" ] || must "yield_prio=$yp" sysctl -q kern.kwq.net.yield_prio=$yp
+	for qu in $QUANTA; do
+	[ "$qu" = "-" ] || must "quantum_us=$qu" sysctl -q kern.kwq.net.quantum_us=$qu
 	for n in $STREAMS; do
-		set -- $(kwq_sums); it0=${1:-0}; pa0=${2:-0}
+		set -- $(kwq_sums); it0=${1:-0}; pa0=${2:-0}; yl0=${3:-0}
 		drops0=$(oqdrops_sum)
+		kwq_maxlat reset
 		pids=""	# clients and pings only: the servers never exit
 		i=1
 		while [ $i -le $NP ]; do
@@ -153,7 +200,7 @@ for d in $DEPTHS; do
 		sleep 2
 		i=1
 		while [ $i -le $NP ]; do
-			jexec "$(jname c$i)" ping -q -c $(( (SECS - 4) * 5 )) -i 0.2 10.99.$i.1 > "$OUT/ping.$i" 2>&1 &
+			jexec "$(jname c$i)" ping -c $(( (SECS - 4) * 50 )) -i 0.02 10.99.$i.1 > "$OUT/ping.$i" 2>&1 &
 			pids="$pids $!"
 			i=$((i + 1))
 		done
@@ -166,17 +213,21 @@ for d in $DEPTHS; do
 			i=$((i + 1))
 		done
 		stats=$(echo "$rates" | awk '{ mn = 1e9; mx = 0; s = 0; c = 0; for (i = 1; i <= NF; i++) { if ($i == "FAILED") continue; s += $i; c++; if ($i < mn) mn = $i; if ($i > mx) mx = $i } printf("total %.1f Gbit/s; per pair min/avg/max %.1f/%.1f/%.1f", s, mn, (c ? s / c : 0), mx) }')
-		# "round-trip min/avg/max/stddev = A/B/C/D ms": B is $(NF-3), C $(NF-2)
-		rtt=$(cat "$OUT"/ping.* | awk -F'[/ ]' '/round-trip/ { a += $(NF-3); c++; if ($(NF-2) > mx) mx = $(NF-2) } END { if (c) printf("rtt avg %.3f ms max %.3f ms", a / c, mx); else print "rtt: no data" }')
+		# Per-packet "time=X ms" over all pairs -> median, p99, max.
+		rtt=$(cat "$OUT"/ping.* | awk -F'time=' '/time=/ { split($2, a, " "); print a[1] }' | sort -n | awk '{ v[NR] = $1 } END { if (NR) printf("rtt ms p50 %.3f p99 %.3f max %.3f (%d samples)", v[int((NR + 1) / 2)], v[int(NR * 0.99) ? int(NR * 0.99) : 1], v[NR], NR); else print "rtt: no data" }')
 		drops=$(( $(oqdrops_sum) - drops0 ))
 		extra=""
 		if sysctl -n kern.kwq.nqueues >/dev/null 2>&1; then
-			set -- $(kwq_sums); it1=${1:-0}; pa1=${2:-0}
-			[ $((pa1 - pa0)) -gt 0 ] && extra="; kwq items/pass $(( (it1 - it0) / (pa1 - pa0) )), passes/s $(( (pa1 - pa0) / SECS ))"
+			set -- $(kwq_sums); it1=${1:-0}; pa1=${2:-0}; yl1=${3:-0}
+			[ $((pa1 - pa0)) -gt 0 ] && extra="; kwq items/pass $(( (it1 - it0) / (pa1 - pa0) )), passes/s $(( (pa1 - pa0) / SECS )), yields/s $(( (yl1 - yl0) / SECS )), maxlat $(kwq_maxlat max) us"
 		fi
-		log "$(printf 'depth %4d %3d' $d $((n * NP))) conns ($n per pair): $stats; $rtt; oqdrops $drops$extra"
+		qtag=""; [ "$qu" = "-" ] || qtag=" quantum $(printf '%4d' $qu) us"
+		[ "$yp" = "-" ] || qtag="$qtag yield_prio $yp"
+		log "$(printf 'depth %4d' $d)$qtag $(printf '%3d' $((n * NP))) conns ($n per pair): $stats; $rtt; oqdrops $drops$extra"
 		log "     per pair Gbit/s:$rates"
 		sleep 1
+	done
+	done
 	done
 	teardown_pairs
 done
