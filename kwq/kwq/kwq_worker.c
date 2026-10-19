@@ -40,6 +40,7 @@
 #include <net/vnet.h>
 
 #include "kwq_sched.h"
+#include "kwq_clock.h"
 
 struct kwq_worker **kwq_workers[KWQ_NCLASS];
 static struct sysctl_ctx_list kwq_worker_sysctl_ctx;
@@ -73,7 +74,7 @@ kwq_higher_waiting(enum kwq_class cls)
  * context switch in between.
  */
 uint64_t
-kwq_cputime_ns(const struct kwq_worker *kw)
+kwq_cputime_ns(struct kwq_worker *kw)
 {
 	uint64_t t;
 
@@ -81,21 +82,54 @@ kwq_cputime_ns(const struct kwq_worker *kw)
 }
 
 /*
- * Same, and also hand back the raw cpu_ticks() reading so a caller that
- * wants both (the pass accounting) reads the clock once: on arm64 a
- * generic-timer read costs an isb() and showed at 16 % of the worker's
- * cycles on a07 with five reads per pass (SCHED.md S15.7).
+ * Same, and also hand back the raw tick so a caller that wants both (the
+ * pass accounting) reads the clock once.
+ *
+ * NET (S1a.4 as amended 2026-10-20): wall time on the bound CPU.  A NET
+ * worker runs at the top interrupt-thread priority and never sleeps in a
+ * handler, so it leaves the CPU during a pass only when preempted by an
+ * ithread of equal or higher priority or blocked on a contended sleep
+ * mutex, both rare and short; a pass during which that happened is
+ * charged the wall time anyway and counted in kc_switched (td_runtime
+ * changes at every switch-out).  Two bare counter reads per pass, nothing
+ * from the kernel's ticker.
+ *
+ * BULK: CPU time.  NET workers preempt BULK workers as a matter of course,
+ * so wall time would charge NET's work to BULK queues.  The thread's CPU
+ * time is td_runtime (accounted at each switch-out) plus the time since
+ * the last switch-in; the latter needs the kernel's ticker, which on
+ * arm64 is a 32-bit extension that misfires when read with interrupts
+ * enabled (tools/clockprobe).  So the exact sum is taken once as a base,
+ * with interrupts off, and advanced with kwq_ticks() while td_runtime has
+ * not changed; a changed td_runtime re-bases: one ticker read per
+ * preemption or stat tick, not per pass (kwq_clock.h).
  */
 uint64_t
-kwq_cputime_ns_tick(const struct kwq_worker *kw, uint64_t *tick)
+kwq_cputime_ns_tick(struct kwq_worker *kw, uint64_t *tick)
 {
-	uint64_t t;
+	uint64_t k, rt, c;
 
-	critical_enter();
-	*tick = cpu_ticks();
-	t = curthread->td_runtime + (*tick - PCPU_GET(switchtime));
-	critical_exit();
-	return (ks_ticks2ns(t, kw->kw_ns_scale));
+	if (kw->kw_class == KWQ_NET) {
+		k = kwq_ticks();
+		*tick = k;
+		return (ks_ticks2ns(k, kw->kw_ns_scale));
+	}
+	rt = curthread->td_runtime;
+	if (__predict_false(rt != kw->kw_seg_rt)) {
+		register_t s;
+
+		s = intr_disable();
+		c = cpu_ticks();
+		kw->kw_seg_cpu = rt + (c - PCPU_GET(switchtime));
+		intr_restore(s);
+		kw->kw_seg_rt = rt;
+		kw->kw_seg_k = kwq_ticks();
+		*tick = kw->kw_seg_k;
+		return (ks_ticks2ns(kw->kw_seg_cpu, kw->kw_ns_scale));
+	}
+	k = kwq_ticks();
+	*tick = k;
+	return (ks_ticks2ns(kw->kw_seg_cpu + (k - kw->kw_seg_k), kw->kw_ns_scale));
 }
 
 /*
@@ -214,6 +248,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 		}
 		kc->kc_empty_since = 0;
 	}
+	kw->kw_pass_rt = curthread->td_runtime;
 	ks_pass_begin(kw, kc, kwq_cputime_ns_tick(kw, &t0));
 	kwq_kc_unlock(kc);
 	SDT_PROBE4(kwq, , , pass__start, q, kc->kc_cpu, n, age);
@@ -271,6 +306,11 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	mtx_lock_spin(&kw->kw_mtx);
 	cpu_now = kwq_cputime_ns_tick(kw, &t1);
 	kc->kc_cycles += t1 - t0;
+	if (__predict_false(curthread->td_runtime != kw->kw_pass_rt)) {
+		/* The worker left the CPU during this pass (S1a.4). */
+		kc->kc_switched++;
+		kw->kw_switched++;
+	}
 	SDT_PROBE5(kwq, , , pass__end, q, kc->kc_cpu, n,
 	    cpu_now - kw->kw_pass_start, (int)(kc->kc_requeued - requeued0));
 	ks_pass_end(kw, kc, cpu_now, has_work);
@@ -312,8 +352,9 @@ kwq_worker_main(void *arg)
 	sched_prio(curthread, kw->kw_pri);
 	sched_bind(curthread, kw->kw_cpu);
 	thread_unlock(curthread);
-	kw->kw_rate = cpu_tickrate();
+	kw->kw_rate = kwq_tickrate();
 	kw->kw_ns_scale = ks_ns_scale(kw->kw_rate);
+	kw->kw_seg_rt = ~0ULL;		/* the first CPU-time read takes a base */
 	kw->kw_win_start = kwq_sbt2ns(sbinuptime());
 	kw->kw_round_wall = kw->kw_win_start;
 
@@ -343,7 +384,7 @@ kwq_worker_main(void *arg)
 		case KS_ROUND_END:
 		case KS_HANDBACK:
 			/* Re-derive the tick scale if the ticker was recalibrated. */
-			rate = cpu_tickrate();
+			rate = kwq_tickrate();
 			if (rate != kw->kw_rate) {
 				kw->kw_rate = rate;
 				kw->kw_ns_scale = ks_ns_scale(rate);
@@ -434,6 +475,7 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	KW_U64(kw_tick_yields, "tick_yields", "yields forced by the tick guard between passes");
 	KW_U64(kw_cap_sleeps, "cap_sleeps", "pause_sbt() sleeps taken by the CPU-share cap");
 	KW_U64(kw_handbacks, "handbacks", "rounds ended early because a higher class waited");
+	KW_U64(kw_switched, "switched", "passes during which the worker left the CPU (preempted or blocked); NET charges them wall time");
 	KW_U64(kw_busy_ns, "busy_ns", "worker CPU time inside handlers");
 	KW_U64(kw_idle_ns, "idle_ns", "wall time asleep with nothing queued");
 	KW_U64(kw_round, "round", "current round number");
@@ -453,6 +495,7 @@ kwq_workers_start(struct sysctl_oid_list **cpu_oids)
 	struct thread *td;
 	int cls, cpu, error;
 
+	kwq_clock_init();
 	sysctl_ctx_init(&kwq_worker_sysctl_ctx);
 	for (cls = 0; cls < KWQ_BULK + 1; cls++) {
 		kwq_workers[cls] = malloc(sizeof(kw) * (mp_maxid + 1), M_KWQ,
@@ -471,8 +514,8 @@ kwq_workers_start(struct sysctl_oid_list **cpu_oids)
 			kw->kw_cpu = cpu;
 			kw->kw_pri = kwq_class_priority(cls);
 			kw->kw_chan = &kwq_chans[cls][cpu];
-			kw->kw_ns_scale = ks_ns_scale(cpu_tickrate());
-			kw->kw_rate = cpu_tickrate();
+			kw->kw_ns_scale = ks_ns_scale(kwq_tickrate());
+			kw->kw_rate = kwq_tickrate();
 			kwq_workers[cls][cpu] = kw;
 			kwq_worker_sysctl(kw, cpu_oids[cls]);
 			error = kthread_add(kwq_worker_main, kw, NULL, &kw->kw_td,

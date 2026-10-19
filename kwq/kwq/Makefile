@@ -6,8 +6,8 @@
 # KERNBUILDDIR=/usr/obj/.../sys/GENERIC-DEBUG so its opt_global.h is used.
 
 KMOD=	kwq
-SRCS=	kwq.c kwq_worker.c kwq_sched.c kwq_sdt.c kwq_ddb.c
-SRCS+=	kwq.h kwq_internal.h kwq_sched.h kwq_sched_env.h kwq_sdt.h
+SRCS=	kwq.c kwq_worker.c kwq_sched.c kwq_sdt.c kwq_ddb.c kwq_clock.c
+SRCS+=	kwq.h kwq_internal.h kwq_sched.h kwq_sched_env.h kwq_sdt.h kwq_clock.h
 SRCS+=	opt_ddb.h
 
 # Standalone builds (no KERNBUILDDIR) get a fixed opt_global.h from

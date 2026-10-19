@@ -104,6 +104,8 @@ struct kwq_cpu {
 	uint64_t		kc_boosts;	/* passes served from the new list */
 	uint64_t		kc_grace;	/* doorbells sent to the ring by the grace rule */
 	uint64_t		kc_glitches;	/* passes with a negative or > KS_GLITCH_NS CPU-time delta */
+	uint64_t		kc_switched;	/* NET: passes during which the worker left the CPU
+					   (preempted or blocked); charged as wall time (S1a.4) */
 	uint64_t		kc_debts;	/* doorbells sent to the ring because the queue owed time */
 	uint64_t		kc_bc_avg;	/* ns per kwq_budget_left() call, learned (SCHED.md S4.4) */
 	uint64_t		kc_steals_in;	/* P6 */
@@ -177,11 +179,20 @@ struct kwq_worker {
 	uint64_t		kw_round_wall;	/* sbinuptime ns at the last round end (kwq:::round-end) */
 	uint64_t		kw_idle_busy;	/* kw_busy_ns at the last wakeup (kwq:::idle) */
 	const struct kwq_sched_knobs *kw_knobs;
-	uint64_t		kw_ns_scale;	/* ks_ns_scale(cpu_tickrate()) */
+	uint64_t		kw_ns_scale;	/* ks_ns_scale(kwq_tickrate()) */
 	uint64_t		kw_rate;	/* the rate the scale was derived from */
+	/*
+	 * CPU-time base (kwq_cputime_ns_tick): the thread's CPU time in ticks
+	 * at kw_seg_k, exact from td_runtime and switchtime, valid while
+	 * td_runtime still equals kw_seg_rt, i.e. the worker has not been
+	 * switched out since; then CPU time = kw_seg_cpu + (kwq_ticks() -
+	 * kw_seg_k) without the kernel's ticker (kwq_clock.h).
+	 */
+	uint64_t		kw_seg_rt, kw_seg_cpu, kw_seg_k;
+	uint64_t		kw_pass_rt;	/* NET: td_runtime at pass begin, to detect a switch-out */
 	uint64_t		kw_rounds, kw_passes, kw_wakeups, kw_yields,
 				kw_tick_yields, kw_cap_sleeps, kw_handbacks,
-				kw_busy_ns, kw_idle_ns, kw_budget_calls, kw_budget_reads;
+				kw_busy_ns, kw_idle_ns, kw_budget_calls, kw_budget_reads, kw_switched;
 } __aligned(KWQ_LINE);
 
 extern struct kwq_worker **kwq_workers[KWQ_NCLASS];	/* [class][cpu] */
@@ -240,8 +251,8 @@ int	kwq_workers_start(struct sysctl_oid_list **cpu_oids);
 void	kwq_workers_stop(void);
 void	kwq_doorbell(struct kwq_cpu *kc);	/* kc locked, state IDLE */
 bool	kwq_higher_waiting(enum kwq_class cls);	/* hand-back flags, this CPU */
-uint64_t kwq_cputime_ns(const struct kwq_worker *kw);
-uint64_t kwq_cputime_ns_tick(const struct kwq_worker *kw, uint64_t *tick);
+uint64_t kwq_cputime_ns(struct kwq_worker *kw);
+uint64_t kwq_cputime_ns_tick(struct kwq_worker *kw, uint64_t *tick);
 
 
 /*

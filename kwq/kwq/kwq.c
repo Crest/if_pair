@@ -794,6 +794,7 @@ kwq_sysctl_register(struct kwq *q)
 		KC_U64(kc_parks, "parks", "rounds skipped for a deficit <= 0");
 		KC_U64(kc_debts, "debts", "doorbells sent to the ring because the queue went idle owing time");
 		KC_U64(kc_glitches, "glitches", "passes whose CPU-time delta was negative or > 1 s (ticker fault; charged one quantum)");
+		KC_U64(kc_switched, "switched", "passes during which the worker left the CPU (preempted or blocked); NET charges them wall time");
 		KC_U64(kc_boosts, "boosts", "passes served from the new list");
 		KC_U64(kc_grace, "grace", "doorbells sent to the ring by the grace rule");
 #undef KC_U64
