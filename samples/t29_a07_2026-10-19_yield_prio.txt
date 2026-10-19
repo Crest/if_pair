@@ -1,0 +1,139 @@
+== kwq 8 pairs yield_prio 00:41:59
+t_29_multi_pair: ok: load ./../if_pair.ko
+t_29_multi_pair: created pair0a + pair0b
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_s1
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_c1
+t_29_multi_pair: ok: move pair0a into ifp_29_multi_pair_s1
+t_29_multi_pair: ok: move pair0b into ifp_29_multi_pair_c1
+t_29_multi_pair: ok: mtu 16384 pair 1
+t_29_multi_pair: ok: address pair 1
+t_29_multi_pair: ok: baseline ping pair 1
+t_29_multi_pair: created pair1a + pair1b
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_s2
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_c2
+t_29_multi_pair: ok: move pair1a into ifp_29_multi_pair_s2
+t_29_multi_pair: ok: move pair1b into ifp_29_multi_pair_c2
+t_29_multi_pair: ok: mtu 16384 pair 2
+t_29_multi_pair: ok: address pair 2
+t_29_multi_pair: ok: baseline ping pair 2
+t_29_multi_pair: created pair2a + pair2b
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_s3
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_c3
+t_29_multi_pair: ok: move pair2a into ifp_29_multi_pair_s3
+t_29_multi_pair: ok: move pair2b into ifp_29_multi_pair_c3
+t_29_multi_pair: ok: mtu 16384 pair 3
+t_29_multi_pair: ok: address pair 3
+t_29_multi_pair: ok: baseline ping pair 3
+t_29_multi_pair: created pair3a + pair3b
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_s4
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_c4
+t_29_multi_pair: ok: move pair3a into ifp_29_multi_pair_s4
+t_29_multi_pair: ok: move pair3b into ifp_29_multi_pair_c4
+t_29_multi_pair: ok: mtu 16384 pair 4
+t_29_multi_pair: ok: address pair 4
+t_29_multi_pair: ok: baseline ping pair 4
+t_29_multi_pair: created pair4a + pair4b
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_s5
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_c5
+t_29_multi_pair: ok: move pair4a into ifp_29_multi_pair_s5
+t_29_multi_pair: ok: move pair4b into ifp_29_multi_pair_c5
+t_29_multi_pair: ok: mtu 16384 pair 5
+t_29_multi_pair: ok: address pair 5
+t_29_multi_pair: ok: baseline ping pair 5
+t_29_multi_pair: created pair5a + pair5b
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_s6
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_c6
+t_29_multi_pair: ok: move pair5a into ifp_29_multi_pair_s6
+t_29_multi_pair: ok: move pair5b into ifp_29_multi_pair_c6
+t_29_multi_pair: ok: mtu 16384 pair 6
+t_29_multi_pair: ok: address pair 6
+t_29_multi_pair: ok: baseline ping pair 6
+t_29_multi_pair: created pair6a + pair6b
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_s7
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_c7
+t_29_multi_pair: ok: move pair6a into ifp_29_multi_pair_s7
+t_29_multi_pair: ok: move pair6b into ifp_29_multi_pair_c7
+t_29_multi_pair: ok: mtu 16384 pair 7
+t_29_multi_pair: ok: address pair 7
+t_29_multi_pair: ok: baseline ping pair 7
+t_29_multi_pair: created pair7a + pair7b
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_s8
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_c8
+t_29_multi_pair: ok: move pair7a into ifp_29_multi_pair_s8
+t_29_multi_pair: ok: move pair7b into ifp_29_multi_pair_c8
+t_29_multi_pair: ok: mtu 16384 pair 8
+t_29_multi_pair: ok: address pair 8
+t_29_multi_pair: ok: baseline ping pair 8
+t_29_multi_pair: ok: depth 4096 on pair0a and pair0b
+t_29_multi_pair: ok: depth 4096 on pair1a and pair1b
+t_29_multi_pair: ok: depth 4096 on pair2a and pair2b
+t_29_multi_pair: ok: depth 4096 on pair3a and pair3b
+t_29_multi_pair: ok: depth 4096 on pair4a and pair4b
+t_29_multi_pair: ok: depth 4096 on pair5a and pair5b
+t_29_multi_pair: ok: depth 4096 on pair6a and pair6b
+t_29_multi_pair: ok: depth 4096 on pair7a and pair7b
+t_29_multi_pair: depth 4096: 8 pairs of pair, 10s runs, mtu 16384; idle rtt (worst pair avg) 0.033 ms
+t_29_multi_pair: ok: yield_prio=56
+t_29_multi_pair: ok: quantum_us=200
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 56  64 conns (8 per pair): total 354.1 Gbit/s; per pair min/avg/max 38.2/44.3/46.0; rtt ms p50 0.182 p99 70.696 max 90.695 (2400 samples); oqdrops 0; kwq items/pass 4, passes/s 1346254, yields/s 51280, maxlat 96083 us
+t_29_multi_pair:      per pair Gbit/s: 44.3 45.6 43.9 38.2 44.6 45.6 45.9 46.0
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 56 256 conns (32 per pair): total 334.9 Gbit/s; per pair min/avg/max 40.6/41.9/42.4; rtt ms p50 0.246 p99 36.239 max 66.134 (2400 samples); oqdrops 0; kwq items/pass 10, passes/s 847477, yields/s 468970, maxlat 120507 us
+t_29_multi_pair:      per pair Gbit/s: 42.0 41.8 42.4 41.9 42.3 42.4 41.5 40.6
+t_29_multi_pair: ok: yield_prio=55
+t_29_multi_pair: ok: quantum_us=200
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 55  64 conns (8 per pair): total 355.0 Gbit/s; per pair min/avg/max 43.6/44.4/45.3; rtt ms p50 0.181 p99 65.747 max 88.380 (2400 samples); oqdrops 0; kwq items/pass 3, passes/s 1407578, yields/s 48887, maxlat 96521 us
+t_29_multi_pair:      per pair Gbit/s: 45.3 43.8 45.1 44.0 44.3 44.3 43.6 44.6
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 55 256 conns (32 per pair): total 334.9 Gbit/s; per pair min/avg/max 40.9/41.9/42.2; rtt ms p50 0.229 p99 30.955 max 76.339 (2400 samples); oqdrops 0; kwq items/pass 9, passes/s 856238, yields/s 470347, maxlat 83428 us
+t_29_multi_pair:      per pair Gbit/s: 42.0 41.7 41.9 42.1 40.9 42.1 42.0 42.2
+t_29_multi_pair: ok: yield_prio=56
+t_29_multi_pair: ok: quantum_us=200
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 56  64 conns (8 per pair): total 352.2 Gbit/s; per pair min/avg/max 42.2/44.0/44.9; rtt ms p50 0.179 p99 79.600 max 90.917 (2400 samples); oqdrops 0; kwq items/pass 4, passes/s 1368344, yields/s 55898, maxlat 96085 us
+t_29_multi_pair:      per pair Gbit/s: 43.6 44.7 44.8 44.9 43.4 44.3 44.3 42.2
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 56 256 conns (32 per pair): total 335.1 Gbit/s; per pair min/avg/max 41.2/41.9/42.5; rtt ms p50 0.227 p99 35.855 max 76.715 (2400 samples); oqdrops 0; kwq items/pass 10, passes/s 831250, yields/s 457303, maxlat 69413 us
+t_29_multi_pair:      per pair Gbit/s: 42.3 41.4 42.0 42.3 41.2 42.5 41.7 41.7
+t_29_multi_pair: ok: yield_prio=55
+t_29_multi_pair: ok: quantum_us=200
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 55  64 conns (8 per pair): total 347.0 Gbit/s; per pair min/avg/max 41.3/43.4/45.5; rtt ms p50 0.176 p99 56.167 max 89.146 (2400 samples); oqdrops 0; kwq items/pass 7, passes/s 1288351, yields/s 95925, maxlat 97069 us
+t_29_multi_pair:      per pair Gbit/s: 45.5 41.8 45.0 43.5 44.7 42.6 41.3 42.6
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 55 256 conns (32 per pair): total 334.9 Gbit/s; per pair min/avg/max 41.3/41.9/42.4; rtt ms p50 0.220 p99 31.758 max 69.183 (2400 samples); oqdrops 0; kwq items/pass 10, passes/s 830004, yields/s 458355, maxlat 79420 us
+t_29_multi_pair:      per pair Gbit/s: 42.4 41.3 41.7 41.9 42.2 41.9 41.8 41.7
+t_29_multi_pair: PASS
+== kwq 1 pair yield_prio 00:44:49
+t_29_multi_pair: ok: load ./../if_pair.ko
+t_29_multi_pair: created pair0a + pair0b
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_s1
+t_29_multi_pair: ok: create jail ifp_29_multi_pair_c1
+t_29_multi_pair: ok: move pair0a into ifp_29_multi_pair_s1
+t_29_multi_pair: ok: move pair0b into ifp_29_multi_pair_c1
+t_29_multi_pair: ok: mtu 16384 pair 1
+t_29_multi_pair: ok: address pair 1
+t_29_multi_pair: ok: baseline ping pair 1
+t_29_multi_pair: ok: depth 4096 on pair0a and pair0b
+t_29_multi_pair: depth 4096: 1 pairs of pair, 10s runs, mtu 16384; idle rtt (worst pair avg) 0.033 ms
+t_29_multi_pair: ok: yield_prio=56
+t_29_multi_pair: ok: quantum_us=200
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 56  32 conns (32 per pair): total 489.0 Gbit/s; per pair min/avg/max 489.0/489.0/489.0; rtt ms p50 0.028 p99 0.103 max 0.157 (300 samples); oqdrops 0; kwq items/pass 2, passes/s 2104085, yields/s 44877, maxlat 87323 us
+t_29_multi_pair:      per pair Gbit/s: 489
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 56 128 conns (128 per pair): total 337.0 Gbit/s; per pair min/avg/max 337.0/337.0/337.0; rtt ms p50 6.214 p99 68.500 max 91.297 (300 samples); oqdrops 0; kwq items/pass 20, passes/s 710458, yields/s 427798, maxlat 96119 us
+t_29_multi_pair:      per pair Gbit/s: 337
+t_29_multi_pair: ok: yield_prio=55
+t_29_multi_pair: ok: quantum_us=200
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 55  32 conns (32 per pair): total 486.0 Gbit/s; per pair min/avg/max 486.0/486.0/486.0; rtt ms p50 0.029 p99 0.075 max 0.116 (300 samples); oqdrops 0; kwq items/pass 2, passes/s 2030541, yields/s 29986, maxlat 56281 us
+t_29_multi_pair:      per pair Gbit/s: 486
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 55 128 conns (128 per pair): total 337.0 Gbit/s; per pair min/avg/max 337.0/337.0/337.0; rtt ms p50 5.088 p99 60.346 max 81.845 (300 samples); oqdrops 0; kwq items/pass 21, passes/s 711477, yields/s 428096, maxlat 123365 us
+t_29_multi_pair:      per pair Gbit/s: 337
+t_29_multi_pair: ok: yield_prio=56
+t_29_multi_pair: ok: quantum_us=200
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 56  32 conns (32 per pair): total 450.0 Gbit/s; per pair min/avg/max 450.0/450.0/450.0; rtt ms p50 0.036 p99 0.096 max 0.119 (300 samples); oqdrops 0; kwq items/pass 3, passes/s 1938790, yields/s 47128, maxlat 91232 us
+t_29_multi_pair:      per pair Gbit/s: 450
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 56 128 conns (128 per pair): total 337.0 Gbit/s; per pair min/avg/max 337.0/337.0/337.0; rtt ms p50 0.362 p99 57.181 max 69.596 (300 samples); oqdrops 0; kwq items/pass 23, passes/s 673443, yields/s 405455, maxlat 94764 us
+t_29_multi_pair:      per pair Gbit/s: 337
+t_29_multi_pair: ok: yield_prio=55
+t_29_multi_pair: ok: quantum_us=200
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 55  32 conns (32 per pair): total 495.0 Gbit/s; per pair min/avg/max 495.0/495.0/495.0; rtt ms p50 0.025 p99 0.068 max 0.109 (300 samples); oqdrops 0; kwq items/pass 3, passes/s 2014068, yields/s 71687, maxlat 46295 us
+t_29_multi_pair:      per pair Gbit/s: 495
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 55 128 conns (128 per pair): total 337.0 Gbit/s; per pair min/avg/max 337.0/337.0/337.0; rtt ms p50 0.501 p99 42.872 max 51.445 (300 samples); oqdrops 0; kwq items/pass 20, passes/s 720854, yields/s 433624, maxlat 95063 us
+t_29_multi_pair:      per pair Gbit/s: 337
+t_29_multi_pair: PASS
+== end 00:46:28
+12:46AM  up 3 days,  3:26, 1 user, load averages: 134.08, 113.45, 86.39

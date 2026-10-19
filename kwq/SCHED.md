@@ -522,6 +522,21 @@ by yielding to kernel threads only, at the price that user threads on a
 saturated CPU get CPU only through the cap; that is the "hard NET
 latency" setting and should be measured in P1's `yield` scenario.
 
+Measured 2026-10-19 (a07, 8 pairs under iperf3 load, ../NOTES.md): the
+yield priority does not bound the stall.  A user thread that holds a
+lock a worker blocked on (the stack's `tcpinp` and `so_rcv`, kwq's own
+list mutex) runs at the worker's lent priority 1; when the lock is
+released ULE lowers its priority but does not reschedule a running
+thread (`sched_thread_priority()`, the `TD_IS_RUNNING` branch), so it
+keeps the CPU to the end of its slice, 16-65 ms seen, and the worker
+that yielded onto the run queue waits behind it at 55 as at 56.  kwq's
+doorbell-to-first-pass maximum under that load is 64-134 ms at every
+quantum and both yield priorities.  The yield is the entry point: a
+worker that never yields never leaves its CPU, which is the pre-kwq
+starvation of userland.  Changing this is a design decision on S6.1
+(rate-limit the yield, or gate it on the window's busy share), recorded
+as open in PLAN P4b goal 2; the ULE side is a kernel matter.
+
 ### 6.3 CPU-share cap (off by default)
 
 Mogul's "limit on CPU usage" feedback, for the case the yield cannot
@@ -643,7 +658,14 @@ single item overruns every pass and is parked most rounds - correct but
 poor for everyone's latency), and well below a tick (1 ms at hz=1000) so
 the tick guard rarely fires.
 PLAN.txt P1 sweeps 50/100/200/500 us on the Ampere before the default is
-final.
+final.  Swept 2026-10-19 (P4b goal 2, tests/t_29_multi_pair.sh with
+QUANTA, samples/t29_a07_2026-10-19_quantum_sweep.txt): 50..2000 us on
+a07 with 8 pairs at 64 and 256 connections and 1 pair at 32 and 128,
+depths 1024 and 4096.  Throughput moves within 3 % over the range (a
+slight decline toward 2000), the RTT percentiles show no trend, and
+kwq's own doorbell-to-first-pass maximum is 64-134 ms at every quantum:
+the tail is set by the yield-and-lent-priority stall of S6.2, not by the
+round.  200 us stays.
 
 ## 9. Observability
 
@@ -1053,6 +1075,15 @@ run it.
   new-arrival boost plus anti-gaming, per-consumer cap, carry limited to
   one refill.
 
+- Cheaper clock reads (open, 2026-10-19).  `cpu_ticks()` on arm64 is the
+  timecounter path with an `isb` and the 32-bit wrap extension (16-47 ns
+  per read on the Altra, and the S13 glitch); on amd64 it is already the
+  bare `rdtsc`.  A `kwq_ticks()` reading the invariant TSC or the 64-bit
+  `CNTVCT_EL0` (`CNTVCTSS_EL0` with FEAT_ECV) without a barrier would be
+  "close enough" for deficit accounting: an early read is within the
+  S4.4 estimate's margin and a per-CPU read cannot go backwards.  PLAN
+  P4b has the entry; S15.2 the measurement.
+
 ## 13. Numeric robustness
 
 Requirement: no quantity the scheduler keeps may overflow, wrap
@@ -1185,6 +1216,14 @@ so deferring it to the worker, the remedy PLAN P4b goal 1 proposed, has
 no ceiling and was not built.  On the if_pair ping flood the whole
 difference is 0.2-0.3 us per hop (round trip 8.1-8.7 vs 7.2-8.1 us,
 timed probe-free), consistent with the above plus the handler.
+
+Clock reads, measured 2026-10-19 (`cost` with `budget_check_every` 1, 8
+and 64; ../NOTES.md): one `cpu_ticks()` per item costs 16-47 ns on the
+Altra and ~11 ns on the x86 guest; the default of one read per 8 budget
+calls plus two per pass and one `sbinuptime()` per burst and per round
+amounts to 30-40 ns per item at 3 items per pass on a07, 10-15 % of the
+consumer's per-item cost there.  64 is slower than 8 on both machines:
+the estimate under-predicts and the pass overruns into debt.
 
 ### 15.3 Per round and per burst
 

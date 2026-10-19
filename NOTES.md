@@ -5179,3 +5179,91 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   Scripts take the name from `ifconfig pair create` since.
   t_31_rtt.sh now times the whole ping with dtrace and reports ns per
   packet.  kwq ATF 22/22 in the guest with the extended test module.
+
+2026-10-19: P4b goal 2, the quantum against the latency tail: the
+  quantum is not the lever.  tests/t_29_multi_pair.sh gained QUANTA and
+  YIELD_PRIOS loops, per-packet ping percentiles (50 Hz per pair) and
+  kwq's maxlat_ns (reset per load) and yields/s.  a07 sweep (samples/
+  t29_a07_2026-10-19_quantum_sweep.txt): 8 pairs at 64 and 256
+  connections, depths 1024 and 4096, quantum 50..2000 us: throughput
+  flat (361->347 Gbit/s at 64 conns, 345->334 at 256 over the range, a
+  3 % slope), RTT p50 0.17-0.26 ms, p99 26-83 ms and max 42-136 ms
+  without a trend, kwq's own doorbell-to-first-pass maximum 64-134 ms at
+  every quantum; 1 pair at 32 conns 451-492 Gbit/s (noise) with p99
+  72-97 us, at 128 conns 337 at every quantum (the mbuf wall) with p99
+  14-57 ms.  Taskqueue driver: 8 pairs 64 conns p99 65-73 ms max 99-126
+  (equal to kwq); 256 conns p99 370-490 ms max 612-769 (kwq 26-39 /
+  42-130: ten times better); 1 pair 32 conns 480 Gbit/s p99 78 us, 128
+  conns 338 p99 10.7 ms.  yield_prio 55 vs 56 (samples/..._yield_prio
+  .txt): no difference in maxlat (83-123 vs 69-120 ms) or p99.
+  Why the tail is 20-130 ms (samples/t29_a07_2026-10-19_slow_pass_
+  trace.txt; DTrace on the worker thread's own history, then on
+  turnstile_wait and on user threads running below priority 56): at
+  every slow pass the worker had yielded (kwq_yield at round end or tick
+  guard) and stayed off its CPU for the whole latency, 20-93 ms, with
+  no sleep and no lock of its own; the thread that ran there meanwhile
+  was iperf3 at PRIORITY 1 with a base priority of 156-177, i.e. a
+  CPU-bound batch thread holding a kwq worker's lent priority.  The
+  lenders: workers blocked in turnstile_wait on tcpinp (7428 in 8 s),
+  so_rcv (2456), kwq's own per-list sleep mutexes "kwq pairNx" (2070,
+  held by the producer inside kwq_enqueue), so_snd (276), mbuf (21).
+  The lent runs last up to 65 ms (438 runs of 16-65 ms in 8 s): ULE's
+  sched_thread_priority() does not reschedule a RUNNING thread whose
+  priority is lowered (sched_ule.c, TD_IS_RUNNING branch sets lowpri
+  only), so after turnstile_unpend() the batch thread keeps the CPU to
+  the end of its slice (sched_slice = stathz/10 ~ 12 ms, re-lent on the
+  next block), and the worker that put itself on the run queue by
+  yielding waits behind it whatever yield_prio says, because the lent
+  priority is the worker's own 1.  The guest shows 20-37 ms stalls of
+  the same shape at hz=100; there the vCPU scheduling adds its own.
+  Consequences: (1) the DRR quantum has no measurable effect on the
+  tail in 50..2000 us: default 200 stays; (2) kwq's share of the lending
+  is removable with KWQ_F_SPIN lists (spin mutexes do not lend) - to be
+  measured; the stack's tcpinp/so_rcv share is not kwq's; (3) the ULE
+  behaviour (no preemption on unlend) is a kernel matter to report, not
+  to work around in kwq; (4) the yield is the entry point: without it
+  the worker never leaves the CPU, but it is also what keeps a
+  CPU-bound user thread at 16 % instead of 0 (t_30 spinner).
+  Mistakes on the way: the first diagnosis script with per-CPU dynamic
+  variables was unreliable (counts of 0 everywhere; probable drops
+  hidden by my grep); the thread-local version was not.  Three t_29 runs
+  on a07 were disturbed by my own concurrent kldunload or by starting
+  the next before the previous teardown finished, each leaving 16 jails
+  for cleanup.sh.
+  Experiment, reverted (samples/t29_a07_2026-10-19_spin_lists.txt):
+  if_pair's queues with KWQ_F_SPIN, so kwq's per-CPU lists use spin
+  mutexes and cannot lend.  Guest: functional tests pass, no WITNESS
+  complaint, flood 19.2 us per packet against 23-24 (a VM effect: the
+  blocked worker's turnstile sleep is dear there).  a07, 8 pairs at 64
+  connections: the "kwq pairNx" lenders are gone (0 of 14,649 blocks;
+  tcpinp 11,327, so_rcv 2,813, so_snd 459 remain), throughput 350
+  Gbit/s, p99 47 ms, maxlat 96 ms, i.e. the tail unchanged; flood round
+  trip 8.6 us against 7.7-8.3.  kwq's own lending was 14 % of the blocks
+  and not what sets the tail; the stack's locks are.  Not kept: no
+  measured gain on hardware, and spin sections with interrupts disabled
+  in pair_output() for nothing.
+  Lesson for a07 scripting: `pgrep` run as crest cannot see root's
+  processes (see_other_uids=0), so a wait loop on `pgrep -f t_29...`
+  returns at once; use `doas -n pgrep` or wait on the log's PASS/FAIL.
+
+2026-10-19: what a clock read costs the scheduler per item (asked by the
+  user).  kwq_test `cost` with kern.kwq.net.budget_check_every 1 / 8 /
+  64 (run_p1b.sh now takes KWQ_KNOBS="net.budget_check_every=1" after the
+  load), consumer busy ns per item including the test handler's pool
+  return:
+    a07 (two runs each):  k=1 228, 259   k=8 212, 212   k=64 291, 291
+    guest (one run):      k=1 55          k=8 44         k=64 61
+  So one cpu_ticks() per item costs 16-47 ns on the Altra (a serialising
+  generic-timer read) and ~11 ns on the Xeon guest (rdtsc).  By default
+  the worker reads cpu_ticks() twice per pass (begin, end), sbinuptime()
+  once per burst (the maxlat stamp's consumer side) and once per round
+  end, and kwq_budget_left() reads at most every 8th call: at 3 items
+  per pass (the single TCP flow) that is roughly 30-40 ns of clock
+  reading per item on a07, 10-15 % of the ~300 ns the consumer spends
+  per item there and under 2 % of a 2 us doorbell-to-handler latency.
+  The producer's sbinuptime() stamp at the empty-to-non-empty transition
+  is once per burst, ~35-50 ns (the V2 experiment of 10-18: all three
+  wake-path reads together were ~100 ns).  k=64 is slower than 8 on both
+  machines (items -20 %, the consumer's cycles down, i.e. idle more): the
+  estimate between reads under-predicts and the pass overruns into debt
+  and parking; 8 stays.

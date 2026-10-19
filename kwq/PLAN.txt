@@ -600,19 +600,34 @@ Phases
        when both share a vCPU (the doorbell wakeup preempts the receiver
        inside its critical section), which a07's 128 cores never show.
     2. Quantum against the latency tail: choose the NET quantum by data.
-       At 8 pairs x 256 connections the 16 backlogged queues per CPU make
-       a round of ~3.2 ms at 200 us, yet the RTT tail is 89-192 ms, so
-       the backlog (4096 x 16 KB per list) dominates the tail and the
-       quantum's share is unmeasured.  Goal: RTT avg/p99/max and
-       throughput for quantum_us in {50, 100, 200, 500, 1000, 2000} at
-       64 and 256 connections, depths 1024 and 4096, both drivers for
-       the baseline columns; kwq's own maxlat_ns (reset per load) beside
-       the end-to-end RTT, to separate the round from the stack's and
-       socket buffers' share.  Decision rule: the lowest quantum that
-       costs < 2 % throughput at P=32 and P=128.  Needs t_29 to loop over
-       the (RWTUN, runtime-writable) quantum and to record ping
-       percentiles from per-packet output instead of -q's avg/max;
-       about five minutes of a07 time per driver.
+       [MEASURED 2026-10-19 and CLOSED: the quantum is not the lever;
+       default 200 us stays.  NOTES.md of that day, SCHED.md S6.2 and
+       S8, samples/t29_a07_2026-10-19_*.]  t_29 gained QUANTA and
+       YIELD_PRIOS loops, per-packet RTT percentiles and kwq's maxlat_ns
+       and yields/s.  a07, 8 pairs at 64 and 256 connections, depths 1024
+       and 4096, quantum 50..2000 us: throughput flat within 3 %, RTT p99
+       26-83 ms and kwq's doorbell-to-first-pass maximum 64-134 ms at
+       every quantum; 1 pair at 32 and 128 connections likewise.  The
+       taskqueue driver's tail is equal at 64 connections and ten times
+       worse at 256 (p99 370-490 ms).  The tail's mechanism, traced on
+       the worker thread: the worker yields at round end, a user thread
+       that holds a lock a worker blocked on runs at the worker's lent
+       priority 1, and ULE does not reschedule a running thread when its
+       lent priority is taken back, so the thread keeps the CPU to the
+       end of its slice (up to 65 ms seen) while the yielded worker
+       waits behind it whatever yield_prio says (55 and 56 measured
+       alike).  The lenders are the stack's tcpinp and so_rcv (86 %) and
+       kwq's own list mutexes (14 %); KWQ_F_SPIN lists on if_pair removed
+       the latter and changed nothing (experiment, reverted).
+       Open, for the user: (a) the ULE behaviour (no preemption on
+       unlend, sched_thread_priority()'s TD_IS_RUNNING branch) is a
+       kernel matter to report upstream; (b) the yield policy: the
+       round-end yield is the entry point of the stall and also what
+       keeps a CPU-bound user thread at 16 % instead of 0 (t_30), so a
+       rate-limited or busy-share-gated yield would trade the tail
+       against user fairness and needs a design decision (S6.1), not a
+       knob sweep; (c) ping's own scheduling under a saturated machine
+       is part of the measured RTT tail for both drivers.
     3. Software LRO in the handler: DROPPED as a P4b goal.  Measured
        2026-08-15: 64 KB vs 16 KB MTU, i.e. 4x fewer stack traversals,
        gave +3.8 %, so per-byte costs dominate above 16 KB and LRO's
@@ -647,6 +662,31 @@ Phases
     and the per-pass notifier loop are gone (16 bytes per kwq_cpu),
     `signals` counter added.  Results and the harness lessons in
     ../NOTES.md 2026-10-08.
+
+[OPEN 2026-10-19] Read the clocks efficiently, at least on amd64 and
+    arm64.  Measured (NOTES.md 2026-10-19, SCHED.md S15.2): one
+    cpu_ticks() costs 16-47 ns on the Altra and ~11 ns on the x86 guest,
+    and the scheduler's default reads (two per pass, one per budget
+    check every 8th call, one sbinuptime() per burst and per round)
+    amount to 30-40 ns per item at 3 items per pass on a07, 10-15 % of
+    the consumer's per-item cost there.  On arm64 cpu_ticks() is the
+    generic tc_cpu_ticks(): a critical section, an isb-fenced 32-bit
+    timecounter read and the per-CPU wrap extension that produces the
+    2^32 glitch on a07; on amd64 it is already the bare rdtsc.  The
+    lever: a kwq_ticks() in kwq_sched_env.h that reads the invariant TSC
+    (rdtsc) on amd64 and the 64-bit CNTVCT_EL0 (CNTVCTSS_EL0 where
+    FEAT_ECV exists: self-synchronised, no barrier needed) on arm64,
+    unfenced - a reading early by a pipeline's length is inside the
+    budget estimate's own margin (Q/10), the worker is bound so no
+    cross-CPU skew enters, and a per-CPU read cannot go backwards, so the
+    S13 glitch guard still holds - with cpu_ticks() elsewhere and the
+    frequency from tsc_freq / cntfrq_el0 instead of cpu_tickrate().
+    Also drops the a07 glitch filtering.  Expected gain 10-30 ns per read
+    on the Altra, nothing measurable on x86; invisible in the TCP flows
+    measured so far.  Revisit when a client with sub-100 ns items makes
+    the clock reads show in its profile, or with the netisr conversion.
+    Cost: one architecture-specific header in a module meant to go
+    upstream.
 
 [DECIDED 2026-10-09] Fork resolved: continue with kwq; netisr is to be
     reimplemented on top of kwq (KWQ.md S8 migration step 2, PLAN P8's

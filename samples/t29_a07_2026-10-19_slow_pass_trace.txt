@@ -1,0 +1,70 @@
+# a07, 2026-10-19, kwq branch 3466819: 8 pairs x 8 connections, depth 4096,
+# quantum 200 us.  DTrace on the worker thread: for every pass that started
+# more than 20 ms after its doorbell, the worker's last off-CPU gap and why
+# it left (td_inhibitors 0x0 = yield or preemption, 0x2 sleeping, 0x8 lock),
+# the thread's priority when it left, and the other thread that last ran
+# on that CPU (name, td_priority, td_pri_class; 3 = timeshare).
+#
+# yield_prio 56 (default), excerpt:
+cpu  63 pair6b  lat  38 ms | last off-cpu gap  38819 us, inhibitors 0x0, prio then  56, back on cpu     25 us ago | idle -1, yield  38852 us ago, pass end  38857 us ago
+cpu   1 pair0b  lat  39 ms | last off-cpu gap  42238 us, inhibitors 0x0, prio then  56, back on cpu      7 us ago | idle  42390 us ago, yield  42246 us ago, pass end  42246 us ago
+cpu  84 pair5b  lat  52 ms | last off-cpu gap  52230 us, inhibitors 0x2, prio then   1, back on cpu      7 us ago | idle  52245 us ago, yield  52618 us ago, pass end  52245 us ago
+cpu  37 pair5b  lat  65 ms | last off-cpu gap  65692 us, inhibitors 0x0, prio then  56, back on cpu      8 us ago | idle  65813 us ago, yield  65703 us ago, pass end  65704 us ago
+cpu  81 pair3a  lat  90 ms | last off-cpu gap  90467 us, inhibitors 0x0, prio then  56, back on cpu     12 us ago | idle  90586 us ago, yield  90480 us ago, pass end  90481 us ago
+cpu  68 pair3b  lat  93 ms | last off-cpu gap  93428 us, inhibitors 0x0, prio then  56, back on cpu     14 us ago | idle  93550 us ago, yield  93444 us ago, pass end  93444 us ago
+cpu  34 pair0a  lat  53 ms | last off-cpu gap     11 us, inhibitors 0x8, prio then   1, back on cpu    137 us ago | idle  65686 us ago, yield    224 us ago, pass end      2 us ago
+cpu 115 pair7b  lat  90 ms | last off-cpu gap  92228 us, inhibitors 0x0, prio then  56, back on cpu      8 us ago | idle  92379 us ago, yield  92241 us ago, pass end  92241 us ago
+# (46 slow passes in 8 s; in all but three the gap equals the latency and
+# follows a yield; the three exceptions are one sleep and two lock blocks.)
+#
+# yield_prio 55, excerpt, with the thread that last ran on the CPU:
+cpu  25 pair3b  lat  34 ms | off-cpu gap  34230 us, inhibitors 0x0, prio then  55 | yield 5 us ago | other thread here last: iperf3 prio 1 class 3, 34328 us ago
+cpu  30 pair4b  lat  36 ms | off-cpu gap  36511 us, inhibitors 0x0, prio then  55 | yield  36535 us ago | other thread here last: iperf3 prio 1 class 3, 36531 us ago
+cpu 101 pair0b  lat  25 ms | off-cpu gap  27574 us, inhibitors 0x0, prio then  55 | yield  27587 us ago | other thread here last: iperf3 prio 1 class 3, 27583 us ago
+cpu 115 pair2b  lat  41 ms | off-cpu gap  41430 us, inhibitors 0x0, prio then  55 | yield  41443 us ago | other thread here last: iperf3 prio 1 class 3, 41439 us ago
+# last off-cpu gap of the worker at a slow pass, ms (1143 slow passes in 8 s)
+#   0 ms: 41   8 ms: 2   16 ms: 189   32 ms: 446   64 ms: 465
+# inhibitors at that off-cpu:  0x8 18   0x2 88   0x0 1037
+#
+# Same load, user threads seen on CPU at a priority below 56 (td_pri_class
+# 3 = timeshare), with their base priority: name, prio, base, count in 8 s.
+# iperf3 with base 156-177 is a CPU-bound batch thread running at the
+# lent priority 1 of a kwq worker; "kernel 1 1" are the workers themselves.
+  iperf3       1 156 4      iperf3       1 177 7      iperf3       1 176 32
+  iperf3       1 175 39     iperf3       1 157 88     iperf3       1 174 92
+  iperf3       1 173 115    iperf3       1 171 224    iperf3       1 172 233
+  iperf3       1 158 252    iperf3       1 159 388    iperf3       1 170 494
+  iperf3       1 161 582    iperf3       1 169 867    iperf3       1 165 975
+  iperf3       1 163 1266   iperf3       1 162 1416   iperf3       1 167 1477
+  iperf3       1 168 1697   iperf3       1 160 1778   iperf3       1 164 1812
+  iperf3       1 166 2653   iperf3       1 115 3453
+  ping         1  59..75    (10-34 each)
+  kernel       1   1 1112168 (the workers)
+#
+# Same load: locks on which kwq workers blocked in turnstile_wait (lock
+# name, owner thread, count in 8 s), and how long user threads then ran at
+# the lent kernel priority.
+  tcpinp                   iperf3       7428
+  so_rcv                   iperf3       2456
+  kwq pair5a               iperf3       546   (kwq's per-list sleep mutex,
+  kwq pair4a               iperf3       287    held by the producer in
+  kwq pair0a               iperf3       234    kwq_enqueue; 2070 in all over
+  kwq pair3b               iperf3       185    the 16 lists, plus 34 held
+  kwq pair7b               iperf3       170    by ping)
+  kwq pair3a               iperf3       154
+  kwq pair4b               iperf3       128
+  kwq pair1a               iperf3       114
+  kwq pair1b               iperf3       99
+  kwq pair2a               iperf3       64
+  kwq pair5b/6b/0b/7a/6a/2b iperf3      91
+  so_snd                   iperf3       276
+  mbuf                     iperf3       19
+  mbuf_jumbo_page          iperf3       2
+# user threads' on-cpu runs while holding a lent kernel priority, us
+#     0: 282   1: 1499   2: 745   4: 149   8: 226   16: 1353   32: 498
+#    64: 329   128: 173   256: 370   512: 991   1024: 1265   2048: 630
+#  4096: 258   8192: 188   16384: 207   32768: 231
+# (438 runs of 16-65 ms: ULE does not reschedule a running thread when its
+# lent priority is dropped, so the thread keeps the CPU to the end of its
+# slice; a worker that yielded onto the run queue waits behind it at any
+# yield_prio, since the lent priority is the worker's own 1.)

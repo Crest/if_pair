@@ -1,0 +1,47 @@
+# EXPERIMENT (not committed): if_pair queues created with KWQ_F_SPIN, so the
+# per-CPU lists use spin mutexes and cannot lend the worker's priority.
+# a07, 2026-10-19, kwq branch 3466819.  Only the 8-pair 64-connection row
+# and the lending trace are valid: the wait loop between runs could not see
+# root's processes (security.bsd.see_other_uids=0) and started the 1-pair
+# run and t_31 while the 8-pair run was still going.
+== spin: 8 pairs, lending traced during the first load 01:12:10
+--- worker blocked in turnstile_wait: lock, owner thread, count
+  mbuf_jumbo_page          iperf3       14
+  mbuf                     iperf3       36
+  so_snd                   iperf3       459
+  so_rcv                   iperf3       2813
+  tcpinp                   iperf3       11327
+--- user threads' on-cpu runs while holding a lent kernel priority, us
+           value  ------------- Distribution ------------- count    
+              -1 |                                         0        
+               0 |                                         3        
+               1 |@@                                       553      
+               2 |@@@@@                                    1328     
+               4 |@                                        345      
+               8 |@                                        261      
+              16 |@@@@@@@@                                 2217     
+              32 |@@@                                      765      
+              64 |@@                                       455      
+             128 |@                                        202      
+             256 |@@                                       543      
+             512 |@@@@@                                    1403     
+            1024 |@@@@@@                                   1631     
+            2048 |@@                                       720      
+            4096 |@                                        285      
+            8192 |@                                        193      
+           16384 |@                                        187      
+           32768 |@                                        305      
+           65536 |@                                        279      
+          131072 |                                         21       
+          262144 |                                         10       
+          524288 |                                         1        
+         1048576 |                                         1        
+         2097152 |                                         0        
+--- 11708 such runs, 61724135600 ns in total over 8 s on 128 CPUs
+t_29_multi_pair: depth 4096 quantum  200 us yield_prio 56  64 conns (8 per pair): total 350.2 Gbit/s; per pair min/avg/max 37.8/43.8/46.1; rtt ms p50 0.194 p99 47.227 max 87.488 (2400 samples); oqdrops 0; kwq items/pass 6, passes/s 1193968, yields/s 65526, maxlat 95658 us
+== spin: 1 pair 01:12:54
+t_29_multi_pair: FAIL: jail ifp_29_multi_pair_s1 already exists (leftover state? run cleanup.sh)
+== spin: rtt 01:12:56
+t_31_rtt: pair flood (50000): rtt us min 8 avg 8 max 67 stddev 0, loss 0.0%; elapsed per packet 8597 ns; kwq per packet: wakeups 1.00
+t_31_rtt: pair 1 kHz (5000): rtt us min 10 avg 22 max 72 stddev 6, loss 55.7%; elapsed per packet 1286276 ns; kwq per packet: wakeups 0.45
+== end 01:13:22
