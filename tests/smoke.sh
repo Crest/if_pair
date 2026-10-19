@@ -12,8 +12,8 @@ BASE=""
 : "${PAIR_MOD:=if_pair}"
 
 cleanup() {
-	jail -r ${JAIL_A} 2>/dev/null || true
-	jail -r ${JAIL_B} 2>/dev/null || true
+	jail -f /dev/null -r ${JAIL_A} 2>/dev/null || true
+	jail -f /dev/null -r ${JAIL_B} 2>/dev/null || true
 	[ -n "${BASE}" ] && ifconfig "${BASE}a" destroy 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -41,8 +41,8 @@ BASE=${side_a%a}
 side_b="${BASE}b"
 echo "created ${side_a} / ${side_b}"
 
-jail -c name=${JAIL_A} vnet persist
-jail -c name=${JAIL_B} vnet persist
+jail -f /dev/null -c name=${JAIL_A} vnet persist
+jail -f /dev/null -c name=${JAIL_B} vnet persist
 
 ifconfig "${side_a}" vnet ${JAIL_A}
 ifconfig "${side_b}" vnet ${JAIL_B}

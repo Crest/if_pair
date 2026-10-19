@@ -19,7 +19,7 @@ mustfail "b not in the host group while jailed" \
 
 # Jail teardown is asynchronous; the interface returns home when the
 # dying vnet is finally destroyed.
-must "remove the jail" jail -r "$J1"
+must "remove the jail" jail -f /dev/null -r "$J1"
 must_retry 10 "b returned to the host" ifconfig "$PAIRB"
 must "b back in the host's pair group" \
     sh -c "ifconfig -g ${PAIR} | grep -qx $PAIRB"

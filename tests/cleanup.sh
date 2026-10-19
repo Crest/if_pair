@@ -9,7 +9,7 @@
 : "${PAIR_MOD:=if_pair}"
 for j in $(jls name 2>/dev/null | grep '^ifp_'); do
 	echo "removing jail $j"
-	jail -r "$j"
+	jail -f /dev/null -r "$j"
 done
 
 # Jail teardown is asynchronous; moved sides come home when their

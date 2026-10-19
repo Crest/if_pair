@@ -150,8 +150,8 @@ teardown_pairs() {
 	local i=1 a
 	kill $SERVERS 2>/dev/null
 	while [ $i -le $NP ]; do
-		jail -r "$(jname s$i)" >/dev/null 2>&1
-		jail -r "$(jname c$i)" >/dev/null 2>&1
+		jail -f /dev/null -r "$(jname s$i)" >/dev/null 2>&1
+		jail -f /dev/null -r "$(jname c$i)" >/dev/null 2>&1
 		i=$((i + 1))
 	done
 	sleep 1

@@ -185,11 +185,16 @@ ifdrops() {
 	    END { if (!found) print "0 0" }'
 }
 
-# mkjail name: persistent vnet jail sharing the host file system.
+# mkjail name: persistent vnet jail sharing the host file system.  Every
+# jail(8) call in the tests passes -f /dev/null: the tests describe their
+# jails on the command line and have no business reading the host's own
+# jail.conf and jail.d, whose contents can make jail(8) refuse to run at
+# all (seen 2026-10-20 with an experimental configuration extension on a
+# test machine, which left the test jails behind).
 mkjail() {
 	if jls -j "$1" jid >/dev/null 2>&1; then
 		fail "jail $1 already exists (leftover state? run cleanup.sh)"
 	fi
-	must "create jail $1" jail -c "name=$1" path=/ vnet=new persist
-	cleanup_push "jail -r $1"
+	must "create jail $1" jail -f /dev/null -c "name=$1" path=/ vnet=new persist
+	cleanup_push "jail -f /dev/null -r $1"
 }
