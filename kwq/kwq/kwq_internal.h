@@ -10,6 +10,7 @@
 #define	_KWQ_INTERNAL_H_
 
 #include <sys/param.h>
+#include <sys/callout.h>
 #include <sys/systm.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
@@ -174,8 +175,11 @@ struct kwq_worker {
 	int64_t			kw_pass_budget;	/* deficit at pass start, ns */
 	u_int			kw_bc_calls;	/* budget calls since the last clock read (S4.4) */
 	int64_t			kw_bc_last;	/* elapsed at that read, ns */
-	uint64_t		kw_win_start;	/* cap window, wall ns */
-	uint64_t		kw_win_busy;
+	uint64_t		kw_cap_start;	/* S6.3 period start, worker wall ns */
+	uint64_t		kw_cap_used;	/* pass time charged in this period */
+	bool			kw_cap_over;	/* allowance spent: giving the CPU away */
+	volatile bool		kw_cap_fired;	/* the period's deadline callout ran */
+	struct callout		kw_cap_co;	/* raises the priority back at the period's end */
 	uint64_t		kw_round_wall;	/* sbinuptime ns at the last round end (kwq:::round-end) */
 	uint64_t		kw_idle_busy;	/* kw_busy_ns at the last wakeup (kwq:::idle) */
 	const struct kwq_sched_knobs *kw_knobs;
@@ -191,7 +195,8 @@ struct kwq_worker {
 	uint64_t		kw_seg_rt, kw_seg_cpu, kw_seg_k;
 	uint64_t		kw_pass_rt;	/* NET: td_runtime at pass begin, to detect a switch-out */
 	uint64_t		kw_rounds, kw_passes, kw_wakeups, kw_yields,
-				kw_tick_yields, kw_cap_sleeps, kw_handbacks,
+				kw_tick_yields, kw_handbacks, kw_cap_demotions,
+				kw_cap_yields, kw_cap_restores, kw_cap_ns, kw_cap_runon,
 				kw_busy_ns, kw_idle_ns, kw_budget_calls, kw_budget_reads, kw_switched;
 } __aligned(KWQ_LINE);
 

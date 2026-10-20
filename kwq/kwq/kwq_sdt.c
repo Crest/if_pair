@@ -41,8 +41,14 @@ SDT_PROBE_DEFINE3_XLATE(kwq, , , park, "struct kwq *", "kwqinfo_t *",
     "int", "int", "int64_t", "int64_t");
 /* class, cpu, ring entries, wall ns since the previous round end */
 SDT_PROBE_DEFINE4(kwq, , , round__end, "int", "int", "int", "uint64_t");
-/* class, cpu, reason (0 round, 1 tick) */
+/* class, cpu, reason (0 round, 1 tick, 2 share limit) */
 SDT_PROBE_DEFINE3(kwq, , , yield, "int", "int", "int");
+/*
+ * The share limit (SCHED.md S6.3): class, cpu, event (KWQ_CAP_*), ns into
+ * the period, ns used of it, and for a pass begin its budget in ns.
+ */
+SDT_PROBE_DEFINE6(kwq, , , cap, "int", "int", "int", "uint64_t", "uint64_t",
+    "int64_t");
 /* class, cpu, busy ns since the last wakeup */
 SDT_PROBE_DEFINE3(kwq, , , idle, "int", "int", "uint64_t");
 /* class, cpu, the worker's state when rung (0 awake, 1 polling, 2 asleep) */

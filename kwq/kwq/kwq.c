@@ -138,9 +138,14 @@ static struct sysctl_oid_list *kwq_queue_oids[KWQ_NCLASS];	/* <class>.queue */
 struct kwq_sched_knobs kwq_knobs[KWQ_NCLASS];
 int kwq_yield_prio[KWQ_NCLASS] = { PUSER, PUSER, PUSER };
 static u_int kwq_quantum_us[KWQ_NCLASS] = { 200, 1000, 5000 };
-static u_int kwq_cap_pct[KWQ_NCLASS] = { 100, 100, 100 };
-static u_int kwq_cap_sleep_us[KWQ_NCLASS] = { 100, 100, 100 };
-static u_int kwq_cap_window_us[KWQ_NCLASS] = { 10000, 10000, 10000 };
+/*
+ * The share limit (SCHED.md S6.3) is on by default at an equal share:
+ * half of each millisecond at kernel priority while anything else is
+ * runnable on the CPU, the other half as an idle-priority thread.  The
+ * knobs are expert overrides; 1000 turns it off.
+ */
+static u_int kwq_cap_permille[KWQ_NCLASS] = { 500, 500, 500 };
+static u_int kwq_cap_period_us[KWQ_NCLASS] = { 1000, 1000, 1000 };
 static u_int kwq_penalty_rounds[KWQ_NCLASS] = { 32, 32, 32 };
 static u_int kwq_budget_check_every[KWQ_NCLASS] = { 8, 8, 8 };
 static struct sysctl_ctx_list kwq_knob_sysctl;
@@ -159,9 +164,9 @@ kwq_knobs_apply(int cls)
 
 	k->quantum_ns = (uint64_t)kwq_quantum_us[cls] * 1000;
 	k->grace_rounds = 1;
-	k->cap_pct = kwq_cap_pct[cls];
-	k->cap_window_ns = (uint64_t)kwq_cap_window_us[cls] * 1000;
-	k->cap_sleep_ns = (uint64_t)kwq_cap_sleep_us[cls] * 1000;
+	k->cap_permille = kwq_cap_permille[cls];
+	k->cap_period_ns = (uint64_t)kwq_cap_period_us[cls] * 1000;
+	k->cap_allow_ns = k->cap_period_ns * k->cap_permille / 1000;
 	k->boost_weighted = true;
 	k->penalty_rounds = kwq_penalty_rounds[cls];
 	k->budget_check_every = kwq_budget_check_every[cls];
@@ -201,28 +206,28 @@ kwq_sysctl_yield_prio(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
-static struct kwq_knob kwq_knob_desc[KWQ_NCLASS][6];
+#define	KWQ_NKNOBS	5
+static struct kwq_knob kwq_knob_desc[KWQ_NCLASS][KWQ_NKNOBS];
 
 static void
 kwq_knobs_register(void)
 {
-	static const struct { const char *name, *descr; u_int lo, hi; } d[6] = {
+	static const struct { const char *name, *descr; u_int lo, hi; } d[KWQ_NKNOBS] = {
 		{ "quantum_us", "CPU time a queue of weight 1 may consume per round", 10, 1000000 },
-		{ "cap_pct", "CPU-share cap in percent of a window; 100 or more = off", 1, 1000 },
-		{ "cap_sleep_us", "sleep when over the cap", 1, 1000000 },
-		{ "cap_window_us", "busy-fraction window for the cap", 100, 10000000 },
+		{ "cap_permille", "share of its CPU the worker keeps at kernel priority per cap_period_us while other threads are runnable, in 1/1000; the rest of the period it is an idle-priority thread; 1000 = no limit (SCHED.md S6.3)", 1, 1000 },
+		{ "cap_period_us", "period over which cap_permille is taken", 100, 1000000 },
 		{ "penalty_rounds", "debt clamp in quanta: rounds an overrunning queue is parked at most", 1, 1024 },
 		{ "budget_check_every", "kwq_budget_left() reads the clock at least every this many calls; 1 = every call", 1, 64 },
 	};
-	u_int *vars[6];
+	u_int *vars[KWQ_NKNOBS];
 	int cls, i;
 
 	sysctl_ctx_init(&kwq_knob_sysctl);
 	for (cls = 0; cls < KWQ_NCLASS; cls++) {
-		vars[0] = &kwq_quantum_us[cls]; vars[1] = &kwq_cap_pct[cls];
-		vars[2] = &kwq_cap_sleep_us[cls]; vars[3] = &kwq_cap_window_us[cls];
-		vars[4] = &kwq_penalty_rounds[cls]; vars[5] = &kwq_budget_check_every[cls];
-		for (i = 0; i < 6; i++) {
+		vars[0] = &kwq_quantum_us[cls]; vars[1] = &kwq_cap_permille[cls];
+		vars[2] = &kwq_cap_period_us[cls];
+		vars[3] = &kwq_penalty_rounds[cls]; vars[4] = &kwq_budget_check_every[cls];
+		for (i = 0; i < KWQ_NKNOBS; i++) {
 			struct kwq_knob *kn = &kwq_knob_desc[cls][i];
 
 			kn->var = vars[i]; kn->lo = d[i].lo; kn->hi = d[i].hi;

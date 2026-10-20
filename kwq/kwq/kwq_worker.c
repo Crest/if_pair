@@ -10,7 +10,8 @@
  * (ks_next), runs passes (swap the lists out under the list lock, run the
  * handler with no service lock held, charge the pass in the worker's own
  * CPU time), and acts on the core's yield decisions: kern_yield() at the
- * class's fixed yield priority, or pause_sbt() for the CPU-share cap.
+ * class's fixed yield priority, and for the share limit (SCHED.md S6.3) a
+ * demotion to idle priority bounded by a callout at the period's end.
  * Between passes the tick guard yields once a hardclock tick has passed
  * since the worker last gave the CPU up voluntarily.
  *
@@ -166,14 +167,114 @@ static void
 kwq_yield(struct kwq_worker *kw, int reason)
 {
 	u_int bit = 1u << kw->kw_class;
+	struct thread *td = curthread;
 
 	SDT_PROBE3(kwq, , , yield, kw->kw_class, kw->kw_cpu, reason);
 	DPCPU_SET(kwq_waiting, DPCPU_GET(kwq_waiting) | bit);
-	kern_yield(kwq_yield_prio[kw->kw_class]);
-	thread_lock(curthread);
-	sched_prio(curthread, kw->kw_pri);
-	thread_unlock(curthread);
+	/*
+	 * Over the allowance the worker is an idle-priority thread for the
+	 * rest of the period (S6.3): yield as one and stay one, unless the
+	 * period's deadline has already raised it.
+	 */
+	kern_yield(kw->kw_cap_over ? PRI_UNCHANGED : kwq_yield_prio[kw->kw_class]);
+	thread_lock(td);
+	sched_prio(td, (kw->kw_cap_over && !kw->kw_cap_fired) ?
+	    PRI_MIN_IDLE : kw->kw_pri);
+	thread_unlock(td);
 	DPCPU_SET(kwq_waiting, DPCPU_GET(kwq_waiting) & ~bit);
+}
+
+/*
+ * The share limit (SCHED.md S6.3): the allowance of this period is spent
+ * and something else is runnable.  Become an idle-priority thread for the
+ * rest of the period and switch once, so that ULE re-picks.  A thread at
+ * PRI_MIN_IDLE or worse runs only when nothing else is runnable and is
+ * preempted at once by anything that wakes (sched_shouldpreempt(), the
+ * cpri >= PRI_MIN_IDLE rule), so from here on ULE arbitrates: the worker
+ * runs on at idle priority whenever the CPU would otherwise be idle, and
+ * is raised back to its class priority by the period's deadline callout
+ * while it waits on the run queue (ULE requeues and preempts:
+ * sched_thread_priority(), the TD_ON_RUNQ branch), or at the period's end
+ * by RESTORE.  The `fired' flag and the priority are written under the
+ * thread lock on both sides, so a deadline that strikes between the
+ * core's decision and this switch is not undone by it.
+ */
+static void
+kwq_cap_demote(struct kwq_worker *kw)
+{
+	struct thread *td = curthread;
+	uint64_t t0;
+
+	SDT_PROBE3(kwq, , , yield, kw->kw_class, kw->kw_cpu, KWQ_YIELD_CAP);
+	t0 = kwq_ticks();
+	thread_lock(td);
+	if (kw->kw_cap_fired) {
+		thread_unlock(td);
+		return;
+	}
+	sched_prio(td, PRI_MIN_IDLE);
+	mi_switch(SW_VOL | SWT_RELINQUISH);	/* releases the thread lock */
+	kw->kw_cap_ns += ks_ticks2ns(kwq_ticks() - t0, kw->kw_ns_scale);
+}
+
+/* The period's deadline, run on the worker's CPU from the timer interrupt. */
+static void
+kwq_cap_deadline(void *arg)
+{
+	struct kwq_worker *kw = arg;
+	struct thread *td;
+
+	mtx_lock_spin(&kw->kw_mtx);
+	td = kw->kw_td;
+	if (td != NULL) {
+		thread_lock(td);
+		kw->kw_cap_fired = true;
+		sched_prio(td, kw->kw_pri);
+		thread_unlock(td);
+		kw->kw_cap_restores++;
+		SDT_PROBE6(kwq, , , cap, kw->kw_class, kw->kw_cpu,
+		    KWQ_CAP_DEADLINE, 0, kw->kw_cap_used, 0);
+	}
+	mtx_unlock_spin(&kw->kw_mtx);
+}
+
+/* Act on ks_cap_check(); `wall' is the clock the core was given. */
+static void
+kwq_cap_act(struct kwq_worker *kw, enum ks_cap cap, uint64_t wall)
+{
+	const struct kwq_sched_knobs *k = kw->kw_knobs;
+	uint64_t left;
+
+	SDT_PROBE6(kwq, , , cap, kw->kw_class, kw->kw_cpu, (int)cap,
+	    wall - kw->kw_cap_start, kw->kw_cap_used, 0);
+	switch (cap) {
+	case KS_CAP_DEMOTE:
+		/*
+		 * nstosbt(), not SBT_1NS: the macro is the integer 4 where the
+		 * factor is 4.29, and a deadline 7 % early lands the worker in
+		 * a period that has not ended by its own clock, where the
+		 * first pass runs on the full quantum (a07, 2026-10-20).
+		 */
+		left = k->cap_period_ns - (wall - kw->kw_cap_start);
+		kw->kw_cap_fired = false;
+		callout_reset_sbt_on(&kw->kw_cap_co, sbinuptime() + nstosbt(left),
+		    nstosbt(k->cap_period_ns / 32), kwq_cap_deadline, kw,
+		    kw->kw_cpu, C_ABSOLUTE | C_DIRECT_EXEC);
+		kwq_cap_demote(kw);
+		break;
+	case KS_CAP_YIELD:
+		/* Already an idle-priority thread: ULE hands the CPU over. */
+		break;
+	case KS_CAP_RESTORE:
+		callout_stop(&kw->kw_cap_co);
+		kw->kw_cap_fired = false;
+		thread_lock(curthread);
+		sched_prio(curthread, kw->kw_pri);
+		thread_unlock(curthread);
+		break;
+	default:
+		break;
+	}
 }
 
 /*
@@ -199,7 +300,8 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	u_int n;
 	int sign;
 	bool net, has_work;
-	uint64_t t1, cpu_now;
+	uint64_t t1, cpu_now, wall;
+	enum ks_cap cap;
 
 	q = kc->kc_q;
 	net = (q->kwq_class == KWQ_NET);
@@ -249,8 +351,17 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 		kc->kc_empty_since = 0;
 	}
 	kw->kw_pass_rt = curthread->td_runtime;
-	ks_pass_begin(kw, kc, kwq_cputime_ns_tick(kw, &t0));
+	cpu_now = kwq_cputime_ns_tick(kw, &t0);
+	cap = ks_pass_begin(kw, kc, cpu_now,
+	    net ? cpu_now : ks_ticks2ns(t0, kw->kw_ns_scale));
 	kwq_kc_unlock(kc);
+	if (__predict_false(kw->kw_knobs->cap_permille < 1000)) {
+		if (cap == KS_CAP_RESTORE)
+			kwq_cap_act(kw, cap, 0);
+		SDT_PROBE6(kwq, , , cap, kw->kw_class, kw->kw_cpu, KWQ_CAP_PASS,
+		    (net ? cpu_now : ks_ticks2ns(t0, kw->kw_ns_scale)) - kw->kw_cap_start,
+		    kw->kw_cap_used, kw->kw_pass_budget);
+	}
 	SDT_PROBE4(kwq, , , pass__start, q, kc->kc_cpu, n, age);
 	requeued0 = kc->kc_requeued;
 
@@ -314,10 +425,15 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	SDT_PROBE5(kwq, , , pass__end, q, kc->kc_cpu, n,
 	    cpu_now - kw->kw_pass_start, (int)(kc->kc_requeued - requeued0));
 	ks_pass_end(kw, kc, cpu_now, has_work);
+	/* S6.3 on the pass's own wall stamp: NET's cpu_now is already wall. */
+	wall = net ? cpu_now : ks_ticks2ns(t1, kw->kw_ns_scale);
+	cap = ks_cap_check(kw, wall, sched_runnable());
 	mtx_unlock_spin(&kw->kw_mtx);
 	if (kc->kc_waiters != 0)
 		wakeup(kc);
 	kwq_kc_unlock(kc);
+	if (__predict_false(cap != KS_CAP_NONE))
+		kwq_cap_act(kw, cap, wall);
 
 	/*
 	 * Tick guard (SCHED.md S6.1): unconditional once a tick has passed
@@ -355,8 +471,8 @@ kwq_worker_main(void *arg)
 	kw->kw_rate = kwq_tickrate();
 	kw->kw_ns_scale = ks_ns_scale(kw->kw_rate);
 	kw->kw_seg_rt = ~0ULL;		/* the first CPU-time read takes a base */
-	kw->kw_win_start = kwq_sbt2ns(sbinuptime());
-	kw->kw_round_wall = kw->kw_win_start;
+	kw->kw_round_wall = kwq_sbt2ns(sbinuptime());
+	kw->kw_cap_start = ks_ticks2ns(kwq_ticks(), kw->kw_ns_scale);
 
 	for (;;) {
 		mtx_lock_spin(&kw->kw_mtx);
@@ -394,13 +510,8 @@ kwq_worker_main(void *arg)
 			    kw->kw_nactive, wall - kw->kw_round_wall);
 			kw->kw_round_wall = wall;
 			y = ks_round_end(kw, wall, sched_runnable());
-			if (y == KS_Y_YIELD) {
+			if (y == KS_Y_YIELD)
 				kwq_yield(kw, KWQ_YIELD_ROUND);
-			} else if (y == KS_Y_PAUSE) {
-				pause_sbt("kwqcap",
-				    (sbintime_t)kw->kw_knobs->cap_sleep_ns * SBT_1NS,
-				    0, C_PREL(1));
-			}
 			break;
 		default:
 			break;
@@ -473,7 +584,11 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	KW_U64(kw_wakeups, "wakeups", "times the worker was woken from idle");
 	KW_U64(kw_yields, "yields", "end-of-round yields");
 	KW_U64(kw_tick_yields, "tick_yields", "yields forced by the tick guard between passes");
-	KW_U64(kw_cap_sleeps, "cap_sleeps", "pause_sbt() sleeps taken by the CPU-share cap");
+	KW_U64(kw_cap_demotions, "cap_demotions", "periods in which the share limit was reached with other threads runnable (SCHED.md S6.3)");
+	KW_U64(kw_cap_yields, "cap_yields", "times the worker gave the CPU away under the share limit");
+	KW_U64(kw_cap_restores, "cap_restores", "period deadlines that raised the worker back to its class priority");
+	KW_U64(kw_cap_ns, "cap_ns", "wall time given away under the share limit");
+	KW_U64(kw_cap_runon, "cap_runon", "passes ended over the allowance with nothing else runnable (the limit did not bind)");
 	KW_U64(kw_handbacks, "handbacks", "rounds ended early because a higher class waited");
 	KW_U64(kw_switched, "switched", "passes during which the worker left the CPU (preempted or blocked); NET charges them wall time");
 	KW_U64(kw_busy_ns, "busy_ns", "worker CPU time inside handlers");
@@ -509,6 +624,7 @@ kwq_workers_start(struct sysctl_oid_list **cpu_oids)
 			    DOMAINSET_PREF(pcpu_find(cpu)->pc_domain),
 			    M_WAITOK | M_ZERO);
 			mtx_init(&kw->kw_mtx, "kwq worker", NULL, MTX_SPIN);
+			callout_init(&kw->kw_cap_co, 1);
 			ks_worker_init(kw, &kwq_knobs[cls], 0);
 			kw->kw_class = cls;
 			kw->kw_cpu = cpu;
@@ -569,6 +685,7 @@ kwq_workers_stop(void)
 				msleep_spin(&kw->kw_td, &kw->kw_mtx, "kwqexit",
 				    0);
 			mtx_unlock_spin(&kw->kw_mtx);
+			callout_drain(&kw->kw_cap_co);
 			mtx_destroy(&kw->kw_mtx);
 			free(kw, M_KWQ);
 			kwq_workers[cls][cpu] = NULL;

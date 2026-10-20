@@ -228,9 +228,9 @@ sim_reset(uint64_t wall0, uint64_t cpu0, uint64_t round0, u_int ticks0)
 		S.glitch_pos_pass = S.glitch_neg_pass = 0;
 		S.knobs[c].quantum_ns = c == C_NET ? 200 * NS_PER_US : 1000 * NS_PER_US;
 		S.knobs[c].grace_rounds = 1;
-		S.knobs[c].cap_pct = 100;
-		S.knobs[c].cap_window_ns = 10 * NS_PER_MS;
-		S.knobs[c].cap_sleep_ns = 100 * NS_PER_US;
+		S.knobs[c].cap_permille = 1000;
+		S.knobs[c].cap_period_ns = 1 * NS_PER_MS;
+		S.knobs[c].cap_allow_ns = S.knobs[c].cap_period_ns;
 		S.knobs[c].boost_weighted = true;
 		S.knobs[c].penalty_rounds = 32;
 		S.knobs[c].budget_check_every = 8;
@@ -566,7 +566,7 @@ run_pass(int c, struct kwq_cpu *kc)
 	struct item it;
 	bool stop = false;
 
-	ks_pass_begin(kw, kc, S.cputime[c]);
+	ks_pass_begin(kw, kc, S.cputime[c], S.now);
 	cpu0 = S.cputime[c];
 	if (S.glitch_pos_pass != 0 && kc->kc_passes + 1 == S.glitch_pos_pass)
 		S.cputime[c] += 171798691840ULL;	/* +2^32 ticks at 25 MHz: a07's fault */
@@ -677,13 +677,21 @@ run_class(int c, bool one_round)
 			return;
 		case KS_SERVE:
 			run_pass(c, kc);
+			/* S6.3: the share limit gives the CPU away like a yield. */
+			switch (ks_cap_check(kw, S.now, runnable_below(c) || higher)) {
+			case KS_CAP_DEMOTE:
+			case KS_CAP_YIELD:
+				do_yield(c);
+				break;
+			default:
+				break;
+			}
 			break;
 		case KS_ROUND_END:
 		case KS_HANDBACK:
 			round_verify(c, a == KS_HANDBACK);
 			y = ks_round_end(kw, S.now, runnable_below(c) || higher);
 			if (y == KS_Y_YIELD) do_yield(c);
-			else if (y == KS_Y_PAUSE) { S.now += kw->kw_knobs->cap_sleep_ns; S.ext_ns += kw->kw_knobs->cap_sleep_ns; }
 			if (one_round || a == KS_HANDBACK) return;
 			break;
 		}
@@ -744,9 +752,9 @@ report(const char *title)
 		struct kwq_worker *kw = &S.w[c];
 		if (kw->kw_passes == 0) continue;
 		printf("  %s: rounds %" PRIu64 " passes %" PRIu64 " yields %" PRIu64
-		    " handbacks %" PRIu64 " cap_sleeps %" PRIu64 " busy %.3f s\n",
+		    " handbacks %" PRIu64 " cap_yields %" PRIu64 " busy %.3f s\n",
 		    c == C_NET ? "net " : "bulk", kw->kw_rounds, kw->kw_passes,
-		    kw->kw_yields, kw->kw_handbacks, kw->kw_cap_sleeps,
+		    kw->kw_yields, kw->kw_handbacks, kw->kw_cap_yields,
 		    (double)kw->kw_busy_ns / NS_PER_S);
 	}
 	for (int i = 0; i < S.nq && i < 12; i++) {
@@ -1185,7 +1193,12 @@ sc_random(uint64_t secs)
 	sim_reset(0, 0, 0, 0);
 	S.ext_kind = rnd64() % 3;
 	S.cpubound_allowed = rnd64() % 2;
-	if (rnd64() % 4 == 0) { S.knobs[C_NET].cap_pct = 80; S.knobs[C_BULK].cap_pct = 80; }
+	if (rnd64() % 4 == 0) {
+		for (int c = 0; c < NCLASS; c++) {
+			S.knobs[c].cap_permille = 800;
+			S.knobs[c].cap_allow_ns = S.knobs[c].cap_period_ns * 800 / 1000;
+		}
+	}
 	for (int i = 0; i < nq; i++) {
 		int cls = rnd64() % 2, pk = 1 + rnd64() % 4, hk = rnd64() % 3;
 		uint64_t cost = (1 + rnd64() % 200) * NS_PER_US;

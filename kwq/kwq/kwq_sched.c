@@ -27,14 +27,16 @@ ks_worker_init(struct kwq_worker *kw, const struct kwq_sched_knobs *k,
 	kw->kw_cur = NULL;
 	kw->kw_pass_start = 0;
 	kw->kw_pass_budget = 0;
-	kw->kw_win_start = wall_now;
-	kw->kw_win_busy = 0;
+	kw->kw_cap_start = wall_now;
+	kw->kw_cap_used = 0;
+	kw->kw_cap_over = false;
 	kw->kw_knobs = k;
 	kw->kw_bc_calls = 0;
 	kw->kw_bc_last = 0;
 	kw->kw_budget_calls = kw->kw_budget_reads = 0;
 	kw->kw_rounds = kw->kw_passes = kw->kw_yields = 0;
-	kw->kw_cap_sleeps = kw->kw_handbacks = kw->kw_busy_ns = 0;
+	kw->kw_cap_demotions = kw->kw_cap_yields = kw->kw_cap_runon = 0;
+	kw->kw_handbacks = kw->kw_busy_ns = 0;
 }
 
 void
@@ -216,15 +218,60 @@ ks_next(struct kwq_worker *kw, bool higher_waiting, struct kwq_cpu **kcp)
 	}
 }
 
-void
-ks_pass_begin(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now)
+/*
+ * S6.3: start a new period if the current one is over.  Nothing carries:
+ * unused allowance is lost, and the overshoot of a clamped pass is one
+ * item, not worth charging.  Returns true if the worker was over the
+ * allowance, i.e. the deadline callout must be disarmed.
+ */
+static bool
+ks_cap_period(struct kwq_worker *kw, uint64_t wall_now)
 {
+	bool was_over;
+
+	if (wall_now - kw->kw_cap_start < kw->kw_knobs->cap_period_ns)
+		return (false);
+	kw->kw_cap_start = wall_now;
+	kw->kw_cap_used = 0;
+	was_over = kw->kw_cap_over;
+	kw->kw_cap_over = false;
+	return (was_over);
+}
+
+enum ks_cap
+ks_pass_begin(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
+    uint64_t wall_now)
+{
+	const struct kwq_sched_knobs *k = kw->kw_knobs;
+	enum ks_cap cap = KS_CAP_NONE;
+	int64_t left;
+
 	kc->kc_state = KWQ_CPU_RUNNING;		/* already so since ks_next() */
 	kw->kw_cur = kc;
 	kw->kw_pass_start = cpu_now;
 	kw->kw_pass_budget = kc->kc_deficit;
+	/*
+	 * S6.3: the period may have ended while the worker waited (the
+	 * deadline brought it back), so roll it over here, or the first
+	 * pass of the period would run on the full deficit.  Under the
+	 * allowance a pass may spend no more than what is left of it, so a
+	 * cooperative handler stops one item over the allowance instead of
+	 * one quantum over.  Over it the budget is the deficit again: the
+	 * worker runs there only because nothing else wants the CPU, and
+	 * one-item passes would be S14 case 4.
+	 */
+	if (k->cap_permille < 1000) {
+		if (ks_cap_period(kw, wall_now))
+			cap = KS_CAP_RESTORE;
+		if (kw->kw_cap_used < k->cap_allow_ns) {
+			left = (int64_t)(k->cap_allow_ns - kw->kw_cap_used);
+			if (kw->kw_pass_budget > left)
+				kw->kw_pass_budget = left;
+		}
+	}
 	kw->kw_bc_calls = 0;
 	kw->kw_bc_last = 0;
+	return (cap);
 }
 
 bool
@@ -286,7 +333,7 @@ ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 	kc->kc_passes++;
 	kw->kw_passes++;
 	kw->kw_busy_ns += (uint64_t)dt;
-	kw->kw_win_busy += (uint64_t)dt;
+	kw->kw_cap_used += (uint64_t)dt;
 	/*
 	 * An overrun is a pass that exceeded its budget by more than one
 	 * quantum: a cooperative handler that stops after the item which
@@ -316,32 +363,48 @@ ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 }
 
 /*
- * S6.1 and S6.3.  The yield is skipped when nothing else is runnable.  With
- * the cap on, a window that ended over the cap with something runnable
- * turns the yield into a pause.
+ * S6.1.  The yield is skipped when nothing else is runnable.
  */
 enum ks_yield
-ks_round_end(struct kwq_worker *kw, uint64_t wall_now, bool runnable)
+ks_round_end(struct kwq_worker *kw, uint64_t wall_now __unused, bool runnable)
 {
-	const struct kwq_sched_knobs *k = kw->kw_knobs;
-	uint64_t win;
-
 	kw->kw_rounds++;
-	if (k->cap_pct < 100) {
-		win = wall_now - kw->kw_win_start;
-		if (win >= k->cap_window_ns) {
-			bool over = kw->kw_win_busy * 100 > win * k->cap_pct;
-
-			kw->kw_win_start = wall_now;
-			kw->kw_win_busy = 0;
-			if (over && runnable) {
-				kw->kw_cap_sleeps++;
-				return (KS_Y_PAUSE);
-			}
-		}
-	}
 	if (!runnable)
 		return (KS_Y_NONE);
 	kw->kw_yields++;
 	return (KS_Y_YIELD);
+}
+
+/*
+ * S6.3, at every pass end.  The limit is a share of wall time per period
+ * that the worker may take while anything else is runnable on its CPU;
+ * with nothing else runnable it runs on.
+ */
+enum ks_cap
+ks_cap_check(struct kwq_worker *kw, uint64_t wall_now, bool runnable)
+{
+	const struct kwq_sched_knobs *k = kw->kw_knobs;
+
+	if (k->cap_permille >= 1000) {		/* off, or turned off just now */
+		if (kw->kw_cap_over) {
+			kw->kw_cap_over = false;
+			return (KS_CAP_RESTORE);
+		}
+		return (KS_CAP_NONE);
+	}
+	if (ks_cap_period(kw, wall_now))
+		return (KS_CAP_RESTORE);
+	if (kw->kw_cap_used < k->cap_allow_ns)
+		return (KS_CAP_NONE);
+	if (!runnable) {
+		kw->kw_cap_runon++;	/* over, but nobody else wants the CPU */
+		return (KS_CAP_NONE);
+	}
+	kw->kw_cap_yields++;
+	if (!kw->kw_cap_over) {
+		kw->kw_cap_over = true;
+		kw->kw_cap_demotions++;
+		return (KS_CAP_DEMOTE);
+	}
+	return (KS_CAP_YIELD);
 }
