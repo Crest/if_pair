@@ -9,12 +9,15 @@
  *                                             # P1b: fairness latency gaming
  *                                             #     overrun yield cost
  *                                             #     tq_baseline switch_baseline
- *                                             #     pingpong pingpong_tq
+ *                                             #     pingpong pingpong_tq clocks
  *                                             # P4 shape: ifpair
  *   sysctl kern.kwq_test.items=1000 kern.kwq_test.reps=1000
  *   sysctl kern.kwq_test.run=1
  *   sysctl kern.kwq_test                      # poll result_state until
  *                                             # "done" or "fail"
+ *
+ * Time is kt_ticks() = get_cyclecount() at a rate calibrated at load, never
+ * cpu_ticks(): see the comment at kt_ticks().
  *
  * A scenario runs in its own kernel thread; results land in the
  * kern.kwq_test.result_* sysctls.  The P1b scenarios leave their queues
@@ -95,9 +98,10 @@ static u_int	kt_nnf = 64;		/* mix: notifiers in use (<= 64) */
 /* Results. */
 static char	kt_state[16] = "idle";
 static char	kt_msg[256] = "";
+static char	kt_clocks[256] = "";	/* clocks: ns per call of each clock */
 static uint64_t	kt_r_in, kt_r_out, kt_r_discarded, kt_r_rejected, kt_r_coalesced,
 		kt_r_runs, kt_r_ns, kt_r_fifo_errors;
-static uint64_t	kt_r_glitches;	/* cpu_ticks() deltas discarded, see kt_tickdelta() */
+static uint64_t	kt_r_glitches;	/* kt_ticks() deltas discarded, see kt_tickdelta() */
 static uint64_t	kt_r_dups;	/* P0: items run or discarded twice in a rep */
 static uint64_t	kt_r_cycles_a, kt_r_cycles_b, kt_r_maxlat_a_us, kt_r_maxlat_b_us,
 		kt_r_ns_per_item, kt_r_prod_ns_per_item, kt_r_lat_ns;
@@ -126,13 +130,14 @@ static uint64_t	kt_fifo_errors;
 static uint64_t	kt_dups;		/* P0: items delivered twice in one rep */
 static u_int	kt_rep_tag;		/* P0: current rep + 1, stamped into ti_seen */
 static int	kt_pcpu = -1;		/* P0: the producer's CPU, never a target */
+static int	kt_pcpu_knob = -1;	/* producer CPU for the two-CPU scenarios; -1: the next CPU */
 static uint64_t	*kt_last_seq;		/* [mp_maxid + 1] */
 
 SYSCTL_NODE(_kern, OID_AUTO, kwq_test, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "kwq test harness");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, scenario, CTLFLAG_RW, kt_scenario,
     sizeof(kt_scenario), "lifecycle fifo notify reject discard sleep | "
-    "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline pingpong pingpong_tq | ifpair | "
+    "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline pingpong pingpong_tq clocks | ifpair | "
     "mixorder mixpattern mixbudget mixstarve mixrearm mixcancel mixrequeue mixdrain mixdrain_discard");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, items, CTLFLAG_RW, &kt_items, 0,
     "items per repetition (P0), pool size per flood (P1b)");
@@ -144,6 +149,8 @@ SYSCTL_UINT(_kern_kwq_test, OID_AUTO, limit, CTLFLAG_RW, &kt_limit, 0,
     "queue limit (0 = class default)");
 SYSCTL_INT(_kern_kwq_test, OID_AUTO, cpu, CTLFLAG_RW, &kt_cpu, 0,
     "target CPU (-1 = round robin for P0, CPU 1 for P1b)");
+SYSCTL_INT(_kern_kwq_test, OID_AUTO, pcpu, CTLFLAG_RW, &kt_pcpu_knob, 0,
+    "producer CPU of the two-CPU scenarios (-1 = the CPU after the target; on an SMT machine that is its sibling)");
 SYSCTL_INT(_kern_kwq_test, OID_AUTO, allow_panic, CTLFLAG_RW, &kt_allow_panic,
     0, "allow scenarios that are expected to panic");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, secs, CTLFLAG_RW, &kt_secs, 0,
@@ -194,7 +201,7 @@ SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_fifo_errors, CTLFLAG_RD,
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_dups, CTLFLAG_RD, &kt_r_dups, 0,
     "P0: items delivered twice within a rep (must be 0)");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_glitches, CTLFLAG_RD, &kt_r_glitches, 0,
-    "cpu_ticks() deltas over 40 ms discarded from the cost sums (ticker glitches)");
+    "kt_ticks() deltas over 40 ms discarded from the cost sums (ticker glitches)");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_ns, CTLFLAG_RD, &kt_r_ns, 0,
     "wall time of the run");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_cycles_a, CTLFLAG_RD,
@@ -209,6 +216,8 @@ SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_ns_per_item, CTLFLAG_RD,
     &kt_r_ns_per_item, 0, "wall ns per item (cost, tq_baseline) or per switch");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_prod_ns_per_item, CTLFLAG_RD,
     &kt_r_prod_ns_per_item, 0, "producer cpu ns per enqueue (cost, tq_baseline, ifpair)");
+SYSCTL_STRING(_kern_kwq_test, OID_AUTO, result_clocks, CTLFLAG_RD, kt_clocks,
+    sizeof(kt_clocks), "clocks: ns per call of each clock read, and of kwq_budget_left()");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_lat_ns, CTLFLAG_RD,
     &kt_r_lat_ns, 0, "pingpong: average enqueue-to-handler ns");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_enq_slow, CTLFLAG_RD,
@@ -255,18 +264,40 @@ kt_sbt2us(sbintime_t d)
 }
 
 /*
- * A cpu_ticks() delta for the cost sums.  On a07 (Ampere Altra, ARM
- * generic timer at 25 MHz) cpu_ticks() reads a few ticks backwards now and
- * then, and tc_cpu_ticks() takes that for a 32-bit wrap: +2^32 ticks =
- * 171.8 s.  Anything over 40 ms in one handler item or one enqueue is
- * such a glitch; count it and leave it out.
+ * The test's own clock: get_cyclecount(), 64-bit and unfenced, at a rate
+ * calibrated against sbinuptime() when the module loads.  Not kt_ticks():
+ * on arm64 that is the kernel's 32-bit extension, which takes a decrease
+ * for a wrap, and statclock() reads it from the clock interrupt, so a
+ * thread reading it with interrupts enabled can see +2^32 ticks (171.8 s)
+ * added to its CPU's ticker for good (tools/clockprobe, 2026-10-20).  This
+ * module read it per item and per enqueue and was a steady source of those
+ * jumps on a07.  The glitch filter stays: anything over 40 ms in one
+ * handler item or one enqueue is a glitch, counted and left out.
  */
+static uint64_t kt_tick_hz;		/* get_cyclecount() per second */
+
+static inline uint64_t
+kt_ticks(void)
+{
+	return (get_cyclecount());
+}
+
+static void
+kt_calibrate_ticks(void)
+{
+	sbintime_t s0 = sbinuptime(), s1;
+	uint64_t c0 = get_cyclecount(), c1;
+
+	do { s1 = sbinuptime(); c1 = get_cyclecount(); } while (s1 - s0 < SBT_1MS * 100);
+	kt_tick_hz = (c1 - c0) * 1000000000ULL / ((((uint64_t)(s1 - s0)) * 1000000000ULL) >> 32);
+}
+
 static inline uint64_t
 kt_tickdelta(uint64_t t0)
 {
-	uint64_t d = cpu_ticks() - t0;
+	uint64_t d = kt_ticks() - t0;
 
-	if (d > cpu_tickrate() / 25) {
+	if (d > kt_tick_hz / 25) {
 		kt_r_glitches++;
 		return (0);
 	}
@@ -275,7 +306,7 @@ kt_tickdelta(uint64_t t0)
 
 /*
  * Busy work standing in for the network stack: spin for `ticks' of
- * cpu_ticks().  A glitch (SCHED.md S13, kt_tickdelta above) can only end
+ * kt_ticks().  A glitch (SCHED.md S13, kt_tickdelta above) can only end
  * the spin early.  The loop reads the clock, which on arm64 is a
  * serialising instruction; that is the only memory traffic real stack
  * work would have and this does not, so the model is optimistic about
@@ -284,16 +315,16 @@ kt_tickdelta(uint64_t t0)
 static inline void
 kt_spin_ticks(uint64_t ticks)
 {
-	uint64_t t0 = cpu_ticks();
+	uint64_t t0 = kt_ticks();
 
-	while (cpu_ticks() - t0 < ticks)
+	while (kt_ticks() - t0 < ticks)
 		cpu_spinwait();
 }
 
 static inline uint64_t
 kt_ns2ticks(uint64_t ns)
 {
-	return (ns * cpu_tickrate() / 1000000000ULL);
+	return (ns * kt_tick_hz / 1000000000ULL);
 }
 
 static int
@@ -301,6 +332,9 @@ kt_other_cpu(int cpu)
 {
 	int c = cpu;
 
+	if (kt_pcpu_knob >= 0 && kt_pcpu_knob <= mp_maxid &&
+	    !CPU_ABSENT(kt_pcpu_knob) && kt_pcpu_knob != cpu)
+		return (kt_pcpu_knob);
 	do {
 		c = (c + 1) % (mp_maxid + 1);
 	} while (CPU_ABSENT(c) && c != cpu);
@@ -756,7 +790,7 @@ kt_ifpair_handler(struct kt_flood *f, struct kwq_item *head, int n)
 		panic("kwq_test: ifpair handler on CPU %d outside %d..%d", curcpu,
 		    f->cpu, f->cpu + (int)f->spread - 1);
 	cs = &f->cstat[local];
-	t0 = cpu_ticks();
+	t0 = kt_ticks();
 	now = (uint64_t)sbinuptime();
 	for (it = head; it != NULL; it = next) {
 		next = KWQ_ITEM_NEXT(f->q, it);
@@ -809,7 +843,7 @@ kt_fanin_handler(struct kt_flood *f, struct kwq_item *head, int n)
 		STAILQ_INIT(&back[i]);
 		cnt[i] = 0;
 	}
-	t0 = cpu_ticks();
+	t0 = kt_ticks();
 	for (it = head; it != NULL; it = next) {
 		next = KWQ_ITEM_NEXT(f->q, it);
 		ti = __containerof(it, struct titem, ti_item);
@@ -841,7 +875,7 @@ kt_flood_handler_one(struct kt_flood *f, struct kwq_item *head, int n)
 	sbintime_t now;
 	int left = n, done = 0;
 
-	t0 = cpu_ticks();
+	t0 = kt_ticks();
 	for (it = head; it != NULL; it = next) {
 		next = KWQ_ITEM_NEXT(f->q, it);
 		ti = __containerof(it, struct titem, ti_item);
@@ -937,7 +971,7 @@ kt_flood_producer(void *arg)
 			f->nfree -= k;
 			mtx_unlock(&f->mtx);
 			KWQ_ITEM_INIT(tail);
-			t0 = cpu_ticks();
+			t0 = kt_ticks();
 			error = kwq_enqueue_list(f->q, f->cpu, it, tail, (int)k);
 			f->prod_ticks += kt_tickdelta(t0);
 			if (error != 0) {
@@ -962,7 +996,7 @@ kt_flood_producer(void *arg)
 			ti = __containerof(it, struct titem, ti_item);
 			ti->ti_seq = (uint64_t)sbinuptime();
 		}
-		t0 = cpu_ticks();
+		t0 = kt_ticks();
 		error = kwq_enqueue(f->q, f->cpu, it);
 		f->prod_ticks += kt_tickdelta(t0);
 		if (error != 0)
@@ -1040,7 +1074,7 @@ kt_ifpair_producer(struct kt_flood *f)
 			ti->ti_cpu = target;
 			ti->ti_seq = now;	/* enqueue stamp: queue latency */
 		}
-		d = cpu_ticks();
+		d = kt_ticks();
 		if (k == 1)
 			error = kwq_enqueue(f->q, target, it);
 		else
@@ -1381,7 +1415,7 @@ kt_run_ifpair(void)
 		kt_flood_stop(kt_scale[i]);
 	t1 = sbinuptime();
 	wall_us = kt_sbt2us(t1 - t0);
-	wall_ticks = wall_us * cpu_tickrate() / 1000000ULL;
+	wall_ticks = wall_us * kt_tick_hz / 1000000ULL;
 	for (i = 0; i < nsend; i++) {
 		f = kt_scale[i];
 		produced += f->produced;
@@ -1411,12 +1445,12 @@ kt_run_ifpair(void)
 	kt_r_out = total;
 	kt_r_ns_per_item = total ? wall_us * 1000 / total : 0;
 	kt_r_prod_ns_per_item = produced ?
-	    prod_ticks * 1000000000ULL / cpu_tickrate() / produced : 0;
+	    prod_ticks * 1000000000ULL / kt_tick_hz / produced : 0;
 	/* Senders run (or sleep on their window) for the whole wall time. */
 	kt_r_enq_pct = wall_ticks ? prod_ticks * 100 / (wall_ticks * nsend) : 0;
 	kt_r_cons_pct = wall_ticks ? spin_ticks * 100 / (wall_ticks * ncons) : 0;
-	kt_r_cycles_a = spin_ticks * 1000000000ULL / cpu_tickrate();	/* packet work, ns */
-	kt_r_cycles_b = hand_ticks * 1000000000ULL / cpu_tickrate();	/* handler calls, ns */
+	kt_r_cycles_a = spin_ticks * 1000000000ULL / kt_tick_hz;	/* packet work, ns */
+	kt_r_cycles_b = hand_ticks * 1000000000ULL / kt_tick_hz;	/* handler calls, ns */
 	snprintf(kt_msg, sizeof(kt_msg), "%u ifaces x %u workers x %u senders, spin %u/%u ns, batch %u: "
 	    "%ju pkt/s (%ju..%ju per sender); enqueue %ju ns = %ju%% of sender CPU, %ju over 2 us; "
 	    "workers %ju%% in packet work, %ju passes; queue latency mean %ju max %ju us; %ju rejects, %ju window waits",
@@ -1686,7 +1720,7 @@ kt_run_cost(void)
 	kt_floods_report(a, NULL);
 	kt_r_ns_per_item = a->items_out ? kt_sbt2us(sbinuptime() - t0) * 1000 / a->items_out : 0;
 	kt_r_prod_ns_per_item = a->produced ?
-	    (a->prod_ticks * 1000000000ULL / cpu_tickrate()) / a->produced : 0;
+	    (a->prod_ticks * 1000000000ULL / kt_tick_hz) / a->produced : 0;
 }
 
 /* tq_baseline: the same producer into a taskqueue with epair's shape. */
@@ -1740,7 +1774,7 @@ kt_tq_producer(void *arg)
 		f->nfree--;
 		mtx_unlock(&f->mtx);
 		KWQ_ITEM_INIT(it);
-		t0 = cpu_ticks();
+		t0 = kt_ticks();
 		mtx_lock(&kt_tq_mtx);
 		STAILQ_INSERT_TAIL(&kt_tq_list, it, kwi_link);
 		sched = !kt_tq_scheduled;
@@ -1794,7 +1828,7 @@ kt_run_tq_baseline(void)
 	kt_r_in = f->produced; kt_r_out = f->items_out;
 	kt_r_ns_per_item = f->items_out ? kt_sbt2us(sbinuptime() - t0) * 1000 / f->items_out : 0;
 	kt_r_prod_ns_per_item = f->produced ?
-	    (f->prod_ticks * 1000000000ULL / cpu_tickrate()) / f->produced : 0;
+	    (f->prod_ticks * 1000000000ULL / kt_tick_hz) / f->produced : 0;
 	taskqueue_free(kt_tq);
 	kt_tq = NULL;
 	mtx_destroy(&kt_tq_mtx);
@@ -1868,7 +1902,7 @@ kt_run_switch_baseline(void)
  * the difference between them is the request path: kwq_enqueue() with its
  * doorbell and the worker's way to the handler, against a taskqueue's
  * list append, taskqueue_enqueue() and the thread's loop.  Measured
- * in-kernel with cpu_ticks(), no probes: wall ns per round trip
+ * in-kernel with kt_ticks(), no probes: wall ns per round trip
  * (result_ns_per_item), the producer's ns inside the enqueue call
  * (result_prod_ns_per_item), and the enqueue-to-handler latency from an
  * sbinuptime() stamp (result_lat_ns average, result_maxlat_a_us worst).
@@ -1946,7 +1980,7 @@ kt_pp_producer(void *arg)
 		pp->in_flight = 1;
 		KWQ_ITEM_INIT(&pp->item.ti_item);
 		pp->stamp = sbinuptime();
-		t0 = cpu_ticks();
+		t0 = kt_ticks();
 		if (pp->tq != NULL)
 			taskqueue_enqueue(pp->tq, &pp->task);
 		else if (kwq_enqueue(pp->q, pp->cpu, &pp->item.ti_item) != 0) {
@@ -2009,7 +2043,7 @@ kt_run_pingpong(bool use_tq)
 	kt_r_runs = pp->runs;
 	kt_r_ns_per_item = pp->rounds ? kt_sbt2us(sbinuptime() - t0) * 1000 / pp->rounds : 0;
 	kt_r_prod_ns_per_item = pp->rounds ?
-	    (pp->prod_ticks * 1000000000ULL / cpu_tickrate()) / pp->rounds : 0;
+	    (pp->prod_ticks * 1000000000ULL / kt_tick_hz) / pp->rounds : 0;
 	kt_r_lat_ns = pp->runs ? kt_sbt2us(pp->lat_sum / pp->runs * 1000) : 0;
 	kt_r_maxlat_a_us = kt_sbt2us(pp->lat_max);
 out:
@@ -2024,6 +2058,172 @@ out:
 	mtx_destroy(&pp->mtx);
 	free(pp, M_KWQ_TEST);
 	kt_pp = NULL;
+}
+
+/*
+ * clocks: what one read of each clock costs on this machine, and what one
+ * kwq_budget_left() call costs under the current kern.kwq.net.
+ * budget_check_every (1: a scheduler clock read per call; 64: the
+ * estimate).  The raw reads run on this thread, bound to the producer CPU;
+ * kwq_budget_left() runs where it must, inside a handler on the worker
+ * CPU, timed with sbinuptime() around KT_CLK_BL calls that stay inside the
+ * pass budget (weight 8), so that the estimate path is timed and not the
+ * "budget spent, read the clock every call" path.  Results in
+ * result_clocks as ns per call, nothing else is measured.
+ */
+#define	KT_CLK_N	1000000u
+#define	KT_CLK_BATCH	100u	/* kwq_budget_left() calls per timed batch */
+#define	KT_CLK_BATCHES	20u	/* 2000 calls x <= 150 ns stay inside a weight-8
+				   budget (1.6 ms at Q = 200 us), so the estimate path
+				   is what is timed when budget_check_every is large */
+
+
+struct kt_clk {
+	struct kwq	*q;
+	struct titem	item;
+	int		cpu, pcpu;
+	volatile int	phase;		/* 0 cold pass pending, 1 warm pass pending, 2 done */
+	uint64_t	bl_min, bl_med;	/* ns per kwq_budget_left() call: best and median batch */
+	u_int		bl_zero;	/* calls that answered 0: the budget was spent, or a
+					   clock glitch ended the pass (S13); the fast exit */
+	uint64_t	h_ticks, h_cyc, h_sbin;	/* the raw reads on the worker CPU, best batch */
+	uint64_t	cold_ns;	/* ns per kwq_budget_left() in the first batch, CPU fresh from idle */
+};
+
+/* Best of KT_CLK_BATCHES batches of KT_CLK_BATCH evaluations of expr, ns each. */
+#define	KT_CLK_BEST(expr, out) do {						uint64_t _best = ~0ULL, _c0, _c1;					volatile uint64_t _sink = 0;						u_int _b, _i;								for (_b = 0; _b < KT_CLK_BATCHES; _b++) {					_c0 = get_cyclecount();							for (_i = 0; _i < KT_CLK_BATCH; _i++)						_sink += (uint64_t)(expr);					_c1 = get_cyclecount();							if (_c1 - _c0 < _best)								_best = _c1 - _c0;					}									(out) = _best * 1000000000ULL / kt_tick_hz / KT_CLK_BATCH;	} while (0)
+
+static void
+kt_clk_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
+{
+	struct kt_clk *c = ctx;
+	struct kwq_item *it, *next;
+	u_int i;
+
+	for (it = head; it != NULL; it = next) {
+		next = KWQ_ITEM_NEXT(q, it);
+		KWQ_ITEM_INIT(it);
+	}
+	if (n <= 0)
+		return;
+	if (c->phase == 0) {
+		/*
+		 * First pass, on a CPU fresh from idle: a core coming out of a
+		 * low-power state ran every instruction 2.7-3.5x slower for a
+		 * while on both test machines (host DVFS at 816 MHz in the
+		 * guest's case).  Keep one batch as "cold", then spin 20 ms to
+		 * warm the CPU; the overrun only parks the queue for a few
+		 * rounds, and the second pass measures the warm CPU.
+		 */
+		uint64_t c0 = get_cyclecount(), c1;
+		sbintime_t s0;
+
+		for (i = 0; i < KT_CLK_BATCH; i++)
+			(void)kwq_budget_left(q);
+		c1 = get_cyclecount();
+		c->cold_ns = (c1 - c0) * 1000000000ULL / kt_tick_hz / KT_CLK_BATCH;
+		s0 = sbinuptime();
+		while (sbinuptime() - s0 < SBT_1MS * 20)
+			cpu_spinwait();
+		c->phase = 1;
+		wakeup(c);
+		return;
+	}
+	KT_CLK_BEST(cpu_ticks(), c->h_ticks);
+	KT_CLK_BEST(get_cyclecount(), c->h_cyc);
+	KT_CLK_BEST(sbinuptime(), c->h_sbin);
+	/* Batches timed with get_cyclecount(); the best one is the cost without interference. */
+	{
+		uint64_t d[KT_CLK_BATCHES], c0, c1, tmp;
+		u_int b, j;
+
+		for (b = 0; b < KT_CLK_BATCHES; b++) {
+			c0 = get_cyclecount();
+			for (i = 0; i < KT_CLK_BATCH; i++)
+				if (kwq_budget_left(q) == 0)
+					c->bl_zero++;
+			c1 = get_cyclecount();
+			d[b] = c1 - c0;
+		}
+		for (b = 1; b < KT_CLK_BATCHES; b++)	/* insertion sort */
+			for (j = b; j > 0 && d[j - 1] > d[j]; j--) {
+				tmp = d[j]; d[j] = d[j - 1]; d[j - 1] = tmp;
+			}
+		c->bl_min = d[0] * 1000000000ULL / kt_tick_hz / KT_CLK_BATCH;
+		c->bl_med = d[KT_CLK_BATCHES / 2] * 1000000000ULL / kt_tick_hz / KT_CLK_BATCH;
+	}
+	c->phase = 2;
+	wakeup(c);
+}
+
+#define	KT_CLK_LOOP(expr, out) do {					\
+	sbintime_t _t0, _t1;						\
+	u_int _i;							\
+	volatile uint64_t _sink = 0;					\
+	_t0 = sbinuptime();						\
+	for (_i = 0; _i < KT_CLK_N; _i++)				\
+		_sink += (uint64_t)(expr);				\
+	_t1 = sbinuptime();						\
+	(out) = kt_sbt2us((_t1 - _t0) * 1000) / KT_CLK_N;		\
+} while (0)
+
+static void
+kt_run_clocks(void)
+{
+	struct kt_clk *c;
+	uint64_t t_ticks, t_cyc, t_sbin, t_getsbin, t_rate;
+	int i;
+
+	c = malloc(sizeof(*c), M_KWQ_TEST, M_WAITOK | M_ZERO);
+	c->cpu = kt_cpu >= 0 ? kt_cpu : 1;
+	if (CPU_ABSENT(c->cpu)) c->cpu = 0;
+	c->pcpu = kt_other_cpu(c->cpu);
+	thread_lock(curthread);
+	sched_bind(curthread, c->pcpu);
+	thread_unlock(curthread);
+	KT_CLK_LOOP(cpu_ticks(), t_ticks);
+	KT_CLK_LOOP(get_cyclecount(), t_cyc);
+	KT_CLK_LOOP(sbinuptime(), t_sbin);
+	KT_CLK_LOOP(getsbinuptime(), t_getsbin);
+	KT_CLK_LOOP(cpu_tickrate(), t_rate);
+	thread_lock(curthread);
+	sched_unbind(curthread);
+	thread_unlock(curthread);
+
+	c->item.ti_magic = TITEM_MAGIC;
+	KWQ_ITEM_INIT(&c->item.ti_item);
+	c->q = kt_create("kta", KWQ_F_DISCARD, 8, kt_clk_handler, c);
+	if (c->q == NULL) {
+		kt_fail("kwq_create(kta) failed");
+		free(c, M_KWQ_TEST);
+		return;
+	}
+	kwq_activate(c->q);
+	if (kwq_enqueue(c->q, c->cpu, &c->item.ti_item) != 0)
+		kt_fail("enqueue failed");
+	for (i = 0; i < 100 && c->phase < 1 && kt_state[0] != 'f'; i++)
+		tsleep(c, 0, "ktclk", hz / 10);
+	if (c->phase < 1 && kt_state[0] != 'f')
+		kt_fail("cold pass did not run");
+	else if (kt_state[0] != 'f') {
+		KWQ_ITEM_INIT(&c->item.ti_item);
+		if (kwq_enqueue(c->q, c->cpu, &c->item.ti_item) != 0)
+			kt_fail("second enqueue failed");
+		for (i = 0; i < 100 && c->phase < 2 && kt_state[0] != 'f'; i++)
+			tsleep(c, 0, "ktclk", hz / 10);
+		if (c->phase < 2 && kt_state[0] != 'f')
+			kt_fail("warm pass did not run");
+	}
+	kwq_drain(c->q);
+	kwq_destroy(c->q);
+	snprintf(kt_clocks, sizeof(kt_clocks),
+	    "cpu_ticks %ju get_cyclecount %ju sbinuptime %ju getsbinuptime %ju cpu_tickrate %ju | worker cpu warm: cpu_ticks %ju get_cyclecount %ju sbinuptime %ju kwq_budget_left %ju (median %ju, cold %ju, %u of %u calls answered 0)",
+	    (uintmax_t)t_ticks, (uintmax_t)t_cyc, (uintmax_t)t_sbin, (uintmax_t)t_getsbin,
+	    (uintmax_t)t_rate, (uintmax_t)c->h_ticks, (uintmax_t)c->h_cyc, (uintmax_t)c->h_sbin,
+	    (uintmax_t)c->bl_min, (uintmax_t)c->bl_med, (uintmax_t)c->cold_ns, c->bl_zero,
+	    KT_CLK_BATCH * KT_CLK_BATCHES);
+	kt_r_ns_per_item = c->bl_min;
+	free(c, M_KWQ_TEST);
 }
 
 /* ================================================================ runner */
@@ -2127,10 +2327,10 @@ kt_mix_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 				kt_mix_log(m, 2, 0);
 				if (n > 0) {
 					/* Hold this pass until released, 100 ms at most. */
-					t0 = cpu_ticks();
+					t0 = kt_ticks();
 					lim = kt_ns2ticks(100000000ULL);
 					m->in_gate = 1;
-					while (m->gate_hold && cpu_ticks() - t0 < lim)
+					while (m->gate_hold && kt_ticks() - t0 < lim)
 						cpu_spinwait();
 					m->in_gate = 0;
 				}
@@ -2857,6 +3057,7 @@ kt_thread(void *arg __unused)
 	kt_r_cycles_a = kt_r_cycles_b = kt_r_maxlat_a_us = kt_r_maxlat_b_us = 0;
 	kt_r_ns_per_item = kt_r_prod_ns_per_item = kt_r_glitches = kt_r_dups = 0;
 	kt_r_lat_ns = 0;
+	kt_clocks[0] = '\0';
 	kt_r_enq_slow = kt_r_enq_pct = kt_r_cons_pct = kt_r_pool_waits = 0;
 	kt_r_inversions = kt_r_exact_errors = kt_r_calls = kt_r_requeues = 0;
 	kt_r_patterns = kt_r_with = kt_r_without = kt_r_wcpu = 0;
@@ -2919,6 +3120,8 @@ kt_thread(void *arg __unused)
 		kt_run_pingpong(false);
 	else if (strcmp(kt_scenario, "pingpong_tq") == 0)
 		kt_run_pingpong(true);
+	else if (strcmp(kt_scenario, "clocks") == 0)
+		kt_run_clocks();
 	else
 		kt_fail("unknown scenario %s", kt_scenario);
 
@@ -2981,6 +3184,7 @@ kt_modevent(module_t mod __unused, int type, void *data __unused)
 {
 	switch (type) {
 	case MOD_LOAD:
+		kt_calibrate_ticks();
 		mtx_init(&kt_mtx, "kwq_test", NULL, MTX_DEF);
 		kt_last_seq = malloc(sizeof(*kt_last_seq) * (mp_maxid + 1),
 		    M_KWQ_TEST, M_WAITOK | M_ZERO);
