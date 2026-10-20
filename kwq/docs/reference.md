@@ -526,7 +526,7 @@ module is preloaded.  Out-of-range values are refused with `EINVAL`.
 | `cap_permille` | RWTUN | 1 .. 1000 | 500 | share limit: the share of its CPU the worker keeps at kernel priority per period while other threads are runnable, in 1/1000; the rest of the period it is an idle-priority thread.  Equal share by default, 1000 = off (SCHED.md S6.3) |
 | `cap_period_us` | RWTUN | 100 .. 1000000 | 1000 | the share limit's period, the longest the CPU is given away at a time |
 | `yield_prio` | RW | class priority .. 223 | 56 (`PUSER`) | priority of the end-of-round yield.  223 lets every user thread run a full slice, which is the setting for the case where an interactive process turns CPU-bound and its latency spikes with `yields` normal and no kwq counter explaining them.  The one knob that is not a loader tunable |
-| `priority` | RD | | 1 (net), 2 (bulk), 56 (blocking) | the class's worker priority.  Every knob exists for `blocking` too, although the class has no workers |
+| `priority` | RDTUN | 0 .. 223, net <= bulk <= blocking | 1 (net), 2 (bulk), 56 (blocking) | the class's worker priority, settable only before the module loads (loader.conf or kenv(1)); a setting outside the range or out of order resets all three to the defaults with a console message.  Every knob exists for `blocking` too, although the class has no workers |
 
 Service-wide (`kern.kwq.`): `clock` (RD) names the scheduler's tick source
 and its rate, `tsc`, `cntvct`, `timebase`, or the kernel's `cpu_ticks` as

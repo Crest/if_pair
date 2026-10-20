@@ -1271,7 +1271,7 @@ Per class: `kern.kwq.<class>.`
 | `limit` | uint | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards |
 | `cap_permille` | uint | RWTUN | 500 | share limit: the share of its CPU the worker keeps at kernel priority per `cap_period_us` while other threads are runnable, the rest as an idle-priority thread, in 1/1000; 1000 = off (S11 Missing 1; SCHED.md S6.3) |
 | `cap_period_us` | uint | RWTUN | 1000 | the share limit's period |
-| `priority` | int | RD | `PI_NET` / `PI_SOFT` / `PUSER` | scheduler priority of the class's workers |
+| `priority` | int | RDTUN | `PI_NET` / `PI_SOFT` / `PUSER` | scheduler priority of the class's workers, a loader tunable; [`PRI_MIN_ITHD`, `PRI_MAX_TIMESHARE`] and net <= bulk <= blocking, else all three default |
 | `nworkers` | int | RD | ncpu (blocking: current) | worker threads in the class (P7) |
 | `max_workers` | int | RW | blocking only, 4 x ncpu | ceiling for worker replacement (P7) |
 | `idle_timeout_s` | int | RW | blocking only, 30 | reap an idle replacement worker after this long (P7) |

@@ -116,14 +116,50 @@ SYSCTL_UINT(_kern_kwq_blocking, OID_AUTO, limit, CTLFLAG_RWTUN,
     &kwq_limit[KWQ_BLOCKING], 0,
     "default per-CPU item limit for queues created with limit = 0");
 
+/*
+ * The classes' worker priorities, loader tunables (kern.kwq.<class>.priority
+ * in loader.conf or kenv(1) before the module loads).  Defaults: NET at
+ * PI_NET, the hardware interrupt threads' level; BULK at PI_SOFT, where
+ * netisr, iflib's queue threads and other software interrupt threads run;
+ * BLOCKING at PUSER.  kwq_priority_check() at load confines them to
+ * [PRI_MIN_ITHD, PRI_MAX_TIMESHARE] (the share limit demotes to
+ * PRI_MIN_IDLE, which must stay below every class) and to the class order
+ * NET <= BULK <= BLOCKING, which the hand-back between classes (SCHED.md
+ * S6.4) relies on; a setting that breaks either resets all three.
+ */
+static const int kwq_priority_default[KWQ_NCLASS] = { PI_NET, PI_SOFT, PUSER };
 static int kwq_priority[KWQ_NCLASS] = { PI_NET, PI_SOFT, PUSER };
-SYSCTL_INT(_kern_kwq_net, OID_AUTO, priority, CTLFLAG_RD,
-    &kwq_priority[KWQ_NET], 0, "scheduler priority of the class's workers");
-SYSCTL_INT(_kern_kwq_bulk, OID_AUTO, priority, CTLFLAG_RD,
-    &kwq_priority[KWQ_BULK], 0, "scheduler priority of the class's workers");
-SYSCTL_INT(_kern_kwq_blocking, OID_AUTO, priority, CTLFLAG_RD,
+SYSCTL_INT(_kern_kwq_net, OID_AUTO, priority, CTLFLAG_RDTUN,
+    &kwq_priority[KWQ_NET], 0,
+    "scheduler priority of the class's workers (tunable; default PI_NET)");
+SYSCTL_INT(_kern_kwq_bulk, OID_AUTO, priority, CTLFLAG_RDTUN,
+    &kwq_priority[KWQ_BULK], 0,
+    "scheduler priority of the class's workers (tunable; default PI_SOFT)");
+SYSCTL_INT(_kern_kwq_blocking, OID_AUTO, priority, CTLFLAG_RDTUN,
     &kwq_priority[KWQ_BLOCKING], 0,
-    "scheduler priority of the class's workers");
+    "scheduler priority of the class's workers (tunable; default PUSER)");
+
+static void
+kwq_priority_check(void)
+{
+	int cls, bad = 0;
+
+	for (cls = 0; cls < KWQ_NCLASS; cls++) {
+		if (kwq_priority[cls] < PRI_MIN_ITHD ||
+		    kwq_priority[cls] > PRI_MAX_TIMESHARE)
+			bad = 1;
+		if (cls > 0 && kwq_priority[cls] < kwq_priority[cls - 1])
+			bad = 1;
+	}
+	if (!bad)
+		return;
+	printf("kwq: class priorities net %d bulk %d blocking %d rejected "
+	    "(each in [%d, %d], net <= bulk <= blocking); using the defaults\n",
+	    kwq_priority[KWQ_NET], kwq_priority[KWQ_BULK],
+	    kwq_priority[KWQ_BLOCKING], PRI_MIN_ITHD, PRI_MAX_TIMESHARE);
+	for (cls = 0; cls < KWQ_NCLASS; cls++)
+		kwq_priority[cls] = kwq_priority_default[cls];
+}
 
 static struct sysctl_oid_list *kwq_class_oids[KWQ_NCLASS];
 static struct sysctl_oid_list *kwq_cpu_oids[KWQ_NCLASS];	/* <class>.cpu */
@@ -1015,6 +1051,7 @@ kwq_modevent(module_t mod __unused, int type, void *data __unused)
 
 	switch (type) {
 	case MOD_LOAD:
+		kwq_priority_check();
 		kwq_cpu_remap_init();
 		kwq_class_oids[KWQ_NET] = SYSCTL_STATIC_CHILDREN(_kern_kwq_net);
 		kwq_class_oids[KWQ_BULK] =

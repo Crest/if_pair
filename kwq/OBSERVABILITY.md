@@ -74,7 +74,13 @@ The grace window of the anti-gaming rule (one round) is compile time.
     kern.kwq.version        KPI version (1)
     kern.kwq.ncpu           CPUs with workers
     kern.kwq.nqueues        queues currently created, active or not
-    kern.kwq.<class>.priority   scheduler priority of the class's workers (net 1, bulk 2)
+    kern.kwq.<class>.priority   scheduler priority of the class's workers; a loader
+                            tunable (net PI_NET = 1, bulk PI_SOFT = 2, blocking PUSER
+                            = 56 by default), each in [0, 223] and net <= bulk <=
+                            blocking, or all three fall back to the defaults with a
+                            console message.  PI_SOFT for net puts the workers level
+                            with netisr and iflib's queue threads, one below the
+                            NIC interrupt threads
     kern.kwq.clock          the scheduler's tick source and rate: "cntvct 25000000 Hz",
                             "tsc 2194914621 Hz", "timebase ...", or "cpu_ticks ..." (the
                             kernel's ticker, the fallback); SCHED.md S15.2
