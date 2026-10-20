@@ -1,0 +1,132 @@
+# tests/t_17_throughput.sh (kwq and the taskqueue baseline), t_18_throughput_batch.sh
+# (taskqueue: the batch knob is its) and t_19_profile.sh (kwq, LOAD_P=64) on lab
+# (AMD Ryzen 7 5800X, 8 cores / 16 threads, FreeBSD 15.1-p4 custom GENERIC,
+# hz=1000, MTU 16384), 2026-10-20, kwq branch ce53022 plus the clock and
+# wall-time work of 10-20 (uncommitted at the time).
+== t_17 kwq 14:54:18
+t_17_throughput: ok: load ./../if_pair.ko
+t_17_throughput: created pair0a + pair0b
+t_17_throughput: ok: create jail ifp_17_throughput_1
+t_17_throughput: ok: create jail ifp_17_throughput_2
+t_17_throughput: ok: move pair0a into ifp_17_throughput_1
+t_17_throughput: ok: move pair0b into ifp_17_throughput_2
+t_17_throughput: ok: mtu 16384 side a
+t_17_throughput: ok: mtu 16384 side b
+t_17_throughput: ok: address side a
+t_17_throughput: ok: address side b
+t_17_throughput: ok: baseline ping
+t_17_throughput: conns  Gbit/s  oqdrops   idrop  overruns  (5s runs, mtu 16384)
+t_17_throughput:     1     142        0       0         0
+t_17_throughput:     2     196        0       0         0
+t_17_throughput:     4     223        0       0         0
+t_17_throughput:     8     106        0       0         0
+t_17_throughput:    16    78.4        0       0         0
+t_17_throughput:    32    77.0        0       0         0
+t_17_throughput:    64    78.3        0       0         0
+t_17_throughput:   128    79.7        0       0         0
+t_17_throughput: PASS
+== t_17 taskqueue 14:55:08
+t_17_throughput: ok: load ./../extras/if_pair_tq/if_pair_tq.ko
+t_17_throughput: created pairtq0a + pairtq0b
+t_17_throughput: ok: create jail ifp_17_throughput_1
+t_17_throughput: ok: create jail ifp_17_throughput_2
+t_17_throughput: ok: move pairtq0a into ifp_17_throughput_1
+t_17_throughput: ok: move pairtq0b into ifp_17_throughput_2
+t_17_throughput: ok: mtu 16384 side a
+t_17_throughput: ok: mtu 16384 side b
+t_17_throughput: ok: address side a
+t_17_throughput: ok: address side b
+t_17_throughput: ok: baseline ping
+t_17_throughput: conns  Gbit/s  oqdrops   idrop  overruns  (5s runs, mtu 16384)
+t_17_throughput:     1     142        0       0      5040
+t_17_throughput:     2     217        0       0      8484
+t_17_throughput:     4     243        0       0     19138
+t_17_throughput:     8     109        0       0     22615
+t_17_throughput:    16    76.5        0       0     25762
+t_17_throughput:    32    73.7        0       0     28053
+t_17_throughput:    64    73.5        0       0     28769
+t_17_throughput:   128    75.3        0       0     31309
+t_17_throughput: PASS
+== t_18 taskqueue 14:55:57
+t_18_throughput_batch: ok: load ./../extras/if_pair_tq/if_pair_tq.ko
+t_18_throughput_batch: created pairtq0a + pairtq0b
+t_18_throughput_batch: ok: create jail ifp_18_throughput_batch_1
+t_18_throughput_batch: ok: create jail ifp_18_throughput_batch_2
+t_18_throughput_batch: ok: move pairtq0a into ifp_18_throughput_batch_1
+t_18_throughput_batch: ok: move pairtq0b into ifp_18_throughput_batch_2
+t_18_throughput_batch: ok: address side a
+t_18_throughput_batch: ok: address side b
+t_18_throughput_batch: ok: baseline ping
+t_18_throughput_batch: ok: set batch size to 16
+t_18_throughput_batch: batch  16  conns   1     145  oqdrops 0       idrop 0      overruns 4990
+t_18_throughput_batch: batch  16  conns   2     241  oqdrops 0       idrop 0      overruns 9822
+t_18_throughput_batch: batch  16  conns   4     187  oqdrops 0       idrop 0      overruns 18798
+t_18_throughput_batch: batch  16  conns   8     103  oqdrops 0       idrop 0      overruns 27283
+t_18_throughput_batch: batch  16  conns  16    76.6  oqdrops 0       idrop 0      overruns 29135
+t_18_throughput_batch: batch  16  conns  32    73.2  oqdrops 0       idrop 0      overruns 29643
+t_18_throughput_batch: batch  16  conns  64    72.1  oqdrops 0       idrop 0      overruns 29895
+t_18_throughput_batch: batch  16  conns 128    72.8  oqdrops 0       idrop 0      overruns 31214
+t_18_throughput_batch: ok: set batch size to 64
+t_18_throughput_batch: batch  64  conns   1     141  oqdrops 0       idrop 0      overruns 4949
+t_18_throughput_batch: batch  64  conns   2     215  oqdrops 0       idrop 0      overruns 8490
+t_18_throughput_batch: batch  64  conns   4     197  oqdrops 0       idrop 0      overruns 18881
+t_18_throughput_batch: batch  64  conns   8     106  oqdrops 0       idrop 0      overruns 23561
+t_18_throughput_batch: batch  64  conns  16    75.7  oqdrops 0       idrop 0      overruns 26234
+t_18_throughput_batch: batch  64  conns  32    72.2  oqdrops 0       idrop 0      overruns 28199
+t_18_throughput_batch: batch  64  conns  64    71.4  oqdrops 0       idrop 0      overruns 27958
+t_18_throughput_batch: batch  64  conns 128    71.7  oqdrops 0       idrop 0      overruns 30816
+t_18_throughput_batch: ok: set batch size to 256
+t_18_throughput_batch: batch 256  conns   1     143  oqdrops 0       idrop 0      overruns 5001
+t_18_throughput_batch: batch 256  conns   2     183  oqdrops 0       idrop 0      overruns 6289
+t_18_throughput_batch: batch 256  conns   4     186  oqdrops 0       idrop 0      overruns 14629
+t_18_throughput_batch: batch 256  conns   8     108  oqdrops 0       idrop 0      overruns 26580
+t_18_throughput_batch: batch 256  conns  16    73.2  oqdrops 0       idrop 0      overruns 22979
+t_18_throughput_batch: batch 256  conns  32    71.8  oqdrops 0       idrop 0      overruns 27381
+t_18_throughput_batch: batch 256  conns  64    71.0  oqdrops 0       idrop 0      overruns 28866
+t_18_throughput_batch: batch 256  conns 128    70.6  oqdrops 0       idrop 0      overruns 30690
+t_18_throughput_batch: conns  batch16  batch64  batch256  (Gbits/sec receiver average)
+t_18_throughput_batch:     1      145      141       143
+t_18_throughput_batch:     2      241      215       183
+t_18_throughput_batch:     4      187      197       186
+t_18_throughput_batch:     8      103      106       108
+t_18_throughput_batch:    16     76.6     75.7      73.2
+t_18_throughput_batch:    32     73.2     72.2      71.8
+t_18_throughput_batch:    64     72.1     71.4      71.0
+t_18_throughput_batch:   128     72.8     71.7      70.6
+t_18_throughput_batch: PASS
+== t_19 kwq 14:58:24
+t_19_profile: ok: load ./../if_pair.ko
+t_19_profile: created pair0a + pair0b
+t_19_profile: ok: create jail ifp_19_profile_1
+t_19_profile: ok: create jail ifp_19_profile_2
+t_19_profile: ok: move pair0a into ifp_19_profile_1
+t_19_profile: ok: move pair0b into ifp_19_profile_2
+t_19_profile: ok: mtu 16384 side a
+t_19_profile: ok: mtu 16384 side b
+t_19_profile: ok: address side a
+t_19_profile: ok: address side b
+t_19_profile: ok: baseline ping
+t_19_profile: iperf3 -P 64 for 15s at mtu 16384, profiling 10s inside the run
+t_19_profile: ok: capture finished
+t_19_profile: ok: iperf3 completed
+t_19_profile: samples: 74766 total, 57453 non-idle (23.2% idle)
+t_19_profile: bucket locks    15.6%
+t_19_profile: bucket sched     0.0%
+t_19_profile: bucket copy     48.9%
+t_19_profile: bucket alloc    15.7%
+t_19_profile: bucket proto     7.4%
+t_19_profile: bucket other    12.4%
+t_19_profile: top  1  kernel`copyin_smap_erms                    23.5%
+t_19_profile: top  2  kernel`copyout_smap_erms                   23.2%
+t_19_profile: top  3  kernel`soreceive_generic_locked             6.3%
+t_19_profile: top  4  kernel`lock_delay                           5.7%
+t_19_profile: top  5  kernel`mb_free_ext                          4.8%
+t_19_profile: top  6  kernel`mb_dupcl                             3.1%
+t_19_profile: top  7  kernel`tcp_default_output                   3.0%
+t_19_profile: top  8  kernel`m_demote                             3.0%
+t_19_profile: top  9  kernel`sbcut_internal                       2.4%
+t_19_profile: top 10  kernel`spinlock_exit                        2.4%
+t_19_profile: top 11  kernel`uma_zalloc_arg                       2.4%
+t_19_profile: top 12  kernel`mb_ctor_clust                        2.0%
+t_19_profile: PASS
+== end 14:58:44

@@ -5267,3 +5267,322 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   machines (items -20 %, the consumer's cycles down, i.e. idle more): the
   estimate between reads under-predicts and the pass overruns into debt
   and parking; 8 stays.
+
+2026-10-20: clock reads priced and made cheap (PLAN "Read the clocks
+  efficiently" DONE; SCHED.md S15.2; samples/clocks_2026-10-20_fast_clock_
+  ab.txt).  New kwq_test scenario `clocks` (run_p1b.sh clocks; KWQ_KNOBS
+  sets the knob after the load, KT_EXTRA adds test knobs).  Raw reads,
+  warm CPU: a07 cpu_ticks 22 / get_cyclecount 9 / sbinuptime 25 /
+  getsbinuptime 6 / cpu_tickrate 3 ns; guest 11 / 11 / 24 / 3 / 3.
+  Finding on the way: a CPU fresh from idle runs everything, the bare
+  counter read included (9 -> 19 ns), 3.5x slower for longer than the
+  first 300 us on a07 (no cpufreq exposed, C1 only, every CPU tried) and
+  2.7x in the guest (the host idles at 816 of 2195 MHz, SMT siblings);
+  until the benchmark warmed the worker CPU with a 20 ms spin its numbers
+  were bimodal between runs (40 vs 137 ns for the same call).  Any
+  latency number taken on an idle machine includes this.
+  Fast path: kwq_clock.{c,h}, kwq_ticks()/kwq_tickrate() (get_cyclecount
+  + tsc_freq / cntfrq_el0 / cpu_tickrate on amd64 with an invariant TSC,
+  arm64, powerpc; checked against cpu_tickrate() within 1 % at load;
+  kern.kwq.clock reports, kern.kwq.clock_fast=0 keeps cpu_ticks).  The
+  worker's CPU time (td_runtime + ticker - switchtime) is taken once as a
+  base and advanced with kwq_ticks() while td_runtime is unchanged (no
+  switch-out), re-based with one cpu_ticks() otherwise.  A/B on one boot
+  (loader tunable, interleaved): a07 kwq_budget_left with a read per
+  call 37-38 -> 16 ns, default knob 14 -> 11-12; hwpmc on the worker CPU
+  during `cost` k=8: 1.94-2.00 -> 1.89-1.90 G instr/s at 2.17-2.30 ->
+  2.39-2.51 M items/s, i.e. 856-895 -> 755-795 instructions and
+  1305-1382 -> 1197-1256 cycles per item (-12 % / -8 %, +9 % items/s);
+  busy_ns per item too noisy on a07 (196-316 for one config) to show it;
+  pingpong unchanged (3.66-3.75 us).  Guest (TSC was the ticker): budget
+  call 28 -> 27, cost 55-58 -> 52-53 at k=1, nothing at k=8.  kwq's S13
+  glitch counter shows 2-3 per 3 s run on a07 with the fast clock (0-1
+  before): the kernel ticker's 2^32 jump caught at a re-base, one quantum
+  charged each.  kwq ATF 22/22 in the guest; fairness/latency/overrun
+  scenarios on a07 as in S10.3 (shares 1:1 and 2:1, light queue 211 us).
+
+2026-10-20: tools/clockprobe (standalone module) and what a07's clocks
+  really do (samples/clockprobe_a07_2026-10-20.txt).  Per read, warm:
+  bare cntvct 9 ns, cntvct behind isb 18, cntpct 18, cpu_ticks 24,
+  timecounter raw 20, sbinuptime 25, getsbinuptime 6; fresh from idle
+  2-4x more.  No FEAT_ECV.  Resolution one tick (40 ns), 74 % of
+  back-to-back bare reads return the same value.  Monotonic: 0 backward
+  steps in 2 M reads per clock on cpu 1 and 500 k on each of 128 CPUs,
+  with or without isb; frequency 25 MHz -8 ppm against the timecounter.
+  Cross-CPU: with isb never out of order (reader minus writer >= 1
+  tick); the bare mrs IS speculated past the load it follows: 21-22 %
+  of handoffs read a value below what the other CPU had published, up
+  to 65 ticks (2.6 us) early - harmless for same-CPU deltas, fatal for
+  anything comparing a bare read with a value received through memory.
+  THE GLITCH, finally: cpu_ticks() with interrupts enabled jumped by
+  2^32 + 1 ticks 77 times in 20 s on cpu 1 (19 M reads/s), the bare
+  counter never: tc_cpu_ticks() races with statclock()'s cpu_ticks()
+  from the clock interrupt (kern_clock.c); the kernel's own callers hold
+  spin locks and are safe, kwq's old per-pass reads and kwq_test's
+  per-item reads were not.  Per-CPU extension bases relative to cpu 0:
+  cpu 1 +205 periods, cpu 2 +357 (the benchmark CPUs; +17 hours of
+  cpu_ticks), 9 CPUs behind by 1 (idle, wraps unseen), 79 ahead.  The
+  2026-09-28 diagnosis ("the counter reads backwards") is withdrawn;
+  SCHED.md S10.3/S13, the whitepaper and the memory are corrected.
+  Done for kwq: interrupts off around the one cpu_ticks() left (the
+  re-base); kwq_test off cpu_ticks() onto get_cyclecount() with a
+  calibrated rate (kt_ticks(); its own per-item reads were a steady
+  glitch source and cost it 30 ns per item: cost items/s 5.9-7.4 M ->
+  9.2-10.1 M, consumer busy 134-160 ns/item).  kwq glitches on a07: 0
+  in all runs since (2-3 per run before).  Guest (amd64, rdtsc): no
+  anomaly of any kind in 1.3 G interrupt-enabled reads.
+
+2026-10-20: lab (Ryzen 7 5800X, 8 cores / 16 SMT threads, invariant TSC
+  3.79 GHz, TSC-low timecounter, 15.1-p4 custom GENERIC, kernel objects on
+  the box, sudo) joined as the third test machine.  tools/clockprobe
+  there (samples/clockprobe_lab_2026-10-20.txt): rdtsc 7 ns, fenced
+  14-15, cpu_ticks 7 (it is rdtsc), timecounter raw 16, sbinuptime 18;
+  fresh from idle only 1.4x more; 0 backward steps, 0 false wraps, 0
+  extension lag, cross-CPU never out of order even for the bare rdtsc
+  (x86 does not speculate rdtsc past loads the way the N1 speculates
+  mrs cntvct); -5 ppm.  SMT siblings are adjacent CPU ids ((0,1), (2,3),
+  ...), so kwq_test's "next CPU" producer sat on the worker's sibling:
+  new knob kern.kwq_test.pcpu (KT_EXTRA="cpu=2 pcpu=4").  Clock A/B
+  (samples/clocks_lab_2026-10-20_fast_clock_ab.txt): kwq_budget_left
+  11 ns at k=1 and 4-5 at k=8 in both modes, cost 28 ns consumer busy
+  per item, 12-13 M items/s, 420 instructions / 380 cycles per item
+  (hwpmc ls_not_halted_cyc / ex_ret_instr, core at 4.71 GHz boost),
+  pingpong 1.3-1.6 us round trip: the fast path is a no-op where the
+  kernel ticker is the TSC, as designed.  run_p1b's cost line read the
+  wrong CPU's busy_ns when cpu= was given; fixed.
+
+2026-10-20: how often the worker reads clocks now (a07, cost scenario in
+  its sleepy regime: the producer on cpu 3 is slower than the worker on
+  cpu 1, so every pass ends in a sleep; 3 s of DTrace, counts per 3 s):
+  passes 175,289, idle sleeps 173,002, tc_cpu_ticks() by the worker
+  350,440 = 2 per wake (one is the kernel's own mi_switch() at the
+  switch-out, under the thread lock, the other kwq's re-base after the
+  wake; the switch-in read runs in the idle thread's context and is not
+  counted here), binuptime() by the worker 698,645 = 4 per wake (kwq's
+  sbinuptime() before and after the sleep for idle_ns, at the round end
+  for the probe and cap window, and the first pass's maxlat read),
+  arm_tmr_get_timecount() 1,049,085 = those two together.  Per pass and
+  per item the kernel ticker is no longer read at all; per wake kwq reads
+  it once (24 ns, interrupts off) and sbinuptime() four times (100 ns).
+  The next lever, if one is wanted, is therefore the four sbinuptime()
+  reads per wake, three of which (idle_ns, round-end wall) are same-CPU
+  deltas that kwq_ticks() could take at 9 ns each; the maxlat stamp
+  compares across CPUs and keeps sbinuptime().
+
+2026-10-20: NET passes charged in wall time (SCHED.md S1a.4 amended; S2,
+  S9; counters `switched` per worker and per queue; BULK keeps CPU time
+  because NET preempts it as a matter of course).  Two bare kwq_ticks()
+  per pass and no kernel ticker on the NET path at all; a pass during
+  which td_runtime changed (the worker was switched out: preempted or
+  blocked) is charged its wall time and counted.  Measured on the three
+  machines (samples/walltime_2026-10-20_three_machines.txt): guest ATF
+  22/22; fairness 1:1 and 2:1, light-queue latency 248 / 210 / 201 us
+  (guest / a07 / lab), cost and throughput unchanged; pingpong a07 3.68
+  us (3.71-3.75 before) and lab 1.20-1.24 us (1.31-1.63 before), the
+  re-base read gone from the wake path.  How often the rare case fires:
+  lab 0.007 % of passes in the scenarios and 0.05 % under a 140 Gbit/s
+  flow; a07 0.005 % and 0.06 % (75-84 switched passes/s of 130 k, the
+  same with a spinner on the worker CPU: ULE does not preempt for equal
+  priority); guest 0.24 % in the scenarios and 25 % in the single flow
+  where the receiver on the worker's vCPU holds the socket locks the
+  handler blocks on (throughput 7.39 Gbit/s, at the top of the earlier
+  range).  The cost scenario on a07 is bistable between 3 items per pass
+  (136-147 ns/item) and large passes (20-24 ns/item) depending on who
+  leads at the start; run_p1b.sh prints items per pass and switched
+  passes now.  lab: if_pair flood 3.73 us per packet, 1 kHz 5 us; one
+  flow 140-145 Gbit/s at 5-9 items per pass, 109 with a spinner; the
+  SMT sibling of the sender decides the regime (80 vs 143 Gbit/s between
+  runs).  lab's jail.d carried an experimental jail.conf(5) extension
+  that the installed jail(8) rejected, so every `jail -r` failed and
+  left the test jails behind; the user has disabled it since.  The
+  harness passes -f /dev/null to jail(8) everywhere now (lib.sh,
+  cleanup.sh, smoke, t_08, t_29): the tests describe their jails on the
+  command line and should not read the host's configuration at all.
+
+2026-10-20: t_17/t_18/t_19 on lab, with the same-day guest run and the
+  2026-10-09 a07 run for comparison (samples/t17-19_lab_2026-10-20.txt,
+  t17-19_guest_2026-10-20.txt, t17_a07_2026-10-09_shared_list_ab.txt,
+  t18_ampere.txt, t19_p128.txt).  Receiver Gbit/s, kwq / taskqueue:
+    conns      lab (16 threads)   a07 (128 cores)   guest (4 vCPU)
+       1        142 / 142          33-37 / 33-36      9.9 / 9.5
+       2        196 / 217          57-66 / 55-64     13.6 / 11.8
+       4        223 / 243         109-116 / 100-115  10.5 / 14.5
+       8        106 / 109         190-202 / 228-231  14.8 / 14.0
+      16       78.4 / 76.5        358-369 / 361-365  14.3 / 14.0
+      32       77.0 / 73.7        492-497 / 498-499  14.0 / 13.0
+      64       78.3 / 73.5        353 / 357-358      12.9 / 12.9
+     128       79.7 / 75.3        338-339 / 339-340  12.3 / 10.3
+  lab peaks at 4 connections (223-243 Gbit/s, 16 iperf3 threads plus
+  the workers already fill its 16 hardware threads) and then settles at
+  77-80 Gbit/s to 128 connections with no drops and no overruns on kwq,
+  3-6 % above the taskqueue driver from 16 connections up; the taskqueue
+  driver takes 5-31 k batch overruns per run there.  The guest's
+  taskqueue driver drops (oqdrops 236 and 688) at 64 and 128
+  connections, kwq does not.  t_18 (taskqueue batch 16/64/256) on lab:
+  the batch size moves nothing beyond run spread (145/141/143 at 1 conn,
+  72.8/71.7/70.6 at 128), as on a07.  t_19 profile at 64 connections,
+  kwq, buckets of non-idle samples (locks / sched / copy / alloc / proto
+  / other): lab 15.6 / 0.0 / 48.9 / 15.7 / 7.4 / 12.4 %, top copyin and
+  copyout (23 % each), then soreceive, lock_delay 5.7 %, mbuf free and
+  clone; a07 at 128 conns 15.0 / 0.0 / 56.6 / 13.2 / 5.1 / 10.1 % with
+  copycommon 55 %; guest 26.9 / 0.1 / 12.8 / 16.0 / 7.3 / 36.9 % (the
+  debug kernel's WITNESS and INVARIANTS land in "other" and "locks").
+  On every machine the scheduler bucket is at or below 0.1 % and data
+  copying is the largest cost; the scaling wall is CPU count on lab, the
+  mbuf zone lock on a07 (t_20) and the vCPUs in the guest.
+
+2026-10-20: the user's ssh session on lab felt sluggish during the t_17
+  runs.  Measured (samples/interactive_lab_2026-10-20.txt): an unpinned
+  timeshare 1 kHz timer under the 32-connection load sees avg 12.7-15.6
+  ms, p99 52-73, max 85-122 ms of lateness with kwq at yield_prio 56
+  (70.4-70.9 Gbit/s), avg 5.4 ms, p99 45, max 62 with yield_prio 223
+  (67.5 Gbit/s), and avg 9.0 ms, p99 69, max 118 with the taskqueue
+  driver (66.4 Gbit/s); idle 1 / 2 / 3 us.  64 CPU-bound iperf3 threads
+  on 16 hardware threads is the bulk of it (ULE slices); the yield policy
+  is the part kwq owns: at 56 only threads scored 56 or better take the
+  worker's yield and an ordinary interactive thread waits for the
+  worker to go idle; 223 lets every user thread take it and halves the
+  average for 5 % throughput.  Same open design point as P4b goal 2's
+  (b): the yield priority trades the user's interactivity against NET
+  throughput and the lent-priority stall, and 56 may be the wrong
+  default for a machine that is also someone's workstation.
+
+2026-10-20: PLAN P4c, interactive use beside NET workers.  Benchmark
+  first (tests/t_34_interactive.sh with tests/victim.c): an ordinary
+  timeshare process pinned to the CPU of the worker that one iperf3 flow
+  saturates, the iperf3 processes moved off that CPU, in three shapes: a
+  1 kHz timer doing 100 us of work per wake (lateness, turnaround), a
+  CPU-bound spinner (its CPU share) and a fork+exec loop; plus the
+  timer unpinned under 2 x ncpu connections, the sluggish-ssh case.
+  Baselines (samples/t34_baseline_2026-10-20_three_machines.txt), kwq
+  at yield_prio 56 / taskqueue driver, timer p99 lateness us, spinner
+  share %, exec avg us:
+    guest   7971 / 2810    20 / 93    11766 / 8573
+    a07      128 /  105    16 / 99     5344 / 1087
+    lab    16822 /  703    13 / 99    27860 / 1042
+  kwq's worker leaves a user thread on its CPU 13-20 % and, on lab,
+  17 ms of p99 lateness and 28 ms per exec; the taskqueue driver leaves
+  93-99 % and 1 ms, at the price of the flow (half its rate on the
+  guest and a07 with the spinner present).
+  Then the share limit (SCHED.md S6.3 rewritten): cap_permille of a
+  cap_period_us (1 ms) in wall time, measured from the pass stamps the
+  worker already takes; the pass budget clamped to what is left of the
+  allowance; over it, with sched_runnable(), a switch at
+  PRI_MAX_TIMESHARE at every pass end, bounded by a direct-exec callout
+  at the period's end that raises the worker back to its class priority
+  on the run queue (ULE requeues and preempts).  The old cap (one
+  pause_sbt() per window over cap_pct) is gone: it gave away one sleep
+  per window, 1 % at its defaults, whatever the percentage said.
+  Three builds were needed, each found by the spinner's share and the
+  new kwq:::cap probe on a07: (1) the period rolled over at pass end
+  only, so the first pass after the deadline ran on the full quantum
+  (32 % busy at 10/1000); (2) ULE's timeshare calendar hands a thread at
+  223 a turn per tick while better threads wait, and such a turn ran a
+  full pass (20-25 %; now declined by switching away again while
+  something else is runnable and the deadline has not struck); (3) the
+  deadline was converted with SBT_1NS, the integer 4 for a factor of
+  4.29, so it struck 7 % early, into a period not yet over by the
+  worker's clock, and the first pass was unclamped again (the probe
+  showed passes beginning at 512-1023 us with 128-512 us budgets).
+  Final (samples/t34_sweep_2026-10-20_three_machines.txt), spinner
+  share % at ratio 10 / 100 / 500 / 750 (ideal 99 / 90 / 50 / 25):
+    guest   97.6 / 88.5 / 52.9 / 26.9
+    a07     98.9 / 90.1 / 51.1 / 22.2
+    lab     99.0 / 90.2 / 51.0 / 27.6
+  Timer p99 lateness us at 10 / 100 / 500 / 750 (no limit in brackets):
+    guest    281 /  317 / 649 / 882   [4485]
+    a07       19 /   81 / 258 / 221   [115]
+    lab       11 /  101 / 514 / 780   [15612]
+  exec avg us at 10 / 100 / 500 (no limit): guest 1843 / 2068 / 3704
+  (10951), a07 954 / 916 / 1686 (4699), lab 388 / 523 / 613 (19398).
+  The limit is accurate to within two points of the ideal on all three
+  machines at every ratio where it binds; at 900 and above the worker's
+  own demand (60-88 % of the CPU) is below the allowance, so those
+  columns are the baseline again.  The pinned victim's latency follows
+  the allowance: p99 near one clamped pass plus the deadline's lateness
+  at 10, about half the period at 500.  The flow keeps about half its
+  rate at a 1 % allowance (a07 17 of 33 Gbit/s, lab 68 of 138, guest 4.6
+  of 8.8) and 80-100 % at 500: the worker's per-byte work is small when
+  it arrives in large batches, and unlimited it spends 75-85 % of a CPU
+  on small passes of an ACK-clocked flow.  The whole-machine mode did
+  not move (p99 15-38 ms at every ratio, both drivers, all machines):
+  that is ULE slicing among oversubscribed iperf3 threads, not the
+  workers.  At 1000 the limit is one compare per pass; the round-end
+  yield and the tick guard are unchanged, ATF 22/22 on the guest.
+  Default stays 1000 (off); the knob is for the operator who shares the
+  machine.  Also found: a lingering dtrace(1) consumer with a module's
+  SDT probes enabled vetoes kldunload through kld_unload_try (EBUSY,
+  nothing in dmesg), which was the "stuck kwq.ko" of 2026-09-30 as well.
+
+2026-10-20: PLAN P4c design study: three designs for interactive use beside
+  a saturated NET worker, one branch each from kwq-cap-designs (a
+  snapshot of this tree), measured with t_34 on the three machines
+  (samples/t34_designs_2026-10-20_three_machines.txt; t_34 gained an rtt
+  mode: the flow's own TCP RTT from iperf3 -J beside the spinner).
+    share    kwq branch, cap_permille knob (500 here).
+    tickfair kwq-cap-tickfair: no tuning.  Class priority for half of
+             each millisecond, PRI_MIN_IDLE for the rest with one
+             voluntary switch; ULE runs an idle-priority thread only
+             when nothing else is runnable and preempts it for any
+             waking thread, so no sched_runnable() and no declined-turn
+             loop; the deadline callout raises it back.  Alone, the
+             worker runs through.
+    ule      kwq-cap-ule: no callout, no share.  Round-end yield to
+             every thread ULE scores interactive (PRI_MAX_INTERACT 114,
+             derived) and a yield at PRI_USER when ULE ends the worker's
+             slice (TDF_SLICEEND, the AST a kernel thread never
+             services).
+  Spinner share % / timer p99 us / exec avg us / flow RTT mean us
+  beside the spinner, guest - a07 - lab:
+    share 500   52-51-51 / 649-258-514 / 3704-1686-613 / 6874-349-327
+    tickfair    53-51-51 / 630-475-517 / 3875-1693-653 / 6030-540-221
+    ule         20-15-45 / 1940-543-31468 / 11117-4728-23323 / 2937-280-243
+    none        20-15-0.5 / 4485-115-15612 / 10951-4699-19398 / 2780-230-227
+  tickfair and share at 500 are the same mechanism with the same two
+  constants and measure the same, as expected; the idle-range priority
+  did not move the timer because at 500 its wake-ups fall into the
+  kernel-priority half as often as into the other.  ule failed twice
+  over.  Where the worker sleeps between bursts (guest, a07: 26 k
+  wakeups per window) slice_yields stayed 0: sched_wakeup() resets
+  ts_slice, so ULE's slice never ends for a thread that is 80 % busy in
+  microsecond bursts, and the CPU-bound competitor got nothing (15-20 %,
+  the baseline).  Where the worker never sleeps (lab, busy 0.9-1.0) the
+  slice did end and the spinner got 45 %, but at ULE's 94 ms slice
+  granularity: timer p99 31 ms, exec p99 386 ms, the taskqueue driver's
+  tail.  ULE's fairness is built for threads that either sleep or run
+  for slices; a kernel worker that does neither falls through it, and
+  that is the design fact behind every variant here.  The round-end
+  yield at 114 instead of 56 helped the timer somewhat (guest p99 4.5 ->
+  1.9 ms) and cost nothing measurable.
+  Recommendation: tickfair's semantics as the default, i.e. the share
+  limit mechanism with the equal share and the tick-sized period as
+  built-in constants, the idle-range priority and no run-queue query
+  after the demotion, plus sched_runnable() as a gate on the demotion
+  itself so an uncontended worker arms no callout (today's share limit
+  has that gate; tickfair demotes unconditionally and pays a switch, a
+  callout and a timer interrupt per millisecond when alone).  The knobs
+  stay as expert overrides.  What it does not fix is unchanged: the
+  one-item overshoot of a clamped pass, BULK taking what NET gives away
+  unless limited too, and the lent-priority stall of P4b goal 2.
+
+2026-10-20: the recommended design merged into kwq (SCHED.md S6.3 as it
+  now reads): cap_permille defaults to 500 of a 1 ms period, the
+  demoted worker is an idle-priority thread (PRI_MIN_IDLE) after one
+  voluntary switch, no sched_runnable() after the demotion and no
+  declined-turn loop, the gate on the demotion itself kept so an
+  uncontended worker arms no callout, knobs as overrides.  t_34 default
+  sweep on the three machines (samples/t34_merged_2026-10-20_three_
+  machines.txt), spinner share % at 10 / 100 / 500 / 750:
+    guest   97.7 / 88.4 / 52.9 / 27.1
+    a07     98.9 / 90.1 / 51.2 / 22.3
+    lab     99.0 / 90.2 / 51.0 / 25.2
+  At the default (500) against the limit off (1000): timer p99 us
+  638 / 97 / 518 against 2853 / 338 / 10044, exec avg us 3762 / 1665 /
+  735 against 11075 / 3632 / 2838 (lab's exec p99 188 ms off, 1.0 ms
+  on), the flow beside the spinner 7.3 / 34 / 108 Gbit/s against 8.8 /
+  35 / 136 and alone (timer mode) unchanged within run spread.  The
+  flow's TCP RTT beside the spinner from iperf3 -J is noisy run to run
+  (a07 350-750 us mean at 500 against 220-280 off; lab's TCP_INFO
+  reported one constant value in two runs) and is kept as an indicator
+  only.  ATF 22/22 on the guest with the previous build of the same
+  core; the simulator passes.

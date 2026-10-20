@@ -663,8 +663,17 @@ Phases
     `signals` counter added.  Results and the harness lessons in
     ../NOTES.md 2026-10-08.
 
-[OPEN 2026-10-19] Read the clocks efficiently, at least on amd64 and
-    arm64.  Measured (NOTES.md 2026-10-19, SCHED.md S15.2): one
+[DONE 2026-10-20] Read the clocks efficiently, at least on amd64 and
+    arm64.  Implemented as kwq_clock.{c,h}: kwq_ticks() = get_cyclecount()
+    where it is a fixed-rate counter at cpu_tickrate() (invariant TSC,
+    CNTVCT_EL0, PowerPC timebase), cpu_ticks() elsewhere or with
+    kern.kwq.clock_fast=0; the worker's CPU time re-based from td_runtime
+    only after a switch-out.  Measured with the new kwq_test `clocks`
+    scenario and hwpmc (SCHED.md S15.2, samples/clocks_2026-10-20_*): on
+    a07 a budget call that reads the clock 38 -> 16 ns, the default call
+    14 -> 11.5, the cost scenario 100 fewer instructions and 8 % fewer
+    cycles per item, +9 % items/s; on the x86 guest 1-3 ns.  The
+    investigation that preceded it:  Measured (NOTES.md 2026-10-19, SCHED.md S15.2): one
     cpu_ticks() costs 16-47 ns on the Altra and ~11 ns on the x86 guest,
     and the scheduler's default reads (two per pass, one per budget
     check every 8th call, one sbinuptime() per burst and per round)
@@ -673,20 +682,134 @@ Phases
     generic tc_cpu_ticks(): a critical section, an isb-fenced 32-bit
     timecounter read and the per-CPU wrap extension that produces the
     2^32 glitch on a07; on amd64 it is already the bare rdtsc.  The
-    lever: a kwq_ticks() in kwq_sched_env.h that reads the invariant TSC
-    (rdtsc) on amd64 and the 64-bit CNTVCT_EL0 (CNTVCTSS_EL0 where
-    FEAT_ECV exists: self-synchronised, no barrier needed) on arm64,
-    unfenced - a reading early by a pipeline's length is inside the
+    lever: get_cyclecount() from machine/cpu.h, which every architecture
+    defines, 64-bit and unfenced: the bare rdtsc on amd64 (what
+    cpu_ticks() already is there) and a direct CNTVCT_EL0 read on arm64
+    (a few ns, no isb, no timecounter wrapper; KTR, tslog and the boot
+    trace use it).  A reading early by a pipeline's length is inside the
     budget estimate's own margin (Q/10), the worker is bound so no
     cross-CPU skew enters, and a per-CPU read cannot go backwards, so the
-    S13 glitch guard still holds - with cpu_ticks() elsewhere and the
-    frequency from tsc_freq / cntfrq_el0 instead of cpu_tickrate().
+    S13 glitch guard still holds.  What it lacks is a frequency: take
+    tsc_freq on amd64 and CNTFRQ_EL0 on arm64, cpu_ticks()/cpu_tickrate()
+    elsewhere - the one architecture-specific piece left.
     Also drops the a07 glitch filtering.  Expected gain 10-30 ns per read
     on the Altra, nothing measurable on x86; invisible in the TCP flows
     measured so far.  Revisit when a client with sub-100 ns items makes
     the clock reads show in its profile, or with the netisr conversion.
     Cost: one architecture-specific header in a module meant to go
     upstream.
+
+[DONE 2026-10-20] NET passes charged in wall time on the bound CPU
+    (SCHED.md S1a.4 amended): two bare counter reads per pass, no kernel
+    ticker on the NET path; a pass during which the worker was switched
+    out is counted in `switched` and charged the time away (0.005-0.06 %
+    of passes on hardware, 25 % in the guest's co-located single flow,
+    shares and throughput unchanged on three machines).  BULK keeps CPU
+    time with the once-per-switch re-base.
+
+[OPEN 2026-10-20] Report upstream: tc_cpu_ticks() (kern_tc.c) races with
+    statclock()'s cpu_ticks() from the clock interrupt on architectures
+    without set_cputicker() (arm64, riscv): a thread reading cpu_ticks()
+    with interrupts enabled can take the interrupt's newer "last" for a
+    wrap and add 2^32 ticks to the CPU's base; idle CPUs lose periods
+    besides.  Reproduced with tools/clockprobe on a07 (77 jumps in 20 s;
+    per-CPU bases up to 357 periods apart; samples/clockprobe_a07_
+    2026-10-20.txt).  Fixes to propose: interrupts off inside
+    tc_cpu_ticks(), a tolerance before taking a decrease for a wrap, or
+    set_cputicker() with the 64-bit CNTVCT_EL0 on arm64 as amd64 does
+    with the TSC.  Not kwq's to fix; kwq avoids the read (kwq_clock.h,
+    interrupts off at the re-base).
+
+[DONE 2026-10-20] P4c  Interactive use beside NET workers: measure it, then
+    a fractional per-CPU limit for kwq worker threads (1/1000 resolution).
+    Done the same day; results in NOTES.md 2026-10-20 and
+    samples/t34_baseline_*, t34_sweep_*: the spinner's share is within two
+    points of 1000 - cap_permille on all three machines, the pinned
+    timer's p99 falls from 4-17 ms (guest, lab) to 0.3-0.8 ms at
+    500-750/1000 and to tens of us at 10, the exec loop from 11-28 ms to
+    0.4-4 ms; the whole-machine mode is ULE's and did not move.  Default
+    stays 1000 (off).  Design study the same day (../NOTES.md, samples/
+    t34_designs_*): branches kwq-cap-designs (snapshot), kwq-cap-tickfair
+    (equal share at tick granularity, idle-range priority, no tuning) and
+    kwq-cap-ule (ULE's own classification and slices).  tickfair measures
+    as the share limit at 500; ule does not work for a worker that sleeps
+    between bursts (sched_wakeup() resets the slice) and gives ULE's
+    94 ms tail where it does.  Recommended: tickfair's semantics as the
+    default with the share limit's sched_runnable() gate on the
+    demotion; knobs as overrides.  Merged into kwq the same day
+    (defaults 500 and 1000 us, PRI_MIN_IDLE, one switch, no loop) and
+    re-measured on all three machines (samples/t34_merged_*).
+    The plan as written:
+    Why: lab's ssh session felt sluggish under t_17 (NOTES.md 2026-10-20);
+    the yield policy (S6.2) hands a saturated CPU to user threads only at
+    priority 56 or at 223 for whole slices, and the S6.3 cap as written
+    gives away one cap_sleep_us per cap_window_us (1 % at the defaults)
+    whatever cap_pct says: neither is a share.  Steps, each measured on
+    the guest first, then a07 and lab; results in samples/t34_*:
+    1. Benchmark: tests/t_34_interactive.sh with tests/victim.c.  The
+       victim is an ordinary timeshare process pinned to the CPU of a
+       saturated NET worker (one iperf3 flow, the iperf3 processes moved
+       off that CPU), in three shapes: a 1 kHz timer that does a short
+       burst of work per wake (lateness and turnaround avg/p99/max, the
+       "keystroke"), a CPU-bound spinner (its CPU share from rusage, the
+       "compile job": what the worker leaves), and a fork+exec loop (the
+       "shell").  A fourth shape repeats the unpinned timer under a
+       whole-machine load (2 x ncpu connections), the sluggish-ssh case.
+       Per run: the flow's Gbit/s, the worker's busy share and cap
+       counters, the victim's numbers.  Runs over a list of cap ratios
+       (RATIOS, default 10 100 500 750 900 990 1000 permille; only 1000
+       before step 3) for kwq at yield_prio 56, plus the taskqueue driver
+       as the reference.
+    2. Baseline: step 1 at ratio 1000 (no limit) on all three machines,
+       kwq and taskqueue.
+    3. Implement: replace the S6.3 cap by a per-worker allowance of
+       cap_permille/1000 of a cap_period_us (default 1000) in wall time,
+       checked at every pass end from the stamps the pass already takes,
+       no extra clock read.  Under the allowance the pass budget is
+       clamped to what is left of it (one item of overshoot instead of a
+       quantum).  Over it, with sched_runnable(), the worker gives the
+       CPU away at PRI_MAX_TIMESHARE (every user thread may take it) at
+       each pass end until the period ends, and a callout armed at the
+       period's end raises the worker back to its class priority while
+       it waits on the run queue: ULE requeues and preempts (sched_
+       thread_priority(), the TD_ON_RUNQ branch), so the share given
+       away is bounded by the period, not by ULE's 16-94 ms slice.  With
+       nothing else runnable the worker runs on: work-conserving.
+       Nothing carries between periods: unused allowance is lost, the
+       overshoot of a clamped pass is one item.  The period rolls over at
+       pass begin as well as at pass end, so the first pass after the
+       deadline is clamped (the first build rolled it over at pass end
+       only and ran that pass on the full quantum: 32 % busy at ratio
+       10/1000 on a07; found by the spinner), and a worker that ULE's
+       timeshare calendar brings back before the deadline with something
+       else still runnable switches away again at once (the second build
+       ran a full pass on each such turn: 20-25 % at 10-100/1000 on a07).
+       The deadline is converted with nstosbt(): SBT_1NS is the integer
+       4 for a factor of 4.29, and the third build's deadlines came 7 %
+       early, into a period not yet over by the worker's clock, so the
+       first pass ran on the full quantum (the kwq:::cap probe showed
+       passes beginning at 512-1023 us with 128-512 us budgets).  Per
+       class, per CPU; both classes on one CPU add.  Counters cap_demotions,
+       cap_yields, cap_restores, cap_ns replace cap_sleeps; the yield
+       probe gets reason 2.  kwq_sched.{h,c} stay pure (the callout and
+       priorities are the worker's), the simulator follows.
+    4. Repeat step 1 over the ratios on all three machines.  Expected:
+       the spinner's share ~= 1000 - ratio permille (the fidelity of the
+       limit), the timer's p99 lateness falls into the low milliseconds
+       at any ratio below 1000 and its turnaround follows the allowance's
+       phase, the exec loop likewise, throughput falls by about the share
+       given away and no more.  What it cannot fix: a user thread that
+       holds a stack lock at the worker's lent priority 1 keeps the CPU to
+       its slice end after unlock (P4b goal 2); the maxima will show it.
+    5. Record: NOTES.md, SCHED.md S6.3/S8/S9/S15, OBSERVABILITY.md,
+       docs/reference.md, KWQ.md revision log, samples/t34_*; the default
+       stays off (1000) unless the sweep says otherwise - that decision
+       is the user's.
+    A waking interactive thread cannot preempt a kernel thread at 223
+    (kern.sched.ule.preempt_thresh 40), so it runs at the worker's next
+    pass end: one quantum plus one item, 200-250 us.  Raising the
+    threshold would make the hand-over immediate; a system knob, not
+    kwq's.
 
 [DECIDED 2026-10-09] Fork resolved: continue with kwq; netisr is to be
     reimplemented on top of kwq (KWQ.md S8 migration step 2, PLAN P8's

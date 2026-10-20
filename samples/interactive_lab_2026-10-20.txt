@@ -1,0 +1,20 @@
+# lab (Ryzen 7 5800X, 16 hardware threads), 2026-10-20: scheduling latency of
+# an ordinary timeshare thread under a 32-connection iperf3 load through one
+# pair (64 iperf3 threads on 16 hardware threads).  The proxy is
+# tests/lateness.c run unpinned and without rtprio: a 1 kHz timer reporting
+# how late each wake-up was (avg / p99 / max us).  Idle: 1 / 2 / 3.
+#
+# kwq yield_prio 56 : 70.9 Gbit/s; lateness avg 12666 p99 51983 max  84993 us
+# kwq yield_prio 223: 67.5 Gbit/s; lateness avg  5409 p99 44727 max  61818 us
+# kwq yield_prio 56 : 70.4 Gbit/s; lateness avg 15638 p99 73184 max 122160 us
+# taskqueue driver  : 66.4 Gbit/s; lateness avg  8991 p99 69317 max 118301 us
+# idle after        :              lateness avg     1 p99     2 max      3 us
+#
+# The user's ssh session on lab "felt sluggish but usable" during the t_17
+# runs: this is that, measured.  Most of it is the oversubscription (ULE
+# slices among four CPU-bound iperf3 threads per hardware thread); kwq's
+# default yield, which hands the CPU only to threads at priority 56 or
+# better, adds to the average (12.7-15.6 vs 9.0 ms for the taskqueue
+# driver), and yield_prio 223 (every user thread may take the yield)
+# brings it to 5.4 ms for 5 % of throughput.  The tails, 45-122 ms, are
+# the same for every setting and both drivers.

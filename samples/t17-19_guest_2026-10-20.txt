@@ -1,0 +1,82 @@
+# tests/t_17_throughput.sh (kwq and the taskqueue baseline) and t_19_profile.sh
+# (kwq, LOAD_P=64) in the bhyve guest (4 vCPU Xeon D-1518, GENERIC-DEBUG,
+# hz=100, MTU 16384), 2026-10-20, the same code as the lab and a07 runs.
+== t_17 kwq
+t_17_throughput: ok: load ./../if_pair.ko
+t_17_throughput: created pair0a + pair0b
+t_17_throughput: ok: create jail ifp_17_throughput_1
+t_17_throughput: ok: create jail ifp_17_throughput_2
+t_17_throughput: ok: move pair0a into ifp_17_throughput_1
+t_17_throughput: ok: move pair0b into ifp_17_throughput_2
+t_17_throughput: ok: mtu 16384 side a
+t_17_throughput: ok: mtu 16384 side b
+t_17_throughput: ok: address side a
+t_17_throughput: ok: address side b
+t_17_throughput: ok: baseline ping
+t_17_throughput: conns  Gbit/s  oqdrops   idrop  overruns  (5s runs, mtu 16384)
+t_17_throughput:     1    9.88        0       0         0
+t_17_throughput:     2    13.6        0       0         0
+t_17_throughput:     4    10.5        0       0         0
+t_17_throughput:     8    14.8        0       0         0
+t_17_throughput:    16    14.3        0       0         0
+t_17_throughput:    32    14.0        0       0         0
+t_17_throughput:    64    12.9        0       0         0
+t_17_throughput:   128    12.3        0       0         0
+t_17_throughput: PASS
+== t_17 taskqueue
+t_17_throughput: ok: load ./../extras/if_pair_tq/if_pair_tq.ko
+t_17_throughput: created pairtq0a + pairtq0b
+t_17_throughput: ok: create jail ifp_17_throughput_1
+t_17_throughput: ok: create jail ifp_17_throughput_2
+t_17_throughput: ok: move pairtq0a into ifp_17_throughput_1
+t_17_throughput: ok: move pairtq0b into ifp_17_throughput_2
+t_17_throughput: ok: mtu 16384 side a
+t_17_throughput: ok: mtu 16384 side b
+t_17_throughput: ok: address side a
+t_17_throughput: ok: address side b
+t_17_throughput: ok: baseline ping
+t_17_throughput: conns  Gbit/s  oqdrops   idrop  overruns  (5s runs, mtu 16384)
+t_17_throughput:     1    9.51        0       0       494
+t_17_throughput:     2    11.8        0       0       493
+t_17_throughput:     4    14.5        0       0       872
+t_17_throughput:     8    14.0        0       0      1064
+t_17_throughput:    16    14.0        0       0      1059
+t_17_throughput:    32    13.0        0       0      1839
+t_17_throughput:    64    12.9      236       0      2028
+t_17_throughput:   128    10.3      688       0      1769
+t_17_throughput: PASS
+== t_19 kwq
+t_19_profile: ok: load ./../if_pair.ko
+t_19_profile: created pair0a + pair0b
+t_19_profile: ok: create jail ifp_19_profile_1
+t_19_profile: ok: create jail ifp_19_profile_2
+t_19_profile: ok: move pair0a into ifp_19_profile_1
+t_19_profile: ok: move pair0b into ifp_19_profile_2
+t_19_profile: ok: mtu 16384 side a
+t_19_profile: ok: mtu 16384 side b
+t_19_profile: ok: address side a
+t_19_profile: ok: address side b
+t_19_profile: ok: baseline ping
+t_19_profile: iperf3 -P 64 for 15s at mtu 16384, profiling 10s inside the run
+t_19_profile: ok: capture finished
+t_19_profile: ok: iperf3 completed
+t_19_profile: samples: 18172 total, 13871 non-idle (23.7% idle)
+t_19_profile: bucket locks    26.9%
+t_19_profile: bucket sched     0.1%
+t_19_profile: bucket copy     12.8%
+t_19_profile: bucket alloc    16.0%
+t_19_profile: bucket proto     7.3%
+t_19_profile: bucket other    36.9%
+t_19_profile: top  1  kernel`trash_ctor                          14.9%
+t_19_profile: top  2  kernel`lock_delay                          14.8%
+t_19_profile: top  3  kernel`copyout_smap_erms                    7.6%
+t_19_profile: top  4  kernel`uma_dbg_free                         5.5%
+t_19_profile: top  5  kernel`item_ctor                            5.4%
+t_19_profile: top  6  kernel`trash_dtor                           4.9%
+t_19_profile: top  7  kernel`spinlock_exit                        4.5%
+t_19_profile: top  8  kernel`uma_dbg_getslab                      4.1%
+t_19_profile: top  9  kernel`copyin_smap_erms                     3.7%
+t_19_profile: top 10  kernel`soreceive_generic_locked             2.5%
+t_19_profile: top 11  kernel`mb_free_ext                          2.1%
+t_19_profile: top 12  kernel`witness_checkorder                   1.8%
+t_19_profile: PASS

@@ -1,0 +1,67 @@
+# PLAN P4c design study, 2026-10-20: three designs for sharing a saturated
+# worker's CPU, run through tests/t_34_interactive.sh on the three machines.
+#   share    the kwq branch's share limit (cap_permille knob), here at 500
+#            and 1000, rtt mode only (its other modes are in
+#            samples/t34_sweep_2026-10-20_three_machines.txt)
+#   tickfair branch kwq-cap-tickfair: no tuning; class priority for half of
+#            each millisecond, idle priority (PRI_MIN_IDLE) for the rest,
+#            one voluntary switch, ULE preempts and re-picks, the deadline
+#            callout raises; alone the worker runs through
+#   ule      branch kwq-cap-ule: no callout, no share; round-end yield to
+#            every thread ULE scores interactive (114) and a yield at
+#            PRI_USER when ULE ends the worker's slice (TDF_SLICEEND)
+# Modes as in t34_sweep: timer / spin / exec / rtt (the flow's own TCP RTT
+# from iperf3 -J beside the spinner, us) / unpinned.  "ratio" is the knob
+# value the harness wrote; for ule the limit is off (1000).
+# The ule design's slice yields were 0 on the guest (26 k wakeups in the
+# window): sched_wakeup() resets ts_slice, so a worker that sleeps between
+# bursts never reaches a slice end; on lab the saturated worker (busy 0.9-1.0,
+# no sleeps) did reach it and shared at ULE's slice granularity.
+#
+# guest share (kwq branch), rtt mode
+t_34_interactive: RUN drv=pair ratio=500 mode=rtt conns=1 rate=7.19 W=1 busy=0.467 passes/s=3204 yields/s=1774 cap_dem/s=893 cap_yld/s=893 cap_rst/s=893 cap_share=0.524 cap_runon/s=14 | spin wall=5.000 cpu=2.613 share=0.5227 rtt_min=2187 rtt_mean=6874 rtt_max=12187
+t_34_interactive: RUN drv=pair ratio=1000 mode=rtt conns=1 rate=8.42 W=3 busy=0.833 passes/s=21799 yields/s=11907 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | spin wall=5.000 cpu=0.832 share=0.1664 rtt_min=2187 rtt_mean=2780 rtt_max=5312
+# guest tickfair
+t_34_interactive: RUN drv=pair ratio=500 mode=timer conns=1 rate=8.84 W=3 busy=0.777 passes/s=19625 yields/s=3205 cap_dem/s=958 cap_yld/s=5838 cap_rst/s=237 cap_share=0.046 cap_runon/s=0 | timer n=5000 late_avg=195 late_p99=630 late_max=1259 turn_avg=379 turn_p99=795 turn_max=1741 catchups=0
+t_34_interactive: RUN drv=pair ratio=500 mode=spin conns=1 rate=7.16 W=2 busy=0.461 passes/s=3236 yields/s=1796 cap_dem/s=897 cap_yld/s=906 cap_rst/s=895 cap_share=0.526 cap_runon/s=0 | spin wall=5.001 cpu=2.649 share=0.5297
+t_34_interactive: RUN drv=pair ratio=500 mode=exec conns=1 rate=9.09 W=0 busy=0.719 passes/s=18653 yields/s=525 cap_dem/s=916 cap_yld/s=6709 cap_rst/s=306 cap_share=0.073 cap_runon/s=0 | exec n=200 exec_avg=3875 exec_p99=5684 exec_max=6914
+t_34_interactive: RUN drv=pair ratio=500 mode=rtt conns=1 rate=7.18 W=2 busy=0.467 passes/s=3245 yields/s=1786 cap_dem/s=896 cap_yld/s=904 cap_rst/s=895 cap_share=0.525 cap_runon/s=0 | spin wall=5.000 cpu=2.617 share=0.5234 rtt_min=2187 rtt_mean=6030 rtt_max=17812
+t_34_interactive: RUN drv=pair ratio=500 mode=unpinned conns=8 rate=15.2 W=1 busy=0.247 passes/s=2842 yields/s=1757 cap_dem/s=378 cap_yld/s=398 cap_rst/s=370 cap_share=0.209 cap_runon/s=0 | timer n=5000 late_avg=1876 late_p99=30842 late_max=134457 turn_avg=2027 turn_p99=31386 turn_max=134559 catchups=190
+# guest ule
+t_34_interactive: RUN drv=pair ratio=1000 mode=timer conns=1 rate=8.71 W=3 busy=0.760 passes/s=20828 yields/s=5017 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | timer n=5000 late_avg=268 late_p99=1940 late_max=6392 turn_avg=537 turn_p99=2632 turn_max=7389 catchups=0
+t_34_interactive: RUN drv=pair ratio=1000 mode=spin conns=1 rate=8.90 W=3 busy=0.664 passes/s=19881 yields/s=10727 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | spin wall=5.001 cpu=0.986 share=0.1971
+t_34_interactive: RUN drv=pair ratio=1000 mode=exec conns=1 rate=8.63 W=1 busy=0.827 passes/s=25776 yields/s=5205 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | exec n=200 exec_avg=11117 exec_p99=17507 exec_max=17718
+t_34_interactive: RUN drv=pair ratio=1000 mode=rtt conns=1 rate=8.69 W=3 busy=0.757 passes/s=23314 yields/s=12628 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | spin wall=5.001 cpu=1.155 share=0.2309 rtt_min=2187 rtt_mean=2937 rtt_max=5937
+t_34_interactive: RUN drv=pair ratio=1000 mode=unpinned conns=8 rate=13.8 W=2 busy=0.431 passes/s=8822 yields/s=5531 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | timer n=5000 late_avg=1667 late_p99=21952 late_max=67597 turn_avg=1945 turn_p99=23243 turn_max=67699 catchups=120
+
+# a07 share (kwq branch), rtt mode
+t_34_interactive: RUN drv=pair ratio=500 mode=rtt conns=1 rate=33.20 W=124 busy=0.488 passes/s=3624 yields/s=1792 cap_dem/s=968 cap_yld/s=968 cap_rst/s=968 cap_share=0.512 cap_runon/s=53 | spin wall=5.000 cpu=2.559 share=0.5118 rtt_min=218 rtt_mean=349 rtt_max=1218
+t_34_interactive: RUN drv=pair ratio=1000 mode=rtt conns=1 rate=35.10 W=71 busy=0.757 passes/s=140159 yields/s=70505 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | spin wall=5.000 cpu=0.895 share=0.1790 rtt_min=218 rtt_mean=230 rtt_max=343
+# a07 tickfair
+t_34_interactive: RUN drv=pair ratio=500 mode=timer conns=1 rate=38.4 W=50 busy=0.811 passes/s=102641 yields/s=16093 cap_dem/s=995 cap_yld/s=28511 cap_rst/s=32 cap_share=0.055 cap_runon/s=0 | timer n=5000 late_avg=71 late_p99=475 late_max=531 turn_avg=327 turn_p99=650 turn_max=673 catchups=0
+t_34_interactive: RUN drv=pair ratio=500 mode=spin conns=1 rate=35.4 W=9 busy=0.487 passes/s=4591 yields/s=2340 cap_dem/s=970 cap_yld/s=1006 cap_rst/s=969 cap_share=0.512 cap_runon/s=0 | spin wall=5.000 cpu=2.559 share=0.5118
+t_34_interactive: RUN drv=pair ratio=500 mode=exec conns=1 rate=32.1 W=54 busy=0.665 passes/s=100066 yields/s=858 cap_dem/s=863 cap_yld/s=36321 cap_rst/s=81 cap_share=0.029 cap_runon/s=0 | exec n=200 exec_avg=1693 exec_p99=2028 exec_max=2147
+t_34_interactive: RUN drv=pair ratio=500 mode=rtt conns=1 rate=33.92 W=40 busy=0.487 passes/s=4233 yields/s=2076 cap_dem/s=970 cap_yld/s=1009 cap_rst/s=969 cap_share=0.512 cap_runon/s=0 | spin wall=5.001 cpu=2.561 share=0.5121 rtt_min=218 rtt_mean=540 rtt_max=1218
+t_34_interactive: RUN drv=pair ratio=500 mode=unpinned conns=128 rate=334 W=113 busy=0.166 passes/s=7510 yields/s=4213 cap_dem/s=83 cap_yld/s=130 cap_rst/s=78 cap_share=0.027 cap_runon/s=0 | timer n=5000 late_avg=1845 late_p99=18595 late_max=90141 turn_avg=2028 turn_p99=20369 turn_max=90243 catchups=135
+# a07 ule
+t_34_interactive: RUN drv=pair ratio=1000 mode=timer conns=1 rate=37.1 W=85 busy=0.785 passes/s=135648 yields/s=45571 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | timer n=5000 late_avg=71 late_p99=543 late_max=1130 turn_avg=682 turn_p99=1289 turn_max=1763 catchups=0
+t_34_interactive: RUN drv=pair ratio=1000 mode=spin conns=1 rate=35.3 W=10 busy=0.769 passes/s=134309 yields/s=67514 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | spin wall=5.001 cpu=0.769 share=0.1538
+t_34_interactive: RUN drv=pair ratio=1000 mode=exec conns=1 rate=36.1 W=111 busy=0.796 passes/s=133015 yields/s=13222 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | exec n=200 exec_avg=4728 exec_p99=6003 exec_max=6051
+t_34_interactive: RUN drv=pair ratio=1000 mode=rtt conns=1 rate=35.51 W=1 busy=0.783 passes/s=135165 yields/s=67935 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | spin wall=5.001 cpu=0.698 share=0.1396 rtt_min=218 rtt_mean=280 rtt_max=531
+t_34_interactive: RUN drv=pair ratio=1000 mode=unpinned conns=128 rate=337 W=123 busy=0.283 passes/s=8876 yields/s=4998 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | timer n=5000 late_avg=1782 late_p99=20742 late_max=70289 turn_avg=2024 turn_p99=23634 turn_max=75420 catchups=144
+
+# lab share (kwq branch), rtt mode
+t_34_interactive: RUN drv=pair ratio=500 mode=rtt conns=1 rate=107.59 W=2 busy=0.485 passes/s=44156 yields/s=26810 cap_dem/s=967 cap_yld/s=967 cap_rst/s=967 cap_share=0.477 cap_runon/s=39 | spin wall=5.000 cpu=2.530 share=0.5059 rtt_min=218 rtt_mean=327 rtt_max=1000
+t_34_interactive: RUN drv=pair ratio=1000 mode=rtt conns=1 rate=138.23 W=15 busy=1.000 passes/s=167680 yields/s=91053 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | spin wall=5.008 cpu=0.025 share=0.0049 rtt_min=218 rtt_mean=227 rtt_max=312
+# lab tickfair
+t_34_interactive: RUN drv=pair ratio=500 mode=timer conns=1 rate=133 W=3 busy=0.888 passes/s=159695 yields/s=23365 cap_dem/s=953 cap_yld/s=35287 cap_rst/s=42 cap_share=0.067 cap_runon/s=0 | timer n=5000 late_avg=157 late_p99=517 late_max=537 turn_avg=281 turn_p99=623 turn_max=637 catchups=0
+t_34_interactive: RUN drv=pair ratio=500 mode=spin conns=1 rate=106 W=5 busy=0.486 passes/s=22193 yields/s=12527 cap_dem/s=969 cap_yld/s=1020 cap_rst/s=969 cap_share=0.492 cap_runon/s=0 | spin wall=5.000 cpu=2.551 share=0.5101
+t_34_interactive: RUN drv=pair ratio=500 mode=exec conns=1 rate=140 W=15 busy=0.995 passes/s=168852 yields/s=160 cap_dem/s=1026 cap_yld/s=81446 cap_rst/s=57 cap_share=0.006 cap_runon/s=0 | exec n=200 exec_avg=653 exec_p99=1025 exec_max=1030
+t_34_interactive: RUN drv=pair ratio=500 mode=rtt conns=1 rate=111.41 W=6 busy=0.483 passes/s=46215 yields/s=26749 cap_dem/s=936 cap_yld/s=973 cap_rst/s=936 cap_share=0.467 cap_runon/s=0 | spin wall=5.000 cpu=2.538 share=0.5075 rtt_min=218 rtt_mean=221 rtt_max=250
+t_34_interactive: RUN drv=pair ratio=500 mode=unpinned conns=32 rate=69.5 W=9 busy=0.136 passes/s=6172 yields/s=3600 cap_dem/s=154 cap_yld/s=161 cap_rst/s=154 cap_share=0.070 cap_runon/s=0 | timer n=5000 late_avg=1544 late_p99=26917 late_max=52698 turn_avg=1667 turn_p99=27094 turn_max=52801 catchups=191
+# lab ule
+t_34_interactive: RUN drv=pair ratio=1000 mode=timer conns=1 rate=145 W=3 busy=0.571 passes/s=98577 yields/s=51836 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | timer n=5000 late_avg=684 late_p99=31468 late_max=99876 turn_avg=2053 turn_p99=83650 turn_max=196001 catchups=80
+t_34_interactive: RUN drv=pair ratio=1000 mode=spin conns=1 rate=72.4 W=7 busy=0.473 passes/s=275293 yields/s=138440 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | spin wall=5.000 cpu=2.258 share=0.4516
+t_34_interactive: RUN drv=pair ratio=1000 mode=exec conns=1 rate=129 W=5 busy=0.727 passes/s=301231 yields/s=109622 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | exec n=200 exec_avg=23323 exec_p99=386227 exec_max=506267
+t_34_interactive: RUN drv=pair ratio=1000 mode=rtt conns=1 rate=117.60 W=1 busy=0.904 passes/s=566234 yields/s=284796 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | spin wall=5.005 cpu=0.152 share=0.0304 rtt_min=218 rtt_mean=243 rtt_max=375
+t_34_interactive: RUN drv=pair ratio=1000 mode=unpinned conns=32 rate=70.1 W=2 busy=0.309 passes/s=8618 yields/s=5078 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 cap_runon/s=0 | timer n=5000 late_avg=1487 late_p99=28164 late_max=65544 turn_avg=1634 turn_p99=29041 turn_max=65768 catchups=184

@@ -215,11 +215,15 @@ more.  "kwq:" marks terms this project defines.
   user thread for a full slice when saturated (KWQ.md S11 Missing 1).  Aliases: *relinquish* (`sched_relinquish(9)` is the
   no-demotion variant), *demote-yield* (earlier project text),
   *cond_resched* (Linux).
-- **CPU-share cap** (kwq) - the substitute for a bounded yield: a worker
-  that has been busy more than `cap_pct` of a window (`cap_window_us`)
-  while other threads are runnable on its CPU (`sched_runnable()`) sleeps
-  for `cap_sleep_us` with `pause_sbt(9)`; off by default (`cap_pct` 100).
-  From Mogul & Ramakrishnan's "limit on CPU usage" feedback (../POOLS.md).
+- **share limit** (kwq; "CPU-share cap" in earlier text) - the
+  substitute for a bounded yield: a worker may take `cap_permille`/1000
+  of its CPU's time per `cap_period_us` while other threads are runnable
+  there (`sched_runnable()`); over that it is an idle-priority thread
+  for the rest of the period, which ULE runs only when nothing else is
+  runnable, until a callout at the period's end raises it back; an
+  equal share by default (`cap_permille` 500).  From Mogul
+  & Ramakrishnan's "limit on CPU usage" feedback (../POOLS.md); SCHED.md
+  S6.3.
 - **tick** - one `hz` clock interrupt; `ticks` counts them.  kwq's *tick
   guard* forces a yield when a tick has elapsed since the last one, the
   safety net for over-long passes (inherited from if_pair's governor).

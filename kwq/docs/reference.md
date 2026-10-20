@@ -523,11 +523,15 @@ module is preloaded.  Out-of-range values are refused with `EINVAL`.
 | `limit` | RWTUN | any | 4096 | default per-CPU bound for queues created with `limit = 0`; applies to queues created afterwards |
 | `penalty_rounds` | RWTUN | 1 .. 1024 | 32 | how many quanta of debt a queue may accumulate, i.e. the longest parking |
 | `budget_check_every` | RWTUN | 1 .. 64 | 8 | how often `kwq_budget_left()` reads the clock; 1 is exact and expensive |
-| `cap_pct` | RWTUN | 1 .. 1000 | 100 (off) | CPU-share cap: above this busy fraction, with others runnable, the worker sleeps |
-| `cap_sleep_us` | RWTUN | 1 .. 1000000 | 100 | length of that sleep |
-| `cap_window_us` | RWTUN | 100 .. 10000000 | 10000 | window of the busy-fraction measurement |
+| `cap_permille` | RWTUN | 1 .. 1000 | 500 | share limit: the share of its CPU the worker keeps at kernel priority per period while other threads are runnable, in 1/1000; the rest of the period it is an idle-priority thread.  Equal share by default, 1000 = off (SCHED.md S6.3) |
+| `cap_period_us` | RWTUN | 100 .. 1000000 | 1000 | the share limit's period, the longest the CPU is given away at a time |
 | `yield_prio` | RW | class priority .. 223 | 56 (`PUSER`) | priority of the end-of-round yield.  223 lets every user thread run a full slice, which is the setting for the case where an interactive process turns CPU-bound and its latency spikes with `yields` normal and no kwq counter explaining them.  The one knob that is not a loader tunable |
 | `priority` | RD | | 1 (net), 2 (bulk), 56 (blocking) | the class's worker priority.  Every knob exists for `blocking` too, although the class has no workers |
+
+Service-wide (`kern.kwq.`): `clock` (RD) names the scheduler's tick source
+and its rate, `tsc`, `cntvct`, `timebase`, or the kernel's `cpu_ticks` as
+the fallback; `clock_fast` (RDTUN, default 1) set to 0 at load keeps
+`cpu_ticks()`, for A/B measurements (SCHED.md S15.2).
 
 The anti-gaming grace window (one round) is compile time.
 
@@ -541,7 +545,12 @@ The anti-gaming grace window (one round) is compile time.
 | `yields` | end-of-round yields that had a taker |
 | `tick_yields` | yields forced because a pass outlived a clock tick |
 | `handbacks` | rounds ended early because a higher class wanted the CPU |
-| `cap_sleeps` | sleeps taken by the CPU-share cap |
+| `switched` | passes during which the worker left the CPU (preempted or blocked); NET charges them wall time |
+| `cap_demotions` | periods in which the share limit was reached with other threads runnable |
+| `cap_yields` | times the worker gave the CPU away under the share limit |
+| `cap_restores` | period deadlines that raised a waiting worker back to its class priority |
+| `cap_ns` | wall time given away under the share limit |
+| `cap_runon` | passes that ended over the allowance with nothing else runnable: the limit did not bind |
 | `busy_ns` | CPU time inside handlers |
 | `idle_ns` | wall time asleep with nothing queued |
 | `round` | current round number (gauge) |
@@ -609,15 +618,16 @@ default build produces.
 | `park` | a queue skipped for owing time | `arg1` cpu, `arg2` deficit ns, zero or negative |
 | `budget-hit` | `kwq_budget_left()` answered 0 | `arg1` cpu |
 | `round-end` | worker finished a round | untranslated: `arg0` class, `arg1` cpu, `arg2` ring entries, `arg3` wall ns since the last round end |
-| `yield` | worker yielded | untranslated: `arg0` class, `arg1` cpu, `arg2` 0 round end, 1 tick guard |
+| `yield` | worker yielded | untranslated: `arg0` class, `arg1` cpu, `arg2` 0 round end, 1 tick guard, 2 share limit |
+| `cap` | the share limit (SCHED.md S6.3) | untranslated: `arg0` class, `arg1` cpu, `arg2` event (0 a pass begins under the limit, 1 allowance spent and CPU given away, 2 given away again, 3 period ended while over, 4 deadline callout ran), `arg3` ns into the period, `arg4` ns used of it, `arg5` the pass's budget ns (event 0) |
 | `idle` | worker about to sleep | untranslated: `arg0` class, `arg1` cpu, `arg2` busy ns since it woke |
 | `doorbell` | a (queue, CPU) placed with its worker | untranslated: `arg0` class, `arg1` cpu, `arg2` worker state when rung: 0 awake, 1 polling, 2 asleep |
 | `steal` | defined, never fires yet (P6) | `arg1` from cpu, `arg2` to cpu, `arg3` items |
 | `worker-block`, `worker-spawn`, `worker-exit` | defined, never fire yet (P7) | untranslated: `arg0` cpu, `arg1` workers, `arg2` runnable |
 
-`round-end`, `yield`, `idle` and `doorbell` are worker probes rather than
+`round-end`, `yield`, `cap`, `idle` and `doorbell` are worker probes rather than
 queue probes: they carry no `kwqinfo_t`, so their arguments start at
-`arg0` with the class id.  Twenty probes in total.
+`arg0` with the class id.  Twenty-one probes in total.
 
 Measured cost on a 128-core Neoverse-N1: probes compiled in but disabled
 cost 0.6 % of a saturated worker's throughput; an enabled probe costs
@@ -679,7 +689,7 @@ or installed so the dependency resolves.
 | DRR in CPU time: quantum, weights, carry, parking, penalty cap | implemented |
 | new list with boost, grace rule, debt rule, progress rule | implemented |
 | estimated budget check, clock glitch guard | implemented |
-| yield at round end and tick, hand-back between classes, CPU-share cap | implemented |
+| yield at round end and tick, hand-back between classes, share limit | implemented |
 | sysctl tree, 19 DTrace probes, translator, `show kwq` | implemented |
 | writable per-queue `limit` | implemented |
 | `kwq_cpu_for_hash()` remap for sparse CPU ids | implemented; the sparse path itself is **untested**, no such machine being available |

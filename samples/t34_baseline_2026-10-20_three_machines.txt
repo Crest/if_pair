@@ -1,0 +1,52 @@
+# tests/t_34_interactive.sh baselines, 2026-10-20, before the share limit
+# (kwq at yield_prio 56, kern.kwq.net.cap_permille not yet present, so ratio
+# 1000 = no limit; and the taskqueue driver).  One iperf3 flow; the victim
+# (tests/victim.c) is an ordinary timeshare process pinned to the worker's
+# CPU W with both iperf3 processes moved off it: timer = 1 kHz with 100 us
+# of work per wake (lateness / turnaround avg p99 max, us), spin = a
+# CPU-bound loop (its CPU share), exec = fork+exec of /usr/bin/true every
+# 20 ms (us each); unpinned = the timer unpinned under 2 x ncpu connections
+# (a07: 256 exceeded iperf3's 128-stream maximum, that run is void).
+# busy = the kwq worker's busy share of W from its counters.
+#
+# guest (4 vCPU bhyve, GENERIC-DEBUG, hz=100), kwq
+t_34_interactive: idle reference (unpinned): timer n=3000 late_avg=235 late_p99=294 late_max=675 turn_avg=340 turn_p99=401 turn_max=777 catchups=0
+t_34_interactive: idle reference (unpinned): spin wall=2.000 cpu=2.001 share=1.0006
+t_34_interactive: idle reference (unpinned): exec n=50 exec_avg=3713 exec_p99=4276 exec_max=4276
+t_34_interactive: RUN drv=pair ratio=1000 mode=timer conns=1 rate=8.98 W=0 busy=0.823 passes/s=24133 yields/s=9723 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | timer n=5000 late_avg=587 late_p99=7971 late_max=11964 turn_avg=1080 turn_p99=9081 turn_max=14753 catchups=5
+t_34_interactive: RUN drv=pair ratio=1000 mode=spin conns=1 rate=8.92 W=1 busy=0.794 passes/s=24234 yields/s=13107 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | spin wall=5.003 cpu=1.020 share=0.2039
+t_34_interactive: RUN drv=pair ratio=1000 mode=exec conns=1 rate=8.74 W=2 busy=0.846 passes/s=25245 yields/s=5112 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | exec n=200 exec_avg=11766 exec_p99=35539 exec_max=40807
+t_34_interactive: RUN drv=pair ratio=1000 mode=unpinned conns=8 rate=13.6 W=2 busy=0.180 passes/s=4956 yields/s=2929 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | timer n=5000 late_avg=1729 late_p99=32356 late_max=138258 turn_avg=1979 turn_p99=33580 turn_max=138463 catchups=166
+# guest, taskqueue driver
+t_34_interactive: RUN drv=pairtq ratio=tq mode=timer conns=1 rate=8.48 W=0 busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | timer n=5000 late_avg=373 late_p99=2810 late_max=5988 turn_avg=777 turn_p99=3491 turn_max=6445 catchups=0
+t_34_interactive: RUN drv=pairtq ratio=tq mode=spin conns=1 rate=4.69 W=3 busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | spin wall=5.001 cpu=4.651 share=0.9300
+t_34_interactive: RUN drv=pairtq ratio=tq mode=exec conns=1 rate=8.83 W=0 busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | exec n=200 exec_avg=8573 exec_p99=16202 exec_max=17526
+t_34_interactive: RUN drv=pairtq ratio=tq mode=unpinned conns=8 rate=13.9 W=3 busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | timer n=5000 late_avg=1599 late_p99=18251 late_max=52968 turn_avg=1832 turn_p99=19551 turn_max=53070 catchups=139
+
+# a07 (128-core Ampere Altra, GENERIC, hz=1000), kwq
+t_34_interactive: idle reference (unpinned): timer n=3000 late_avg=1 late_p99=3 late_max=9 turn_avg=101 turn_p99=105 turn_max=115 catchups=0
+t_34_interactive: idle reference (unpinned): spin wall=2.000 cpu=2.001 share=1.0005
+t_34_interactive: idle reference (unpinned): exec n=50 exec_avg=1250 exec_p99=1331 exec_max=1331
+t_34_interactive: RUN drv=pair ratio=1000 mode=timer conns=1 rate=35.3 W=95 busy=0.773 passes/s=133817 yields/s=43160 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | timer n=5000 late_avg=25 late_p99=128 late_max=392 turn_avg=638 turn_p99=790 turn_max=935 catchups=0
+t_34_interactive: RUN drv=pair ratio=1000 mode=spin conns=1 rate=34.5 W=49 busy=0.759 passes/s=130754 yields/s=65715 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | spin wall=5.000 cpu=0.812 share=0.1624
+t_34_interactive: RUN drv=pair ratio=1000 mode=exec conns=1 rate=34.9 W=14 busy=0.804 passes/s=137784 yields/s=14538 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | exec n=200 exec_avg=5344 exec_p99=6228 exec_max=6296
+t_34_interactive: RUN drv=pair ratio=1000 mode=unpinned conns=256 rate=FAILED W=- busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | timer n=5000 late_avg=1 late_p99=3 late_max=4 turn_avg=101 turn_p99=104 turn_max=107 catchups=0
+# a07, taskqueue driver
+t_34_interactive: RUN drv=pairtq ratio=tq mode=timer conns=1 rate=36.2 W=77 busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | timer n=5000 late_avg=17 late_p99=105 late_max=315 turn_avg=345 turn_p99=396 turn_max=538 catchups=0
+t_34_interactive: RUN drv=pairtq ratio=tq mode=spin conns=1 rate=19.6 W=102 busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | spin wall=5.000 cpu=4.958 share=0.9915
+t_34_interactive: RUN drv=pairtq ratio=tq mode=exec conns=1 rate=30.8 W=28 busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | exec n=200 exec_avg=1087 exec_p99=2225 exec_max=2335
+t_34_interactive: RUN drv=pairtq ratio=tq mode=unpinned conns=256 rate=FAILED W=- busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | timer n=5000 late_avg=1 late_p99=3 late_max=4 turn_avg=102 turn_p99=104 turn_max=107 catchups=0
+
+# lab (Ryzen 7 5800X, 16 threads, GENERIC, hz=1000), kwq
+t_34_interactive: idle reference (unpinned): timer n=3000 late_avg=1 late_p99=2 late_max=4 turn_avg=102 turn_p99=102 turn_max=104 catchups=0
+t_34_interactive: idle reference (unpinned): spin wall=2.000 cpu=2.000 share=1.0002
+t_34_interactive: idle reference (unpinned): exec n=50 exec_avg=386 exec_p99=450 exec_max=450
+t_34_interactive: RUN drv=pair ratio=1000 mode=timer conns=1 rate=135 W=1 busy=0.567 passes/s=134656 yields/s=68899 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | timer n=5000 late_avg=683 late_p99=16822 late_max=122656 turn_avg=2008 turn_p99=63440 turn_max=222360 catchups=100
+t_34_interactive: RUN drv=pair ratio=1000 mode=spin conns=1 rate=118 W=0 busy=0.794 passes/s=628386 yields/s=314898 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | spin wall=5.000 cpu=0.654 share=0.1309
+t_34_interactive: RUN drv=pair ratio=1000 mode=exec conns=1 rate=131 W=2 busy=0.651 passes/s=192291 yields/s=76928 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | exec n=200 exec_avg=27860 exec_p99=382003 exec_max=549606
+t_34_interactive: RUN drv=pair ratio=1000 mode=unpinned conns=32 rate=75.9 W=12 busy=0.168 passes/s=8479 yields/s=4869 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | timer n=5000 late_avg=1157 late_p99=36550 late_max=158237 turn_avg=1296 turn_p99=37026 turn_max=159636 catchups=130
+# lab, taskqueue driver
+t_34_interactive: RUN drv=pairtq ratio=tq mode=timer conns=1 rate=137 W=15 busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | timer n=5000 late_avg=502 late_p99=703 late_max=798 turn_avg=702 turn_p99=803 turn_max=1797 catchups=0
+t_34_interactive: RUN drv=pairtq ratio=tq mode=spin conns=1 rate=67.1 W=9 busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | spin wall=5.000 cpu=4.975 share=0.9949
+t_34_interactive: RUN drv=pairtq ratio=tq mode=exec conns=1 rate=119 W=6 busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | exec n=200 exec_avg=1042 exec_p99=1902 exec_max=1976
+t_34_interactive: RUN drv=pairtq ratio=tq mode=unpinned conns=32 rate=70.5 W=1 busy=0.000 passes/s=0 yields/s=0 cap_dem/s=0 cap_yld/s=0 cap_rst/s=0 cap_share=0.000 | timer n=5000 late_avg=1669 late_p99=27676 late_max=130924 turn_avg=1833 turn_p99=28201 turn_max=131035 catchups=190

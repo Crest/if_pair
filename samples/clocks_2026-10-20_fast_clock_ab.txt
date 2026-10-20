@@ -1,0 +1,50 @@
+# kwq_test `clocks` and the clock-read A/B, 2026-10-20, kwq branch ce53022
+# plus the clocks scenario and kwq_clock.c.  ns per call; "worker cpu warm"
+# is measured inside a handler after a 20 ms spin on the worker CPU, "cold"
+# is the first batch of 100 kwq_budget_left() calls on the CPU fresh from
+# idle.  budget_check_every (k) 1 reads the scheduler clock on every budget
+# call, 8 is the default (estimate between reads), 64 rarely reads.
+#
+# Raw reads (both machines, stable to the ns across all runs):
+#                        cpu_ticks  get_cyclecount  sbinuptime  getsbinuptime  cpu_tickrate
+# a07 (Altra, N1)            22           9             25            6             3-4
+# guest (Xeon D, bhyve)      11          11             24            3             3
+#
+# kwq_budget_left() on the warm worker CPU, A/B on one boot by the loader
+# tunable kern.kwq.clock_fast, interleaved 0 1 0 1, two runs each:
+#                   a07 clock_fast=0   a07 clock_fast=1   guest =0   guest =1
+# k=1                   37-38              16             28         27
+# k=8                   14                 11-12          15-16      15-17
+# k=64 (before)         10                 10             14-15      14-15
+# cold, k=1            137-144            20-58          34-90      33-152
+#
+# cost scenario, consumer busy ns per item (handler's own work included):
+# a07 k=1: 226, 275, 226, 316 (slow) vs 273, 222, 196, 238 (fast)
+# a07 k=8: 255, 218, 281, 210 (slow) vs 242, 252, 258, 254 (fast)
+#   -> run-to-run spread 196-316 on a07 for one configuration; the
+#      scenario cannot resolve a 3 ns change there.  hwpmc below.
+# guest k=1: 58, 55, 58, 54 (slow) vs 53, 52, 52, 52 (fast)
+# guest k=8: 44, 43, 45, 43 (slow) vs 42, 42, 44, 45 (fast)
+#
+# pingpong round trip ns (every enqueue wakes the worker):
+# a07: 3732, 3724, 3711, 3737 (slow) vs 3751, 3744, 3666, 3660 (fast)
+# guest: 11547, 11721, 11567, 11342 (slow) vs 11424, 12279, 11317, 11786 (fast)
+#
+# The 3.5x "cold" factor: a CPU fresh from idle ran everything (the bare
+# counter read included: 9 -> 19 ns, cpu_ticks 22 -> 80) 3.5x slower on a07
+# for longer than the benchmark's first 300 us, on every CPU tried (1, 2,
+# 5, 64, 127); the guest's host idles at 816 of 2195 MHz (dev.cpu.0.freq)
+# and has SMT siblings.  Until the warm-up was added the budget numbers
+# were bimodal between runs.
+#
+# hwpmc on the worker CPU (1) during the cost scenario at k=8, a07, 2 s of
+# each 3 s run, clock_fast 0 1 0 1 0 1 (pmc_cost.sh):
+# clock_fast=0: 3.002 G cycles/s, 1.999 G instr/s, IPC 0.67; items/s 2296772; busy ns/item 219; kwq glitches 0
+# clock_fast=1: 3.002 G cycles/s, 1.894 G instr/s, IPC 0.63; items/s 2508292; busy ns/item 219; kwq glitches 2
+# clock_fast=0: 3.001 G cycles/s, 1.944 G instr/s, IPC 0.65; items/s 2272191; busy ns/item 253; kwq glitches 0
+# clock_fast=1: 3.002 G cycles/s, 1.897 G instr/s, IPC 0.63; items/s 2499139; busy ns/item 218; kwq glitches 3
+# clock_fast=0: 3.002 G cycles/s, 1.944 G instr/s, IPC 0.65; items/s 2170811; busy ns/item 242; kwq glitches 1
+# clock_fast=1: 3.002 G cycles/s, 1.900 G instr/s, IPC 0.63; items/s 2388964; busy ns/item 229; kwq glitches 2
+# -> instructions per item 856-895 -> 755-795 (-100, -12 %); cycles per
+#    item 1305-1382 -> 1197-1256 (-8 %); items/s +9 %.  The glitch count is
+#    the S13 guard catching the kernel ticker's 2^32 jump at a re-base.

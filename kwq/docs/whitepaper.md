@@ -457,10 +457,14 @@ demote the worker for its lifetime.
 
 The tick guard spans passes rather than being anchored at pass entry, so
 a chain of individually-small passes cannot add up to unbounded
-occupancy.  CPU-bound userland, which a one-decision yield does not
-help, is served by the CPU-share cap instead: above `cap_pct` busy over
-`cap_window_us`, with something else runnable, the worker sleeps
-`cap_sleep_us`.  The cap is off by default.
+occupancy.  Userland on a CPU the worker saturates, which a one-decision
+yield does not help, is served by the share limit instead: over
+`cap_permille`/1000 of a `cap_period_us` period, with something else
+runnable, the worker becomes an idle-priority thread for the rest of
+the period, which ULE runs only when nothing else wants the CPU, and a
+callout at the period's end raises it back while it waits on the run
+queue, so the time given away is bounded by the period rather than by
+a ULE slice.  An equal share by default.
 
 Between classes the arbitration is strict priority by thread priority,
 plus a per-CPU hand-back flag so that a BULK round ends as soon as a
@@ -469,11 +473,16 @@ quantum.
 
 ### 5.8 The clock glitch guard
 
-On the project's Ampere Altra, `cpu_ticks()` is not monotonic: the
-25 MHz generic timer reads a few ticks backwards often enough that
-`tc_cpu_ticks()` mistakes it for a 32-bit wrap and adds 2^32 ticks,
-171.8 seconds, several times a minute per busy CPU.  Any scheduler built
-on CPU-time deltas has to survive that.  kwq treats a negative delta or
+On the project's Ampere Altra, `cpu_ticks()` is not monotonic.  The
+kernel builds it from a 32-bit timecounter read and takes any decrease
+for a wrap, in a critical section that leaves interrupts enabled, while
+the clock interrupt's `statclock()` reads the same ticker; a thread
+reading it with interrupts enabled can therefore find the stored last
+value newer than its own and add 2^32 ticks, 171.8 seconds, to its
+CPU's base for good.  The counter itself never steps back, a probe
+showed in 66 million reads; the first explanation, backwards reads,
+was wrong.  Any scheduler built on CPU-time deltas has to survive that
+kind of thing, and kwq now also avoids the exposed read.  kwq treats a negative delta or
 one over one second as a glitch, charges the pass one quantum, and
 counts it in `glitches`, which an operator can read as "this machine's
 CPU-time accounting is broken".  The kernel-side issue is reported

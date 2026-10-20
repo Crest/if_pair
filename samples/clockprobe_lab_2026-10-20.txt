@@ -1,0 +1,48 @@
+# tools/clockprobe on lab (AMD Ryzen 7 5800X, 8 cores / 16 threads, invariant
+# TSC 3.79 GHz, timecounter TSC-low, FreeBSD 15.1-p4 custom GENERIC, hz=1000),
+# 2026-10-20: single-CPU tests on cpu 2, cross-CPU with cpu 15, 2 M reads per
+# scan, 20 s scans with interrupts enabled.
+clockprobe: amd64, 16 CPUs, hz 1000, timecounter TSC-low at 1896424207 Hz, cpu_tickrate 3792848415 Hz, get_cyclecount 3792827705 Hz measured; single-CPU tests on cpu 2
+clockprobe: cost rdtsc: 7 ns per read warm, 10 ns fresh from idle (first 100 reads after 50 ms asleep)
+clockprobe: cost lfence; rdtsc: 14 ns per read warm, 19 ns fresh from idle (first 100 reads after 50 ms asleep)
+clockprobe: cost rdtscp: 15 ns per read warm, 20 ns fresh from idle (first 100 reads after 50 ms asleep)
+clockprobe: cost get_cyclecount(): 7 ns per read warm, 10 ns fresh from idle (first 100 reads after 50 ms asleep)
+clockprobe: cost cpu_ticks(): 7 ns per read warm, 10 ns fresh from idle (first 100 reads after 50 ms asleep)
+clockprobe: cost timecounter raw 32-bit: 16 ns per read warm, 21 ns fresh from idle (first 100 reads after 50 ms asleep)
+clockprobe: cost sbinuptime(): 18 ns per read warm, 25 ns fresh from idle (first 100 reads after 50 ms asleep)
+clockprobe: scan rdtsc: 2000000 reads, same 0, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 1672 ticks
+clockprobe:   step histogram (ticks): [1-1]:449605 [32-63]:1533060 [64-127]:17319 [128-255]:1 [1024-2047]:15
+clockprobe: scan lfence; rdtsc: 2000000 reads, same 0, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 38 max step 2052 ticks
+clockprobe:   step histogram (ticks): [32-63]:589605 [64-127]:1410376 [1024-2047]:18 [2048-4095]:1
+clockprobe: scan rdtscp: 2000000 reads, same 0, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 38 max step 1938 ticks
+clockprobe:   step histogram (ticks): [32-63]:529385 [64-127]:1470596 [1024-2047]:19
+clockprobe: scan get_cyclecount(): 2000000 reads, same 0, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 2546 ticks
+clockprobe:   step histogram (ticks): [1-1]:395898 [32-63]:1532297 [64-127]:71788 [1024-2047]:16 [2048-4095]:1
+clockprobe: scan cpu_ticks(): 2000000 reads, same 0, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 2013 ticks
+clockprobe:   step histogram (ticks): [1-1]:401963 [32-63]:1509173 [64-127]:88848 [1024-2047]:16
+clockprobe: scan timecounter raw 32-bit: 2000000 reads, same 0, backward 0 (max 0 ticks, total 0), wraps 0, min step 19 max step 1026 ticks
+clockprobe:   step histogram (ticks): [16-31]:456783 [32-63]:1543198 [512-1023]:18 [1024-2047]:1
+clockprobe: scan sbinuptime(): 2000000 reads, same 0, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 43 max step 18159 ticks
+clockprobe:   step histogram (ticks): [32-63]:49 [64-127]:1884288 [128-255]:115637 [256-511]:7 [1024-2047]:15 [2048-4095]:3 [16384-32767]:1
+clockprobe: frequency rdtsc: measured 3792828160 Hz (nominal 3792848415 Hz, -5 ppm)
+clockprobe: frequency lfence; rdtsc: measured 3792828044 Hz (nominal 3792848415 Hz, -5 ppm)
+clockprobe: frequency rdtscp: measured 3792827742 Hz (nominal 3792848415 Hz, -5 ppm)
+clockprobe: frequency get_cyclecount(): measured 3792828051 Hz (no nominal rate; 0 Hz, 0 ppm)
+clockprobe: frequency cpu_ticks(): measured 3792827786 Hz (nominal 3792848415 Hz, -5 ppm)
+clockprobe: frequency timecounter raw 32-bit: measured 1896414028 Hz (nominal 1896424207 Hz, -5 ppm)
+clockprobe: frequency sbinuptime(): measured 4294966974 Hz (nominal 4294967296 Hz, 0 ppm)
+clockprobe: scan with interrupts on, 20 s, rdtsc: 806902035 reads, same 0, backward 0 (max 0 ticks), jumps of a second or more 0 (max 0 ticks)
+clockprobe: scan with interrupts on, 20 s, cpu_ticks(): 807169818 reads, same 0, backward 0 (max 0 ticks), jumps of a second or more 0 (max 0 ticks)
+clockprobe: cpu_ticks() extension base relative to cpu 0, in periods of 2^32 ticks (1 s): 0 CPUs behind, 0 ahead
+clockprobe: cross-CPU rdtsc, writer cpu 2 reader cpu 15: 199976 handoffs, reader minus writer min 0 max 1862 ticks, negative 0 (0.00%)
+clockprobe: cross-CPU rdtsc, writer cpu 15 reader cpu 2: 199979 handoffs, reader minus writer min 38 max 1938 ticks, negative 0 (0.00%)
+clockprobe: cross-CPU lfence; rdtsc, writer cpu 2 reader cpu 15: 199981 handoffs, reader minus writer min 152 max 1938 ticks, negative 0 (0.00%)
+clockprobe: cross-CPU lfence; rdtsc, writer cpu 15 reader cpu 2: 199972 handoffs, reader minus writer min 114 max 1938 ticks, negative 0 (0.00%)
+clockprobe: cross-CPU rdtscp, writer cpu 2 reader cpu 15: 199980 handoffs, reader minus writer min 114 max 1900 ticks, negative 0 (0.00%)
+clockprobe: cross-CPU rdtscp, writer cpu 15 reader cpu 2: 199984 handoffs, reader minus writer min 114 max 1672 ticks, negative 0 (0.00%)
+clockprobe: cross-CPU get_cyclecount(), writer cpu 2 reader cpu 15: 199975 handoffs, reader minus writer min 38 max 1216 ticks, negative 0 (0.00%)
+clockprobe: cross-CPU get_cyclecount(), writer cpu 15 reader cpu 2: 199978 handoffs, reader minus writer min 38 max 1444 ticks, negative 0 (0.00%)
+clockprobe: cross-CPU cpu_ticks(), writer cpu 2 reader cpu 15: 199974 handoffs, reader minus writer min 38 max 2014 ticks, negative 0 (0.00%)
+clockprobe: cross-CPU cpu_ticks(), writer cpu 15 reader cpu 2: 199887 handoffs, reader minus writer min 38 max 1634 ticks, negative 0 (0.00%)
+clockprobe: all-CPU scan rdtsc: 0 of 16 CPUs stepped backward, 0 steps in total, worst cpu -1 with 0
+clockprobe: done

@@ -1,0 +1,30 @@
+# NET wall-time accounting (SCHED.md S1a.4 as amended 2026-10-20) measured on
+# the three machines, kwq branch ce53022 plus the clock work of 10-20.
+# "switched" = passes during which the worker left the CPU (td_runtime
+# changed between pass begin and end), charged wall time.
+#
+# guest (bhyve, 4 vCPU, GENERIC-DEBUG, hz=100): kwq ATF 22/22.
+#   fairness 1:1 (cyc_a 3.18 G, cyc_b 3.27 G), 2:1 (4.24 G / 2.14 G), latency
+#   light queue 248 us, overrun as before; cost 44 ns/item; pingpong 11.1-11.3
+#   us; switched 1700 of 709,531 passes (0.24 %) over the scenarios.
+#   t_31 flood 24.1 us/packet, 1 kHz 213 us.  t_30 timers=1 clean 7.39 Gbit/s
+#   with switched/s 5682 of 22,749 passes/s (25 %: the receiver on the worker's
+#   vCPU holds socket locks the worker blocks on); spinner 9.19 Gbit/s, 389/s.
+#
+# a07 (Altra): fairness 1:1 (38.26 M / 38.41 M ticks), 2:1 (50.9 M / 25.5 M),
+#   light queue 210 us, overrun as before; cost (cpu 1, producer cpu 3) 136-147
+#   ns/item at 3 items/pass, switched 160-192 of ~3.3 M passes per run; the
+#   same scenario sometimes settles at 20-24 ns/item with large passes (the
+#   consumer fell behind the producer at the start): report items per pass.
+#   pingpong 3678-3684 ns (3711-3751 before: the re-base read is gone from the
+#   wake path).  t_31 flood 7.56 us/packet, 1 kHz 21 us.  t_30: 35.2 / 37.3
+#   (spinner) / 33.2 / 36.9 Gbit/s, switched/s 75-84 of 127-143 k passes/s
+#   (0.06 %), with or without a spinner on the worker CPU.
+#
+# lab (Ryzen 5800X, worker cpu 2, producer cpu 4): fairness 1:1 (5.710 G /
+#   5.715 G), 2:1 (7.62 G / 3.81 G), light queue 201 us; cost 28 ns/item;
+#   pingpong 1197-1238 ns (1306-1625 before); switched 2180 of 30.0 M passes
+#   (0.007 %).  t_31 flood 3.73 us/packet, 1 kHz 5 us.  t_30 timers=1 clean
+#   143 Gbit/s at 329 k passes/s, 5 items/pass, 1.7 k wakeups/s (worker cpu 10)
+#   and 80 Gbit/s at 68 k wakeups/s (worker cpu 0, shared with the sender's
+#   SMT sibling): placement on an SMT part is the dominant variable.

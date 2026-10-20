@@ -1,0 +1,104 @@
+# tools/clockprobe on a07 (128-core Ampere Altra, Neoverse N1 r3p1, 15.1-p5
+# GENERIC, hz=1000), 2026-10-20, first version of the probe (single-CPU
+# tests on cpu 1, cross-CPU with cpu 127, 2 M reads per scan).  Kernel
+# message buffer timestamps are seconds of uptime.
+[314632.641971] clockprobe: no FEAT_ECV: CNTVCTSS_EL0 not available
+[314632.855243] clockprobe: aarch64, 128 CPUs, hz 1000, timecounter ARM MPCore Timecounter at 25000000 Hz, cpu_tickrate 25000000 Hz, get_cyclecount 24999789 Hz measured; single-CPU tests on cpu 1
+[314632.888131] clockprobe: cost cntvct_el0 (bare mrs): 9 ns per read warm, 20 ns fresh from idle (first 100 reads after 50 ms asleep)
+[314632.965278] clockprobe: cost cntvct_el0 (isb; mrs): 18 ns per read warm, 55 ns fresh from idle (first 100 reads after 50 ms asleep)
+[314633.042280] clockprobe: cost cntpct_el0 (isb; mrs): 18 ns per read warm, 55 ns fresh from idle (first 100 reads after 50 ms asleep)
+[314633.119243] clockprobe: cost get_cyclecount(): 9 ns per read warm, 20 ns fresh from idle (first 100 reads after 50 ms asleep)
+[314633.195425] clockprobe: cost cpu_ticks(): 24 ns per read warm, 86 ns fresh from idle (first 100 reads after 50 ms asleep)
+[314633.272291] clockprobe: cost timecounter raw 32-bit: 20 ns per read warm, 77 ns fresh from idle (first 100 reads after 50 ms asleep)
+[314633.350309] clockprobe: cost sbinuptime(): 25 ns per read warm, 86 ns fresh from idle (first 100 reads after 50 ms asleep)
+[314633.447755] clockprobe: scan cntvct_el0 (bare mrs): 2000000 reads, same 1486613, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 26 ticks
+[314633.467264] clockprobe:   step histogram (ticks): [1-1]:513368 [4-7]:2 [8-15]:14 [16-31]:3
+[314633.536450] clockprobe: scan cntvct_el0 (isb; mrs): 2000000 reads, same 944336, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 34 ticks
+[314633.549988] clockprobe:   step histogram (ticks): [1-1]:1055645 [8-15]:11 [16-31]:7 [32-63]:1
+[314633.624088] clockprobe: scan cntpct_el0 (isb; mrs): 2000000 reads, same 944334, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 108 ticks
+[314633.637713] clockprobe:   step histogram (ticks): [1-1]:1055647 [8-15]:12 [16-31]:5 [64-127]:2
+[314633.685550] clockprobe: scan get_cyclecount(): 2000000 reads, same 1486758, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 26 ticks
+[314633.698741] clockprobe:   step histogram (ticks): [1-1]:513223 [4-7]:4 [8-15]:12 [16-31]:3
+[314633.782176] clockprobe: scan cpu_ticks(): 2000000 reads, same 588294, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 36 ticks
+[314633.794846] clockprobe:   step histogram (ticks): [1-1]:1411656 [2-3]:11 [4-7]:20 [8-15]:7 [16-31]:10 [32-63]:2
+[314633.870600] clockprobe: scan timecounter raw 32-bit: 2000000 reads, same 825759, backward 0 (max 0 ticks, total 0), wraps 0, min step 1 max step 34 ticks
+[314633.890348] clockprobe:   step histogram (ticks): [1-1]:1174222 [8-15]:7 [16-31]:11 [32-63]:1
+[314633.985705] clockprobe: scan sbinuptime(): 2000000 reads, same 296290, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 171 max step 6184 ticks
+[314633.998810] clockprobe:   step histogram (ticks): [128-255]:1703638 [256-511]:15 [512-1023]:34 [1024-2047]:7 [2048-4095]:10 [4096-8191]:6
+[314635.046260] clockprobe: frequency cntvct_el0 (bare mrs): measured 24999797 Hz (nominal 25000000 Hz, -8 ppm)
+[314636.108255] clockprobe: frequency cntvct_el0 (isb; mrs): measured 24999797 Hz (nominal 25000000 Hz, -8 ppm)
+[314637.176241] clockprobe: frequency cntpct_el0 (isb; mrs): measured 24999796 Hz (nominal 25000000 Hz, -8 ppm)
+[314638.244240] clockprobe: frequency get_cyclecount(): measured 24999797 Hz (no nominal rate0 Hz, 0 ppm)
+[314639.287748] clockprobe: frequency cpu_ticks(): measured 24999796 Hz (nominal 25000000 Hz, -8 ppm)
+[314640.313749] clockprobe: frequency timecounter raw 32-bit: measured 24999795 Hz (nominal 25000000 Hz, -8 ppm)
+[314641.339749] clockprobe: frequency sbinuptime(): measured 4294966792 Hz (nominal 4294967296 Hz, 0 ppm)
+[314641.358792] clockprobe: cross-CPU cntvct_el0 (bare mrs), writer cpu 1 reader cpu 127: 499 handoffs, reader minus writer min 1 max 16 ticks, negative 0 (0.00%)
+[314641.381794] clockprobe: cross-CPU cntvct_el0 (bare mrs), writer cpu 127 reader cpu 1: 12882 handoffs, reader minus writer min -5 max 12 ticks, negative 2882 (22.37%)
+[314641.414792] clockprobe: cross-CPU cntvct_el0 (isb; mrs), writer cpu 1 reader cpu 127: 31370 handoffs, reader minus writer min 1 max 5 ticks, negative 0 (0.00%)
+[314641.439792] clockprobe: cross-CPU cntvct_el0 (isb; mrs), writer cpu 127 reader cpu 1: 31348 handoffs, reader minus writer min 1 max 11 ticks, negative 0 (0.00%)
+[314641.470792] clockprobe: cross-CPU cntpct_el0 (isb; mrs), writer cpu 1 reader cpu 127: 31810 handoffs, reader minus writer min 1 max 6 ticks, negative 0 (0.00%)
+[314641.495792] clockprobe: cross-CPU cntpct_el0 (isb; mrs), writer cpu 127 reader cpu 1: 30862 handoffs, reader minus writer min 1 max 11 ticks, negative 0 (0.00%)
+[314641.522792] clockprobe: cross-CPU get_cyclecount(), writer cpu 1 reader cpu 127: 1085 handoffs, reader minus writer min 0 max 17 ticks, negative 0 (0.00%)
+[314641.544792] clockprobe: cross-CPU get_cyclecount(), writer cpu 127 reader cpu 1: 12783 handoffs, reader minus writer min -65 max 14 ticks, negative 2712 (21.21%)
+[314641.580792] clockprobe: cross-CPU cpu_ticks(), writer cpu 1 reader cpu 127: 67516 handoffs, reader minus writer min -545460846591 max -545460846584 ticks, negative 67516 (100.00%)
+[314641.609798] clockprobe: cross-CPU cpu_ticks(), writer cpu 127 reader cpu 1: 51118 handoffs, reader minus writer min 545460846593 max 545460846607 ticks, negative 0 (0.00%)
+[314642.936246] clockprobe: all-CPU scan cntvct_el0 (bare mrs): 0 of 128 CPUs stepped backward, 0 steps in total, worst cpu -1 with 0
+[314642.943708] clockprobe: done
+[315412.235188] clockprobe: aarch64, 128 CPUs, hz 1000, timecounter ARM MPCore Timecounter at 25000000 Hz, cpu_tickrate 25000000 Hz, get_cyclecount 24999789 Hz measured; single-CPU tests on cpu 1
+[315412.268075] clockprobe: cost cntvct_el0 (bare mrs): 9 ns per read warm, 20 ns fresh from idle (first 100 reads after 50 ms asleep)
+[315412.345222] clockprobe: cost cntvct_el0 (isb; mrs): 18 ns per read warm, 54 ns fresh from idle (first 100 reads after 50 ms asleep)
+[315412.422225] clockprobe: cost cntpct_el0 (isb; mrs): 18 ns per read warm, 54 ns fresh from idle (first 100 reads after 50 ms asleep)
+[315412.505190] clockprobe: cost get_cyclecount(): 9 ns per read warm, 20 ns fresh from idle (first 100 reads after 50 ms asleep)
+[315412.582247] clockprobe: cost cpu_ticks(): 24 ns per read warm, 87 ns fresh from idle (first 100 reads after 50 ms asleep)
+[315412.659236] clockprobe: cost timecounter raw 32-bit: 20 ns per read warm, 75 ns fresh from idle (first 100 reads after 50 ms asleep)
+[315412.739256] clockprobe: cost sbinuptime(): 25 ns per read warm, 90 ns fresh from idle (first 100 reads after 50 ms asleep)
+[315412.821303] clockprobe: scan cntvct_el0 (bare mrs): 500000 reads, same 371420, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 26 ticks
+[315412.834754] clockprobe:   step histogram (ticks): [1-1]:128576 [8-15]:3 [16-31]:1
+[315412.876745] clockprobe: scan cntvct_el0 (isb; mrs): 500000 reads, same 236077, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 35 ticks
+[315412.895316] clockprobe:   step histogram (ticks): [1-1]:263919 [16-31]:3 [32-63]:1
+[315412.932124] clockprobe: scan cntpct_el0 (isb; mrs): 500000 reads, same 236078, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 35 ticks
+[315412.951338] clockprobe:   step histogram (ticks): [1-1]:263918 [8-15]:2 [16-31]:1 [32-63]:1
+[315412.983560] clockprobe: scan get_cyclecount(): 500000 reads, same 370319, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 27 ticks
+[315413.004961] clockprobe:   step histogram (ticks): [1-1]:129677 [4-7]:1 [8-15]:1 [16-31]:2
+[315413.045581] clockprobe: scan cpu_ticks(): 500000 reads, same 156059, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 1 max step 30 ticks
+[315413.063630] clockprobe:   step histogram (ticks): [1-1]:343932 [2-3]:3 [4-7]:2 [8-15]:2 [16-31]:2
+[315413.102886] clockprobe: scan timecounter raw 32-bit: 500000 reads, same 207517, backward 0 (max 0 ticks, total 0), wraps 0, min step 1 max step 29 ticks
+[315413.112881] clockprobe:   step histogram (ticks): [1-1]:292478 [2-3]:1 [8-15]:3 [16-31]:1
+[315413.156810] clockprobe: scan sbinuptime(): 500000 reads, same 73461, backward 0 (max 0 ticks, total 0), false wraps the kernel's 32-bit extension would see: 0, min step 171 max step 3608 ticks
+[315413.169741] clockprobe:   step histogram (ticks): [128-255]:426476 [256-511]:45 [512-1023]:14 [1024-2047]:2 [2048-4095]:2
+[315414.241185] clockprobe: frequency cntvct_el0 (bare mrs): measured 24999796 Hz (nominal 25000000 Hz, -8 ppm)
+[315415.309186] clockprobe: frequency cntvct_el0 (isb; mrs): measured 24999794 Hz (nominal 25000000 Hz, -8 ppm)
+[315416.377185] clockprobe: frequency cntpct_el0 (isb; mrs): measured 24999795 Hz (nominal 25000000 Hz, -8 ppm)
+[315417.445186] clockprobe: frequency get_cyclecount(): measured 24999796 Hz (no nominal rate; 0 Hz, 0 ppm)
+[315418.496218] clockprobe: frequency cpu_ticks(): measured 24999793 Hz (nominal 25000000 Hz, -8 ppm)
+[315419.563187] clockprobe: frequency timecounter raw 32-bit: measured 24999795 Hz (nominal 25000000 Hz, -8 ppm)
+[315420.594695] clockprobe: frequency sbinuptime(): measured 4294966794 Hz (nominal 4294967296 Hz, 0 ppm)
+[315440.599731] clockprobe: scan with interrupts on, 20 s, cntvct_el0 (bare mrs): 599661349 reads, same 149519162, backward 0 (max 0 ticks), jumps of a second or more 0 (max 0 ticks)
+[315460.611447] clockprobe: scan with interrupts on, 20 s, cpu_ticks(): 387197418 reads, same 0, backward 0 (max 0 ticks), jumps of a second or more 77 (max 4294967297 ticks)
+[315460.623274] clockprobe: cpu_ticks() extension base relative to cpu 0, in periods of 2^32 ticks (171 s): 9 CPUs behind, 79 ahead; cpu:periods 1:205 2:357 3:3 4:3 5:3 6:1 9:3 10:2 12:2 14:1 15:4 16:-1 17:-1 18:4 20:-1 21:3 22:2 25:2 27:2 28:3 29:2 30:4 31:1 35:1 36:3 37:4 38:1 39:4 40:3 41:2 43:2 44:4 46:1 48:1 49:-1 50:3 51:1
+[315460.662736] clockprobe: cross-CPU cntvct_el0 (bare mrs), writer cpu 1 reader cpu 127: 13261 handoffs, reader minus writer min -4 max 22 ticks, negative 4244 (32.00%)
+[315460.685736] clockprobe: cross-CPU cntvct_el0 (bare mrs), writer cpu 127 reader cpu 1: 13074 handoffs, reader minus writer min -5 max 20 ticks, negative 3909 (29.89%)
+[315460.711736] clockprobe: cross-CPU cntvct_el0 (isb; mrs), writer cpu 1 reader cpu 127: 30488 handoffs, reader minus writer min 1 max 27 ticks, negative 0 (0.00%)
+[315460.736736] clockprobe: cross-CPU cntvct_el0 (isb; mrs), writer cpu 127 reader cpu 1: 33008 handoffs, reader minus writer min 1 max 16 ticks, negative 0 (0.00%)
+[315460.764736] clockprobe: cross-CPU cntpct_el0 (isb; mrs), writer cpu 1 reader cpu 127: 31553 handoffs, reader minus writer min 1 max 5 ticks, negative 0 (0.00%)
+[315460.789736] clockprobe: cross-CPU cntpct_el0 (isb; mrs), writer cpu 127 reader cpu 1: 32531 handoffs, reader minus writer min 1 max 12 ticks, negative 0 (0.00%)
+[315460.812735] clockprobe: cross-CPU get_cyclecount(), writer cpu 1 reader cpu 127: 12743 handoffs, reader minus writer min -4 max 16 ticks, negative 3071 (24.09%)
+[315460.835736] clockprobe: cross-CPU get_cyclecount(), writer cpu 127 reader cpu 1: 12550 handoffs, reader minus writer min -10 max 15 ticks, negative 2895 (23.06%)
+[315460.864736] clockprobe: cross-CPU cpu_ticks(), writer cpu 1 reader cpu 127: 67498 handoffs, reader minus writer min -876173328383 max -876173328376 ticks, negative 67498 (100.00%)
+[315460.903736] clockprobe: cross-CPU cpu_ticks(), writer cpu 127 reader cpu 1: 67074 handoffs, reader minus writer min 876173328385 max 876173328406 ticks, negative 0 (0.00%)
+[315461.724169] clockprobe: all-CPU scan cntvct_el0 (bare mrs): 0 of 128 CPUs stepped backward, 0 steps in total, worst cpu -1 with 0
+[315461.731631] clockprobe: done
+# (77 lines "cpu_ticks() jumped forward by 4294967297 ticks (171 s) at read N" omitted: reads 17763004 .. 386731441 of 387197418)
+#
+# Second run, same machine, with the interrupt-enabled scan (20 s) and the
+# per-CPU extension lag.  Reading: the counter never steps back; the
+# kernel's tc_cpu_ticks() does jump by a period, 77 times in 20 s on cpu 1
+# while the probe called it 19 M times per second: statclock() reads the
+# ticker from the clock interrupt (kern_clock.c, "new_switchtime =
+# cpu_ticks()"), and tc_cpu_ticks() runs in a critical section with
+# interrupts enabled, so an interrupt between a thread's read of the
+# counter and its store of "last" leaves "last" newer than the thread's
+# value, which the thread then takes for a 32-bit wrap.  Every such event
+# adds 2^32 ticks (171.8 s) to that CPU's ticker for good.  Idle CPUs lose
+# periods instead (a wrap that passes with no read on the CPU is not seen).
+# cpu 1 and cpu 2 are the CPUs the kwq benchmarks have used for weeks.

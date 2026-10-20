@@ -44,9 +44,8 @@ handler rejects values outside its range with EINVAL.
 | `penalty_rounds` (RWTUN) | 1 .. 1024 | 32 | how many rounds a queue can be parked for overrunning its budget, in quanta of debt.  Smaller forgives a misbehaving handler sooner |
 | `budget_check_every` (RWTUN) | 1 .. 64 | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; between reads it estimates.  1 = a clock read per call (exact, expensive with cheap items) |
 | `yield_prio` (RW) | class priority .. 223 | 56 (PUSER) | the priority the worker yields at after a round when something else is runnable.  223 lets every user thread run a full time slice per round |
-| `cap_pct` (RWTUN) | 1 .. 1000 | 100 (off) | CPU-share cap: when the worker's busy fraction over `cap_window_us` exceeds this and other threads are runnable, it sleeps `cap_sleep_us`.  100 or more = off |
-| `cap_sleep_us` (RWTUN) | 1 .. 1000000 | 100 | length of that sleep |
-| `cap_window_us` (RWTUN) | 100 .. 10000000 | 10000 | window of the busy-fraction measurement |
+| `cap_permille` (RWTUN) | 1 .. 1000 | 500 | share limit: the share of its CPU the worker keeps at kernel priority per `cap_period_us` while other threads are runnable there, in 1/1000; for the rest of the period it is an idle-priority thread, so anything that wakes preempts it and it runs only when the CPU would otherwise idle.  The default is an equal share; 1000 turns it off (SCHED.md S6.3) |
+| `cap_period_us` (RWTUN) | 100 .. 1000000 | 1000 | the period of the share limit, and the longest the CPU is given away at a time |
 
 Examples:
 
@@ -56,8 +55,10 @@ Examples:
     # a client that legitimately queues deep: raise the default before it is created
     sysctl kern.kwq.bulk.limit=16384
 
-    # confine a runaway BULK class to two thirds of its CPUs when others compete
-    sysctl kern.kwq.bulk.cap_pct=66
+    # a dedicated router: NET workers keep the whole CPU against anything
+    sysctl kern.kwq.net.cap_permille=1000
+    # a shared box where the network is a background duty: a tenth
+    sysctl kern.kwq.net.cap_permille=100
 
     # preloaded module: the same in /boot/loader.conf
     kern.kwq.net.quantum_us="500"
@@ -74,6 +75,10 @@ The grace window of the anti-gaming rule (one round) is compile time.
     kern.kwq.ncpu           CPUs with workers
     kern.kwq.nqueues        queues currently created, active or not
     kern.kwq.<class>.priority   scheduler priority of the class's workers (net 1, bulk 2)
+    kern.kwq.clock          the scheduler's tick source and rate: "cntvct 25000000 Hz",
+                            "tsc 2194914621 Hz", "timebase ...", or "cpu_ticks ..." (the
+                            kernel's ticker, the fallback); SCHED.md S15.2
+    kern.kwq.clock_fast     loader tunable, default 1: 0 keeps cpu_ticks() (A/B runs)
 
 ## 4. Per-worker counters: `kern.kwq.<class>.cpu.<N>.`
 
@@ -85,7 +90,12 @@ The grace window of the anti-gaming rule (one round) is compile time.
 | `yields` | end-of-round yields taken because something else was runnable |
 | `tick_yields` | yields forced because a pass outlived a clock tick |
 | `handbacks` | rounds ended early because a higher class waited on this CPU |
-| `cap_sleeps` | sleeps taken by the CPU-share cap |
+| `switched` | passes during which the worker left the CPU, preempted or blocked on a lock; NET charges them wall time (SCHED.md S1a.4) |
+| `cap_demotions` | periods in which the share limit was reached with other threads runnable |
+| `cap_yields` | times the worker gave the CPU away under the share limit |
+| `cap_restores` | period deadlines that raised a waiting worker back to its class priority |
+| `cap_ns` | wall time given away under the share limit |
+| `cap_runon` | passes that ended over the allowance with nothing else runnable: the limit did not bind |
 | `busy_ns` | CPU time spent inside handlers |
 | `idle_ns` | wall time asleep with nothing queued |
 | `round` | current round number |
@@ -138,6 +148,7 @@ Per CPU, `kern.kwq.<class>.queue.<queue>.cpu.<N>.`:
 | `boosts` | passes served from the new list (a queue that woke up) |
 | `grace` | doorbells sent to the ring instead of the new list by the anti-gaming rule |
 | `debts` | doorbells sent to the ring because the queue went idle owing time |
+| `switched` | passes of this queue during which the worker left the CPU; under NET's wall-time accounting these are charged the time away as well |
 | `glitches` | passes whose CPU-time delta was negative or over 1 s (a broken clock; charged one quantum) |
 
 Examples:
@@ -209,7 +220,12 @@ One-liners, all verified against the test module:
     dtrace -n 'fbt::kwq_enqueue:return /arg1 != 0/ { @[stack()] = count(); }'
 
     # is the worker giving the CPU away, and why
-    dtrace -n 'kwq:::yield { @[arg1, arg2 == 1 ? "tick" : "round"] = count(); }'
+    dtrace -n 'kwq:::yield { @[arg1, arg2 == 1 ? "tick" : arg2 == 2 ? "cap" : "round"] = count(); }'
+
+    # the share limit (SCHED.md S6.3): where in its period a worker begins each
+    # pass and what budget the pass got (event 0; 1 demote, 2 yield, 3 restore,
+    # 4 deadline), ns
+    dtrace -n 'kwq:::cap /arg2 == 0/ { @el[arg1] = quantize(arg3 / 1000); @budget[arg1] = quantize(arg5 / 1000); }'
 
     # round lengths and how busy each burst was
     dtrace -n 'kwq:::round-end { @[arg1] = quantize(arg3 / 1000); }'
@@ -248,6 +264,14 @@ a serial console: `sysctl debug.kdb.enter=1`, `show kwq`, `c`.
 
 ## 8. lockstat, fbt and profile
 
+`tools/clockprobe` (standalone, `kldload`, `sysctl kern.clockprobe.run=1`,
+`dmesg | grep clockprobe`) characterises the machine's clocks: cost
+warm and fresh from idle, resolution, monotonicity, step jitter,
+frequency, cross-CPU ordering, the kernel ticker's behaviour with
+interrupts enabled and its per-CPU extension lag.  Run it before
+trusting any clock-based number on a new machine (SCHED.md S10.3,
+2026-10-20).
+
 A caution before any of them: `lockstat -P` instruments every lock
 acquisition kernel-wide and cost a single if_pair TCP flow on a07 about
 15 % (29-32 instead of 33-38 Gbit/s, ../NOTES.md 2026-10-09).  Take a
@@ -282,7 +306,7 @@ case where this grows (SCHED.md S15.7).  `fbt::kwq_enqueue:entry` with
 
     scenario   lifecycle fifo notify reject discard sleep fairness latency gaming
                overrun yield cost scale fanin tq_baseline switch_baseline
-               pingpong pingpong_tq ifpair
+               pingpong pingpong_tq clocks ifpair
                mixorder mixpattern mixbudget mixstarve mixrearm mixcancel
                mixrequeue mixdrain mixdrain_discard
     items reps cost_us limit cpu allow_panic secs     (P0 knobs)
@@ -395,6 +419,21 @@ and `result_maxlat_a_us` the worst enqueue-to-handler latency.  In-kernel
 timing, no probes: the tool for A/B tests of the wake path at ~20 ns
 resolution (SCHED.md S15.6, S10.3).  `tests/run_p1b.sh pingpong
 pingpong_tq` prints the four numbers.
+
+`kern.kwq_test.pcpu` places the two-CPU scenarios' producer (default: the
+CPU after the target, which on an SMT machine with adjacent sibling ids
+is the worker's own core; `KT_EXTRA="cpu=2 pcpu=4"` in run_p1b.sh).
+
+`clocks` prices the clocks: ns per call of `cpu_ticks()`,
+`get_cyclecount()`, `sbinuptime()`, `getsbinuptime()` and
+`cpu_tickrate()` on the producer CPU, and on the worker CPU, inside a
+handler after a 20 ms warm-up spin, the first three again plus
+`kwq_budget_left()` under the current `budget_check_every` (best and
+median of 20 batches of 100 calls, and the first batch on the CPU fresh
+from idle as "cold").  `result_clocks` holds the line; `tests/run_p1b.sh
+clocks` prints it.  A CPU fresh from idle runs everything 2.7-3.5x slower
+for a while on both test machines, which is what the cold number shows
+and why the warm-up exists (2026-10-20).
 
 ## 10. Build defaults
 

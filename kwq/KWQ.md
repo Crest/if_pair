@@ -21,7 +21,7 @@ fail with ENOBUFS.  Each worker drains its CPU's queues in deficit
 round robin measured in CPU time, with a cooperative quantum per queue
 and a fixed-priority yield at the end of every round so that softclock,
 epoch reclamation and other kernel threads run; userland gets its share
-through that yield (interactive threads) and the optional CPU-share cap
+through that yield (interactive threads) and the optional share limit
 (SCHED.md S6).  Every queue is accounted per CPU
 (items, cycles, passes, quantum overruns, rejections, max queueing
 delay) under sysctl and DTrace, by its name.  Clients never see a
@@ -774,7 +774,7 @@ the worker performs the demote-yield: `kern_yield()` to the class's
 fixed `yield_prio` (default `PUSER`, never `PRI_USER`: S11 Missing 1)
 then restore the class priority, giving softclock, epoch callbacks,
 BULK, BLOCKING and interactive userland a turn; CPU-bound userland gets
-its share from the CPU-share cap (S11), not from the yield.  Without this a saturated NET worker starves its own
+its share from the share limit (S11, SCHED.md S6.3), not from the yield.  Without this a saturated NET worker starves its own
 CPU's timers - the callout-starvation the 128-core measurements exposed
 (../NOTES.md 2026-08-20).  Per-item queueing latency is sampled (enqueue
 timestamp in the item is NOT stored - items are the client's - but the
@@ -1063,7 +1063,8 @@ with `SDT_PROBE_DEFINEn_XLATE` (the mechanism `ip`/`tcp` use) so that
 | `kwq:::overrun` | a pass overran its quantum | `kwqinfo_t *`, `int cpu`, `uint64_t over_ns` | per event |
 | `kwq:::park` | queue parked with negative deficit | `kwqinfo_t *`, `int cpu`, `int64_t deficit_ns` | per event |
 | `kwq:::round-end` | worker finished a DRR round | `int class`, `int cpu`, `int nqueues`, `uint64_t round_ns` | per round |
-| `kwq:::yield` | the demote-yield taken | `int class`, `int cpu`, `int reason` (round / tick) | per round |
+| `kwq:::yield` | the demote-yield taken | `int class`, `int cpu`, `int reason` (0 round, 1 tick, 2 share limit) | per round |
+| `kwq:::cap` | the share limit (SCHED.md S6.3): a pass begins under the limit (0), the allowance is spent and the CPU given away (1), given away again (2), the period ended while over (3), the deadline callout ran (4) | `int class`, `int cpu`, `int event`, `uint64_t ns_into_period`, `uint64_t ns_used`, `int64_t pass_budget_ns` (event 0) | per pass while limited |
 | `kwq:::idle` | worker found nothing and went to sleep | `int class`, `int cpu`, `uint64_t busy_ns` | per burst |
 | `kwq:::steal` | BULK batch moved between CPUs | `kwqinfo_t *`, `int from`, `int to`, `int n` | per event |
 | `kwq:::worker-block`, `worker-spawn`, `worker-exit` | BLOCKING pool management | `int cpu`, `int nworkers`, `int nrunnable` | per event |
@@ -1165,7 +1166,7 @@ S17 Rule 2) under
 overruns, parks, requeued, steals_in, coalesced, depth/maxdepth,
 maxlat_ns) plus
 class-level `kern.kwq.<class>.cpu.<N>.` (rounds, yields, tick_yields,
-cap_sleeps, idle_ns, busy_ns, steals_out); the full list with types and
+cap_demotions, cap_yields, cap_restores, cap_ns, cap_runon, idle_ns, busy_ns, steals_out); the full list with types and
 defaults is S10.7.  `sysctl kern.kwq` is the first thing to look at, and
 `dtrace` the second.  `show kwq` in DDB prints every queue's
 per-CPU depth, state (IDLE/WAKING/RUNNING/PARKED) and the last handler
@@ -1268,9 +1269,8 @@ Per class: `kern.kwq.<class>.`
 | `penalty_rounds` | uint | RW | 32 | debt clamp in quanta: the most rounds an overrunning queue is parked (P1; SCHED.md S4.3) |
 | `budget_check_every` | uint | RW | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; 1 = every call (SCHED.md S4.4) (P2) |
 | `limit` | uint | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards |
-| `cap_pct` | uint | RW | 100 (off) | CPU-share cap: worker busy fraction above which it sleeps when other threads are runnable (S11 Missing 1); 100 or more = off |
-| `cap_sleep_us` | int | RW | 100 | length of that sleep |
-| `cap_window_us` | int | RW | 10000 | window over which the busy fraction is measured |
+| `cap_permille` | uint | RWTUN | 500 | share limit: the share of its CPU the worker keeps at kernel priority per `cap_period_us` while other threads are runnable, the rest as an idle-priority thread, in 1/1000; 1000 = off (S11 Missing 1; SCHED.md S6.3) |
+| `cap_period_us` | uint | RWTUN | 1000 | the share limit's period |
 | `priority` | int | RD | `PI_NET` / `PI_SOFT` / `PUSER` | scheduler priority of the class's workers |
 | `nworkers` | int | RD | ncpu (blocking: current) | worker threads in the class (P7) |
 | `max_workers` | int | RW | blocking only, 4 x ncpu | ceiling for worker replacement (P7) |
@@ -1285,7 +1285,11 @@ Per worker: `kern.kwq.<class>.cpu.<N>.`
 | `cpu.<N>.wakeups` | counter | RD | | times the worker was woken from idle (P1) |
 | `cpu.<N>.yields` | counter | RD | | end-of-round yields taken (P1) |
 | `cpu.<N>.tick_yields` | counter | RD | | yields forced by the tick guard (a pass outlived a tick) (P1) |
-| `cpu.<N>.cap_sleeps` | counter | RD | | CPU-share cap sleeps taken (P1) |
+| `cpu.<N>.cap_demotions` | counter | RD | | periods in which the share limit was reached with other threads runnable (P4c) |
+| `cpu.<N>.cap_yields` | counter | RD | | times the worker gave the CPU away under the share limit (P4c) |
+| `cpu.<N>.cap_restores` | counter | RD | | period deadlines that raised a waiting worker back to its class priority (P4c) |
+| `cpu.<N>.cap_ns` | counter | RD | | wall time given away under the share limit (P4c) |
+| `cpu.<N>.cap_runon` | counter | RD | | passes ended over the allowance with nothing else runnable (P4c) |
 | `cpu.<N>.handbacks` | counter | RD | | rounds ended early because a higher class waited (P1) |
 | `cpu.<N>.budget_calls` | counter | RD | | `kwq_budget_left()` calls by handlers on this worker (P2) |
 | `cpu.<N>.budget_reads` | counter | RD | | of those, the ones that read the clock (SCHED.md S4.4) (P2) |
@@ -1441,14 +1445,20 @@ Options, in order of preference:
     reliably lets timers, epoch callbacks, the kernel range and the most
     interactive threads run, each of which sleeps again soon, so its
     latency cost is small in practice though not bounded by
-    construction.  CPU-bound user threads get their share from Mogul's
-    "limit on CPU usage" feedback instead: each worker tracks its busy
-    fraction over a short window and, above a class cap (`cap_pct`,
-    default 100 = off) with
-    runnable timeshare threads on the CPU (`sched_runnable()`), sleeps
-    for a fixed short interval with `pause_sbt(..., C_PREL(1))` at its
-    normal priority.  Bounded by the interval, tunable, and the cost is
-    one callout arm per cap event plus jitter equal to the interval.  An
+    construction.  Everything else on a saturated CPU gets its share
+    from Mogul's "limit on CPU usage" feedback instead: the share limit
+    (SCHED.md S6.3, `cap_permille` of a `cap_period_us` period, default
+    500 = an equal share) lets the worker take its allowance, then, if
+    anything else is runnable (`sched_runnable()`), become an
+    idle-priority thread for the rest of the period with one switch;
+    ULE runs it only when the CPU would otherwise idle and preempts it
+    for anything that wakes, and a callout at the period's end raises it
+    back to its class priority; the time given away is bounded by the
+    period, the cost is one callout arm and one switch per contended
+    period.  (The first version, a
+    `pause_sbt()` once per window over a busy percentage, gave away one
+    sleep per window regardless of the percentage; replaced 2026-10-20,
+    PLAN P4c.)  An
     operator who prefers throughput for user processes over NET latency
     may set `yield_prio` to `PRI_MAX_TIMESHARE` and get the generous
     regime deterministically.  `PRI_USER` is never used.
@@ -1590,7 +1600,7 @@ right-hand column is what the two scheduler patches (S11 Missing 1 and
 
 | concern | module on stock GENERIC | with the scheduler patches |
 |---|---|---|
-| deference to user threads (S11 Missing 1) | fixed-priority yield (`yield_prio`, default `PUSER`): timers, epoch callbacks, kernel range and the most interactive threads run; CPU-bound users get a share only through the `pause_sbt` cap, which adds jitter equal to `cap_sleep_us` and sleeps for the whole interval even if the user thread finishes early | `sched_relinquish_to(prio, max)`: every lower thread may run, for at most `max`; no cap, no jitter beyond `max` |
+| deference to user threads (S11 Missing 1) | fixed-priority yield (`yield_prio`, default `PUSER`): timers, epoch callbacks, kernel range and the most interactive threads run; everyone else gets a share through the share limit (SCHED.md S6.3): an idle-priority thread for the rest of the period once the allowance is spent, bounded by a callout at the period's end | `sched_relinquish_to(prio, max)`: every lower thread may run, for at most `max`; no cap, no jitter beyond `max` |
 | a BLOCKING worker blocks (S11 Missing 2) | the 1 Hz monitor notices within up to a second; queues on that CPU stall that long unless the queue has reserved workers (`KWQ_F_RESERVE`) | `sched_sleep` hook starts a replacement within microseconds; fewer reserved workers needed |
 | a NET or BULK worker hogs the CPU | cooperative only: quantum via `kwq_budget_left()` and the tick guard; ULE's slice-end for a timeshare-class kernel thread sets an AST the thread never services | unchanged (the patches do not add preemption; a hog is a client bug either way) |
 | CPU choice for `KWQ_CPU_ANY` | kwq's own per-CPU queue depth; ULE's per-CPU load (`tdq_load`) is not exported, `sched_load()` is global | unchanged unless a per-CPU load accessor is added, which neither patch does |
@@ -1603,7 +1613,7 @@ The module form costs nothing in per-item overhead (all calls are
 already indirect or out of line) and gives up exactly two things a stock
 kernel cannot provide: bounded deference and prompt blocked-worker
 detection.  Both fallbacks are explicit, measured by counters
-(`cap_sleeps`, `tick_yields`, the monitor's replacements) and remain the
+(`cap_yields`, `tick_yields`, the monitor's replacements) and remain the
 module's behaviour on kernels without the patches.
 
 Graduation path: once if_pair, epair and wg run on `kwq.ko` and the two
@@ -2352,3 +2362,39 @@ decision deferred until real clients show what fan-in they produce.
   by the eight `mix` ATF cases, which showed notifiers-first delivery
   (1000 of 1000 inversions), unbudgeted signals (64 x 50 us in one pass)
   and SCHED.md S14 case 4 at one item per pass on the old design.
+- 2026-10-20: the scheduler reads its clock through kwq_clock.h:
+  `get_cyclecount()` where it is a fixed-rate counter at the kernel
+  ticker's rate (invariant TSC, `CNTVCT_EL0`, PowerPC timebase), the
+  kernel's `cpu_ticks()` elsewhere or with `kern.kwq.clock_fast=0`.  The
+  worker's CPU time is taken exactly once per run segment and advanced
+  with the fast clock until `td_runtime` changes.  `kern.kwq.clock`
+  reports the choice.  kwq_test gained the `clocks` scenario.  SCHED.md
+  S15.2 has the measurements: on the Altra a clock-reading budget call
+  38 -> 16 ns, the cost scenario -12 % instructions per item.
+- 2026-10-20: tools/clockprobe, a standalone module, characterised a07's
+  clocks and corrected the 2026-09-28 finding: the generic timer never
+  reads backwards; `tc_cpu_ticks()` races with `statclock()` when read
+  with interrupts enabled, adding 2^32 ticks to the CPU's base, and kwq
+  and kwq_test were the exposed readers.  kwq's re-base read runs with
+  interrupts off; kwq_test reads `get_cyclecount()`.  Glitch counter 0
+  on a07 since.  SCHED.md S10.3, S13, S15.2.
+- 2026-10-20: NET passes are charged wall time on the bound CPU (two
+  bare counter reads), with `switched` counting passes during which the
+  worker was switched out; BULK keeps CPU time.  SCHED.md S1a.4, S2, S9.
+  Measured on three machines, shares and throughput unchanged
+  (samples/walltime_2026-10-20_three_machines.txt).  The test jails are
+  created and removed with `jail -f /dev/null`, independent of the
+  host's jail.conf.
+- 2026-10-20: the CPU-share cap of SCHED.md S6.3 is replaced by the
+  share limit: `cap_permille` of a `cap_period_us` period in wall time,
+  the pass budget clamped to the allowance, over it an idle-priority
+  thread for the rest of the period bounded by a callout at its end
+  (the first build switched at `PRI_MAX_TIMESHARE` per pass; the design
+  study of the same day settled on `PRI_MIN_IDLE` and an equal share as
+  the default, `cap_permille` 500);
+  `cap_pct`, `cap_window_us`, `cap_sleep_us` and `cap_sleeps` are gone,
+  `cap_demotions`, `cap_yields`, `cap_restores`, `cap_ns`, `cap_runon`
+  and the `kwq:::cap` probe are new.  Measured with
+  tests/t_34_interactive.sh on three machines: the share a pinned user
+  thread gets is within two points of `1000 - cap_permille` (PLAN P4c,
+  samples/t34_*).  Default off.

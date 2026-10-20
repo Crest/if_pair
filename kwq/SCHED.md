@@ -75,8 +75,8 @@ falls out for pseudo-interfaces is a side effect, not the design goal.
    softclock, other kwq classes, and user threads, arbitrated by ULE
    priority, and ULE never time-slices a kernel-priority thread (S1,
    ULE row).  Hence the end-of-round and tick-guard yields (S6.1), the
-   fixed yield priority (S6.2), and the cap (S6.3): all *non-work-
-   conserving* by design, which no link scheduler is.
+   fixed yield priority (S6.2), and the share limit (S6.3): the first
+   two *non-work-conserving* by design, which no link scheduler is.
 3. **Between classes there is strict priority, not fairness.**  NET
    (`PI_NET`), BULK (`PI_SOFT`) and BLOCKING (`PUSER`) are three workers
    per CPU at fixed priorities; a saturated NET worker starves BULK on
@@ -94,6 +94,25 @@ falls out for pseudo-interfaces is a side effect, not the design goal.
    deficit and `kwq_budget_left()`; `kc_cycles` keeps the wall-time
    view for latency diagnosis.  This also answers S12's BLOCKING
    question.
+   **Amended 2026-10-20 for NET.**  A NET worker runs at the top
+   interrupt-thread priority, bound, and never sleeps in a handler, so
+   during a pass it leaves the CPU only when an ithread of equal or
+   higher priority preempts it (ULE does not preempt for equal
+   priority, so in practice never) or when it blocks on a contended
+   sleep mutex, both rare and short.  NET therefore charges the pass its
+   wall time on the bound CPU, two bare counter reads (S15.2), and counts
+   a pass during which `td_runtime` changed, i.e. the worker was
+   switched out, in `switched`, charging it the wall time anyway: the
+   time was lost to every queue on the CPU regardless of who is charged,
+   and the charge is bounded by `penalty_rounds`.  Measured 0.007 % of
+   passes on lab, 0.06 % on a07 under a TCP flow, 0.24 % in the guest's
+   scenarios and 25 % in the guest's single flow where the receiver on
+   the same vCPU holds the socket locks the handler blocks on; shares,
+   latency and throughput unchanged on all three
+   (samples/walltime_2026-10-20_three_machines.txt).  BULK keeps CPU
+   time: NET workers preempt BULK workers as a matter of course.  The
+   remaining dependency on the kernel ticker is BULK's once-per-switch
+   re-base, with interrupts off (S15.2).
 5. **The producer chooses the "link".**  A link scheduler has one link;
    kwq has one scheduler per (class, CPU) and the client picks the CPU per
    item (KWQ.md S3).  There is no cross-CPU fairness or balancing in the
@@ -136,10 +155,12 @@ falls out for pseudo-interfaces is a side effect, not the design goal.
   queue may still consume.  Consumer-private.
 - **Budget**: the value of `D` at the start of a pass; what
   `kwq_budget_left()` counts down from.
-- **Service `S`**: CPU time the worker itself consumed in passes:
-  `td_runtime + (cpu_ticks() - PCPU_GET(switchtime))` sampled at pass
-  start and end (S1a.4), converted to ns.  Excludes time the worker was
-  preempted or asleep.
+- **Service `S`**: the worker's time in passes, sampled at pass start
+  and end and converted to ns: for NET the wall time on the bound CPU
+  (the worker is not preempted by equals and never sleeps; a pass with a
+  switch-out in it is counted in `switched`), for BULK the thread's CPU
+  time `td_runtime` plus the time since the switch-in, which excludes
+  time preempted (S1a.4, amended 2026-10-20).
 - **Boost**: a fresh `D = Qw` given to a queue when it enters the new
   list.
 - **Grace period**: the interval after a queue leaves the ring during
@@ -162,7 +183,7 @@ Per worker (`struct kwq_worker`, one per (class, CPU)):
 | `kwq_waiting[class]` (per CPU, outside the worker struct) | each class's worker, plain volatile store; read by lower classes on the same CPU | hand-back flags (S6.4) |
 | `kw_cur`, `kw_pass_start`, `kw_pass_budget` | the worker | the pass in progress, for `kwq_budget_left()` and `kwq_requeue()`; `kw_cur` and `kc_state = RUNNING` are set the moment `ks_next()` hands a queue over (I2 holds between the pop and the pass) |
 | `kw_served` | the worker | passes served in the current round; the hand-back (S6.4) applies only once it is non-zero |
-| `kw_win_start`, `kw_win_busy` | the worker | CPU-share cap window |
+| `kw_cap_start`, `kw_cap_used`, `kw_cap_over` | the worker | the share limit's period, what was charged in it, and whether the allowance is spent (S6.3); `kw_cap_fired` is written by the period's deadline callout under the thread lock |
 | counters (S9) | the worker | |
 
 Per (queue, CPU) (`struct kwq_cpu`), in addition to the P0 fields:
@@ -416,10 +437,10 @@ the following rounds, and if the worker instead runs out of work and
 sleeps, the queue was idle and its deficit was reset, so no debt survives
 an idle period (I3).  The end-of-round yield happens per round: while the
 worker sleeps it is not holding the CPU and there is nothing to yield.
-Only the CPU-share cap (S6.3) is defined in wall time, with
-`sbinuptime()` windows, because the fraction it bounds is the worker's
-share of the CPU over time, sleep included; a window that spans a sleep
-correctly reads as mostly idle.
+The share limit (S6.3) is defined in wall time on the worker's own
+clock (the pass stamps), because the fraction it bounds is the worker's
+share of the CPU over time, sleep included; a period that passed
+entirely while the worker slept starts the next one clean.
 
 ### 4.7 Invariants
 
@@ -537,24 +558,120 @@ starvation of userland.  Changing this is a design decision on S6.1
 (rate-limit the yield, or gate it on the window's busy share), recorded
 as open in PLAN P4b goal 2; the ULE side is a kernel matter.
 
-### 6.3 CPU-share cap (off by default)
+### 6.3 Share limit (on by default, an equal share)
 
 Mogul's "limit on CPU usage" feedback, for the case the yield cannot
-serve (CPU-bound user threads on a saturated CPU):
+serve: user threads, interactive or CPU-bound, on a CPU a worker
+saturates.  A worker keeps its class priority for at most
+`cap_permille`/1000 of its CPU's wall time per `cap_period_us` *while
+anything else is runnable there* and is an idle-priority thread for the
+rest of the period; with nothing else runnable it runs on
+(work-conserving).  The defaults, 500 and 1000 us, are the equal share
+FreeBSD gives two competing processes, at tick granularity; they need
+no tuning and the knobs are expert overrides (1000 turns the limit
+off).  Measured against the pass stamps the worker takes anyway, so the
+limit costs no clock read of its own:
 
-    at round_end, if cap_pct < 100:
-        if now - win_start >= cap_window:
-            busy_fraction = win_busy / (now - win_start)
-            if busy_fraction > cap_pct/100 and sched_runnable():
-                pause_sbt(cap_sleep_us, C_PREL(1)); cap_sleeps++
-                (a pause replaces the yield for this round)
-            win_start = now; win_busy = 0
+    period(now):   if now - period_start >= period:
+                       period_start = now; used = 0
+                       if over: over = false, RESTORE
+    at pass_begin (the pass's wall stamp): period(now), then under the
+        allowance: budget = min(deficit, allowance - used)
+                   (one item of overshoot, not a quantum)
+    at pass_end:   used += pass; period(now); then if not rolled over and
+                   used >= allowance and sched_runnable():
+                       if not over: over = true, DEMOTE else YIELD
 
-`sched_runnable()` is the exported ULE query "is anything else runnable
-on this CPU"; without it the cap would sleep on an otherwise idle CPU.
-Defaults: `cap_pct` 100 (off), `cap_window_us` 10000, `cap_sleep_us`
-100.  The jitter the cap adds is `cap_sleep_us` per cap event; PLAN.txt
-lists measuring it as a P1 exit item.
+    DEMOTE:  arm a callout at period_start + period on this CPU; under
+             the thread lock, unless the callout has fired:
+             sched_prio(PRI_MIN_IDLE); mi_switch(SW_VOL); stay at idle
+             priority (the round-end and tick yields keep it)
+    YIELD:   nothing: ULE hands the CPU to whoever wakes
+    the callout (period's end, timer interrupt on the worker's CPU,
+             armed for sbinuptime() + nstosbt(period - elapsed)):
+             under kw_mtx and the thread lock: fired = true,
+             sched_prio(class priority)
+    RESTORE: callout_stop(); fired = false; sched_prio(class priority)
+
+An idle-priority thread is ULE's own notion of "run only when nothing
+else wants the CPU": it is picked when the realtime and timeshare
+queues are empty and preempted at once by anything that wakes
+(`sched_shouldpreempt()`, the `cpri >= PRI_MIN_IDLE` rule), local or by
+IPI, whatever `preempt_thresh` says.  So after the one switch kwq asks
+the scheduler nothing: a waking interactive thread takes the CPU at
+once, a CPU-bound thread keeps it until the period's deadline callout
+raises the worker while it waits on the run queue, which requeues and
+preempts (`sched_thread_priority()`, the `TD_ON_RUNQ` branch): the
+share given away is bounded by the period, not by ULE's 16-94 ms slice.
+The first build waited at `PRI_MAX_TIMESHARE` instead and needed
+`sched_runnable()` after every return and a loop declining ULE's
+once-per-tick calendar turns (1.6 switches per demotion and 20-25 %
+busy at 10-100/1000 on a07 before that loop); the idle range made both
+unnecessary and measured the same (../NOTES.md 2026-10-20, the design
+study).  `sched_runnable()` is still consulted once, at the demotion,
+so that an uncontended worker arms no callout.  The deadline is converted with
+`nstosbt()`: `SBT_1NS` is the integer 4 for a factor of 4.29, and a
+deadline 7 % early returns the worker into a period not yet over by its
+own clock, where the first pass runs on the full quantum (the
+`kwq:::cap` probe, which reports where in its period each pass begins
+and with what budget, showed passes beginning at 512-1023 us with
+128-512 us budgets; a07, 2026-10-20).  The `fired` flag and the priority are written
+under the thread lock on both sides, so a deadline that strikes between
+the core's decision and the switch is not undone by the switch.  A
+waking user thread cannot preempt a kernel thread at 223
+(`kern.sched.ule.preempt_thresh` 40), so over the allowance it runs at
+the next pass end: one quantum plus one item.  Over the allowance with
+nothing else runnable the budget is the deficit again, since one-item
+passes would be S14 case 4.  Nothing carries between periods: unused
+allowance is lost, and the overshoot of a clamped pass is one item.
+The period rolls over at pass begin as well as at pass end, because the
+deadline brings the worker back into a period that is over, and the
+first pass of the new one must be clamped (the first build rolled over
+at pass end only and ran that pass on the full quantum: 32 % busy at
+10/1000 on a07, 2026-10-20).  Per class and per CPU: NET and BULK on one
+CPU add; BULK at `PI_SOFT` takes what a limited NET gives away before
+any user thread does unless it is limited too.
+
+Defaults: `cap_permille` 500, `cap_period_us` 1000.  Resolution
+1/1000 of the period; below a pass's worth the allowance is one clamped
+pass per period.  Counters per worker: `cap_demotions` (periods in which
+the allowance was reached with something runnable), `cap_yields`,
+`cap_restores` (deadlines that raised a waiting worker), `cap_ns` (wall
+time given away), `cap_runon` (passes ended over the allowance with
+nothing else runnable: the limit did not bind); the `kwq:::yield` probe
+reports reason 2.  The
+previous design (a `pause_sbt()` of `cap_sleep_us` once per
+`cap_window_us` window over `cap_pct`, 2026-09) gave away one sleep per
+window, 1 % at its defaults whatever the percentage said, and was
+replaced 2026-10-20 (PLAN P4c, tests/t_34_interactive.sh).
+
+Measured 2026-10-20 (../NOTES.md, samples/t34_sweep_2026-10-20_three_
+machines.txt): with one iperf3 flow and a CPU-bound process pinned to
+the worker's CPU, the process gets 97.6-99.0 / 88.5-90.2 / 51.0-52.9 /
+22.2-27.6 % at 10 / 100 / 500 / 750 permille on the guest, a07 and lab
+(ideal 99 / 90 / 50 / 25); a 1 kHz timer pinned there sees a p99
+lateness of 11-281 us at 10 and 221-882 us at 750 against 115 us
+(a07), 4.5 ms (guest) and 15.6 ms (lab) without the limit; a fork+exec
+loop 0.4-1.8 ms per exec against 4.7-19 ms.  The flow keeps about half
+its rate at a 1 % allowance and 80-100 % at 500.  Where the worker's
+own demand is below the allowance (900 and above here) the limit does
+not bind and `cap_runon` says so.  The unpinned timer under 2 x ncpu
+connections is unchanged at every ratio: ULE's slicing of the
+oversubscribed user threads, not the workers.
+
+Alternatives measured the same day (../NOTES.md, PLAN P4c design study):
+the same mechanism with an equal share and the tick-sized period as
+constants and `PRI_MIN_IDLE` instead of 223 for the demoted worker
+(branch kwq-cap-tickfair) measures the same as the limit at 500 and
+needs no tuning and no `sched_runnable()` after the demotion, because
+an idle-priority thread runs only when nothing else is runnable and is
+preempted by anything that wakes; it is the recommended default.
+Letting ULE share by its own slices (branch kwq-cap-ule: yield at
+`PRI_USER` on `TDF_SLICEEND`) does not work for a worker that sleeps
+between bursts, since `sched_wakeup()` resets the slice, and where the
+worker never sleeps it shares at ULE's 94 ms granularity.  ULE's
+fairness is built for threads that sleep or run for slices; a kernel
+worker that does neither falls through it.
 
 ### 6.4 Hand-back between classes on one CPU
 
@@ -644,9 +761,8 @@ client's `c_max`; `Y` the time the yielded-to threads run at a yield
 | `kern.kwq.<class>.quantum_us` | class, RWTUN | 200 / 1000 / 5000 | `Q`; the throughput/latency dial: larger = fewer yields and lock hand-offs per item, longer B4/B5.  Validated to `[10, 1000000]` us by the sysctl handler: 0 would park every queue forever (S13) |
 | `kwq_params.weight` | queue, create time | 1 | share within the class on a CPU, 1..8, read as "this queue gets `w` quanta per round".  Clients are reviewed kernel code, not tenants, so a weight above 1 is a declaration reviewed with the client, not a privilege kwq enforces (KWQ.md S1 corrected 2026-09-28) |
 | `kern.kwq.<class>.yield_prio` | class, RW | `PUSER` | who may run at a yield (S6.2) |
-| `kern.kwq.<class>.cap_pct` | class, RWTUN | 100 (off) | CPU-share cap threshold; values above 100 read as off |
-| `kern.kwq.<class>.cap_window_us` | class, RWTUN | 10000 | cap measurement window |
-| `kern.kwq.<class>.cap_sleep_us` | class, RWTUN | 100 | cap sleep, the jitter it adds |
+| `kern.kwq.<class>.cap_permille` | class, RWTUN | 500 | share of its CPU the worker keeps at kernel priority per period while other threads are runnable, in 1/1000; the rest of the period it is an idle-priority thread; 1000 = off (S6.3) |
+| `kern.kwq.<class>.cap_period_us` | class, RWTUN | 1000 | the period of the share limit; also the bound on how long the CPU is given away at a time |
 | `GRACE_ROUNDS` | compile-time | 1 | anti-gaming window; the P1a sweep found 1 and 2 indistinguishable (S12) |
 | `kern.kwq.<class>.budget_check_every` | class, RWTUN | 8 | `K` of S4.4: `kwq_budget_left()` reads the clock at least every `K` calls; 1 = read on every call (exact B1, expensive with cheap items); validated to `[1, 64]` |
 | `kern.kwq.<class>.penalty_rounds` | class, RWTUN | 32 | debt clamp in quanta: how many rounds an overrunning queue can be parked at most (S4.3).  Validated to `[1, 1024]` by the sysctl handler: 0 would make overruns free, since the deficit could never go negative |
@@ -675,8 +791,10 @@ list), `grace` (doorbells that went to the ring because of S4.6),
 `maxlat_ns` (the longest doorbell-to-first-pass latency: the age of
 `kc_empty_since` at the first pass after each doorbell, sampled once per
 burst; the B4/B5 measurement).  Per worker: `rounds`, `yields`, `tick_yields`,
-`cap_sleeps`, `handbacks` (rounds ended early for a higher class, S6.4),
-`busy_ns`, `idle_ns`, `wakeups`, `passes`, `budget_calls` and
+`cap_demotions`, `cap_yields`, `cap_restores`, `cap_ns`, `cap_runon` (the
+share limit, S6.3), `handbacks` (rounds ended early for a higher class, S6.4),
+`switched` (passes during which the worker left the CPU; also per
+queue), `busy_ns`, `idle_ns`, `wakeups`, `passes`, `budget_calls` and
 `budget_reads` (S4.4: how many `kwq_budget_left()` calls there were and
 how many of them read the clock).  KWQ.md S10.7 lists them with
 types (rows marked P1).  DTrace probes
@@ -708,7 +826,7 @@ them (S15.6); one saturated CPU, the test thread bound elsewhere.
 | B6 anti-gaming | `gaming` | queue C bursts 32 items then pauses one round, repeatedly, against backlogged A | C's `boosts` <= idle periods longer than one round (expected ~0); C's share equals A's within 10 % |
 | B1/B5 overrun | `overrun` | handler ignores the budget and runs 2 ms items | `overruns` == passes; `parks` > 0; A's share still within 10 % over 3 s |
 | B7 timers | `yield` | a callout at 1 kHz pinned to the saturated CPU for 3 s | fires within 1 % of 3000; with `quantum_us` = 5000 (above a tick) the tick guard keeps it there (`tick_yields` > 0) |
-| S6.2 yield priority | `yield` (manual half) | a CPU-bound user process bound to the saturated CPU (`cpuset -l`), `ps -o cputime` | default: ~0 %; `yield_prio=223`: whole slices; cap on: >= (100 - cap) % |
+| S6.2 yield priority, S6.3 share limit | `yield` (manual half); tests/t_34_interactive.sh (P4c) | a CPU-bound user process bound to the saturated CPU (`cpuset -l`), `ps -o cputime`; t_34's timer, spinner and exec victims | default: ~0 %; `yield_prio=223`: whole slices; limit at `p`/1000: the spinner gets about `1000 - p` permille, the timer's p99 lateness is bounded by a pass |
 | B8 conservation | `lifecycle` (P0) | unchanged | in == out |
 | B9 cost | `cost`, `tq_baseline`, `switch_baseline` (S15.6) | items/s and ns per item with an empty and a 1 us handler; the same into a taskqueue; thread switch cost | consumer bookkeeping <= 30 ns per item and <= 300 ns per pass; within 5 % of `tq_baseline` items/s; numbers recorded in ../NOTES.md |
 
@@ -736,7 +854,7 @@ compare the guest against in P1b:
 | quantum 10 us with 20 us items, weights 8:1 | ratio 8.2, the light queue's `overruns == passes` |
 | quantum 1 s, depth-32 floods | equal shares: the budget never binds, so weights cannot act (documented, not a defect) |
 | badhandler, requeues everything | signature `passes` 9987, `requeued` 419476, items out 0; the cooperative queue keeps its throughput |
-| random, 100 seeds x 3 s, 1-12 queues of mixed producers and handlers, external load and cap on or off | no violation |
+| random, 100 seeds x 3 s, 1-12 queues of mixed producers and handlers, external load and the share limit on or off | no violation |
 
 Three findings changed the specification during P1a: the penalty cap
 (S4.3), the hand-back rule (S6.4) and the overrun definition (S4.3); a
@@ -868,6 +986,30 @@ it: with the guard the light queue is at 218 us in every run and
 `tc_cpu_ticks()` wrap heuristic that a backwards read can trigger, on
 a counter that does read backwards) is reported to the operator, not
 fixed here.
+
+**Corrected 2026-10-20** (tools/clockprobe, samples/clockprobe_a07_
+2026-10-20.txt): the counter does not read backwards.  66 M back-to-back
+reads on all 128 CPUs, with and without the barrier, never stepped back
+once.  What `fbt::tc_cpu_ticks:return` saw was the *return values* of
+two nested calls: `tc_cpu_ticks()` runs in a critical section with
+interrupts enabled, and `statclock()` reads the ticker from the clock
+interrupt (kern_clock.c, `new_switchtime = cpu_ticks()`).  An interrupt
+after the thread's read and before its store of `last` returns the
+newer value first and lets the thread store the older one afterwards
+(the "5-9 ticks backwards" seen); an interrupt between the read and the
+compare leaves `last` newer than the thread's value, which the thread
+takes for a wrap and adds 2^32 ticks to the CPU's base for good.
+Reproduced on demand: 77 jumps of exactly 2^32 + 1 ticks in 20 s on one
+CPU calling `cpu_ticks()` in a loop, none on the bare counter in the
+same loop.  The kernel's own callers hold spin locks and are safe; the
+exposed callers were kwq's two reads per pass and kwq_test's reads per
+item, both with interrupts enabled, which is why the rate scaled with
+kwq's own activity ("per busy CPU") and why cpu 1 and cpu 2, the
+benchmark CPUs, had bases 205 and 357 periods ahead of cpu 0 after three
+days.  Idle CPUs lose periods instead: a wrap with no read on the CPU
+goes unseen.  kwq reads `get_cyclecount()` since 2026-10-20 (S15.2) and
+disables interrupts around its one remaining `cpu_ticks()`; the glitch
+counter is 0 on a07 since.
 
 **The shape of if_pair: the `ifpair` scenario (a07, 2026-09-29).**  The
 question was whether the (queue, CPU) lock would still be a significant
@@ -1078,13 +1220,17 @@ run it.
 - Cheaper clock reads (open, 2026-10-19).  `cpu_ticks()` on arm64 is the
   timecounter path with an `isb` and the 32-bit wrap extension (16-47 ns
   per read on the Altra, and the S13 glitch); on amd64 it is already the
-  bare `rdtsc`.  A `kwq_ticks()` reading the invariant TSC or the 64-bit
-  `CNTVCT_EL0` (`CNTVCTSS_EL0` with FEAT_ECV) without a barrier would be
-  "close enough" for deficit accounting: an early read is within the
+  bare `rdtsc`.  `get_cyclecount()` (`machine/cpu.h`, every architecture:
+  the bare `rdtsc`, a direct `CNTVCT_EL0` read) without a barrier would
+  be "close enough" for deficit accounting: an early read is within the
   S4.4 estimate's margin and a per-CPU read cannot go backwards.  PLAN
   P4b has the entry; S15.2 the measurement.
 
 ## 13. Numeric robustness
+
+(2026-10-20: with the fast clock of S15.2 the glitch guard also covers a
+ticker jump caught at a CPU-time re-base and a counter reset across
+suspend and resume: either shows as one pass charged a quantum.)
 
 Requirement: no quantity the scheduler keeps may overflow, wrap
 incorrectly, divide by zero or accumulate error in a way that changes
@@ -1094,7 +1240,7 @@ true difference is far below half the type's range.
 
 | quantity | type | range or rate | hazard | rule |
 |---|---|---|---|---|
-| `cpu_ticks()`, `td_runtime`, `pc_switchtime` | `uint64_t` ticks | up to ~5 GHz: 2^64 lasts 117 years; the TSC counts from CPU reset | wrap; cross-CPU skew; **non-monotonic reads** | wrap-safe; only same-CPU differences are taken (the worker is bound), never a difference between two CPUs' ticks.  Found on a07 (Ampere Altra, 2026-09-28): the 25 MHz generic timer reads a few ticks backwards now and then and `tc_cpu_ticks()` takes that for a 32-bit wrap, adding 2^32 ticks (171.8 s) to one delta a few times per minute per busy CPU.  A pass stamped inside such a jump has a negative or absurd elapsed time |
+| `cpu_ticks()`, `td_runtime`, `pc_switchtime` | `uint64_t` ticks | up to ~5 GHz: 2^64 lasts 117 years; the TSC counts from CPU reset | wrap; cross-CPU skew; **non-monotonic reads** | wrap-safe; only same-CPU differences are taken (the worker is bound), never a difference between two CPUs' ticks.  Found on a07 (Ampere Altra, 2026-09-28, cause corrected 2026-10-20, S10.3): `tc_cpu_ticks()` races with `statclock()`'s read from the clock interrupt and adds 2^32 ticks (171.8 s) to the CPU's base when a thread reads it with interrupts enabled; the counter itself never steps back.  kwq reads `get_cyclecount()` (S15.2) and disables interrupts around its re-base read, so the jump reaches it only through `td_runtime` when another thread on the CPU triggers the race.  A pass stamped inside such a jump has a negative or absurd elapsed time |
 | pass elapsed time (`cpu_now - kw_pass_start`) | `int64_t` ns | one pass: at most the budget plus one item, never a second of CPU time | a ticker glitch (above) makes it negative (budget never runs out: the 5 ms light-queue outliers on a07) or 171.8 s (32 rounds parked for nothing) | **glitch guard** `KS_GLITCH_NS` = 1 s: `kwq_budget_left()` returns 0 for a negative or over-long elapsed time (the pass stops), `ks_pass_end()` charges one quantum instead of the delta and counts `kc_glitches`; the counter is the fault signal for a broken ticker |
 | `cpu_tickrate()` | `uint64_t` Hz | recalibrated once a second when the ticker is variable (`cpu_tick_variable`, non-invariant TSC) | division by zero before calibration; rate change inside a pass | `kwq_ticks2ns()` treats a zero rate as 1 GHz; a rate change mis-scales one pass by at most the P-state ratio, which only the deficit sees and the clamps bound.  Workers do not run before `smp_started`, by which time the ticker is calibrated |
 | `kwq_ticks2ns(t)` | `uint64_t` ns | `t x 1e9` overflows above 18 s of ticks at 1 GHz | multiplication overflow; a 64-bit division per call costs 20-40 cycles | a 32.32 fixed-point scale `ns_per_tick = (1e9 << 32) / rate`, computed at load and re-derived at each round end when `cpu_tickrate()` differs from the cached rate (there is no change notification), so the hot path is one multiply and shift (`(t x scale) >> 32`); exact to 1 ns for `t < 2^32` ticks (about 1.4 s at 3 GHz, far above any pass), and the S13 split-division form is used for longer intervals (the idle time counter) |
@@ -1104,13 +1250,13 @@ true difference is far below half the type's range.
 | `kw_round` | `uint64_t` | ~1e6 rounds/s worst case: 2^64 lasts 5.8e5 years | a 32-bit counter would wrap in 71 minutes at that rate | 64-bit |
 | `kc_idle_round` | `u_int` (block 0 has 4 bytes left, S17) | the low 32 bits of `kw_round` | wraps every 71 minutes at the worst-case round rate | only the unsigned difference to `kw_round` is used; validity is the `kc_warm` flag, not a sentinel; a wrapped difference can only make a queue idle for exactly a multiple of 2^32 rounds read as warm, which costs it one boost |
 | `ticks`, `td_swvoltick` | `int` | wraps every 24.8 days at hz = 1000 | signed wrap | the tick guard uses `(u_int)ticks - (u_int)td_swvoltick >= 1`, the kernel's own idiom, correct across the wrap |
-| `kc_empty_since`, `kw_win_start` | `sbintime_t` (`int64_t`, 32.32 fixed point) | uptime wraps after 68 years | cross-CPU stamp; wrap | `sbinuptime()` is one global monotonic clock, so a producer on CPU A stamping and the worker on CPU B reading do not compare two TSCs (the P0 code stamps with `cpu_ticks()`, unused so far; P1 switches it); differences only; 68 years is the kernel-wide limit and not kwq's to fix  **Conversion overflow** (2026-09-29): the first `kwq_sbt2ns()` multiplied the whole 32.32 value by 1e9 and wrapped after 2.1 s of uptime, so every absolute wall stamp it produced (cap window, `kwq:::round-end`) was garbage; found by the round-end probe reporting negative round lengths, fixed with `sbttons()`, which splits the multiply |
-| `kw_win_busy`, `kw_busy_ns`, `kw_idle_ns`, `kc_cycles`, all counters | `uint64_t` | at 1e9/s, 584 years | wrap | monotonic counters; readers difference them |
+| `kc_empty_since` | `sbintime_t` (`int64_t`, 32.32 fixed point) | uptime wraps after 68 years | cross-CPU stamp; wrap | `sbinuptime()` is one global monotonic clock, so a producer on CPU A stamping and the worker on CPU B reading do not compare two TSCs (the P0 code stamps with `cpu_ticks()`, unused so far; P1 switches it); differences only; 68 years is the kernel-wide limit and not kwq's to fix  **Conversion overflow** (2026-09-29): the first `kwq_sbt2ns()` multiplied the whole 32.32 value by 1e9 and wrapped after 2.1 s of uptime, so every absolute wall stamp it produced (cap window, `kwq:::round-end`) was garbage; found by the round-end probe reporting negative round lengths, fixed with `sbttons()`, which splits the multiply |
+| `kw_cap_used`, `kw_busy_ns`, `kw_idle_ns`, `kc_cycles`, all counters | `uint64_t` | at 1e9/s, 584 years | wrap | monotonic counters; readers difference them |
 | `kc_depth` | `u_int` | bounded by `limit` | `KWQ_LIMIT_NONE` = `UINT_MAX` would let `depth++` wrap at 2^32 queued items (~100 GB of queued objects, but not impossible on a large machine) | the limit check runs for every queue including unbounded ones, in the overflow-safe form `n > limit - depth`; `limit` is capped at `INT_MAX` in `kwq_create()`, so the 2^31st item is refused instead of wrapping anything, and that refusal is the fault signal the design wants |
 | `kc_nnotify`, `kc_waiters`, `kw_nactive` | `u_int` | bounded by objects that exist | none | |
 | notifier generation (`kn_state >> 2`, 2026-10-08) | 30 bits of a `u_int` | one bump per consume of that notifier; wraps modulo 2^30 after ~1.07e9 consumes | wrap (defined, unsigned) | compared only between a pass's swap-out and its end, during which the notifier is consumed at most once (one instance pending at a time; a re-signal lands on the live list), so the value moves by 0 or 1 and a false "unconsumed" would need exactly 2^30 bumps; a single bit would suffice |
 | `n` in `kwq_pass()` / handler `int n` | `int` | `<= limit <= INT_MAX` | `sign x n` would overflow `int` above 2^31 items in one batch | excluded by the `INT_MAX` cap on `limit` |
-| cap arithmetic | `uint64_t` | window <= 1 s, busy <= window | `busy x 100` and `window_ns x pct` <= 1e11 | no overflow |
+| share limit arithmetic | `uint64_t` | period <= 1 s, `cap_allow_ns = period x permille / 1000` derived once per knob write | `period_ns x 1000` <= 1e12 | no overflow; `kw_cap_start` is on the worker's own clock, so a stale or glitched stamp reads as a period elapsed twice and starts clean |
 | `hz`, `mp_maxid`, CPU ids | `int` | fixed at boot | none | |
 
 What this adds to the algorithm: the lower deficit clamp (S4.3), the
@@ -1124,8 +1270,8 @@ overrun", stated in S4.3.
 Uptime-dependent degradation is excluded by construction: every stored
 value is either a bounded quantity (deficits, depths, list lengths), a
 wrap-safe monotonic counter used only by difference, or a flag.  There
-is no floating point, no averaging that accumulates rounding (the cap's
-busy fraction is recomputed per window from two differences), and no
+is no floating point, no averaging that accumulates rounding (the share
+limit's `used` is a sum of pass times reset every period), and no
 quantity whose *absolute* value is compared against a threshold except
 the deficit, which is clamped.
 
@@ -1148,7 +1294,7 @@ case 4 added the progress rule (S5); the rest are documented limits.
 | 8 | a handler requeues the same head item forever (it cannot make progress) | one pass per round is spent on it; the rest of the queue starves behind it | `requeued` grows, `items` does not, `passes` grows | a client bug kwq cannot fix; the signature is unambiguous |
 | 9 | producers alternate burst and pause timed to the round | with the grace rule, no boost; without it one `Qw` per burst | `boosts` per queue vs its idle periods | S4.6 |
 | 10 | a heavy-weight queue arrives new | boost of `Qw` with `w = 8` jumps eight quanta ahead of the ring | light queues' `maxlat_ns` | S12 open question: cap the boost at `Q` if seen |
-| 11 | BULK stealing (P6) runs a batch of CPU A's queue on CPU B | whose deficit is charged is undefined | | P6 must define it (charge the victim's `kc_deficit` on A; the stealer's own accounting for the cap) |
+| 11 | BULK stealing (P6) runs a batch of CPU A's queue on CPU B | whose deficit is charged is undefined | | P6 must define it (charge the victim's `kc_deficit` on A; the stealer's own share limit) |
 | 12 | a BLOCKING handler sleeps mid-pass | the worker holds its place in the round while asleep; other BLOCKING queues on the CPU wait for worker replacement | | P7; CPU-time charging (S1a.4) already excludes the sleep from the deficit |
 | 13 | an ithread preempts the worker mid-pass | wall-clock pass length grows; the deficit (CPU time) does not | `cycles` (wall) vs `busy_ns` (CPU) diverge | by design; B1-B5 are CPU-time bounds, wall-clock latency includes interrupt load |
 | 14 | `quantum_us` changed at runtime | deficits refilled and clamped with the new `Qw` from the next round | | fine; the clamps re-bound old values immediately |
@@ -1217,13 +1363,58 @@ no ceiling and was not built.  On the if_pair ping flood the whole
 difference is 0.2-0.3 us per hop (round trip 8.1-8.7 vs 7.2-8.1 us,
 timed probe-free), consistent with the above plus the handler.
 
-Clock reads, measured 2026-10-19 (`cost` with `budget_check_every` 1, 8
-and 64; ../NOTES.md): one `cpu_ticks()` per item costs 16-47 ns on the
-Altra and ~11 ns on the x86 guest; the default of one read per 8 budget
-calls plus two per pass and one `sbinuptime()` per burst and per round
-amounts to 30-40 ns per item at 3 items per pass on a07, 10-15 % of the
-consumer's per-item cost there.  64 is slower than 8 on both machines:
-the estimate under-predicts and the pass overruns into debt.
+Clock reads, measured 2026-10-19 and 2026-10-20 (`cost` with
+`budget_check_every`, then the `clocks` scenario; samples/clocks_2026-10-20_
+fast_clock_ab.txt).  One read, warm CPU, ns:
+
+| | `cpu_ticks()` | `get_cyclecount()` | `sbinuptime()` | `getsbinuptime()` | `cpu_tickrate()` |
+|---|---|---|---|---|---|
+| a07 (Neoverse N1) | 22 | 9 | 25 | 6 | 3 |
+| guest (Xeon D, bhyve) | 11 | 11 | 24 | 3 | 3 |
+| lab (Ryzen 7 5800X) | 7 | 7 | 17 | - | - |
+
+On arm64 `cpu_ticks()` is the generic `tc_cpu_ticks()`: a critical
+section, an `isb`-fenced 32-bit timecounter read and the per-CPU wrap
+extension behind the S13 glitch; on amd64 it is the bare `rdtsc`.  Since
+2026-10-20 the scheduler reads `kwq_ticks()` (kwq_clock.h):
+`get_cyclecount()` where that is a fixed-rate 64-bit counter whose rate
+matches `cpu_tickrate()` within 1 %, which is the invariant TSC on
+amd64, `CNTVCT_EL0` on arm64 and the timebase on powerpc, and
+`cpu_ticks()` elsewhere or with the loader tunable `kern.kwq.clock_fast=0`.
+The read is unfenced, which the budget estimate's margin, the bound
+worker and the per-CPU monotonicity make harmless (S4.4, S13).  The
+worker's CPU time is no longer `td_runtime` plus a ticker read per call:
+that exact sum is taken once as a base and advanced with `kwq_ticks()`
+while `td_runtime` is unchanged, i.e. while the worker has not been
+switched out; a change re-bases with one `cpu_ticks()` read, so the
+kernel's ticker is read once per preemption or lock block instead of
+twice per pass and once per budget read (kwq_worker.c,
+`kwq_cputime_ns_tick()`).  A ticker glitch at a re-base shows as one S13
+glitch (one quantum charged), 2-3 per 3 s run on a07 against 0-1 before.
+
+Measured A/B on one boot, `clock_fast` 0 against 1, interleaved twice:
+
+| | a07, `cpu_ticks` | a07, `cntvct` | guest, `cpu_ticks` | guest, `tsc` | lab, either |
+|---|---|---|---|---|---|
+| `kwq_budget_left()`, a read per call (k=1) | 37-38 ns | 16 ns | 28 | 27 | 11 |
+| `kwq_budget_left()`, default k=8 | 14 ns | 11-12 ns | 15-16 | 15-17 | 4-5 |
+| `cost`, consumer busy ns per item, k=8 | 210-281 | 242-258 | 43-45 | 42-45 |
+| `cost`, instructions per item (hwpmc, worker CPU) | 856-895 | 755-795 | - | - |
+| `cost`, cycles per item (hwpmc) | 1305-1382 | 1197-1256 | - | - |
+| `cost`, items/s | 2.17-2.30 M | 2.39-2.51 M | - | - |
+| `pingpong` round trip | 3711-3737 ns | 3660-3751 ns | 11.3-11.7 us | 11.3-12.3 us | 1.3-1.6 us |
+
+So on the Altra a budget call that reads the clock costs 22 ns less
+(-58 %), the default budget call 2.5 ns less (-18 %), and the cost
+scenario's consumer spends 100 fewer instructions and 8 % fewer cycles
+per item for 9 % more items per second; `busy_ns` per item is too noisy
+there (196-316 for one configuration across runs) to show it, and the
+wake path does not change.  On the guest the TSC was the ticker already,
+and the saving is the wrapper's indirect call and critical section, 1-3
+ns.  Per pass this removes two `cpu_ticks()` reads (44 ns on a07), per
+item at the default knob one eighth of one (3 ns), per burst and per
+round nothing: `sbinuptime()` stays for the latency stamp, the idle
+accounting and the round end, 25 ns each.
 
 ### 15.3 Per round and per burst
 
@@ -1279,6 +1470,7 @@ outgrew as counters were added; measured by compiling a `CTASSERT` on
 | `cost` with `cost_us=1` | the same with a 1 us handler | fraction of CPU in bookkeeping = 1 - (items x 1 us) / busy_ns |
 | `tq_baseline` | the same producer pattern into a `taskqueue(9)` with one task per burst and an mbufq-style list (epair's shape) | items/s and ns per item for the design kwq replaces |
 | `switch_baseline` | two kernel threads on one CPU handing a token back and forth with `wakeup`/`msleep` 1e6 times | ns per thread switch on this machine, the number the pass cost is compared against |
+| `clocks` | ns per call of each clock on the producer CPU and, warm, on the worker CPU, with `kwq_budget_left()` under the current `budget_check_every` | the clock reads' price; the cold first batch shows a CPU fresh from idle (2026-10-20) |
 | `pingpong`, `pingpong_tq` | one item back and forth between a producer CPU and the consumer CPU; every enqueue wakes the consumer; the request half is kwq or a taskqueue, the reply the same `wakeup_one()` | wall ns per round trip, the producer's ns inside the enqueue, enqueue-to-handler ns: the wake path's cost, no probes (2026-10-18) |
 
 The Ampere runs the same four scenarios for the arm64 column, with

@@ -1,0 +1,23 @@
+# kwq_test `clocks`, `cost`, `pingpong` on lab (AMD Ryzen 7 5800X, invariant
+# TSC 3.79 GHz, SMT; worker on cpu 2, producer on cpu 4, different cores),
+# 2026-10-20.  A/B by kern.kwq.clock_fast (loader tunable), 0 1 0 1.
+# ns per call, warm worker CPU:
+#                   clock_fast=0   clock_fast=1
+# cpu_ticks (rdtsc)      7              7
+# get_cyclecount         7              7
+# sbinuptime            17-18          17-18
+# kwq_budget_left k=1   11             11
+# kwq_budget_left k=8   4-5            4-5
+# cold (fresh from idle) k=1 15, k=8 8-9, both modes
+# pingpong round trip ns: 1625 1609 1306 1339 (slow) | 1421 1380 1360 1373 (fast)
+#   producer in the enqueue 214-226 ns, enqueue-to-handler 741-914 ns
+# hwpmc on the worker cpu during cost k=8 (ls_not_halted_cyc, ex_ret_instr):
+clock_fast=0: worker cpu 4.713 G cycles/s, 5.200 G instr/s, IPC 1.10; items/s 12167899; consumer busy ns/item 28
+clock_fast=1: worker cpu 4.712 G cycles/s, 5.219 G instr/s, IPC 1.11; items/s 12420410; consumer busy ns/item 28
+clock_fast=0: worker cpu 4.712 G cycles/s, 5.183 G instr/s, IPC 1.10; items/s 12403199; consumer busy ns/item 28
+clock_fast=1: worker cpu 4.711 G cycles/s, 5.147 G instr/s, IPC 1.09; items/s 12003809; consumer busy ns/item 28
+clock_fast=0: worker cpu 4.711 G cycles/s, 5.241 G instr/s, IPC 1.11; items/s 12290531; consumer busy ns/item 28
+clock_fast=1: worker cpu 4.709 G cycles/s, 5.115 G instr/s, IPC 1.09; items/s 13002150; consumer busy ns/item 29
+# -> 420 instructions and 380 cycles per item either way: on a machine
+#    whose cpu_ticks() is already the TSC the fast path is a no-op, as
+#    designed.  The core runs at 4.71 GHz under load (boost; nominal 3.79).
