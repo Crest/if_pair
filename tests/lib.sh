@@ -41,6 +41,12 @@ pass() {
 	printf '%s\n' "${CLEANUP}" | while IFS= read -r _cmd; do
 		[ -n "$_cmd" ] && eval "$_cmd" >/dev/null 2>&1
 	done
+	# A module this run loaded and could not unload stays for the next run
+	# to measure by mistake; say so (a running dtrace(1) consumer with the
+	# module's probes enabled vetoes the unload, silently).
+	if [ "${MOD_PRELOADED}" = no ] && kldstat -q -m "${PAIR_MOD}"; then
+		log "WARNING: ${PAIR_MOD} is still loaded after cleanup (dtrace running?)"
+	fi
 	log "PASS"
 	exit 0
 }
@@ -131,6 +137,16 @@ ensure_kwq() {
 	fail "kwq.ko not found (build kwq/ or set KWQ_KO)"
 }
 
+# loaded_is name file: the loaded module `name' came from `file' (kldstat -v
+# records the path it was loaded from).  A module left loaded by an earlier
+# run is the easiest way to measure the wrong build, so a test that is told
+# which file to use refuses any other.
+loaded_is() {
+	_want=$(realpath "$2" 2>/dev/null) || return 1
+	_have=$(kldstat -v -n "$1.ko" 2>/dev/null | sed -n '2s/.*(\(.*\))$/\1/p')
+	[ -n "$_have" ] && [ "$(realpath "$_have" 2>/dev/null)" = "$_want" ]
+}
+
 ensure_module() {
 	if kldstat -q -m "${PAIR_MOD}"; then
 		# ifconfig(8) autoloads if_<cloner>.ko from the module path
@@ -140,6 +156,12 @@ ensure_module() {
 		# the taskqueue version is what is running.
 		if [ "${PAIR_MOD}" = if_pair ] && ! kldstat -q -m kwq; then
 			fail "a preloaded if_pair without kwq.ko: the installed taskqueue driver, not the kwq one (kldunload if_pair, or set PAIR_MOD)"
+		fi
+		if [ -n "${IFPAIR_KO:-}" ] && ! loaded_is "${PAIR_MOD}" "${IFPAIR_KO}"; then
+			fail "${PAIR_MOD} is loaded from another file than IFPAIR_KO=${IFPAIR_KO}; unload it first"
+		fi
+		if [ "${PAIR_MOD}" = if_pair ] && [ -n "${KWQ_KO:-}" ] && ! loaded_is kwq "${KWQ_KO}"; then
+			fail "kwq is loaded from another file than KWQ_KO=${KWQ_KO}; unload it first (a dtrace consumer with kwq probes enabled makes kldunload fail)"
 		fi
 		MOD_PRELOADED=yes
 		return 0

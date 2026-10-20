@@ -21,11 +21,44 @@
  *   victim exec COUNT [GAP_MS]
  *       fork(2) + execve(2) of /usr/bin/true, COUNT times, GAP_MS apart
  *       (default 20): the wall time of each, as a shell spawning commands.
+ *   victim udpecho PORT
+ *       A UDP echo server; runs in the far jail for the mode below.
+ *   victim udp HOST PORT SECS [SPORT [GAP_US]]
+ *       Request-reply over UDP from source port SPORT (0 = any), one
+ *       64-byte datagram at a time, GAP_US apart (default 500): the
+ *       round-trip time's median, 99th percentile and maximum, and the
+ *       requests unanswered within 200 ms.  A fixed SPORT keeps the flow on
+ *       one worker CPU across runs and drivers (the pair hashes the
+ *       4-tuple), so the harness can put it on the CPU under test.
+ *   victim ports SEED NCPU CPU SRC DST TCPPORT UDPPORT [COUNT]
+ *       The pair's flow hash (if_pair.c pair_hash_mbuf(): jenkins_hash32
+ *       over source, destination, protocol and the port pair, seeded per
+ *       module load) replicated, so that the harness can choose ports
+ *       offline: prints cports=N,N,... (COUNT of them, default 1) and
+ *       uport=M, the lowest ports from 40000 up whose TCP flow SRC:N ->
+ *       DST:TCPPORT and UDP flow SRC:M -> DST:UDPPORT land on CPU (hash %
+ *       NCPU) in the direction from SRC: the data of the bulk flow and the
+ *       requests of the UDP flow.  The reverse direction hashes on its
+ *       own; demanding both on one CPU leaves too few ports on a 128-CPU
+ *       machine.  A fresh TCP port per run keeps the previous run's
+ *       TIME_WAIT entry out of the way.  SEED is pair_hash_seed read from
+ *       the loaded module:
+ *   victim seed MODULE
+ *       The value of the static pair_hash_seed of the loaded module file
+ *       (if_pair.ko or if_pair_tq.ko), through kldsym(2) and /dev/kmem.
  */
+#include <sys/param.h>
+#include <sys/linker.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <poll.h>
 #include <sys/types.h>
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -178,6 +211,195 @@ do_exec(int count, long gap_ms)
 	return (0);
 }
 
+/* jenkins_hash32() of sys/libkern/jenkins_hash.c: Bob Jenkins' hashword(). */
+#define	JROT(x, k)	(((x) << (k)) | ((x) >> (32 - (k))))
+#define	JMIX(a, b, c) do {						\
+	a -= c; a ^= JROT(c, 4); c += b;				\
+	b -= a; b ^= JROT(a, 6); a += c;				\
+	c -= b; c ^= JROT(b, 8); b += a;				\
+	a -= c; a ^= JROT(c, 16); c += b;				\
+	b -= a; b ^= JROT(a, 19); a += c;				\
+	c -= b; c ^= JROT(b, 4); b += a;				\
+} while (0)
+#define	JFINAL(a, b, c) do {						\
+	c ^= b; c -= JROT(b, 14);					\
+	a ^= c; a -= JROT(c, 11);					\
+	b ^= a; b -= JROT(a, 25);					\
+	c ^= b; c -= JROT(b, 16);					\
+	a ^= c; a -= JROT(c, 4);					\
+	b ^= a; b -= JROT(a, 14);					\
+	c ^= b; c -= JROT(b, 24);					\
+} while (0)
+
+static uint32_t
+jenkins_hash32(const uint32_t *k, size_t length, uint32_t initval)
+{
+	uint32_t a, b, c;
+
+	a = b = c = 0xdeadbeef + (((uint32_t)length) << 2) + initval;
+	while (length > 3) {
+		a += k[0]; b += k[1]; c += k[2];
+		JMIX(a, b, c);
+		length -= 3;
+		k += 3;
+	}
+	switch (length) {
+	case 3: c += k[2];	/* FALLTHROUGH */
+	case 2: b += k[1];	/* FALLTHROUGH */
+	case 1: a += k[0];
+		JFINAL(a, b, c);
+		/* FALLTHROUGH */
+	case 0:
+		break;
+	}
+	return (c);
+}
+
+/* The CPU of one direction: addresses and ports as they sit in the packet. */
+static unsigned
+flow_cpu(uint32_t seed, unsigned ncpu, struct in_addr src, struct in_addr dst,
+    int proto, int sport, int dport)
+{
+	uint32_t key[4];
+	uint16_t ports[2] = { htons((uint16_t)sport), htons((uint16_t)dport) };
+
+	key[0] = src.s_addr;
+	key[1] = dst.s_addr;
+	key[2] = (uint32_t)proto;
+	key[3] = (uint32_t)ports[0] << 16 | ports[1];
+	return (jenkins_hash32(key, 4, seed) % ncpu);
+}
+
+static int
+do_ports(uint32_t seed, unsigned ncpu, unsigned cpu, const char *src,
+    const char *dst, int tcpport, int udpport, int count)
+{
+	struct in_addr s, d;
+	int p, ncport = 0, uport = 0;
+
+	if (inet_pton(AF_INET, src, &s) != 1 || inet_pton(AF_INET, dst, &d) != 1)
+		return (1);
+	printf("cports=");
+	for (p = 40000; p < 65000 && (ncport < count || uport == 0); p++) {
+		if (ncport < count && flow_cpu(seed, ncpu, s, d, 6, p, tcpport) == cpu)
+			printf("%s%d", ncport++ ? "," : "", p);
+		else if (uport == 0 && flow_cpu(seed, ncpu, s, d, 17, p, udpport) == cpu)
+			uport = p;
+	}
+	if (ncport < count || uport == 0)
+		return (1);
+	printf(" uport=%d\n", uport);
+	return (0);
+}
+
+static int
+do_seed(const char *module)
+{
+	struct kld_sym_lookup l;
+	char name[] = "pair_hash_seed";
+	uint32_t v;
+	int fid, fd;
+
+	fid = kldfind(module);
+	if (fid < 0)
+		return (1);
+	memset(&l, 0, sizeof(l));
+	l.version = sizeof(l);
+	l.symname = name;
+	if (kldsym(fid, KLDSYM_LOOKUP, &l) != 0)
+		return (1);
+	fd = open("/dev/kmem", O_RDONLY);
+	if (fd < 0 || pread(fd, &v, sizeof(v), (off_t)l.symvalue) != (ssize_t)sizeof(v))
+		return (1);
+	printf("%u\n", v);
+	return (0);
+}
+
+static int
+do_udpecho(int port)
+{
+	struct sockaddr_in sin, from;
+	socklen_t fl;
+	char buf[256];
+	ssize_t n;
+	int s;
+
+	s = socket(AF_INET, SOCK_DGRAM, 0);
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons((uint16_t)port);
+	if (s < 0 || bind(s, (struct sockaddr *)&sin, sizeof(sin)) != 0)
+		return (1);
+	for (;;) {
+		fl = sizeof(from);
+		n = recvfrom(s, buf, sizeof(buf), 0, (struct sockaddr *)&from, &fl);
+		if (n > 0)
+			(void)sendto(s, buf, (size_t)n, 0, (struct sockaddr *)&from, fl);
+	}
+}
+
+static int
+do_udp(const char *host, int port, int secs, int sport, long gap_us)
+{
+	struct sockaddr_in sin;
+	struct timespec t0, t1, end, gap = { 0, gap_us * 1000L };
+	struct pollfd pfd;
+	char buf[64];
+	long *rtt, lost = 0;
+	size_t n = 0, cap;
+	int s;
+
+	cap = (size_t)secs * 1000000L / (gap_us > 0 ? gap_us : 1) + 1000;
+	rtt = calloc(cap, sizeof(*rtt));
+	s = socket(AF_INET, SOCK_DGRAM, 0);
+	if (rtt == NULL || s < 0)
+		return (1);
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	if (sport > 0) {
+		sin.sin_port = htons((uint16_t)sport);
+		if (bind(s, (struct sockaddr *)&sin, sizeof(sin)) != 0)
+			return (1);
+	}
+	sin.sin_port = htons((uint16_t)port);
+	if (inet_pton(AF_INET, host, &sin.sin_addr) != 1 ||
+	    connect(s, (struct sockaddr *)&sin, sizeof(sin)) != 0)
+		return (1);
+	memset(buf, 'k', sizeof(buf));
+	pfd.fd = s;
+	pfd.events = POLLIN;
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	end.tv_sec += secs;
+	for (;;) {
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		if (t0.tv_sec > end.tv_sec ||
+		    (t0.tv_sec == end.tv_sec && t0.tv_nsec >= end.tv_nsec))
+			break;
+		memcpy(buf, &n, sizeof(n));
+		if (send(s, buf, sizeof(buf), 0) != (ssize_t)sizeof(buf))
+			return (1);
+		if (poll(&pfd, 1, 200) == 1 && recv(s, buf, sizeof(buf), 0) > 0) {
+			clock_gettime(CLOCK_MONOTONIC, &t1);
+			if (n < cap)
+				rtt[n] = ts_sub_us(&t1, &t0);
+		} else {
+			lost++;
+			if (n < cap)
+				rtt[n] = 200000;
+		}
+		n++;
+		if (gap_us > 0)
+			nanosleep(&gap, NULL);
+	}
+	if (n > cap)
+		n = cap;
+	qsort(rtt, n, sizeof(*rtt), cmp);
+	printf("udp n=%zu rtt_p50=%ld rtt_p99=%ld rtt_max=%ld lost=%ld\n", n,
+	    n ? rtt[n / 2] : 0, n ? rtt[n * 99 / 100] : 0, n ? rtt[n - 1] : 0,
+	    lost);
+	return (0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -187,7 +409,20 @@ main(int argc, char **argv)
 		return (do_spin(atoi(argv[2])));
 	if (argc >= 3 && strcmp(argv[1], "exec") == 0)
 		return (do_exec(atoi(argv[2]), argc > 3 ? atol(argv[3]) : 20));
+	if (argc >= 3 && strcmp(argv[1], "seed") == 0)
+		return (do_seed(argv[2]));
+	if (argc >= 9 && strcmp(argv[1], "ports") == 0)
+		return (do_ports((uint32_t)strtoul(argv[2], NULL, 0),
+		    (unsigned)atoi(argv[3]), (unsigned)atoi(argv[4]), argv[5],
+		    argv[6], atoi(argv[7]), atoi(argv[8]),
+		    argc > 9 ? atoi(argv[9]) : 1));
+	if (argc >= 3 && strcmp(argv[1], "udpecho") == 0)
+		return (do_udpecho(atoi(argv[2])));
+	if (argc >= 5 && strcmp(argv[1], "udp") == 0)
+		return (do_udp(argv[2], atoi(argv[3]), atoi(argv[4]),
+		    argc > 5 ? atoi(argv[5]) : 0, argc > 6 ? atol(argv[6]) : 500));
 	fprintf(stderr, "usage: victim timer SECS [WORK_US] | spin SECS | "
-	    "exec COUNT [GAP_MS]\n");
+	    "exec COUNT [GAP_MS] | udpecho PORT | udp HOST PORT SECS [SPORT [GAP_US]] | "
+	    "ports SEED NCPU CPU SRC DST TCPPORT UDPPORT [COUNT] | seed MODULE\n");
 	return (2);
 }
