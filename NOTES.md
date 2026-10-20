@@ -5646,3 +5646,35 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
     K2 against K1 and K3 against K2 show no systematic change in any
     column; their effects were measured where they live (per-pass cost,
     clock reads), not in these end-to-end numbers.
+
+2026-10-21: the NET class at other scheduler priorities, with the new
+  kern.kwq.net.priority tunable, through compare.sh on the three machines
+  (samples/compare_prio_2026-10-21_three_machines.txt): PI_REALTIME (0,
+  tried on the guest first), PI_NET (1, the default), PI_SOFT (2, where
+  netisr, hpts and iflib's queue threads run), 3 and 16 (BULK moved
+  along to keep the class order), and the taskqueue driver.
+  Result: the priority is invisible here.  The fairness columns are the
+  same at every priority on all three machines to the last digit that
+  matters (spinner 51 %, timer p99 514-518 us on lab, 138-239 on a07,
+  616-627 on the guest; exec 0.68-0.82 ms on lab, 1.65-1.71 on a07), as
+  they must be, since the share limit's demotion and deadline and not the
+  class priority decide the worker's standing against user threads.
+  Throughput, the UDP round trip and the worker's own counters move
+  within the run spread: switched stays at 90-125 passes per second at
+  every priority, so nothing preempts the worker more often at 16 than
+  at 0, and the doorbell-to-pass maximum jumps between 50 and 800 us
+  from repetition to repetition without a trend.  Two outliers are the
+  machines, not the priority: lab's single flow fell into its low
+  regime (72.9 Gbit/s, the SMT-sibling placement seen on 10-20) in one
+  repetition of priority 0, which the median then shows as -20 %, and
+  a07's single flow spans 32.8-38.2 Gbit/s across all stages as it did
+  on 10-20.  Why nothing shows: the class priority orders the worker
+  only against other interrupt-level threads, and on these machines no
+  such thread competes for the worker's CPU; the pair dispatches
+  directly so netisr is idle, the per-CPU callout threads wake a few
+  times a second, and no NIC is in the path.  The case the 2022
+  collapse of the interrupt priorities was designed for, a NIC's
+  interrupt thread and deferred packet work on one CPU under load,
+  needs a flow that enters through a physical interface and leaves
+  through the pair; lab could provide it as a separate setup.  Until
+  then PI_NET stays the default and PI_SOFT is a kenv away.
