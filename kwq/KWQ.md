@@ -1518,6 +1518,29 @@ replaces its yield with kwq's fixed-target one.  The same wording applies
 to every `PI_NET` taskqueue pool in the tree that calls
 `kern_yield(PRI_USER)`.
 
+### Missing 4: the best priority waiting on a CPU
+
+`sched_runnable()` is the only run-queue fact the scheduler exports: a
+boolean "something else is runnable here".  What the yield decision and
+the share limit's demotion want is one step more, "is a thread better
+than X waiting on this CPU", which ULE keeps in `tdq_lowpri` and its
+run-queue bitmap and does not export.  Without it kwq lets ULE answer
+indirectly: it drops to the idle range and runs again when ULE picks it
+(SCHED.md S6.3), and its round-end yield admits a whole priority band
+rather than the thread that is actually waiting.  An accessor of the form
+`sched_waiting_prio(cpu)`, returning the best runnable priority on a CPU
+or none, implemented in `sched_ule.c` and `sched_4bsd.c` where the
+layout is known, would make both decisions exact and remove the
+idle-range demotion.  It would also let the share scale with the number
+of competitors instead of being fixed at a half.
+
+Design rule, decided 2026-10-21: kwq does not read scheduler internals
+(`struct tdq`, `td_sched`, the DPCPU statics), not even through CTF-derived
+offsets with a fallback, because the module must stay free of any one
+kernel version and scheduler.  Where an internal would decide a design
+question, the design records that fact here and names the export to ask
+for.
+
 ## 12. Module-first implementation
 
 Yes: the pool itself, its first clients, its DTrace provider and its

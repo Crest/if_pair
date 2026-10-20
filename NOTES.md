@@ -5586,3 +5586,63 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   reported one constant value in two runs) and is kept as an indicator
   only.  ATF 22/22 on the guest with the previous build of the same
   core; the simulator passes.
+
+2026-10-20: tests/compare.sh, one battery against several builds of the
+  drivers on the same boot (with tests/build_stage.sh, compare_report.sh
+  and victim.c's udp, udpecho, seed and ports modes), run on the three
+  machines with two repetitions, medians in samples/compare_2026-10-20_
+  three_machines.txt and the raw rows in compare_2026-10-20_{guest,a07,
+  lab}.tsv.  Stages: T the taskqueue driver, K1 be8ad02 (the port), K2
+  744b5a6 (shared list), K3 5fac285 (fast clock, wall time), K4off and
+  K4 685949e (the share limit off and at its default).
+  What had to be fixed before the harness measured what it claims: the
+  iperf3 server has to exist before the first discovery flow; the pair
+  seeds its flow hash per module load, so ports chosen on one stage mean
+  nothing on the next and a UDP flow cannot share a TCP flow's CPU by
+  port equality (the hash covers the protocol), so each stage's seed is
+  now read through kldsym(2) and /dev/kmem (dtrace could not resolve
+  the module static) and the ports are computed offline with the hash
+  replicated in victim.c; demanding both directions of a flow on one
+  CPU leaves too few ports on 128 CPUs, so only the data and request
+  directions are placed; and reusing one client port within a stage met
+  the previous run's TIME_WAIT entry on a07 and lab ("unable to connect
+  stream: Address already in use", never on the guest), so every run
+  gets a fresh port.  lib.sh now refuses a preloaded module that is not
+  the file asked for and warns when the unload at the end failed.
+  Readings, with T as the reference (medians of 2):
+    single flow: every kwq stage within +-5 % of T on all machines
+      (a07 K3 -9 % in one pair of runs); sixteen flows: kwq 1-10 % below
+      T on a07 and lab, +5 % on the guest; no stage stands out.
+    udp_idle: p50 and p99 equal across stages within +-10 % everywhere
+      (a07 13 / 33 us, lab 7 / 9, guest 420 / 620); the delivery path's
+      latency did not change from K1 to K4.
+    udp_load (UDP beside the bulk flow on its CPU): a07 p99 34.5 (T) vs
+      38-39.5 (all kwq), lab and guest within noise; both flows go
+      through the same per-side queue, so DRR between queues cannot
+      favour the small flow, and the taskqueue driver's smaller batches
+      give it a few microseconds on a07.
+    spin (fairness to a CPU-bound process): T leaves it the whole CPU
+      and the flow drops to a third (a07 12.7 of 36 Gbit/s, lab 52 of
+      136, guest 3.5 of 9.2); K1-K3 and K4off leave it 13-21 % (lab:
+      0.2-26 %, the worker there saturates); K4 leaves 51 % on all
+      three with the flow at 100 % (a07), 72 % (lab), 75 % (guest) of
+      its unlimited rate.
+    timer (interactive thread on the worker CPU, p99 lateness us): T 77
+      / 692 / 1570 (a07 / lab / guest); K1-K3, K4off 85-606 / 10400-14400
+      / 3200-6900; K4 212 / 264 / 634.  exec (avg us): T 1020 / 731 /
+      8510; K1-K3, K4off 5100-5500 / 13100-25900 / 10500-10900; K4 1640 /
+      624 / 3770.  K4 is the only kwq stage near T on a07 and better than
+      T on lab and the guest; the three stages before it are 5-30 x
+      worse than T on the hardware, which is the starvation P4c set out
+      to fix, measured for the first time against the old driver on the
+      same boot.
+    machine (unpinned timer, 2 x ncpu connections, p99 ms): T 11.7 / 27
+      / 10.6; K1-K3 15-20 / 9.5-12 / 10.6-12.5; K4 19 / 27.8 / 9.1.
+      ULE's slicing of the oversubscribed iperf3 threads dominates; on
+      lab K4's equal share hands the iperf3 threads half of every CPU
+      and the unpinned timer then waits behind more runnable threads,
+      which is the one case where fairness to CPU-bound threads costs a
+      third party.
+    K2 against K1 and K3 against K2 show no systematic change in any
+    column; their effects were measured where they live (per-pass cost,
+    clock reads), not in these end-to-end numbers.
