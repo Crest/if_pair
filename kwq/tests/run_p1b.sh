@@ -23,7 +23,7 @@ for kv in ${KWQ_KNOBS:-}; do sysctl kern.kwq.\$kv || { echo KNOBFAIL; exit 1; };
 uname -v | sed 's/^/kernel: /'; sysctl -n kern.hz hw.ncpu hw.machine | tr '\\n' ' ' | sed 's/^/hz ncpu machine: /'; echo
 run() { name=\$1; shift
 	sysctl -q kern.kwq_test.cost_us=0 kern.kwq_test.limit=0 kern.kwq_test.cpu=-1 kern.kwq_test.items=1000 kern.kwq_test.reps=10 kern.kwq_test.secs=3 kern.kwq_test.weight_a=1 kern.kwq_test.weight_b=1 kern.kwq_test.cost_a=50 kern.kwq_test.cost_b=500 kern.kwq_test.batch=1 kern.kwq_test.pairs=1 kern.kwq_test.fanin=1 kern.kwq_test.ifaces=1 kern.kwq_test.spread=1 kern.kwq_test.prod_ns=1000 kern.kwq_test.cons_ns=1500 >/dev/null
-	for kv in "\$@"; do sysctl -q kern.kwq_test.\$kv >/dev/null; done
+	for kv in "\$@" ${KT_EXTRA:-}; do sysctl -q kern.kwq_test.\$kv >/dev/null; done	# KT_EXTRA="cpu=5" adds knobs to every run
 	sysctl -q kern.kwq_test.scenario=\$name >/dev/null; start=\$(date +%s); sysctl -q kern.kwq_test.run=1 >/dev/null
 	while [ "\$(sysctl -n kern.kwq_test.result_state)" = running ]; do sleep 0.2; [ \$(( \$(date +%s) - start )) -gt 120 ] && { echo "\$name: TIMEOUT"; return 1; }; done
 	R() { sysctl -n kern.kwq_test.result_\$1; }
@@ -47,6 +47,7 @@ for s in $scenarios; do
 	overrun) run overrun || rc=1; C ;;
 	yield) run yield || rc=1; C ;;
 	yield0) run yield items=0 || rc=1 ;;	# callout only: VM/timer noise baseline
+	clocks) run clocks || rc=1; echo "    ns per call: \$(R clocks) (budget_check_every \$(sysctl -n kern.kwq.net.budget_check_every))" ;;
 	pingpong|pingpong_tq) run \$s || rc=1; echo "    round trip \$(R ns_per_item) ns, producer in the enqueue \$(R prod_ns_per_item) ns, enqueue-to-handler avg \$(R lat_ns) ns max \$(R maxlat_a_us) us" ;;
 	cost16) run cost items=1024 batch=16 || rc=1 ;;	# S16 batching: 16 items per kwq_enqueue_list()
 	scale) run scale items=1024 batch=${BATCH:-16} pairs=${PAIRS:-1} || rc=1 ;;	# PAIRS producer/consumer pairs on disjoint CPUs
@@ -60,7 +61,9 @@ for s in $scenarios; do
 		b1=0; for c in \$(seq 1 \$ncons); do b1=\$(( b1 + \$(sysctl -n kern.kwq.net.cpu.\$c.busy_ns) )); done
 		busy=\$(( b1 - b0 )); spin=\$(sysctl -n kern.kwq_test.result_cycles_a); wall=\$(sysctl -n kern.kwq_test.result_ns)
 		[ \$busy -gt 0 ] && echo "    workers: busy \$(( busy * 100 / (wall * ncons) ))% of wall; of that \$(( spin * 100 / busy ))% packet work, \$(( 100 - spin * 100 / busy ))% kwq passes + queue lock + item return" ;;
-	cost) b0=\$(sysctl -n kern.kwq.net.cpu.1.busy_ns); run cost items=1024 || rc=1; b1=\$(sysctl -n kern.kwq.net.cpu.1.busy_ns); echo "    consumer busy ns per item: \$(( (b1 - b0) / \$(sysctl -n kern.kwq_test.result_out) )) (cpu_ticks glitches discarded by the test: \$(sysctl -n kern.kwq_test.result_glitches))" ;;
+	cost) wc=\$(echo " ${KT_EXTRA:-}" | sed -n 's/.* cpu=\([0-9]*\).*/\1/p'); wc=\${wc:-1}	# the worker CPU: the cpu= knob, else 1
+	      b0=\$(sysctl -n kern.kwq.net.cpu.\$wc.busy_ns); p0=\$(sysctl -n kern.kwq.net.cpu.\$wc.passes); s0=\$(sysctl -n kern.kwq.net.cpu.\$wc.switched 2>/dev/null || echo 0); run cost items=1024 || rc=1; b1=\$(sysctl -n kern.kwq.net.cpu.\$wc.busy_ns); p1=\$(sysctl -n kern.kwq.net.cpu.\$wc.passes); s1=\$(sysctl -n kern.kwq.net.cpu.\$wc.switched 2>/dev/null || echo 0); it=\$(sysctl -n kern.kwq_test.result_out)
+	      echo "    consumer busy ns per item: \$(( (b1 - b0) / it )) (cpu \$wc; items per pass \$(( it / (p1 - p0 > 0 ? p1 - p0 : 1) )), switched passes \$(( s1 - s0 )); clock glitches discarded by the test: \$(sysctl -n kern.kwq_test.result_glitches))" ;;
 	tq_baseline) run tq_baseline items=1024 || rc=1 ;;
 	switch_baseline) run switch_baseline || rc=1 ;;
 	*) echo "unknown scenario \$s"; rc=1 ;;

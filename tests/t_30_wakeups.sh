@@ -102,11 +102,12 @@ busiest() {	# the pool thread that did most in one second
 		dtrace -qn "sched:::on-cpu /index(stringof(curthread->td_name), \"$TPREFIX\") == 0/ { @[stringof(curthread->td_name)] = count(); } tick-1s { trunc(@, 1); printa(\"%s\\n\", @); exit(0); }" 2>/dev/null | awk 'NF { print $1; exit }'
 	fi
 }
-kwq_snap() {	# wakeups passes busy_ns idle_ns items-on-W(both queues) yields tick_yields spins spin_hits spin_ns
-	[ "$PAIR" = pair ] || { echo "0 0 0 0 0 0 0 0 0 0"; return; }
-	# The last three exist only with the idle poll (kwq-spin-experiment).
+kwq_snap() {	# wakeups passes busy_ns idle_ns items-on-W(both queues) yields tick_yields spins spin_hits spin_ns switched
+	[ "$PAIR" = pair ] || { echo "0 0 0 0 0 0 0 0 0 0 0"; return; }
+	# spins/spin_hits/spin_ns exist only with the idle poll (kwq-spin-experiment); switched since 2026-10-20.
 	_sp=$(sysctl -n kern.kwq.net.cpu.$1.spins kern.kwq.net.cpu.$1.spin_hits kern.kwq.net.cpu.$1.spin_ns 2>/dev/null | tr '\n' ' ')
-	echo "$(sysctl -n kern.kwq.net.cpu.$1.wakeups kern.kwq.net.cpu.$1.passes kern.kwq.net.cpu.$1.busy_ns kern.kwq.net.cpu.$1.idle_ns | tr '\n' ' ') $(( $(sysctl -n kern.kwq.net.queue.$PAIRA.cpu.$1.items) + $(sysctl -n kern.kwq.net.queue.$PAIRB.cpu.$1.items) )) $(sysctl -n kern.kwq.net.cpu.$1.yields kern.kwq.net.cpu.$1.tick_yields | tr '\n' ' ') ${_sp:-0 0 0}"
+	_sw=$(sysctl -n kern.kwq.net.cpu.$1.switched 2>/dev/null)
+	echo "$(sysctl -n kern.kwq.net.cpu.$1.wakeups kern.kwq.net.cpu.$1.passes kern.kwq.net.cpu.$1.busy_ns kern.kwq.net.cpu.$1.idle_ns | tr '\n' ' ') $(( $(sysctl -n kern.kwq.net.queue.$PAIRA.cpu.$1.items) + $(sysctl -n kern.kwq.net.queue.$PAIRB.cpu.$1.items) )) $(sysctl -n kern.kwq.net.cpu.$1.yields kern.kwq.net.cpu.$1.tick_yields | tr '\n' ' ') ${_sp:-0 0 0} ${_sw:-0}"
 }
 has_oid() { sysctl -n "$1" >/dev/null 2>&1; }
 
@@ -144,7 +145,7 @@ for t in $TIMERS; do
 			cpuset -l "$W" yes > /dev/null & spid=$!
 		fi
 		# Window start.
-		set -- $(kwq_snap "$W"); wk0=$1; pa0=$2; bz0=$3; id0=$4; it0=$5; yl0=$6; ty0=$7; sp0=$8; sh0=$9; sn0=${10}
+		set -- $(kwq_snap "$W"); wk0=$1; pa0=$2; bz0=$3; id0=$4; it0=$5; yl0=$6; ty0=$7; sp0=$8; sh0=$9; sn0=${10}; sw0=${11}
 		cat > "$OUT/gaps.d" <<EOF
 /* CPU shares by sampling: a polling worker may never switch, so on-cpu/off-cpu stamps could miss it. */
 profile-1999 /pid == $spid/ { @scpu["spinner_samples"] = count(); }
@@ -202,7 +203,7 @@ EOF
 		fi
 		sleep "$WIN"
 		# Window end.
-		set -- $(kwq_snap "$W"); wk1=$1; pa1=$2; bz1=$3; id1=$4; it1=$5; yl1=$6; ty1=$7; sp1=$8; sh1=$9; sn1=${10}
+		set -- $(kwq_snap "$W"); wk1=$1; pa1=$2; bz1=$3; id1=$4; it1=$5; yl1=$6; ty1=$7; sp1=$8; sh1=$9; sn1=${10}; sw1=${11}
 		wait $pids 2>/dev/null
 		[ "$spid" != 0 ] && kill $spid 2>/dev/null
 		wait $ipid
@@ -215,7 +216,7 @@ EOF
 		# Reductions.
 		wcpu=$(awk -v w="$WIN" '/^  worker_samples/ { printf("%.2f", $2 / (w * 1999)) }' "$OUT/dtrace.$tag"); wcpu=${wcpu:-0}
 		kwqs=""
-		[ "$PAIR" = pair ] && kwqs=$(echo "$wk0 $wk1 $pa0 $pa1 $bz0 $bz1 $it0 $it1 $WIN $yl0 $yl1 $ty0 $ty1 $sp0 $sp1 $sh0 $sh1 $sn0 $sn1" | awk '{ p = $4 - $3; sp = $15 - $14; printf("; kwq: passes/s %d, items/pass %.1f, wakeups/s %d, yields/s %d+%d, busy %.0f%%", p / $9, p ? ($8 - $7) / p : 0, ($2 - $1) / $9, ($11 - $10) / $9, ($13 - $12) / $9, ($6 - $5) / ($9 * 1e9) * 100); if (sp > 0) printf(", spins/s %d (hit %.0f%%, %.2f s/s)", sp / $9, ($17 - $16) * 100 / sp, ($19 - $18) / ($9 * 1e9)) }')
+		[ "$PAIR" = pair ] && kwqs=$(echo "$wk0 $wk1 $pa0 $pa1 $bz0 $bz1 $it0 $it1 $WIN $yl0 $yl1 $ty0 $ty1 $sp0 $sp1 $sh0 $sh1 $sn0 $sn1 $sw0 $sw1" | awk '{ p = $4 - $3; sp = $15 - $14; printf("; kwq: passes/s %d, items/pass %.1f, wakeups/s %d, yields/s %d+%d, busy %.0f%%, switched/s %d", p / $9, p ? ($8 - $7) / p : 0, ($2 - $1) / $9, ($11 - $10) / $9, ($13 - $12) / $9, ($6 - $5) / ($9 * 1e9) * 100, ($21 - $20) / $9); if (sp > 0) printf(", spins/s %d (hit %.0f%%, %.2f s/s)", sp / $9, ($17 - $16) * 100 / sp, ($19 - $18) / ($9 * 1e9)) }')
 		dts=$(awk -v w="$WIN" '/^  gaps/ { g = $2 } /^  lt20 / { a = $2 } /^  lt50 / { b = $2 } /^  lt100 / { c = $2 } /^  lt500 / { d = $2 } /^  switches/ { s = $2 } /^  wakeups/ { k = $2 } /^  ygaps/ { y = $2 } /^  ylt20 / { ya = $2 } /^  yield_ns/ { yn = $2 } /^  lblocks/ { l = $2 } /^  lock_ns/ { ln = $2 }
 		    END { if (g == 0) g = 1; if (y == 0) y = 1; printf("dtrace: wakeups/s %d, switches/s %d, sleeps/s %d (<20us %d%%, <50us %d%%, <100us %d%%, <500us %d%%), lock blocks/s %d (off-cpu %.2f s/s), yields/s %d (<20us %d%%, off-cpu %.2f s/s)", k / w, s / w, g / w, a * 100 / g, b * 100 / g, c * 100 / g, d * 100 / g, l / w, ln / (w * 1e9), y / w, ya * 100 / y, yn / (w * 1e9)) }' "$OUT/dtrace.$tag")
 		cs=$(awk '$1 == "r" && !h { for (i = 1; i <= NF; i++) if ($i == "cs") col = i; h = 1; next } h && col && $1 ~ /^[0-9]+$/ { s += $col; n++ } END { printf("%d", n ? s / n : 0) }' "$OUT/vmstat.$tag")
