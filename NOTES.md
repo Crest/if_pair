@@ -5678,3 +5678,72 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   needs a flow that enters through a physical interface and leaves
   through the pair; lab could provide it as a separate setup.  Until
   then PI_NET stays the default and PI_SOFT is a kenv away.
+
+2026-10-21: PLAN P4d, the test campaign on running NET passes at idle
+  priority (a fork with Opus agents implemented the tests; samples/p4d_
+  2026-10-21_{guest,a07,lab}.txt rendered, the TSVs beside them; branch
+  kwq-p4d-passprio 4c91544 is stage C).  Stages: A HEAD with the share
+  limit at 500, B the limit off, C passes at class priority with the
+  idle priority only between passes, T the taskqueue driver.  Eight new
+  tests in tests/compare.sh (TESTS=, COMPETITOR=timer|burst|spin):
+  preempt (the worker's off-CPU intervals while over its allowance,
+  voluntary and preempted, from sched probes), coloc (receiver pinned to
+  the worker CPU), rwlock (a UDP socket's owner taking INP_WLOCK every
+  2 ms against the worker's INP_RLOCK, with lockstat rw-block), xcpu
+  (one UDP socket fed from two CPUs so two workers share its locks),
+  twoq (two queues on one worker CPU), churn (connection and address
+  churn with epoch_wait_preempt and smr_poll probes), magnet (where an
+  unpinned bystander's wakeups land), fair (eight streams, one spinner);
+  victim.c gained cpu, udpecho2, tcpecho and tcpconn.  Fixed on the
+  way: TCP ACKs follow the learned flow id back to the data CPU, so a
+  TCP flow never crosses CPUs and xcpu had to use UDP; smr_synchronize()
+  is inlined and not probeable, smr_poll with the wait flag is; sixteen
+  client ports per stage, not six, since eleven flows per stage ran
+  into TIME_WAIT.
+  Confirmed: under a bursty competitor (400 us of work per 1 kHz wake on
+  the worker CPU) the demoted worker is preempted in the middle of a
+  pass about 270 times a second on a07 and lab, absent 250-270 us on
+  average and up to 500 us, over a thousand absences longer than 100 us
+  per window (guest 131/s, up to 700 us); with the 100 us timer
+  competitor 1/s on a07, 40/s on lab.  Those passes are charged wall
+  time, so the two-queue test's overruns rise from 0 (limit off) to
+  337/432 (a07) and 138/236 (lab) per window; the queues' shares stay
+  at 0.50.  Stage C removes 98 % of the preemptions (the residue is the
+  pass that straddles the decision) and all of the overruns at no
+  measurable cost in any other column on any machine: spinner share,
+  timer lateness, exec, flow rate, UDP latency identical to A.
+  Refuted, for the pair on these machines: nothing followed from the
+  preemptions.  The read-held INP_RLOCK never blocked the writer
+  (disconnect max 1-4 us on hardware, rw-block count 0; the guest's one
+  4.4 ms stall did not recur), epoch_wait_preempt and waiting smr_poll
+  counts were 0 under churn, the second worker sharing a socket's locks
+  paid nothing (its blocks are on kwq's own queue lock, 1 us maximum,
+  equal across stages), the co-located receiver showed no
+  wake-and-be-preempted collapse (items per pass 4.06, rates equal
+  across A, B, C), no bystander wakeups were steered to the worker CPU,
+  and fairness among eight streams did not depend on the stage beyond
+  the limit's own effect.  The costs that reach a user are the ones the
+  limit intends: a co-scheduled UDP flow pays the half period (p99
+  120-720 us in A and C against 32-47 us in B).  The taskqueue driver's
+  80-90 % advantage with a co-located receiver is the pre-existing one.
+  Not measured: a NIC-fed flow, so NIC interrupt threads against the
+  workers remain unmeasured.
+  tools/schedprobe (standalone, like clockprobe) measured the operations
+  the constructive fix would use (samples/schedprobe_{guest,a07,lab}_
+  2026-10-21.txt), medians on lab / a07: set the running thread's
+  priority to idle and back 30 / 80 ns, sched_runnable() under the
+  40 ns floor, arm and cancel the deadline callout 49 / 80 ns, switch
+  to self 30 / 80 ns, yield round trip 250 / 240 ns, a mutex whose
+  holder has left its CPU at idle priority (block, lend, IPI, requeue)
+  1.5 / 2.9 us against 0.9 / 1.5 us when the holder runs, the deadline
+  callout 0.5 us accurate with the worker back 260 / 400 ns after it
+  fires.  The guest's microsecond figures (9.6 us resume, 43 us late
+  deadlines, 700 us block tails) are bhyve's.  Conclusion: the
+  mechanisms cost nothing that matters; the question was only who waits
+  how long for a preempted holder, and on these machines nobody did.
+  Recommendation: merge stage C (class priority for the duration of a
+  pass, idle priority between passes), which restores the premise of
+  the NET wall-time charging and the one-pass hand-over bound, and add
+  the budget-check lever (kwq_budget_left() returns 0 while over the
+  allowance and sched_runnable() is true) so the bound is one item;
+  keep the client guidance of docs/cheatsheet.md 5.1 as advice.

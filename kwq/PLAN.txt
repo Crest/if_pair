@@ -819,8 +819,20 @@ Phases
     thread; a NET worker that has spent its allowance runs its passes as
     an idle-priority thread (SCHED.md S6.3) and is preempted by anything
     that wakes, mid-handler, holding whatever the handler holds.  To be
-    confirmed or refuted by test, not by argument.  Mechanisms to look
-    at, with what the kernel does about each today:
+    confirmed or refuted by test, not by argument.  MEASURED 2026-10-21
+    (../NOTES.md of that day, samples/p4d_2026-10-21_*, schedprobe_*):
+    the preemptions are real, about 270 per second of up to 500 us
+    under a bursty competitor on a07 and lab, and they inflate the
+    queues' overruns; none of the feared consequences followed on these
+    machines (no rwlock writer blocked, no epoch or SMR waiter waited,
+    no cross-CPU worker paid, no scheduler feedback); stage C on branch
+    kwq-p4d-passprio removes the preemptions at no measurable cost, and
+    tools/schedprobe put the mechanisms' costs at tens of nanoseconds.
+    Next: merge C with the budget-check lever (kwq_budget_left() returns
+    0 while over the allowance and sched_runnable() is true), re-measure
+    with compare.sh, and the NIC-fed flow on lab stays unmeasured.
+    Mechanisms that were looked at, with what the kernel does about
+    each:
     - a preempted handler holds a sleep mutex of the stack (tcpinp,
       so_rcv, pcb hash, kwq's own list locks for non-SPIN queues): a
       waiter lends its priority through the turnstile, which raises the

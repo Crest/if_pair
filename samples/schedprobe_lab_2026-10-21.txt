@@ -1,0 +1,15 @@
+# tools/schedprobe on lab (Ryzen 7 5800X, GENERIC, hz=1000), 2026-10-21, probe CPU 2,
+# holder CPU 4 (both first SMT threads of their cores), n 100000.  Nanoseconds; the 10 ns
+# floor is the cycle counter read.  See tools/schedprobe/schedprobe.c for the rows.
+schedprobe: cpu 2 partner 4, 3792828260 cycles/s, hz 1000, PI_NET 1 PRI_MIN_IDLE 224
+schedprobe: getprio    n  100000  min      0  median     10  p99      10  max      500 ns
+schedprobe: setprio    n  100000  min     30  median     30  p99      40  max      490 ns
+schedprobe: runnable   n  100000  min      0  median     10  p99      10  max      460 ns
+schedprobe: callout    n   10000  min     40  median     49  p99      50  max      250 ns
+schedprobe: yieldself  n   10000  min     29  median     30  p99      39  max      170 ns
+schedprobe: yieldpair  n   10000  min    250  median    250  p99     260  max      661 ns
+schedprobe: mtxspin    n    1000  min     30  median    901  p99    1763  max     1773 ns
+schedprobe: mtxblock   n    1000  min   1122  median   1472  p99    1613  max     2564 ns
+schedprobe: dl-resume  n    1000  min    250  median    260  p99     350  max      881 ns
+schedprobe: dl-total   n    1000  min 200508  median 200568  p99  200798  max   201199 ns
+schedprobe: done

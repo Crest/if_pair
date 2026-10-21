@@ -1,0 +1,15 @@
+# tools/schedprobe on a07 (Ampere Altra, GENERIC, hz=1000), 2026-10-21, probe CPU 2, holder
+# CPU 4, n 100000.  Nanoseconds; the counter is CNTVCT at 25 MHz, so values are quantised to
+# 40 ns and 0 means under 40.  See tools/schedprobe/schedprobe.c for the rows.
+schedprobe: cpu 2 partner 4, 24999795 cycles/s, hz 1000, PI_NET 1 PRI_MIN_IDLE 224
+schedprobe: getprio    n  100000  min      0  median      0  p99      40  max      560 ns
+schedprobe: setprio    n  100000  min     40  median     80  p99      80  max     1280 ns
+schedprobe: runnable   n  100000  min      0  median      0  p99      40  max       40 ns
+schedprobe: callout    n   10000  min     40  median     80  p99      80  max      680 ns
+schedprobe: yieldself  n   10000  min     80  median     80  p99     120  max     1080 ns
+schedprobe: yieldpair  n   10000  min    200  median    240  p99     240  max      800 ns
+schedprobe: mtxspin    n    1000  min      0  median   1480  p99    1600  max     4200 ns
+schedprobe: mtxblock   n    1000  min   2680  median   2920  p99    6720  max    23240 ns
+schedprobe: dl-resume  n    1000  min    360  median    400  p99     520  max     3400 ns
+schedprobe: dl-total   n    1000  min 200521  median 200561  p99  201521  max   204081 ns
+schedprobe: done

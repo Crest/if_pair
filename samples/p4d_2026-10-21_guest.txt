@@ -1,0 +1,152 @@
+# PLAN P4d phase 1, 2026-10-21, guest only (4 vCPU bhyve, GENERIC-DEBUG, hz=100):
+# what running NET passes at idle priority does.  tests/compare.sh with
+# TESTS="... preempt coloc rwlock xcpu twoq churn magnet fair machine",
+# two repetitions interleaved, medians; change in brackets against A.
+#   A  kwq HEAD, share limit at its default (cap_permille 500)
+#   B  the same build, limit off (cap_permille 1000)
+#   C  branch kwq-p4d-passprio 4c91544: every pass at the class priority,
+#      idle priority only while waiting between passes
+#   T  the taskqueue driver
+# COMPETITOR=timer: a 1 kHz timer with 100 us of work pinned to W beside the
+# flow; the burst run uses 400 us of work per wake.  Tests: see the header
+# of tests/compare.sh.  Raw rows: p4d_2026-10-21_guest.tsv and
+# p4d_2026-10-21_guest_burst.tsv.
+#
+## timer competitor
+test metric              |                  A |                  B |                  C |                  T
+tput1 kwq_switched_s     |                 92 |         90.5 (-2%) |         87.5 (-5%) |                  -
+tput1 kwq_yields_s       |                  0 |             0 (+0) |             0 (+0) |                  -
+tput1 kwq_tick_yields_s  |                100 |         99.5 (-0%) |         99.5 (-0%) |                  -
+tput1 kwq_dem_s          |                  0 |             0 (+0) |             0 (+0) |                  -
+tput1 kwq_maxlat_us      |           4.01e+03 |    1.06e+03 (-73%) |         760 (-81%) |                  -
+tput1 gbit               |                9.3 |         9.31 (+0%) |         9.29 (-0%) |         9.29 (-0%)
+tput1 w_sys              |              0.811 |        0.782 (-4%) |         0.78 (-4%) |        0.788 (-3%)
+tput1 w_user             |                  0 |   0.0005 (+0.0005) |             0 (+0) |             0 (+0)
+tput1 w_idle             |              0.189 |       0.217 (+15%) |       0.221 (+17%) |       0.212 (+12%)
+spin share               |              0.526 |       0.204 (-61%) |        0.528 (+0%) |           1 (+90%)
+spin gbit                |               6.92 |        9.25 (+34%) |         6.92 (+0%) |        3.52 (-49%)
+spin w_sys               |              0.485 |       0.807 (+66%) |        0.496 (+2%) |      0.002 (-100%)
+spin w_user              |              0.515 |       0.193 (-63%) |        0.504 (-2%) |       0.998 (+94%)
+spin w_idle              |                  0 |             0 (+0) |             0 (+0) |     0.001 (+0.001)
+timer late_p99           |                622 |   4.49e+03 (+622%) |          650 (+5%) |   1.84e+03 (+195%)
+timer late_max           |                866 |   8.38e+03 (+868%) |   2.67e+03 (+208%) |   5.14e+03 (+493%)
+timer turn_p99           |                806 |   5.45e+03 (+577%) |          818 (+1%) |   2.57e+03 (+219%)
+timer gbit               |                9.4 |          9.3 (-1%) |         9.41 (+0%) |         9.29 (-1%)
+preempt vol_s            |                784 |        0.5 (-100%) |          826 (+5%) |                  -
+preempt vol_avg_us       |               87.5 |          46 (-47%) |           89 (+2%) |                  -
+preempt vol_max_us       |                576 |         150 (-74%) |          598 (+4%) |                  -
+preempt vol_gt100        |           2.39e+03 |          1 (-100%) |     2.54e+03 (+6%) |                  -
+preempt vol_gt500        |                2.5 |          0 (-100%) |         1.5 (-40%) |                  -
+preempt pre_s            |                 37 |          0 (-100%) |          0 (-100%) |                  -
+preempt pre_avg_us       |                100 |          0 (-100%) |          55 (-45%) |                  -
+preempt pre_max_us       |                161 |          0 (-100%) |          88 (-45%) |                  -
+preempt pre_gt100        |                122 |          0 (-100%) |           1 (-99%) |                  -
+preempt pre_gt500        |                  0 |             0 (+0) |             0 (+0) |                  -
+preempt gbit             |               9.42 |          9.2 (-2%) |         9.37 (-1%) |                  -
+coloc gbit               |               7.06 |         7.02 (-1%) |         6.96 (-1%) |          7.4 (+5%)
+coloc passes_s           |           2.05e+04 |     2.05e+04 (-0%) |     2.06e+04 (+0%) |          0 (-100%)
+coloc items_per_pass     |               4.27 |         4.27 (-0%) |          4.2 (-2%) |          0 (-100%)
+coloc kwq_switched_s     |           6.78e+03 |     6.77e+03 (-0%) |     6.71e+03 (-1%) |                  -
+coloc kwq_yields_s       |           1.36e+04 |     1.36e+04 (-0%) |     1.36e+04 (+0%) |                  -
+coloc kwq_tick_yields_s  |                 38 |           38 (+0%) |         41.5 (+9%) |                  -
+coloc kwq_dem_s          |                  1 |          0 (-100%) |         1.5 (+50%) |                  -
+coloc kwq_maxlat_us      |           5.91e+03 |    2.1e+04 (+255%) |   2.34e+04 (+296%) |                  -
+rwlock wl_p50            |                  2 |            2 (+0%) |            2 (+0%) |                  -
+rwlock wl_p99            |                6.5 |          6.5 (+0%) |          6.5 (+0%) |                  -
+rwlock wl_max            |               42.5 |        51.5 (+21%) |        165 (+288%) |                  -
+rwlock udp_rtt_p99       |                496 |         357 (-28%) |         570 (+15%) |                  -
+rwlock udp_rtt_max       |           2.93e+04 |    4.13e+04 (+41%) |    1.02e+04 (-65%) |                  -
+rwlock udp_lost          |                  0 |             0 (+0) |             0 (+0) |                  -
+rwlock rwblock_s         |                  0 |             0 (+0) |             0 (+0) |                  -
+rwlock rwblock_avg_us    |                  0 |             0 (+0) |             0 (+0) |                  -
+rwlock rwblock_max_us    |                  0 |             0 (+0) |             0 (+0) |                  -
+xcpu w2                  |                  2 |            2 (+0%) |            2 (+0%) |                  -
+xcpu w2_passes_s         |           1.96e+03 |    1.39e+03 (-29%) |    1.31e+03 (-33%) |                  -
+xcpu w2_switched_s       |                  2 |         2.5 (+25%) |         2.5 (+25%) |                  -
+xcpu w_udp_rtt_p99       |                392 |          359 (-9%) |          404 (+3%) |                  -
+xcpu w_udp_rtt_max       |                546 |   1.34e+03 (+146%) |   1.32e+03 (+142%) |                  -
+xcpu w2_udp_rtt_p99      |                354 |          321 (-9%) |          332 (-6%) |                  -
+xcpu w2_udp_rtt_max      |                574 |         686 (+19%) |   1.41e+03 (+145%) |                  -
+xcpu w2_block_s          |                734 |     1.3e+03 (+78%) |    1.24e+03 (+69%) |                  -
+xcpu w2_block_avg_us     |               7.75 |         6.4 (-17%) |         7.45 (-4%) |                  -
+xcpu w2_block_max_us     |                132 |         117 (-12%) |         247 (+86%) |                  -
+xcpu w2_rwblock_s        |                  0 |             0 (+0) |             0 (+0) |                  -
+xcpu w2_rwblock_max_us   |                  0 |             0 (+0) |             0 (+0) |                  -
+twoq q1_items            |            3.3e+06 |     3.52e+06 (+7%) |     3.22e+06 (-2%) |                  -
+twoq q1_overruns         |               21.5 |         9.5 (-56%) |          11 (-49%) |                  -
+twoq q1_debts            |                 15 |           4 (-73%) |        11.5 (-23%) |                  -
+twoq q1_parks            |               24.5 |          28 (+14%) |          31 (+27%) |                  -
+twoq q2_items            |           3.29e+06 |     3.52e+06 (+7%) |     3.23e+06 (-2%) |                  -
+twoq q2_overruns         |                 34 |           8 (-76%) |           9 (-74%) |                  -
+twoq q2_debts            |                 13 |         2.5 (-81%) |           5 (-62%) |                  -
+twoq q2_parks            |                 36 |        17.5 (-51%) |          14 (-61%) |                  -
+twoq share1              |              0.501 |          0.5 (-0%) |        0.499 (-0%) |                  -
+twoq gbit1               |               4.86 |         5.28 (+9%) |         4.85 (-0%) |                  -
+twoq gbit2               |               4.85 |         5.29 (+9%) |         4.86 (+0%) |                  -
+churn conn_p99           |           4.41e+03 |    6.16e+03 (+40%) |   2.09e+04 (+374%) |         480 (-89%)
+churn conn_max           |           5.85e+04 |    8.75e+04 (+50%) |     8.8e+04 (+50%) |    8.28e+04 (+42%)
+churn failed             |                  0 |             0 (+0) |             0 (+0) |             0 (+0)
+churn alias_max_ms       |               32.5 |          41 (+26%) |        28.5 (-12%) |        18.5 (-43%)
+churn epochwait_n        |                  0 |             0 (+0) |             0 (+0) |                  -
+churn epochwait_max_us   |                  0 |             0 (+0) |             0 (+0) |                  -
+churn smr_n              |                1.5 |          1.5 (+0%) |          1.5 (+0%) |                  -
+churn smr_max_us         |                  4 |            4 (+0%) |         4.5 (+12%) |                  -
+churn gbit               |                9.3 |         9.18 (-1%) |         9.32 (+0%) |         9.12 (-2%)
+magnet on_w_share        |              0.005 |       0.001 (-80%) |      0.0015 (-70%) |      0.0035 (-30%)
+magnet by_late_p99       |                184 |          168 (-9%) |          170 (-7%) |          171 (-7%)
+magnet by_late_max       |           1.63e+04 |    1.78e+03 (-89%) |    2.57e+03 (-84%) |         636 (-96%)
+magnet gbit              |               9.39 |         9.15 (-3%) |         9.41 (+0%) |         9.21 (-2%)
+fair fair_min            |               1.42 |         1.44 (+1%) |         1.46 (+3%) |          0 (-100%)
+fair fair_max            |               2.33 |         1.9 (-18%) |         2.45 (+5%) |        1.95 (-16%)
+fair fair_cv             |               18.3 |         8.4 (-54%) |         17.6 (-4%) |       58.2 (+218%)
+fair fair_sum            |               14.8 |        12.9 (-13%) |         14.4 (-2%) |        10.9 (-26%)
+machine late_p99         |           2.42e+04 |    1.64e+04 (-32%) |    2.16e+04 (-11%) |    1.24e+04 (-49%)
+machine late_max         |           7.05e+04 |    9.26e+04 (+31%) |    5.77e+04 (-18%) |    3.53e+04 (-50%)
+machine gbit             |               15.7 |         14.6 (-7%) |           16 (+2%) |         14.8 (-5%)
+machine intr_s           |           2.92e+03 |    1.57e+03 (-46%) |     2.69e+03 (-8%) |     1.4e+03 (-52%)
+
+## burst competitor (400 us of work per wake)
+test metric              |                  A |                  B |                  C
+preempt vol_s            |                826 |          0 (-100%) |         941 (+14%)
+preempt vol_avg_us       |                399 |          0 (-100%) |          404 (+1%)
+preempt vol_max_us       |                690 |          0 (-100%) |          727 (+5%)
+preempt vol_gt100        |           4.00e+03 |          0 (-100%) |    4.55e+03 (+14%)
+preempt vol_gt500        |                640 |          0 (-100%) |         952 (+49%)
+preempt pre_s            |                131 |          0 (-100%) |         2.5 (-98%)
+preempt pre_avg_us       |                372 |          0 (-100%) |         246 (-34%)
+preempt pre_max_us       |                701 |          0 (-100%) |         410 (-41%)
+preempt pre_gt100        |                594 |          0 (-100%) |        12.5 (-98%)
+preempt pre_gt500        |                190 |          0 (-100%) |          0 (-100%)
+preempt gbit             |               9.52 |         9.27 (-3%) |         9.65 (+1%)
+rwlock wl_p50            |                  4 |           2 (-50%) |            4 (+0%)
+rwlock wl_p99            |                6.5 |          6.5 (+0%) |           8 (+23%)
+rwlock wl_max            |           4.44e+03 |        65.5 (-99%) |         304 (-93%)
+rwlock udp_rtt_p99       |           3.27e+03 |         316 (-90%) |    3.66e+03 (+12%)
+rwlock udp_rtt_max       |           3.15e+04 |    5.34e+04 (+70%) |   7.45e+04 (+137%)
+rwlock udp_lost          |                  0 |             0 (+0) |             0 (+0)
+rwlock rwblock_s         |                  0 |             0 (+0) |             0 (+0)
+rwlock rwblock_avg_us    |                  0 |             0 (+0) |             0 (+0)
+rwlock rwblock_max_us    |                  0 |             0 (+0) |             0 (+0)
+xcpu w2                  |                  2 |            2 (+0%) |            2 (+0%)
+xcpu w2_passes_s         |            3.1e+03 |    2.01e+03 (-35%) |    2.01e+03 (-35%)
+xcpu w2_switched_s       |                  9 |         3.5 (-61%) |         3.5 (-61%)
+xcpu w_udp_rtt_p99       |                360 |          374 (+4%) |          370 (+3%)
+xcpu w_udp_rtt_max       |                947 |         533 (-44%) |         460 (-51%)
+xcpu w2_udp_rtt_p99      |                362 |          356 (-2%) |          366 (+1%)
+xcpu w2_udp_rtt_max      |                551 |          528 (-4%) |  1.18e+04 (+2038%)
+xcpu w2_block_s          |                164 |        760 (+362%) |        681 (+314%)
+xcpu w2_block_avg_us     |                6.7 |          7.1 (+6%) |          6.9 (+3%)
+xcpu w2_block_max_us     |               60.5 |          94 (+55%) |           60 (-1%)
+xcpu w2_rwblock_s        |                  2 |          0 (-100%) |          0 (-100%)
+xcpu w2_rwblock_max_us   |               34.5 |          0 (-100%) |          0 (-100%)
+twoq q1_items            |           2.49e+06 |     3.5e+06 (+41%) |     2.54e+06 (+2%)
+twoq q1_overruns         |                123 |          10 (-92%) |         8.5 (-93%)
+twoq q1_debts            |                 18 |           7 (-61%) |         4.5 (-75%)
+twoq q1_parks            |                158 |          32 (-80%) |        10.5 (-93%)
+twoq q2_items            |           2.48e+06 |    3.51e+06 (+41%) |     2.54e+06 (+3%)
+twoq q2_overruns         |                144 |        11.5 (-92%) |          11 (-92%)
+twoq q2_debts            |               24.5 |         4.5 (-82%) |           7 (-71%)
+twoq q2_parks            |                187 |          20 (-89%) |          33 (-82%)
+twoq share1              |                0.5 |        0.499 (-0%) |        0.499 (-0%)
+twoq gbit1               |                  4 |        5.32 (+33%) |         3.95 (-1%)
+twoq gbit2               |               4.05 |        5.31 (+31%) |         3.96 (-2%)

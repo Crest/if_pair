@@ -1,0 +1,15 @@
+# tools/schedprobe on the guest (4 vCPU bhyve, GENERIC-DEBUG, hz=100), 2026-10-21,
+# probe CPU 1, partner CPU 2, n 20000.  Nanoseconds; the 10 ns floor is the
+# cycle counter read itself.  See tools/schedprobe/schedprobe.c for what each row is.
+schedprobe: cpu 1 partner 2, 2194914690 cycles/s, hz 100, PI_NET 1 PRI_MIN_IDLE 224
+schedprobe: getprio    n   20000  min     10  median     10  p99      10  max     6077 ns
+schedprobe: setprio    n   20000  min    169  median    173  p99     187  max    10936 ns
+schedprobe: runnable   n   20000  min     10  median     10  p99      10  max      282 ns
+schedprobe: callout    n    2000  min    158  median    162  p99     162  max     9744 ns
+schedprobe: yieldself  n    2000  min    165  median    174  p99     182  max     1875 ns
+schedprobe: yieldpair  n    2000  min    838  median    841  p99     872  max     5992 ns
+schedprobe: mtxspin    n     200  min    147  median   7437  p99   11936  max    21555 ns
+schedprobe: mtxblock   n     200  min  14442  median  14693  p99  501915  max   706072 ns
+schedprobe: dl-resume  n     200  min   9334  median   9613  p99   14242  max    17225 ns
+schedprobe: dl-total   n     200  min 218064  median 243256  p99  294008  max   294905 ns
+schedprobe: done
