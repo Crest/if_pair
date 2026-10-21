@@ -46,6 +46,22 @@
  *   victim seed MODULE
  *       The value of the static pair_hash_seed of the loaded module file
  *       (if_pair.ko or if_pair_tq.ko), through kldsym(2) and /dev/kmem.
+ *   victim cpu SEED NCPU SRC DST PROTO SPORT DPORT
+ *       The CPU one direction of a flow hashes to (PROTO 6 or 17).
+ *   victim udpecho2 PORT SECS GAP_MS
+ *       The UDP echo server that also, every GAP_MS, disconnects its own
+ *       socket (connect(2) with AF_UNSPEC, which takes the pcb's write
+ *       lock while the worker delivering to it holds the read lock) and
+ *       reports the latency of those calls: the read-held rwlock test of
+ *       PLAN P4d.
+ *   victim tcpecho PORT
+ *       Accepts TCP connections and closes them at once: the far end of
+ *       the connection churn below.
+ *   victim tcpconn HOST PORT SECS [GAP_MS]
+ *       connect(2) and close(2) in a loop, GAP_MS apart (default 2): the
+ *       latency of a connection setup (SYN, SYN-ACK, ACK through the
+ *       pair, pcb insert and free: SMR and hash-lock work) p50 / p99 /
+ *       max us and the count.
  */
 #include <sys/param.h>
 #include <sys/linker.h>
@@ -316,6 +332,136 @@ do_seed(const char *module)
 }
 
 static int
+do_cpu(uint32_t seed, unsigned ncpu, const char *src, const char *dst,
+    int proto, int sport, int dport)
+{
+	struct in_addr s, d;
+
+	if (inet_pton(AF_INET, src, &s) != 1 || inet_pton(AF_INET, dst, &d) != 1)
+		return (1);
+	printf("%u\n", flow_cpu(seed, ncpu, s, d, proto, sport, dport));
+	return (0);
+}
+
+static int
+do_udpecho2(int port, int secs, long gap_ms)
+{
+	struct sockaddr_in sin, from;
+	struct sockaddr sa_unspec;
+	struct timespec t0, t1, end, last;
+	struct pollfd pfd;
+	socklen_t fl;
+	char buf[256];
+	long *lat, d;
+	size_t n = 0, cap;
+	ssize_t r;
+	int s;
+
+	cap = (size_t)secs * 1000 / (gap_ms > 0 ? gap_ms : 1) + 100;
+	lat = calloc(cap, sizeof(*lat));
+	s = socket(AF_INET, SOCK_DGRAM, 0);
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons((uint16_t)port);
+	if (lat == NULL || s < 0 || bind(s, (struct sockaddr *)&sin, sizeof(sin)) != 0)
+		return (1);
+	memset(&sa_unspec, 0, sizeof(sa_unspec));
+	sa_unspec.sa_family = AF_UNSPEC;
+	sa_unspec.sa_len = sizeof(sa_unspec);
+	pfd.fd = s;
+	pfd.events = POLLIN;
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	last = end;
+	end.tv_sec += secs;
+	for (;;) {
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		if (t0.tv_sec > end.tv_sec ||
+		    (t0.tv_sec == end.tv_sec && t0.tv_nsec >= end.tv_nsec))
+			break;
+		if (ts_sub_us(&t0, &last) >= gap_ms * 1000L) {
+			/* INP_WLOCK against the worker's INP_RLOCK in udp_input */
+			(void)connect(s, &sa_unspec, sizeof(sa_unspec));
+			clock_gettime(CLOCK_MONOTONIC, &t1);
+			d = ts_sub_us(&t1, &t0);
+			if (n < cap)
+				lat[n++] = d;
+			last = t1;
+		}
+		if (poll(&pfd, 1, 1) == 1) {
+			fl = sizeof(from);
+			r = recvfrom(s, buf, sizeof(buf), 0, (struct sockaddr *)&from, &fl);
+			if (r > 0)
+				(void)sendto(s, buf, (size_t)r, 0, (struct sockaddr *)&from, fl);
+		}
+	}
+	qsort(lat, n, sizeof(*lat), cmp);
+	printf("udpecho2 n=%zu wl_p50=%ld wl_p99=%ld wl_max=%ld\n", n,
+	    n ? lat[n / 2] : 0, n ? lat[n * 99 / 100] : 0, n ? lat[n - 1] : 0);
+	return (0);
+}
+
+static int
+do_tcpecho(int port)
+{
+	struct sockaddr_in sin;
+	int s, c, one = 1;
+
+	s = socket(AF_INET, SOCK_STREAM, 0);
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons((uint16_t)port);
+	if (s < 0 || setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0 ||
+	    bind(s, (struct sockaddr *)&sin, sizeof(sin)) != 0 || listen(s, 128) != 0)
+		return (1);
+	for (;;) {
+		c = accept(s, NULL, NULL);
+		if (c >= 0)
+			close(c);
+	}
+}
+
+static int
+do_tcpconn(const char *host, int port, int secs, long gap_ms)
+{
+	struct sockaddr_in sin;
+	struct timespec t0, t1, end, gap = { 0, gap_ms * 1000000L };
+	long *lat, failed = 0;
+	size_t n = 0, cap;
+	int s;
+
+	cap = (size_t)secs * 1000 / (gap_ms > 0 ? gap_ms : 1) + 1000;
+	lat = calloc(cap, sizeof(*lat));
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons((uint16_t)port);
+	if (lat == NULL || inet_pton(AF_INET, host, &sin.sin_addr) != 1)
+		return (1);
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	end.tv_sec += secs;
+	for (;;) {
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		if (t0.tv_sec > end.tv_sec ||
+		    (t0.tv_sec == end.tv_sec && t0.tv_nsec >= end.tv_nsec))
+			break;
+		s = socket(AF_INET, SOCK_STREAM, 0);
+		if (s < 0 || connect(s, (struct sockaddr *)&sin, sizeof(sin)) != 0)
+			failed++;
+		if (s >= 0)
+			close(s);
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		if (n < cap)
+			lat[n++] = ts_sub_us(&t1, &t0);
+		if (gap_ms > 0)
+			nanosleep(&gap, NULL);
+	}
+	qsort(lat, n, sizeof(*lat), cmp);
+	printf("tcpconn n=%zu conn_p50=%ld conn_p99=%ld conn_max=%ld failed=%ld\n",
+	    n, n ? lat[n / 2] : 0, n ? lat[n * 99 / 100] : 0, n ? lat[n - 1] : 0,
+	    failed);
+	return (0);
+}
+
+static int
 do_udpecho(int port)
 {
 	struct sockaddr_in sin, from;
@@ -418,11 +564,24 @@ main(int argc, char **argv)
 		    argc > 9 ? atoi(argv[9]) : 1));
 	if (argc >= 3 && strcmp(argv[1], "udpecho") == 0)
 		return (do_udpecho(atoi(argv[2])));
+	if (argc >= 5 && strcmp(argv[1], "udpecho2") == 0)
+		return (do_udpecho2(atoi(argv[2]), atoi(argv[3]), atol(argv[4])));
+	if (argc >= 3 && strcmp(argv[1], "tcpecho") == 0)
+		return (do_tcpecho(atoi(argv[2])));
+	if (argc >= 5 && strcmp(argv[1], "tcpconn") == 0)
+		return (do_tcpconn(argv[2], atoi(argv[3]), atoi(argv[4]),
+		    argc > 5 ? atol(argv[5]) : 2));
+	if (argc >= 9 && strcmp(argv[1], "cpu") == 0)
+		return (do_cpu((uint32_t)strtoul(argv[2], NULL, 0),
+		    (unsigned)atoi(argv[3]), argv[4], argv[5], atoi(argv[6]),
+		    atoi(argv[7]), atoi(argv[8])));
 	if (argc >= 5 && strcmp(argv[1], "udp") == 0)
 		return (do_udp(argv[2], atoi(argv[3]), atoi(argv[4]),
 		    argc > 5 ? atoi(argv[5]) : 0, argc > 6 ? atol(argv[6]) : 500));
 	fprintf(stderr, "usage: victim timer SECS [WORK_US] | spin SECS | "
 	    "exec COUNT [GAP_MS] | udpecho PORT | udp HOST PORT SECS [SPORT [GAP_US]] | "
-	    "ports SEED NCPU CPU SRC DST TCPPORT UDPPORT [COUNT] | seed MODULE\n");
+	    "ports SEED NCPU CPU SRC DST TCPPORT UDPPORT [COUNT] | seed MODULE | "
+	    "cpu SEED NCPU SRC DST PROTO SPORT DPORT | udpecho2 PORT SECS GAP_MS | "
+	    "tcpecho PORT | tcpconn HOST PORT SECS [GAP_MS]\n");
 	return (2);
 }
