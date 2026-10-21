@@ -654,7 +654,8 @@ re-entrant from it; the class decides the rest.
 | `kwq_activate` | no | no | configuration-time only, asserted |
 | `kwq_drain`, `kwq_destroy` | no | no | sleep, and waiting for a queue from a handler deadlocks; asserted |
 | waiting for another queue's items to finish | no | no | use the `kwq_scatter` completion callback |
-| taking sleep mutexes, rwlocks, rmlocks | yes, briefly | yes | queue locks are leaves, so client locks may be held across `kwq_enqueue` |
+| taking sleep mutexes, write-locked rwlocks, rmlocks | yes, for the item | yes | queue locks are leaves, so client locks may be held across `kwq_enqueue`; a waiter lends its priority to the holder through the turnstile (rmlock readers are tracked), which is what brings back a worker preempted while holding one under the share limit (SCHED.md S6.3) |
+| read-locking an rwlock, SMR read sections | yes, for a few instructions | yes | readers are anonymous: no priority propagation, and a writer waiting on a preempted reader blocks every later reader everywhere (writer preference) for up to a share-limit period; see docs/cheatsheet.md 5.1 |
 | taking a spin mutex, `critical_enter`, `sched_pin` | yes, release before return | yes | while held, only `KWQ_F_SPIN` queues may be enqueued to |
 | sleeping (`tsleep`, `cv_wait`, sx, lockmgr, `M_WAITOK`, `copyin`) | no, asserted | yes | |
 | `M_NOWAIT` allocation | yes, handle `NULL` | yes | |

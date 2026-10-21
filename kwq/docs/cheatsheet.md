@@ -252,6 +252,50 @@ one item per pass regardless.  Measured on a 200 us NET quantum with
 2 ms items, every pass overruns.  Such a client belongs in a class with
 a larger quantum, or should split its items.
 
+### 5.1 What a handler holds
+
+A pass runs at whatever priority the worker has at that moment, and
+since the share limit (SCHED.md S6.3) it is not always the class
+priority: a worker over its allowance on a contended CPU runs as an
+idle-priority thread, and any thread that wakes there preempts it in
+the middle of your handler, holding whatever your handler holds.  The
+kernel's recovery for each lock type is different, so choose with that
+in mind:
+
+**Recommended:** hold locks for the item, not for the pass.  Take a
+lock, finish the item, release it, then check the budget.  The hold time
+of one item is the longest a waiting thread has to wait for you when
+propagation works, and the item is also the budget's unit of overshoot,
+so the two bounds coincide.
+
+**Recommended:** a mutex or a write-locked rwlock when a waiter must be
+able to get the CPU back to you.  Blocking on either lends the waiter's
+priority to you through the turnstile, which raises a preempted worker
+above the thread that preempted it.  rmlock readers are tracked and get
+the same.
+
+**Warning:** a read-held rwlock has no owner to lend to.  A writer that
+blocks on it waits until the preempted reader runs again on its own,
+up to a share-limit period, and because rwlocks prefer writers every
+later reader on every CPU waits behind that writer too: one preempted
+read section stalls the lock for the whole machine.  Do not read-hold an
+rwlock across anything but a few instructions; the stack's own
+`INP_RLOCK` in `udp_input` is the case to measure against.  The same
+holds for SMR read sections, which `smr_synchronize()` callers poll
+for.
+
+**Warning:** everything downstream of your handler runs in your context
+at your priority: socket upcalls, `KNOTE`, `selwakeup`, and any
+in-kernel consumer behind a socket you deliver to.  They were written
+to run ahead of userland; under the share limit they may not.  Deliver
+and return; do not do a consumer's work inside the handler.
+
+**Recommended:** if your client has one connection whose receiver may
+share the worker's CPU, measure it: a receiver woken by your handler
+preempts an idle-priority worker at once, and a pass that delivered a
+batch becomes one segment per switch.  compare.sh with the receiver
+pinned to the worker CPU shows the effect.
+
 ## 6. Teardown
 
 ```c

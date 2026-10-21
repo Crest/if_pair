@@ -632,6 +632,21 @@ at pass end only and ran that pass on the full quantum: 32 % busy at
 CPU add; BULK at `PI_SOFT` takes what a limited NET gives away before
 any user thread does unless it is limited too.
 
+What a demoted worker holds.  The demotion itself happens at a pass end
+with nothing held, but every later pass of the period runs at idle
+priority from its first instruction, and the handler's locks and epoch
+section are held across any preemption.  For a sleep mutex, a
+write-locked rwlock or an rmlock the waiter lends its priority and the
+worker is back within a turnstile round trip, at the cost of that round
+trip to waiters on other CPUs that could otherwise have spun; for a
+read-locked rwlock or an SMR section nothing is lent, the waiter and,
+through writer preference, every later reader wait for the deadline, up
+to one period.  Socket upcalls and in-kernel consumers invoked from the
+handler inherit the priority.  PLAN P4d measures whether this matters in
+practice and whether a pass should run at the class priority with the
+idle priority confined to the gaps between passes; until then the
+client-side rules are in docs/cheatsheet.md 5.1 and KWQ.md S3.
+
 Defaults: `cap_permille` 500, `cap_period_us` 1000.  Resolution
 1/1000 of the period; below a pass's worth the allowance is one clamped
 pass per period.  Counters per worker: `cap_demotions` (periods in which
