@@ -811,6 +811,51 @@ Phases
     threshold would make the hand-over immediate; a system knob, not
     kwq's.
 
+[OPEN 2026-10-21] P4d  Revisit the scheduling of the worker threads: does
+    running network code at idle priority, and letting it be preempted
+    there, have side-effects the share limit's measurements do not show?
+    The hypothesis (crest): the stack's code paths were written to run
+    at or near the highest priority in the system, ahead of every user
+    thread; a NET worker that has spent its allowance runs its passes as
+    an idle-priority thread (SCHED.md S6.3) and is preempted by anything
+    that wakes, mid-handler, holding whatever the handler holds.  To be
+    confirmed or refuted by test, not by argument.  Mechanisms to look
+    at, with what the kernel does about each today:
+    - a preempted handler holds a sleep mutex of the stack (tcpinp,
+      so_rcv, pcb hash, kwq's own list locks for non-SPIN queues): a
+      waiter lends its priority through the turnstile, which raises the
+      worker above the preempting thread, but only once the waiter has
+      blocked; NET workers on other CPUs that share the lock stall for
+      that round trip, which the share limit's counters do not record;
+    - a preempted handler holds the network epoch section: deferred
+      frees and epoch_wait_preempt() callers (interface and address
+      changes, pcb teardown) wait for the preempted thread; epoch
+      lends priority too, but the wait is as long as the preemption;
+    - the worker is demoted only at pass end, so the first pass after a
+      demotion starts with nothing held, but every later pass in the
+      period runs at idle priority from its first instruction, so the
+      exposure is the whole pass, not the switch;
+    - what used to be ordered by priority now is ordered by the share:
+      socket wakeups, ACK clocking, delayed-ACK and retransmit timers
+      that assumed delivery ahead of userland now see up to half a
+      period of delay per millisecond on a contended CPU, per flow on
+      that CPU and not on others (an unfairness among flows by CPU);
+    - the deadline callout raises a preempted worker from interrupt
+      context on its CPU while a user thread runs with a lock the
+      worker needs: who runs next and for how long.
+    A candidate mitigation to measure against today's code: keep the
+    idle priority for the wait between passes only and run each pass at
+    the class priority, so that a handler is never preempted by a user
+    thread and the hand-over happens at pass boundaries, at most one
+    quantum plus one item later (the bound the first build had), at the
+    price of that bound on interactive latency.  Steps, tests and the
+    exit criteria to be developed from crest's explanation of the
+    theory; tests/compare.sh is the vehicle, with new shapes that share
+    locks and epoch sections across CPUs under a CPU-bound competitor
+    (many connections on the worker's CPU; interface, address and jail
+    churn during load; a second pair whose workers wait on the first's
+    locks).
+
 [DECIDED 2026-10-09] Fork resolved: continue with kwq; netisr is to be
     reimplemented on top of kwq (KWQ.md S8 migration step 2, PLAN P8's
     "first in-tree conversion") rather than improved on its own.  The
