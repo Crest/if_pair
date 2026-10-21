@@ -560,133 +560,191 @@ as open in PLAN P4b goal 2; the ULE side is a kernel matter.
 
 ### 6.3 Share limit (on by default, an equal share)
 
-Mogul's "limit on CPU usage" feedback, for the case the yield cannot
-serve: user threads, interactive or CPU-bound, on a CPU a worker
-saturates.  A worker keeps its class priority for at most
-`cap_permille`/1000 of its CPU's wall time per `cap_period_us` *while
-anything else is runnable there* and is an idle-priority thread for the
-rest of the period; with nothing else runnable it runs on
+Status, 2026-10-21: this section is the specification decided after
+PLAN P4d's campaign.  The code at 56eb9b6 implements the earlier form,
+in which a worker over its allowance ran its passes as an idle-priority
+thread and was preempted inside them (stage A of
+samples/p4d_2026-10-21_*); the form below was measured as stage C from
+branch kwq-p4d-passprio and costs nothing measurable against it.
+Implementing this text is P4d's next step; until then the source
+comments describe 56eb9b6.
+
+Purpose: Mogul's "limit on CPU usage" feedback, for the case the yield
+cannot serve: user threads, interactive or CPU-bound, on a CPU a worker
+saturates.
+
+**The invariant.**  A pass runs at the class priority.  From the
+handler's call to its return the CPU is the worker's against every
+thread but interrupt threads and a higher kwq class; kwq shares the CPU
+with the rest of the system only between passes.  Everything a handler
+holds, locks, the network epoch, SMR sections, and everything it invokes,
+socket upcalls and in-kernel consumers, therefore runs at the class
+priority, as it did under netisr and under the drivers kwq replaces.  No
+property of a handler, correctness or latency, depends on priority
+propagation, which is incomplete in the kernel (anonymous rwlock
+readers, SMR sections) and which no developer should have to reason
+about to write a handler.  The NET wall-time charging of S1a.4 rests on
+this invariant and is exact up to interrupt threads and lock blocks,
+both counted in `switched`.
+
+**The share.**  A worker may spend at most `cap_permille`/1000 of each
+`cap_period_us` of its CPU's wall time in passes while anything else is
+runnable on that CPU.  For the rest of such a period it waits between
+passes as an idle-priority thread (`PRI_MIN_IDLE`), which ULE runs only
+when nothing else is runnable and preempts for anything that wakes;
+alone on its CPU the worker runs through the whole period
 (work-conserving).  The defaults, 500 and 1000 us, are the equal share
 FreeBSD gives two competing processes, at tick granularity; they need
 no tuning and the knobs are expert overrides (1000 turns the limit
-off).  Measured against the pass stamps the worker takes anyway, so the
-limit costs no clock read of its own:
+off).  Nothing carries between periods: unused allowance is lost, and a
+clamped pass overshoots by one item.  Measured against the pass stamps
+the worker takes anyway, so the limit costs no clock read of its own.
+
+**Where the hand-over happens.**  In two places, both outside handlers:
+
+- *At a pass end.*  If the allowance is spent and `sched_runnable()`
+  says something else wants the CPU, the worker lowers itself to
+  `PRI_MIN_IDLE` and switches voluntarily.  On the first hand-over of a
+  period it arms a direct-exec callout at the period's end.  The
+  round-end and tick-guard yields, when they fall into this state, are
+  taken at the worker's current priority.
+- *Inside a pass, through the budget.*  While the allowance is spent and
+  `sched_runnable()` is true, `kwq_budget_left()` returns zero (counted
+  in `cap_cuts`), so a cooperative handler stops at the next item
+  boundary and the pass ends there.  No new rule for the handler: it
+  already stops on a zero budget.  Under the allowance the pass budget
+  is clamped to what is left of it, so the first pass of a period
+  overshoots by one item, not a quantum.
+
+The bound a waiting thread is promised is therefore one item, or `K`
+items by the budget estimate's cadence (S4.4, `K` 8), for a cooperative
+handler, and the remainder of the current pass for a handler that
+ignores its budget.
+
+**Coming back.**  Three ways, all between passes.  ULE picks the
+idle-priority worker when nothing else is runnable, which is the
+work-conserving case.  The deadline callout, running on the worker's CPU
+from the timer interrupt, raises it to the class priority while it waits
+on the run queue; ULE requeues and preempts (`sched_thread_priority()`,
+the `TD_ON_RUNQ` branch), so the time given away is bounded by the
+period and not by ULE's 16-94 ms slice.  And a pass begin always
+restores the class priority if the worker is not at it, a one-nanosecond
+compare and a 30-80 ns change (S15, schedprobe), before the handler is
+called.  The period rolls over at pass begin as well as at pass end, so
+a worker brought back by the deadline runs its first pass clamped.  The
+callout's `fired` flag and the priority are written under the thread
+lock on both sides, so a deadline that strikes between the core's
+decision and the switch is not undone by it.
+
+**Under 4BSD.**  The specification holds with a coarser gate.  4BSD's
+`sched_runnable()` answers for the global run queue as well as the CPU's
+own, so a worker over its allowance hands over whenever a CPU-bound
+thread waits anywhere on the machine, not only on its CPU.  The hand-over
+stays work-conserving, a demoted worker with nothing local is picked
+straight back, but it costs one round trip per contended period on every
+worker CPU while the machine has a backlog; a per-CPU gate would need the
+export KWQ.md S11 Missing 4 asks for.  `maybe_preempt()` has ULE's
+shape without `preempt_thresh`: a pass is preempted by interrupt threads
+only and the idle-priority wait by anything.  The slice is about 100 ms
+and ends with the same `TDA_SCHED` request, so the limit-off rule applies
+unchanged.  One difference reaches the tunables: 4BSD's
+`resetpriority_thread()` rewrites the priority of a kernel thread in the
+timeshare range from its own CPU use, which ULE never does, so the NET
+and BULK class priorities stop at `PRI_MAX_KERN` (S8), and the BLOCKING
+class at `PUSER` is scheduled as a process there.
+
+**No forfeiture rule.**  Decision 2026-10-21: a handler that ignores its
+budget is not demoted inside its pass.  Its longest pass is the bound a
+waiting thread sees; its queue is charged and parked by the debt rule
+(S4.3), the tick guard yields between its passes, and `overruns` names
+it.  One invariant without exceptions is worth more than protection
+against a handler already in breach of its contract, and a latency
+pathology that correlates with a counter is one a developer can find.
+
+**With the limit off.**  `cap_permille` 1000 does not make the worker an
+interrupt thread toward userland; it makes it a process.  At every pass
+end the worker tests `td_ast_pending(curthread, TDA_SCHED)`, ULE's own
+"reschedule" request, which for a thread at the class priority means
+that it has run a full slice without sleeping, and when the bit is set
+it yields once at `PRI_USER`, the priority ULE has computed for it from
+its own history, exactly as `userret()` would make a user thread do.
+The yield is counted in `slice_yields` and reported by `kwq:::yield` as
+`KWQ_YIELD_SLICE`.  Three properties follow from ULE's slice accounting
+(KWQ.md S11, the `ule` design study of 2026-10-20): the bit never fires
+for a worker that sleeps between bursts, since `sched_wakeup()` resets
+the slice, so a lightly or moderately loaded worker is untouched; it
+fires for a worker that has saturated its CPU for a slice, 16-94 ms,
+which then hands over one ULE slice, so a CPU-bound competitor gets
+about half the CPU at ULE's granularity (measured 45 % on lab); and it
+costs one load per pass.  With the limit on, the share limit's hand-over
+comes first and the switch clears the bit before it is tested, so this
+rule is inert by construction.  It is read only at pass end, never
+inside a handler.
+
+**Why not demote inside a pass.**  The previous form did, and P4d
+measured it (../NOTES.md 2026-10-21): under a bursty competitor the
+worker was preempted mid-pass about 270 times a second on both hardware
+machines for up to half a millisecond, holding its locks, and those
+passes were charged to the queues as overruns.  Nothing downstream
+suffered on those machines, but the hazard is one of principle for any
+client that read-holds an rwlock or sits in an SMR section across real
+work, and the pass-level form removes it for the price of a one-item
+hand-over bound instead of an immediate one.
 
     period(now):   if now - period_start >= period:
                        period_start = now; used = 0
-                       if over: over = false, RESTORE
-    at pass_begin (the pass's wall stamp): period(now), then under the
-        allowance: budget = min(deficit, allowance - used)
-                   (one item of overshoot, not a quantum)
-    at pass_end:   used += pass; period(now); then if not rolled over and
-                   used >= allowance and sched_runnable():
-                       if not over: over = true, DEMOTE else YIELD
+                       if over: over = false, RESTORE (callout_stop)
+    pass begin:    period(now); if td_priority != class priority:
+                       sched_prio(class priority)
+                   under the allowance: budget = min(deficit, allowance - used)
+    budget call:   over and sched_runnable() -> 0, cap_cuts++
+    pass end:      used += pass; period(now)
+                   if over and sched_runnable():
+                       if first hand-over of the period: arm the deadline
+                       sched_prio(PRI_MIN_IDLE); mi_switch(SW_VOL); cap_yields++
+    the callout:   under kw_mtx and the thread lock: fired = true,
+                   sched_prio(class priority); cap_restores++
+    pass end, limit off:  if td_ast_pending(TDA_SCHED):
+                       kern_yield(PRI_USER); slice_yields++
 
-    DEMOTE:  arm a callout at period_start + period on this CPU; under
-             the thread lock, unless the callout has fired:
-             sched_prio(PRI_MIN_IDLE); mi_switch(SW_VOL); stay at idle
-             priority (the round-end and tick yields keep it)
-    YIELD:   nothing: ULE hands the CPU to whoever wakes
-    the callout (period's end, timer interrupt on the worker's CPU,
-             armed for sbinuptime() + nstosbt(period - elapsed)):
-             under kw_mtx and the thread lock: fired = true,
-             sched_prio(class priority)
-    RESTORE: callout_stop(); fired = false; sched_prio(class priority)
+**Counters and probes**, with exact meanings: `cap_demotions`, periods
+in which the allowance was spent with something else runnable;
+`cap_yields`, hand-overs at pass end; `cap_cuts`, budget calls answered
+zero by the limit; `cap_restores`, deadlines that raised a waiting
+worker; `cap_ns`, wall time between a hand-over and the worker's next
+run; `cap_runon`, passes ended over the allowance with nothing else
+runnable (the limit did not bind); `slice_yields`, yields at ULE's own
+priority for the worker because ULE ended its slice (limit off only).
+The `kwq:::yield` probe reports a hand-over as `KWQ_YIELD_CAP` and a
+slice yield as `KWQ_YIELD_SLICE`; `kwq:::cap` reports where in its period
+each pass begins and with what budget (`KWQ_CAP_PASS`) and the
+hand-over, restore and deadline events.
 
-An idle-priority thread is ULE's own notion of "run only when nothing
-else wants the CPU": it is picked when the realtime and timeshare
-queues are empty and preempted at once by anything that wakes
-(`sched_shouldpreempt()`, the `cpri >= PRI_MIN_IDLE` rule), local or by
-IPI, whatever `preempt_thresh` says.  So after the one switch kwq asks
-the scheduler nothing: a waking interactive thread takes the CPU at
-once, a CPU-bound thread keeps it until the period's deadline callout
-raises the worker while it waits on the run queue, which requeues and
-preempts (`sched_thread_priority()`, the `TD_ON_RUNQ` branch): the
-share given away is bounded by the period, not by ULE's 16-94 ms slice.
-The first build waited at `PRI_MAX_TIMESHARE` instead and needed
-`sched_runnable()` after every return and a loop declining ULE's
-once-per-tick calendar turns (1.6 switches per demotion and 20-25 %
-busy at 10-100/1000 on a07 before that loop); the idle range made both
-unnecessary and measured the same (../NOTES.md 2026-10-20, the design
-study).  `sched_runnable()` is still consulted once, at the demotion,
-so that an uncontended worker arms no callout.  The deadline is converted with
-`nstosbt()`: `SBT_1NS` is the integer 4 for a factor of 4.29, and a
-deadline 7 % early returns the worker into a period not yet over by its
-own clock, where the first pass runs on the full quantum (the
-`kwq:::cap` probe, which reports where in its period each pass begins
-and with what budget, showed passes beginning at 512-1023 us with
-128-512 us budgets; a07, 2026-10-20).  The `fired` flag and the priority are written
-under the thread lock on both sides, so a deadline that strikes between
-the core's decision and the switch is not undone by the switch.  A
-waking user thread cannot preempt a kernel thread at 223
-(`kern.sched.ule.preempt_thresh` 40), so over the allowance it runs at
-the next pass end: one quantum plus one item.  Over the allowance with
-nothing else runnable the budget is the deficit again, since one-item
-passes would be S14 case 4.  Nothing carries between periods: unused
-allowance is lost, and the overshoot of a clamped pass is one item.
-The period rolls over at pass begin as well as at pass end, because the
-deadline brings the worker back into a period that is over, and the
-first pass of the new one must be clamped (the first build rolled over
-at pass end only and ran that pass on the full quantum: 32 % busy at
-10/1000 on a07, 2026-10-20).  Per class and per CPU: NET and BULK on one
-CPU add; BULK at `PI_SOFT` takes what a limited NET gives away before
-any user thread does unless it is limited too.
+**Costs** (tools/schedprobe, samples/schedprobe_*_2026-10-21.txt, lab
+and a07): a priority change 30 and 80 ns, `sched_runnable()` under the
+40 ns floor, arming and cancelling the callout 49 and 80 ns, a hand-over
+round trip 250 ns, the deadline exact to half a microsecond with the
+worker back 260 and 400 ns after it fires.  A worker over its allowance
+pays two priority changes per pass and one callout per contended
+period; alone it pays one compare per pass.
 
-What a demoted worker holds.  The demotion itself happens at a pass end
-with nothing held, but every later pass of the period runs at idle
-priority from its first instruction, and the handler's locks and epoch
-section are held across any preemption.  For a sleep mutex, a
-write-locked rwlock or an rmlock the waiter lends its priority and the
-worker is back within a turnstile round trip, at the cost of that round
-trip to waiters on other CPUs that could otherwise have spun; for a
-read-locked rwlock or an SMR section nothing is lent, the waiter and,
-through writer preference, every later reader wait for the deadline, up
-to one period.  Socket upcalls and in-kernel consumers invoked from the
-handler inherit the priority.  PLAN P4d measures whether this matters in
-practice and whether a pass should run at the class priority with the
-idle priority confined to the gaps between passes; until then the
-client-side rules are in docs/cheatsheet.md 5.1 and KWQ.md S3.
-
-Defaults: `cap_permille` 500, `cap_period_us` 1000.  Resolution
-1/1000 of the period; below a pass's worth the allowance is one clamped
-pass per period.  Counters per worker: `cap_demotions` (periods in which
-the allowance was reached with something runnable), `cap_yields`,
-`cap_restores` (deadlines that raised a waiting worker), `cap_ns` (wall
-time given away), `cap_runon` (passes ended over the allowance with
-nothing else runnable: the limit did not bind); the `kwq:::yield` probe
-reports reason 2.  The
-previous design (a `pause_sbt()` of `cap_sleep_us` once per
-`cap_window_us` window over `cap_pct`, 2026-09) gave away one sleep per
-window, 1 % at its defaults whatever the percentage said, and was
-replaced 2026-10-20 (PLAN P4c, tests/t_34_interactive.sh).
-
-Measured 2026-10-20 (../NOTES.md, samples/t34_sweep_2026-10-20_three_
-machines.txt): with one iperf3 flow and a CPU-bound process pinned to
-the worker's CPU, the process gets 97.6-99.0 / 88.5-90.2 / 51.0-52.9 /
-22.2-27.6 % at 10 / 100 / 500 / 750 permille on the guest, a07 and lab
-(ideal 99 / 90 / 50 / 25); a 1 kHz timer pinned there sees a p99
-lateness of 11-281 us at 10 and 221-882 us at 750 against 115 us
-(a07), 4.5 ms (guest) and 15.6 ms (lab) without the limit; a fork+exec
-loop 0.4-1.8 ms per exec against 4.7-19 ms.  The flow keeps about half
-its rate at a 1 % allowance and 80-100 % at 500.  Where the worker's
-own demand is below the allowance (900 and above here) the limit does
-not bind and `cap_runon` says so.  The unpinned timer under 2 x ncpu
-connections is unchanged at every ratio: ULE's slicing of the
-oversubscribed user threads, not the workers.
-
-Alternatives measured the same day (../NOTES.md, PLAN P4c design study):
-the same mechanism with an equal share and the tick-sized period as
-constants and `PRI_MIN_IDLE` instead of 223 for the demoted worker
-(branch kwq-cap-tickfair) measures the same as the limit at 500 and
-needs no tuning and no `sched_runnable()` after the demotion, because
-an idle-priority thread runs only when nothing else is runnable and is
-preempted by anything that wakes; it is the recommended default.
-Letting ULE share by its own slices (branch kwq-cap-ule: yield at
-`PRI_USER` on `TDF_SLICEEND`) does not work for a worker that sleeps
-between bursts, since `sched_wakeup()` resets the slice, and where the
-worker never sleeps it shares at ULE's 94 ms granularity.  ULE's
-fairness is built for threads that sleep or run for slices; a kernel
-worker that does neither falls through it.
+**History.**  The first design (2026-09) was a `pause_sbt()` of
+`cap_sleep_us` once per `cap_window_us` window over `cap_pct`, which
+gave away one sleep per window, 1 % at its defaults, whatever the
+percentage said.  The share limit of 2026-10-20 waited at
+`PRI_MAX_TIMESHARE` and needed `sched_runnable()` after every return and
+a loop declining ULE's calendar turns; the same day the idle range made
+both unnecessary and the worker ran its passes there too, measured as
+equal (the design study, ../NOTES.md).  P4d (2026-10-21) measured what
+that did and led to the pass-level form above.  Fidelity measured
+2026-10-20 (samples/t34_sweep_, t34_merged_): a CPU-bound process pinned
+to the worker's CPU gets 1000 - `cap_permille` within two points at
+every ratio where the limit binds, on all three machines; a 1 kHz timer
+there sees a p99 lateness bounded by the allowance's phase (0.1-0.6 ms
+at the default against 4-16 ms without the limit on the guest and lab);
+the flow keeps about half its rate at a 1 % allowance and 80-100 % at
+500; the unpinned timer under 2 x ncpu connections is ULE's and does not
+move.
 
 ### 6.4 Hand-back between classes on one CPU
 
@@ -776,7 +834,8 @@ client's `c_max`; `Y` the time the yielded-to threads run at a yield
 | `kern.kwq.<class>.quantum_us` | class, RWTUN | 200 / 1000 / 5000 | `Q`; the throughput/latency dial: larger = fewer yields and lock hand-offs per item, longer B4/B5.  Validated to `[10, 1000000]` us by the sysctl handler: 0 would park every queue forever (S13) |
 | `kwq_params.weight` | queue, create time | 1 | share within the class on a CPU, 1..8, read as "this queue gets `w` quanta per round".  Clients are reviewed kernel code, not tenants, so a weight above 1 is a declaration reviewed with the client, not a privilege kwq enforces (KWQ.md S1 corrected 2026-09-28) |
 | `kern.kwq.<class>.yield_prio` | class, RW | `PUSER` | who may run at a yield (S6.2) |
-| `kern.kwq.<class>.cap_permille` | class, RWTUN | 500 | share of its CPU the worker keeps at kernel priority per period while other threads are runnable, in 1/1000; the rest of the period it is an idle-priority thread; 1000 = off (S6.3) |
+| `kern.kwq.<class>.priority` | class, RDTUN | `PI_NET` / `PI_SOFT` / `PUSER` | the class's worker priority, a loader tunable; net and bulk in [`PRI_MIN_ITHD`, `PRI_MAX_KERN`], blocking up to `PRI_MAX_TIMESHARE`, net <= bulk <= blocking, else all three default (S6.3, under 4BSD) |
+| `kern.kwq.<class>.cap_permille` | class, RWTUN | 500 | share of its CPU the worker may spend in passes per period while other threads are runnable, in 1/1000; the rest of the period it waits between passes as an idle-priority thread; 1000 = off, and the worker then obeys ULE's slice end as a process would (S6.3) |
 | `kern.kwq.<class>.cap_period_us` | class, RWTUN | 1000 | the period of the share limit; also the bound on how long the CPU is given away at a time |
 | `GRACE_ROUNDS` | compile-time | 1 | anti-gaming window; the P1a sweep found 1 and 2 indistinguishable (S12) |
 | `kern.kwq.<class>.budget_check_every` | class, RWTUN | 8 | `K` of S4.4: `kwq_budget_left()` reads the clock at least every `K` calls; 1 = read on every call (exact B1, expensive with cheap items); validated to `[1, 64]` |
@@ -806,8 +865,8 @@ list), `grace` (doorbells that went to the ring because of S4.6),
 `maxlat_ns` (the longest doorbell-to-first-pass latency: the age of
 `kc_empty_since` at the first pass after each doorbell, sampled once per
 burst; the B4/B5 measurement).  Per worker: `rounds`, `yields`, `tick_yields`,
-`cap_demotions`, `cap_yields`, `cap_restores`, `cap_ns`, `cap_runon` (the
-share limit, S6.3), `handbacks` (rounds ended early for a higher class, S6.4),
+`cap_demotions`, `cap_yields`, `cap_cuts`, `cap_restores`, `cap_ns`,
+`cap_runon`, `slice_yields` (the share limit, S6.3), `handbacks` (rounds ended early for a higher class, S6.4),
 `switched` (passes during which the worker left the CPU; also per
 queue), `busy_ns`, `idle_ns`, `wakeups`, `passes`, `budget_calls` and
 `budget_reads` (S4.4: how many `kwq_budget_left()` calls there were and
@@ -1317,6 +1376,7 @@ case 4 added the progress rule (S5); the rest are documented limits.
 | 16 | `kwq_drain()` during a round | producers refused, the worker finishes queued passes, the drain waits for IDLE | | P0 protocol |
 | 17 | a producer at lower priority holds `kc_mtx` when the worker wants it | turnstile lends the worker's priority | | mutex(9) |
 | 18 | a NIC ithread at `PI_NET` competes with the NET worker at `PI_NET` | round-robin between them; the ithread's own run is bounded by iflib's budget and ULE's ithread slice demotion | | not kwq's; noted so that a saturated NET worker is not blamed for iflib's 94 ms |
+| 19 | a handler ignores its budget while the worker is over its allowance and a user thread waits | the thread waits for the whole pass: the share limit hands over only between passes and at zero budgets (S6.3, no forfeiture rule) | `overruns` on that queue, `cap_cuts` not growing while `cap_demotions` does | by design; the handler is in breach of S3's contract and the counter names it |
 
 ## 15. Cost model
 

@@ -654,8 +654,7 @@ re-entrant from it; the class decides the rest.
 | `kwq_activate` | no | no | configuration-time only, asserted |
 | `kwq_drain`, `kwq_destroy` | no | no | sleep, and waiting for a queue from a handler deadlocks; asserted |
 | waiting for another queue's items to finish | no | no | use the `kwq_scatter` completion callback |
-| taking sleep mutexes, write-locked rwlocks, rmlocks | yes, for the item | yes | queue locks are leaves, so client locks may be held across `kwq_enqueue`; a waiter lends its priority to the holder through the turnstile (rmlock readers are tracked), which is what brings back a worker preempted while holding one under the share limit (SCHED.md S6.3) |
-| read-locking an rwlock, SMR read sections | yes, for a few instructions | yes | readers are anonymous: no priority propagation, and a writer waiting on a preempted reader blocks every later reader everywhere (writer preference) for up to a share-limit period; see docs/cheatsheet.md 5.1 |
+| taking sleep mutexes, rwlocks (read or write), rmlocks; SMR read sections | yes, for the item | yes | queue locks are leaves, so client locks may be held across `kwq_enqueue`.  A pass runs at the class priority and is preempted by nothing but interrupt threads (SCHED.md S6.3, the invariant), so a handler's hold time is the item's and no lock's propagation behaviour matters to it.  (The code at 56eb9b6 still demotes inside passes; docs/cheatsheet.md 5.1 says what that means until the pass-level form is implemented) |
 | taking a spin mutex, `critical_enter`, `sched_pin` | yes, release before return | yes | while held, only `KWQ_F_SPIN` queues may be enqueued to |
 | sleeping (`tsleep`, `cv_wait`, sx, lockmgr, `M_WAITOK`, `copyin`) | no, asserted | yes | |
 | `M_NOWAIT` allocation | yes, handle `NULL` | yes | |
@@ -1270,9 +1269,9 @@ Per class: `kern.kwq.<class>.`
 | `penalty_rounds` | uint | RW | 32 | debt clamp in quanta: the most rounds an overrunning queue is parked (P1; SCHED.md S4.3) |
 | `budget_check_every` | uint | RW | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; 1 = every call (SCHED.md S4.4) (P2) |
 | `limit` | uint | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards |
-| `cap_permille` | uint | RWTUN | 500 | share limit: the share of its CPU the worker keeps at kernel priority per `cap_period_us` while other threads are runnable, the rest as an idle-priority thread, in 1/1000; 1000 = off (S11 Missing 1; SCHED.md S6.3) |
+| `cap_permille` | uint | RWTUN | 500 | share limit: the share of its CPU the worker may spend in passes per `cap_period_us` while other threads are runnable, the rest waiting between passes as an idle-priority thread, in 1/1000; 1000 = off, and the worker then obeys ULE's slice end as a process would (S11 Missing 1; SCHED.md S6.3) |
 | `cap_period_us` | uint | RWTUN | 1000 | the share limit's period |
-| `priority` | int | RDTUN | `PI_NET` / `PI_SOFT` / `PUSER` | scheduler priority of the class's workers, a loader tunable; [`PRI_MIN_ITHD`, `PRI_MAX_TIMESHARE`] and net <= bulk <= blocking, else all three default |
+| `priority` | int | RDTUN | `PI_NET` / `PI_SOFT` / `PUSER` | scheduler priority of the class's workers, a loader tunable; net and bulk in [`PRI_MIN_ITHD`, `PRI_MAX_KERN`] (4BSD recomputes a kernel thread's priority in the timeshare range), blocking up to `PRI_MAX_TIMESHARE`, and net <= bulk <= blocking, else all three default |
 | `nworkers` | int | RD | ncpu (blocking: current) | worker threads in the class (P7) |
 | `max_workers` | int | RW | blocking only, 4 x ncpu | ceiling for worker replacement (P7) |
 | `idle_timeout_s` | int | RW | blocking only, 30 | reap an idle replacement worker after this long (P7) |
@@ -1291,6 +1290,7 @@ Per worker: `kern.kwq.<class>.cpu.<N>.`
 | `cpu.<N>.cap_restores` | counter | RD | | period deadlines that raised a waiting worker back to its class priority (P4c) |
 | `cpu.<N>.cap_ns` | counter | RD | | wall time given away under the share limit (P4c) |
 | `cpu.<N>.cap_runon` | counter | RD | | passes ended over the allowance with nothing else runnable (P4c) |
+| `cpu.<N>.slice_yields` | counter | RD | | yields at ULE's own priority because ULE ended the worker's slice; limit off only (specified 2026-10-21, not in 56eb9b6) |
 | `cpu.<N>.handbacks` | counter | RD | | rounds ended early because a higher class waited (P1) |
 | `cpu.<N>.budget_calls` | counter | RD | | `kwq_budget_left()` calls by handlers on this worker (P2) |
 | `cpu.<N>.budget_reads` | counter | RD | | of those, the ones that read the clock (SCHED.md S4.4) (P2) |
@@ -1449,14 +1449,21 @@ Options, in order of preference:
     construction.  Everything else on a saturated CPU gets its share
     from Mogul's "limit on CPU usage" feedback instead: the share limit
     (SCHED.md S6.3, `cap_permille` of a `cap_period_us` period, default
-    500 = an equal share) lets the worker take its allowance, then, if
-    anything else is runnable (`sched_runnable()`), become an
-    idle-priority thread for the rest of the period with one switch;
-    ULE runs it only when the CPU would otherwise idle and preempts it
-    for anything that wakes, and a callout at the period's end raises it
-    back to its class priority; the time given away is bounded by the
-    period, the cost is one callout arm and one switch per contended
-    period.  (The first version, a
+    500 = an equal share) lets the worker take its allowance in passes
+    at the class priority, then, while anything else is runnable
+    (`sched_runnable()`), hands the CPU over between passes as an
+    idle-priority thread and cuts a running pass short through the
+    budget; ULE runs the worker again when the CPU would otherwise idle,
+    and a callout at the period's end raises it back; a pass is never
+    preempted by a user thread, so handlers hold their locks at the
+    class priority (specified 2026-10-21 after P4d; 56eb9b6 still
+    demotes inside passes).  The time given away is bounded by the
+    period, the cost is two priority changes per pass and one callout
+    per contended period.  With the limit off the worker honours
+    `TDA_SCHED` at pass end and yields at `PRI_USER` as `userret()` would
+    make a process do, the one thing ULE's slice accounting can do for a
+    thread without `userret()`; it fires only for a worker that has run
+    a full slice without sleeping.  (The first version, a
     `pause_sbt()` once per window over a busy percentage, gave away one
     sleep per window regardless of the percentage; replaced 2026-10-20,
     PLAN P4c.)  An
@@ -2409,6 +2416,18 @@ decision deferred until real clients show what fan-in they produce.
   (samples/walltime_2026-10-20_three_machines.txt).  The test jails are
   created and removed with `jail -f /dev/null`, independent of the
   host's jail.conf.
+- 2026-10-21: SCHED.md S6.3 respecified after the P4d campaign: a pass
+  runs at the class priority and is preempted by nothing but interrupt
+  threads; the share limit hands the CPU over only between passes and
+  through the budget (`kwq_budget_left()` returns 0 while over the
+  allowance with something else runnable, counted in `cap_cuts`); no
+  forfeiture rule for a handler that ignores its budget.  Handler
+  contract in docs/overview.md S4 rewritten to match.  Code at 56eb9b6
+  still implements the previous form; its comments describe that.  The
+  same day: SCHED.md S6.3 states how the limit behaves under 4BSD
+  (machine-wide `sched_runnable()`), and the class priority tunables of
+  net and bulk stop at `PRI_MAX_KERN`, because 4BSD rewrites the
+  priority of a kernel thread in the timeshare range.
 - 2026-10-20: the CPU-share cap of SCHED.md S6.3 is replaced by the
   share limit: `cap_permille` of a `cap_period_us` period in wall time,
   the pass budget clamped to the allowance, over it an idle-priority

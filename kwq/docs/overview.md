@@ -147,11 +147,21 @@ then `kwq_destroy()`.
    on a flow hash so one flow always lands on one CPU.  Never use
    `curcpu` for work that has an ordering requirement: the producer
    migrates, the work does not follow, and the order is gone.
-2. **Check the budget, and process at least one item.**  Call
-   `kwq_budget_left()` after each item (or every few, for very cheap
-   items), hand the rest back with `kwq_requeue()` when it returns 0,
-   and return.  A handler that ignores it is not killed, but its queue
-   is charged, parked and visible in `overruns`.
+2. **The CPU is yours until you return; stop when asked.**  A handler
+   runs at the class's priority inside the network epoch.  From the call
+   to the return the CPU is the handler's against every thread but
+   interrupt threads; kwq shares the CPU with the rest of the system
+   only between passes.  Hold locks for the item, not the pass.  The
+   handler's two duties: process at least one item, and when
+   `kwq_budget_left()` returns 0 stop at the next item boundary, handing
+   the rest back with `kwq_requeue()`.  Call it after each item, or
+   every few for very cheap items.  A handler that ignores it keeps the
+   CPU from everyone, interactive users included, for as long as its
+   pass runs; kwq charges and parks its queue and counts it in
+   `overruns`, which is where to look when latency elsewhere is
+   unexplained.  (Specified 2026-10-21, SCHED.md S6.3; as of 56eb9b6 a
+   worker over its share still runs passes at idle priority, where a
+   waking thread preempts the handler.)
 3. **A NET or BULK handler must not sleep.**  No `tsleep`, no sx locks,
    no `M_WAITOK`, no `copyin`.  This is asserted; it panics under
    INVARIANTS rather than deadlocking in production.

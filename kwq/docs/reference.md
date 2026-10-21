@@ -523,10 +523,10 @@ module is preloaded.  Out-of-range values are refused with `EINVAL`.
 | `limit` | RWTUN | any | 4096 | default per-CPU bound for queues created with `limit = 0`; applies to queues created afterwards |
 | `penalty_rounds` | RWTUN | 1 .. 1024 | 32 | how many quanta of debt a queue may accumulate, i.e. the longest parking |
 | `budget_check_every` | RWTUN | 1 .. 64 | 8 | how often `kwq_budget_left()` reads the clock; 1 is exact and expensive |
-| `cap_permille` | RWTUN | 1 .. 1000 | 500 | share limit: the share of its CPU the worker keeps at kernel priority per period while other threads are runnable, in 1/1000; the rest of the period it is an idle-priority thread.  Equal share by default, 1000 = off (SCHED.md S6.3) |
+| `cap_permille` | RWTUN | 1 .. 1000 | 500 | share limit: the share of its CPU the worker may spend in passes per period while other threads are runnable, in 1/1000; the rest of the period it waits between passes as an idle-priority thread.  Equal share by default, 1000 = off, and the worker then obeys ULE's slice end as a process would (SCHED.md S6.3) |
 | `cap_period_us` | RWTUN | 100 .. 1000000 | 1000 | the share limit's period, the longest the CPU is given away at a time |
 | `yield_prio` | RW | class priority .. 223 | 56 (`PUSER`) | priority of the end-of-round yield.  223 lets every user thread run a full slice, which is the setting for the case where an interactive process turns CPU-bound and its latency spikes with `yields` normal and no kwq counter explaining them.  The one knob that is not a loader tunable |
-| `priority` | RDTUN | 0 .. 223, net <= bulk <= blocking | 1 (net), 2 (bulk), 56 (blocking) | the class's worker priority, settable only before the module loads (loader.conf or kenv(1)); a setting outside the range or out of order resets all three to the defaults with a console message.  Every knob exists for `blocking` too, although the class has no workers |
+| `priority` | RDTUN | 0 .. 55 (net, bulk), 0 .. 223 (blocking), net <= bulk <= blocking | 1 (net), 2 (bulk), 56 (blocking) | the class's worker priority, settable only before the module loads (loader.conf or kenv(1)); a setting outside the range or out of order resets all three to the defaults with a console message.  Every knob exists for `blocking` too, although the class has no workers |
 
 Service-wide (`kern.kwq.`): `clock` (RD) names the scheduler's tick source
 and its rate, `tsc`, `cntvct`, `timebase`, or the kernel's `cpu_ticks` as
@@ -547,10 +547,12 @@ The anti-gaming grace window (one round) is compile time.
 | `handbacks` | rounds ended early because a higher class wanted the CPU |
 | `switched` | passes during which the worker left the CPU (preempted or blocked); NET charges them wall time |
 | `cap_demotions` | periods in which the share limit was reached with other threads runnable |
-| `cap_yields` | times the worker gave the CPU away under the share limit |
+| `cap_yields` | hand-overs at pass end under the share limit |
+| `cap_cuts` | budget calls answered 0 by the share limit, cutting a pass short (specified 2026-10-21; not in 56eb9b6) |
 | `cap_restores` | period deadlines that raised a waiting worker back to its class priority |
 | `cap_ns` | wall time given away under the share limit |
 | `cap_runon` | passes that ended over the allowance with nothing else runnable: the limit did not bind |
+| `slice_yields` | yields at ULE's own priority for the worker because ULE ended its slice; limit off only (specified 2026-10-21; not in 56eb9b6) |
 | `busy_ns` | CPU time inside handlers |
 | `idle_ns` | wall time asleep with nothing queued |
 | `round` | current round number (gauge) |

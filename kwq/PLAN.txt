@@ -828,9 +828,14 @@ Phases
     no cross-CPU worker paid, no scheduler feedback); stage C on branch
     kwq-p4d-passprio removes the preemptions at no measurable cost, and
     tools/schedprobe put the mechanisms' costs at tens of nanoseconds.
-    Next: merge C with the budget-check lever (kwq_budget_left() returns
-    0 while over the allowance and sched_runnable() is true), re-measure
-    with compare.sh, and the NIC-fed flow on lab stays unmeasured.
+    SPECIFIED 2026-10-21: SCHED.md S6.3 rewritten to the pass-level
+    invariant with the budget-check hand-over and no forfeiture rule;
+    the handler contract (docs/overview.md S4, KWQ.md S3, cheatsheet
+    5.1), the whitepaper, reference and OBSERVABILITY follow it, each
+    marking what 56eb9b6 still does.  Next: implement (a rewrite of the
+    demotion path, `cap_cuts`, the simulator), re-measure with
+    compare.sh against A and C on the three machines, then the measured
+    paragraphs; the NIC-fed flow on lab stays unmeasured.
     Mechanisms that were looked at, with what the kernel does about
     each:
     - a preempted handler holds a sleep mutex of the stack (tcpinp,

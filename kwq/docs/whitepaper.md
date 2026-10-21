@@ -458,13 +458,18 @@ demote the worker for its lifetime.
 The tick guard spans passes rather than being anchored at pass entry, so
 a chain of individually-small passes cannot add up to unbounded
 occupancy.  Userland on a CPU the worker saturates, which a one-decision
-yield does not help, is served by the share limit instead: over
-`cap_permille`/1000 of a `cap_period_us` period, with something else
-runnable, the worker becomes an idle-priority thread for the rest of
-the period, which ULE runs only when nothing else wants the CPU, and a
-callout at the period's end raises it back while it waits on the run
-queue, so the time given away is bounded by the period rather than by
-a ULE slice.  An equal share by default.
+yield does not help, is served by the share limit instead: a worker may
+spend `cap_permille`/1000 of each `cap_period_us` in passes while
+something else is runnable on its CPU; beyond that it hands the CPU over
+between passes as an idle-priority thread, which ULE runs only when
+nothing else wants the CPU, and cuts a running pass short through the
+budget, and a callout at the period's end raises it back while it waits
+on the run queue, so the time given away is bounded by the period rather
+than by a ULE slice.  An equal share by default.  The invariant behind
+it, decided after measuring the alternative: a pass runs at the class
+priority and is preempted by nothing but interrupt threads, so a handler
+holds its locks exactly as netisr's and the drivers' threads always did
+and never depends on the kernel's partial priority propagation.
 
 Between classes the arbitration is strict priority by thread priority,
 plus a per-CPU hand-back flag so that a BULK round ends as soon as a

@@ -121,13 +121,20 @@ SYSCTL_UINT(_kern_kwq_blocking, OID_AUTO, limit, CTLFLAG_RWTUN,
  * in loader.conf or kenv(1) before the module loads).  Defaults: NET at
  * PI_NET, the hardware interrupt threads' level; BULK at PI_SOFT, where
  * netisr, iflib's queue threads and other software interrupt threads run;
- * BLOCKING at PUSER.  kwq_priority_check() at load confines them to
- * [PRI_MIN_ITHD, PRI_MAX_TIMESHARE] (the share limit demotes to
- * PRI_MIN_IDLE, which must stay below every class) and to the class order
- * NET <= BULK <= BLOCKING, which the hand-back between classes (SCHED.md
- * S6.4) relies on; a setting that breaks either resets all three.
+ * BLOCKING at PUSER.  kwq_priority_check() at load confines NET and BULK
+ * to [PRI_MIN_ITHD, PRI_MAX_KERN]: their workers hold the class priority
+ * for whole passes, and the 4BSD scheduler rewrites the priority of a
+ * kernel thread in the timeshare range from its own CPU use
+ * (resetpriority_thread()), which ULE never does.  BLOCKING may go up to
+ * PRI_MAX_TIMESHARE; at its PUSER default 4BSD schedules its workers as
+ * processes, which a sleeping class tolerates.  The share limit demotes
+ * to PRI_MIN_IDLE, which must stay below every class.  The class order
+ * NET <= BULK <= BLOCKING is what the hand-back between classes (SCHED.md
+ * S6.4) relies on; a setting that breaks either rule resets all three.
  */
 static const int kwq_priority_default[KWQ_NCLASS] = { PI_NET, PI_SOFT, PUSER };
+static const int kwq_priority_max[KWQ_NCLASS] =
+    { PRI_MAX_KERN, PRI_MAX_KERN, PRI_MAX_TIMESHARE };
 static int kwq_priority[KWQ_NCLASS] = { PI_NET, PI_SOFT, PUSER };
 SYSCTL_INT(_kern_kwq_net, OID_AUTO, priority, CTLFLAG_RDTUN,
     &kwq_priority[KWQ_NET], 0,
@@ -146,7 +153,7 @@ kwq_priority_check(void)
 
 	for (cls = 0; cls < KWQ_NCLASS; cls++) {
 		if (kwq_priority[cls] < PRI_MIN_ITHD ||
-		    kwq_priority[cls] > PRI_MAX_TIMESHARE)
+		    kwq_priority[cls] > kwq_priority_max[cls])
 			bad = 1;
 		if (cls > 0 && kwq_priority[cls] < kwq_priority[cls - 1])
 			bad = 1;
@@ -154,9 +161,11 @@ kwq_priority_check(void)
 	if (!bad)
 		return;
 	printf("kwq: class priorities net %d bulk %d blocking %d rejected "
-	    "(each in [%d, %d], net <= bulk <= blocking); using the defaults\n",
+	    "(net and bulk in [%d, %d], blocking in [%d, %d], "
+	    "net <= bulk <= blocking); using the defaults\n",
 	    kwq_priority[KWQ_NET], kwq_priority[KWQ_BULK],
-	    kwq_priority[KWQ_BLOCKING], PRI_MIN_ITHD, PRI_MAX_TIMESHARE);
+	    kwq_priority[KWQ_BLOCKING], PRI_MIN_ITHD, PRI_MAX_KERN,
+	    PRI_MIN_ITHD, PRI_MAX_TIMESHARE);
 	for (cls = 0; cls < KWQ_NCLASS; cls++)
 		kwq_priority[cls] = kwq_priority_default[cls];
 }

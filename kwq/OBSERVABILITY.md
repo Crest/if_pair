@@ -44,7 +44,7 @@ handler rejects values outside its range with EINVAL.
 | `penalty_rounds` (RWTUN) | 1 .. 1024 | 32 | how many rounds a queue can be parked for overrunning its budget, in quanta of debt.  Smaller forgives a misbehaving handler sooner |
 | `budget_check_every` (RWTUN) | 1 .. 64 | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; between reads it estimates.  1 = a clock read per call (exact, expensive with cheap items) |
 | `yield_prio` (RW) | class priority .. 223 | 56 (PUSER) | the priority the worker yields at after a round when something else is runnable.  223 lets every user thread run a full time slice per round |
-| `cap_permille` (RWTUN) | 1 .. 1000 | 500 | share limit: the share of its CPU the worker keeps at kernel priority per `cap_period_us` while other threads are runnable there, in 1/1000; for the rest of the period it is an idle-priority thread, so anything that wakes preempts it and it runs only when the CPU would otherwise idle.  The default is an equal share; 1000 turns it off (SCHED.md S6.3) |
+| `cap_permille` (RWTUN) | 1 .. 1000 | 500 | share limit: the share of its CPU the worker may spend in passes per `cap_period_us` while other threads are runnable there, in 1/1000; for the rest of the period it waits between passes as an idle-priority thread, which runs only when the CPU would otherwise idle.  The default is an equal share; 1000 turns it off, and the worker then obeys ULE's slice end as a process would (SCHED.md S6.3) |
 | `cap_period_us` (RWTUN) | 100 .. 1000000 | 1000 | the period of the share limit, and the longest the CPU is given away at a time |
 
 Examples:
@@ -76,9 +76,9 @@ The grace window of the anti-gaming rule (one round) is compile time.
     kern.kwq.nqueues        queues currently created, active or not
     kern.kwq.<class>.priority   scheduler priority of the class's workers; a loader
                             tunable (net PI_NET = 1, bulk PI_SOFT = 2, blocking PUSER
-                            = 56 by default), each in [0, 223] and net <= bulk <=
-                            blocking, or all three fall back to the defaults with a
-                            console message.  PI_SOFT for net puts the workers level
+                            = 56 by default), net and bulk in [0, 55], blocking in
+                            [0, 223], and net <= bulk <= blocking, or all three fall
+                            back to the defaults with a console message.  PI_SOFT for net puts the workers level
                             with netisr and iflib's queue threads, one below the
                             NIC interrupt threads
     kern.kwq.clock          the scheduler's tick source and rate: "cntvct 25000000 Hz",
@@ -98,10 +98,12 @@ The grace window of the anti-gaming rule (one round) is compile time.
 | `handbacks` | rounds ended early because a higher class waited on this CPU |
 | `switched` | passes during which the worker left the CPU, preempted or blocked on a lock; NET charges them wall time (SCHED.md S1a.4) |
 | `cap_demotions` | periods in which the share limit was reached with other threads runnable |
-| `cap_yields` | times the worker gave the CPU away under the share limit |
+| `cap_yields` | hand-overs at pass end under the share limit |
+| `cap_cuts` | budget calls answered 0 by the share limit, cutting a pass short (specified 2026-10-21; not in 56eb9b6) |
 | `cap_restores` | period deadlines that raised a waiting worker back to its class priority |
 | `cap_ns` | wall time given away under the share limit |
 | `cap_runon` | passes that ended over the allowance with nothing else runnable: the limit did not bind |
+| `slice_yields` | yields at ULE's own priority for the worker because ULE ended its slice; limit off only (specified 2026-10-21; not in 56eb9b6) |
 | `busy_ns` | CPU time spent inside handlers |
 | `idle_ns` | wall time asleep with nothing queued |
 | `round` | current round number |

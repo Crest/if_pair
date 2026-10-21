@@ -218,10 +218,12 @@ more.  "kwq:" marks terms this project defines.
 - **share limit** (kwq; "CPU-share cap" in earlier text) - the
   substitute for a bounded yield: a worker may take `cap_permille`/1000
   of its CPU's time per `cap_period_us` while other threads are runnable
-  there (`sched_runnable()`); over that it is an idle-priority thread
-  for the rest of the period, which ULE runs only when nothing else is
-  runnable, until a callout at the period's end raises it back; an
-  equal share by default (`cap_permille` 500).  From Mogul
+  there (`sched_runnable()`); over that it hands the CPU over between
+  passes as an idle-priority thread, which ULE runs only when nothing
+  else is runnable, and cuts a pass short through the budget, until a
+  callout at the period's end raises it back; a pass itself always runs
+  at the class priority; an equal share by default (`cap_permille`
+  500).  From Mogul
   & Ramakrishnan's "limit on CPU usage" feedback (../POOLS.md); SCHED.md
   S6.3.
 - **tick** - one `hz` clock interrupt; `ticks` counts them.  kwq's *tick
