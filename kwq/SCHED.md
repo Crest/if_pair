@@ -796,6 +796,28 @@ the flow keeps about half its rate at a 1 % allowance and 80-100 % at
 500; the unpinned timer under 2 x ncpu connections is ULE's and does not
 move.
 
+**Measured, the implementation** (2026-10-22, samples/passlevel_2026-10-22_
+{guest,lab}.txt; a07 pending, its if_pair was in use): against 56eb9b6
+(stage A) and the passprio experiment (C), the implementation (N) and
+the same build at `cap_prio` 223 (N223), two repetitions each, timer and
+burst competitors.  Spinner share 0.507 (lab) / 0.528 (guest) on every
+kwq stage; timer p99, exec, UDP p99, single flow and sixteen flows
+within noise of A on both machines; the two-queue overruns under the
+burst competitor fall from 228/242 (lab) and 152/142 (guest) to 0 and
+about 25; the worker's mid-pass preemptions fall from 30 (lab) and 38
+(guest) per second to 0 on lab and, on the guest under the burst
+competitor, to about 14 per second for N and 0 for N223.  Those 14 are
+the switch-in instruction: dtrace put every one at the return address
+of the hand-over's own `mi_switch()` under a timer-interrupt frame, the
+interrupt pending from the switch making the competitor runnable before
+the restore ran; no handler, no lock.  Fairness over eight streams and
+the magnet test show no stage effect (the fair test's spread is the
+hash draw of eight random ports).  The budget cut fires only beside a
+competitor that sleeps (about 580 cuts per second on the guest under the
+burst timer, none beside a spinner, which never lets a pass begin over
+the allowance), and the limit-off slice yield fires at ULE's slice end
+(16 in 3 s beside a spinner on the hz=100 guest).
+
 ### 6.4 Hand-back between classes on one CPU
 
 A NET yield at `PUSER` makes the NET worker the lowest runnable kernel

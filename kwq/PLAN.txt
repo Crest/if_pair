@@ -836,9 +836,14 @@ Phases
     kwq-p4d-passlevel: the demotion path rewritten to the hand-over
     (pass begin restores the class priority, the budget cut `cap_cuts`,
     `cap_prio`, `slice_yields`), the simulator follows with the `cut`
-    scenario; guest ATF suite 22/22.  Next: re-measure with compare.sh
-    against A and C on the three machines, then the measured paragraphs;
-    the NIC-fed flow on lab stays unmeasured.
+    scenario; guest ATF suite 22/22.  MEASURED 2026-10-22 on the guest
+    and lab (samples/passlevel_2026-10-22_*): equal to C and to A in
+    every column but the preemptions and overruns, which go to zero;
+    the residue on the guest (14/s under the burst competitor) is the
+    switch-in instruction and cap_prio 223 removes it; a07 pending (its
+    if_pair was loaded and in use).  Next: a07, merge, then decide the
+    cap_prio default on the preemption-versus-placement trade; the
+    NIC-fed flow on lab stays unmeasured.
     Mechanisms that were looked at, with what the kernel does about
     each:
     - a preempted handler holds a sleep mutex of the stack (tcpinp,

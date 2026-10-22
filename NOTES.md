@@ -5748,6 +5748,36 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   allowance and sched_runnable() is true) so the bound is one item;
   keep the client guidance of docs/cheatsheet.md 5.1 as advice.
 
+2026-10-22: PLAN P4d implemented (branch kwq-p4d-passlevel): the
+  pass-level share limit of SCHED.md S6.3 as respecified on 2026-10-21.
+  Pass begin restores the class priority; kwq_budget_left() returns 0
+  while the allowance is spent and sched_runnable() (cap_cuts); the
+  pass-end hand-over lowers the worker to cap_prio (per class, RWTUN,
+  default PRI_MIN_IDLE, strictly below the class priority up to
+  PRI_MAX_IDLE) and switches once, without the kwq_waiting bit, counting
+  as the tick guard's voluntary switch and suppressing the round-end
+  yield of its round; kwq_yield() has no over-allowance branch; a worker
+  going idle sleeps at the class priority; with the limit off a pending
+  TDA_SCHED is honoured at pass end with kern_yield(PRI_USER)
+  (slice_yields).  The simulator follows (scenario `cut`).  Guest ATF
+  22/22.  Measured with compare.sh (samples/passlevel_2026-10-22_*) on
+  the guest and lab against A (56eb9b6), C (kwq-p4d-passprio) and T:
+  no column moves but the preemptions and overruns, which vanish.  Two
+  findings on the way: (1) restoring the class priority at pass begin
+  alone left the bookkeeping after the switch at the waiting priority,
+  where the guest's bursty competitor preempted the worker 10/s; the
+  restore now follows the switch directly, and the remaining 14/s on the
+  guest are the switch-in instruction itself (dtrace: every event at
+  the return address of the hand-over's mi_switch() under Xtimerint,
+  the interrupt pending from the switch), nothing held, nothing
+  running; cap_prio 223 shows 0 because a timeshare thread cannot
+  preempt 223 at all, which is the measurable argument for 223 against
+  the pickcpu idle shortcut on the other side; (2) the fair test's
+  spread (eight streams, random ports) is the hash draw, not a stage
+  effect: four repetitions alone on lab put N's slowest stream at 11-12
+  Gbit/s in every run.  a07 could not be measured: its /boot/modules
+  if_pair.ko was loaded with pair0a/b in use (not mine to unload).
+
 2026-10-24: PLAN P4e, wake moderation (interrupt coalescing's analogue),
   research and design study, no code: kwq/WAKE.md.  Read on lab's 15.1
   sources: ULE preempts on wake only at priorities <= preempt_thresh
