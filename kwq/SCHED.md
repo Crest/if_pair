@@ -642,10 +642,15 @@ work-conserving case.  The deadline callout, running on the worker's CPU
 from the timer interrupt, raises it to the class priority while it waits
 on the run queue; ULE requeues and preempts (`sched_thread_priority()`,
 the `TD_ON_RUNQ` branch), so the time given away is bounded by the
-period and not by ULE's 16-94 ms slice.  And a pass begin always
-restores the class priority if the worker is not at it, a one-nanosecond
-compare and a 30-80 ns change (S15, schedprobe), before the handler is
-called.  The period rolls over at pass begin as well as at pass end, so
+period and not by ULE's 16-94 ms slice.  Whichever way it comes back,
+the worker re-asserts the class priority the moment its hand-over
+switch returns, so it is at `cap_prio` only while off the CPU; a pass
+begin restores it again if it is not at it, a one-nanosecond compare and
+a 30-80 ns change (S15, schedprobe), before the handler is called.
+(Restoring at pass begin alone left a few microseconds of bookkeeping at
+the waiting priority, where a bursty competitor preempted the worker ten
+times a second on the guest, 2026-10-22; with the immediate restore the
+preemptions are zero, as for stage C.)  The period rolls over at pass begin as well as at pass end, so
 a worker brought back by the deadline runs its first pass clamped.  The
 callout's `fired` flag and the priority are written under the thread
 lock on both sides, so a deadline that strikes between the core's

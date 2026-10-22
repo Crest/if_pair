@@ -193,9 +193,13 @@ kwq_yield(struct kwq_worker *kw, int reason, int prio)
  * is runnable and is preempted by anything that wakes
  * (sched_shouldpreempt(), the cpri >= PRI_MIN_IDLE rule); at
  * PRI_MAX_TIMESHARE it is the last batch thread.  Either way the worker
- * stays at the waiting priority only between passes: the next pass begin
- * restores the class priority before the handler runs, so what ULE may
- * preempt is the bookkeeping, never a handler.  The deadline callout
+ * is at the waiting priority only while it is off the CPU: the moment the
+ * switch returns it re-asserts the class priority (and pass begin does so
+ * again as a safety net), so what ULE may preempt is one instruction of
+ * bookkeeping, never a handler.  Restoring at pass begin alone left a
+ * few microseconds of bookkeeping at the waiting priority, enough for a
+ * bursty competitor to preempt the worker there ten times a second on
+ * the guest (2026-10-22).  The deadline callout
  * raises the worker while it waits on the run queue (ULE requeues and
  * preempts: sched_thread_priority(), the TD_ON_RUNQ branch).  Not a
  * yield in the S6.4 sense: the hand-back bit stays clear, because the
@@ -224,6 +228,9 @@ kwq_cap_handover(struct kwq_worker *kw)
 	sched_prio(td, kwq_cap_prio[kw->kw_class]);
 	mi_switch(SW_VOL | SWT_RELINQUISH);	/* releases the thread lock */
 	kw->kw_cap_ns += ks_ticks2ns(kwq_ticks() - t0, kw->kw_ns_scale);
+	thread_lock(td);
+	sched_prio(td, kw->kw_pri);
+	thread_unlock(td);
 }
 
 /* Back to the class priority if a hand-over left the worker below it. */
