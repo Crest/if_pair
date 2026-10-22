@@ -219,8 +219,8 @@ more.  "kwq:" marks terms this project defines.
   substitute for a bounded yield: a worker may take `cap_permille`/1000
   of its CPU's time per `cap_period_us` while other threads are runnable
   there (`sched_runnable()`); over that it hands the CPU over between
-  passes as an idle-priority thread, which ULE runs only when nothing
-  else is runnable, and cuts a pass short through the budget, until a
+  passes at the waiting priority `cap_prio`, by default an idle-priority
+  thread, which ULE runs only when nothing else is runnable, and cuts a pass short through the budget, until a
   callout at the period's end raises it back; a pass itself always runs
   at the class priority; an equal share by default (`cap_permille`
   500).  From Mogul

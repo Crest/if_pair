@@ -46,6 +46,7 @@ handler rejects values outside its range with EINVAL.
 | `yield_prio` (RW) | class priority .. 223 | 56 (PUSER) | the priority the worker yields at after a round when something else is runnable.  223 lets every user thread run a full time slice per round |
 | `cap_permille` (RWTUN) | 1 .. 1000 | 500 | share limit: the share of its CPU the worker may spend in passes per `cap_period_us` while other threads are runnable there, in 1/1000; for the rest of the period it waits between passes as an idle-priority thread, which runs only when the CPU would otherwise idle.  The default is an equal share; 1000 turns it off, and the worker then obeys ULE's slice end as a process would (SCHED.md S6.3) |
 | `cap_period_us` (RWTUN) | 100 .. 1000000 | 1000 | the period of the share limit, and the longest the CPU is given away at a time |
+| `cap_prio` (RWTUN) | class priority + 1 .. 255 | 224 (PRI_MIN_IDLE) | the priority the worker waits at between passes while over its allowance; never the priority of a pass.  224 runs only when the CPU would otherwise idle and is preempted by anything; 223 (PRI_MAX_TIMESHARE) is the other useful value: the last batch slot, no idle-affinity shortcut in `sched_pickcpu()`, preempted only by priorities <= `kern.sched.preempt_thresh`.  Other values are for experiments (SCHED.md S6.3) |
 
 Examples:
 

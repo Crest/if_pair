@@ -833,7 +833,7 @@ Phases
     the handler contract (docs/overview.md S4, KWQ.md S3, cheatsheet
     5.1), the whitepaper, reference and OBSERVABILITY follow it, each
     marking what 56eb9b6 still does.  Next: implement (a rewrite of the
-    demotion path, `cap_cuts`, the simulator), re-measure with
+    demotion path, `cap_cuts`, `cap_prio`, the simulator), re-measure with
     compare.sh against A and C on the three machines, then the measured
     paragraphs; the NIC-fed flow on lab stays unmeasured.
     Mechanisms that were looked at, with what the kernel does about

@@ -461,8 +461,8 @@ occupancy.  Userland on a CPU the worker saturates, which a one-decision
 yield does not help, is served by the share limit instead: a worker may
 spend `cap_permille`/1000 of each `cap_period_us` in passes while
 something else is runnable on its CPU; beyond that it hands the CPU over
-between passes as an idle-priority thread, which ULE runs only when
-nothing else wants the CPU, and cuts a running pass short through the
+between passes at a waiting priority (`cap_prio`, by default the idle
+range), which ULE runs only when nothing else wants the CPU, and cuts a running pass short through the
 budget, and a callout at the period's end raises it back while it waits
 on the run queue, so the time given away is bounded by the period rather
 than by a ULE slice.  An equal share by default.  The invariant behind

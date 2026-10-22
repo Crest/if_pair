@@ -1271,6 +1271,7 @@ Per class: `kern.kwq.<class>.`
 | `limit` | uint | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards |
 | `cap_permille` | uint | RWTUN | 500 | share limit: the share of its CPU the worker may spend in passes per `cap_period_us` while other threads are runnable, the rest waiting between passes as an idle-priority thread, in 1/1000; 1000 = off, and the worker then obeys ULE's slice end as a process would (S11 Missing 1; SCHED.md S6.3) |
 | `cap_period_us` | uint | RWTUN | 1000 | the share limit's period |
+| `cap_prio` | int | RWTUN | `PRI_MIN_IDLE` (224) | the priority the worker waits at between passes while over its allowance, never the priority of a pass; `PRI_MAX_TIMESHARE` (223) is the other useful value; class priority + 1 .. `PRI_MAX_IDLE` (255) accepted for experiments (SCHED.md S6.3) |
 | `priority` | int | RDTUN | `PI_NET` / `PI_SOFT` / `PUSER` | scheduler priority of the class's workers, a loader tunable; net and bulk in [`PRI_MIN_ITHD`, `PRI_MAX_KERN`] (4BSD recomputes a kernel thread's priority in the timeshare range), blocking up to `PRI_MAX_TIMESHARE`, and net <= bulk <= blocking, else all three default |
 | `nworkers` | int | RD | ncpu (blocking: current) | worker threads in the class (P7) |
 | `max_workers` | int | RW | blocking only, 4 x ncpu | ceiling for worker replacement (P7) |
@@ -1451,9 +1452,9 @@ Options, in order of preference:
     (SCHED.md S6.3, `cap_permille` of a `cap_period_us` period, default
     500 = an equal share) lets the worker take its allowance in passes
     at the class priority, then, while anything else is runnable
-    (`sched_runnable()`), hands the CPU over between passes as an
-    idle-priority thread and cuts a running pass short through the
-    budget; ULE runs the worker again when the CPU would otherwise idle,
+    (`sched_runnable()`), hands the CPU over between passes as a
+    thread at `cap_prio` (default `PRI_MIN_IDLE`) and cuts a running
+    pass short through the budget; ULE runs the worker again when the CPU would otherwise idle,
     and a callout at the period's end raises it back; a pass is never
     preempted by a user thread, so handlers hold their locks at the
     class priority (specified 2026-10-21 after P4d; 56eb9b6 still
@@ -2427,7 +2428,10 @@ decision deferred until real clients show what fan-in they produce.
   same day: SCHED.md S6.3 states how the limit behaves under 4BSD
   (machine-wide `sched_runnable()`), and the class priority tunables of
   net and bulk stop at `PRI_MAX_KERN`, because 4BSD rewrites the
-  priority of a kernel thread in the timeshare range.
+  priority of a kernel thread in the timeshare range.  The waiting
+  priority of the share limit became the per-class RWTUN knob
+  `cap_prio` (default `PRI_MIN_IDLE`, `PRI_MAX_TIMESHARE` the other
+  useful value, the rest for experiments).
 - 2026-10-20: the CPU-share cap of SCHED.md S6.3 is replaced by the
   share limit: `cap_permille` of a `cap_period_us` period in wall time,
   the pass budget clamped to the allowance, over it an idle-priority
