@@ -53,10 +53,11 @@ struct kwq_worker {
 	uint64_t		kw_cap_start;
 	uint64_t		kw_cap_used;
 	bool			kw_cap_over;
+	bool			kw_cap_handed;
 	const struct kwq_sched_knobs *kw_knobs;
 	uint64_t		kw_rounds, kw_passes, kw_yields, kw_cap_demotions,
-				kw_cap_yields, kw_cap_runon, kw_handbacks, kw_busy_ns, kw_budget_calls,
-				kw_budget_reads;
+				kw_cap_yields, kw_cap_cuts, kw_cap_runon, kw_handbacks,
+				kw_busy_ns, kw_budget_calls, kw_budget_reads;
 };
 
 #define	KSQ_WEIGHT(kc)	((kc)->kc_weight)

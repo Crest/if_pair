@@ -23,9 +23,10 @@
  *                      kw_round (uint64_t), kw_phase,
  *                      kw_ring_left, kw_tail_left, kw_want_new, kw_cur,
  *                      kw_served, kw_pass_start, kw_pass_budget,
- *                      kw_cap_start, kw_cap_used (wall ns), kw_cap_over
- *                      (bool), kw_knobs, kw_rounds, kw_passes, kw_yields,
- *                      kw_cap_demotions, kw_cap_yields, kw_cap_runon,
+ *                      kw_cap_start, kw_cap_used (wall ns), kw_cap_over,
+ *                      kw_cap_handed (bool), kw_knobs, kw_rounds,
+ *                      kw_passes, kw_yields, kw_cap_demotions,
+ *                      kw_cap_yields, kw_cap_cuts, kw_cap_runon,
  *                      kw_handbacks, kw_busy_ns,
  *                      kw_bc_calls (u_int), kw_bc_last (int64_t), kw_budget_calls,
  *                      kw_budget_reads (uint64_t)
@@ -112,12 +113,15 @@ enum ks_yield {
 	KS_Y_YIELD,		/* kern_yield(yield_prio), re-assert priority */
 };
 
-/* What ks_cap_check() tells the worker to do (S6.3). */
+/*
+ * What ks_cap_check() tells the worker to do (S6.3).  The values double as
+ * the kwq:::cap event ids (KWQ_CAP_*), so the order is fixed.
+ */
 enum ks_cap {
 	KS_CAP_NONE,		/* under the allowance, or nothing else runnable */
-	KS_CAP_DEMOTE,		/* allowance spent: arm the period's deadline,
-				   then give the CPU away */
-	KS_CAP_YIELD,		/* still over, same period: give it away again */
+	KS_CAP_DEMOTE,		/* allowance spent, first time this period: arm
+				   the period's deadline, then hand the CPU over */
+	KS_CAP_YIELD,		/* still over, same period: hand it over again */
 	KS_CAP_RESTORE,		/* the period ended while over: disarm */
 };
 
@@ -164,16 +168,35 @@ bool	ks_budget_need_clock(struct kwq_worker *kw, uint64_t *leftp);
 void	ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc,
 	    uint64_t cpu_now, bool has_work);
 
-/* End of round (S6.1). `runnable' is sched_runnable(). */
+/*
+ * End of round (S6.1). `runnable' is sched_runnable().  No yield for a
+ * round whose last pass handed the CPU over under the share limit (S6.3).
+ */
 enum ks_yield ks_round_end(struct kwq_worker *kw, uint64_t wall_now,
 	    bool runnable);
 /*
  * The share limit (S6.3), after every pass; caller holds the worker lock.
  * `wall_now' is the worker's wall clock (the pass stamps' clock), `runnable'
- * is sched_runnable().
+ * is sched_runnable().  KS_CAP_DEMOTE and KS_CAP_YIELD both mean: lower
+ * the priority to the waiting priority and switch once.
  */
 enum ks_cap ks_cap_check(struct kwq_worker *kw, uint64_t wall_now,
 	    bool runnable);
+
+/*
+ * S6.3, the budget cut: is the allowance spent?  Judged by the passes
+ * completed in this period (kw_cap_used is added to at pass end only), so
+ * a pass that began under the allowance runs to its clamped budget.  The
+ * caller asks sched_runnable() only when this is true and then answers
+ * the handler's budget query with 0, counted in kw_cap_cuts.
+ */
+static inline bool
+ks_cap_spent(const struct kwq_worker *kw)
+{
+	const struct kwq_sched_knobs *k = kw->kw_knobs;
+
+	return (k->cap_permille < 1000 && kw->kw_cap_used >= k->cap_allow_ns);
+}
 
 /* Per-queue refill amount, Q x w. */
 static inline int64_t

@@ -11,9 +11,15 @@
  * handler with no service lock held, charge the pass in the worker's own
  * CPU time), and acts on the core's yield decisions: kern_yield() at the
  * class's fixed yield priority, and for the share limit (SCHED.md S6.3) a
- * demotion to idle priority bounded by a callout at the period's end.
- * Between passes the tick guard yields once a hardclock tick has passed
- * since the worker last gave the CPU up voluntarily.
+ * hand-over between passes: the worker lowers itself to the class's
+ * waiting priority (cap_prio, idle by default) and switches once, bounded
+ * by a callout at the period's end.  Every pass runs at the class
+ * priority: pass begin restores it, and inside a pass the limit acts only
+ * through kwq_budget_left() returning 0.  Between passes the tick guard
+ * yields once a hardclock tick has passed since the worker last gave the
+ * CPU up voluntarily.  With the limit off the worker honours ULE's slice
+ * end (TDA_SCHED) at a pass end, which a kernel thread otherwise never
+ * does.
  *
  * Hand-back between classes on one CPU (SCHED.md S6.4): a class sets its
  * bit in the per-CPU kwq_waiting word around a yield; lower classes on
@@ -158,49 +164,52 @@ kwq_doorbell(struct kwq_cpu *kc)
 }
 
 /*
- * Give the CPU away for one scheduling decision at the class's fixed
- * yield priority, then re-assert the class priority (kern_yield() rewrote
- * td_base_pri, and a kthread has no userret to restore it).  The hand-back
- * bit is set for the duration.
+ * Give the CPU away for one scheduling decision at `prio' (the class's
+ * fixed yield priority, or PRI_USER for a slice yield), then re-assert the
+ * class priority (kern_yield() rewrote td_base_pri, and a kthread has no
+ * userret to restore it).  The hand-back bit is set for the duration: this
+ * is a yield in the S6.4 sense, the worker wants the CPU back.
  */
 static void
-kwq_yield(struct kwq_worker *kw, int reason)
+kwq_yield(struct kwq_worker *kw, int reason, int prio)
 {
 	u_int bit = 1u << kw->kw_class;
 	struct thread *td = curthread;
 
 	SDT_PROBE3(kwq, , , yield, kw->kw_class, kw->kw_cpu, reason);
 	DPCPU_SET(kwq_waiting, DPCPU_GET(kwq_waiting) | bit);
-	/*
-	 * Over the allowance the worker is an idle-priority thread for the
-	 * rest of the period (S6.3): yield as one and stay one, unless the
-	 * period's deadline has already raised it.
-	 */
-	kern_yield(kw->kw_cap_over ? PRI_UNCHANGED : kwq_yield_prio[kw->kw_class]);
+	kern_yield(prio);
 	thread_lock(td);
-	sched_prio(td, (kw->kw_cap_over && !kw->kw_cap_fired) ?
-	    PRI_MIN_IDLE : kw->kw_pri);
+	sched_prio(td, kw->kw_pri);
 	thread_unlock(td);
 	DPCPU_SET(kwq_waiting, DPCPU_GET(kwq_waiting) & ~bit);
 }
 
 /*
- * The share limit (SCHED.md S6.3): the allowance of this period is spent
- * and something else is runnable.  Become an idle-priority thread for the
- * rest of the period and switch once, so that ULE re-picks.  A thread at
- * PRI_MIN_IDLE or worse runs only when nothing else is runnable and is
- * preempted at once by anything that wakes (sched_shouldpreempt(), the
- * cpri >= PRI_MIN_IDLE rule), so from here on ULE arbitrates: the worker
- * runs on at idle priority whenever the CPU would otherwise be idle, and
- * is raised back to its class priority by the period's deadline callout
- * while it waits on the run queue (ULE requeues and preempts:
- * sched_thread_priority(), the TD_ON_RUNQ branch), or at the period's end
- * by RESTORE.  The `fired' flag and the priority are written under the
- * thread lock on both sides, so a deadline that strikes between the
- * core's decision and this switch is not undone by it.
+ * The share limit's hand-over (SCHED.md S6.3): the allowance of this
+ * period is spent and something else is runnable.  Lower the priority to
+ * the class's waiting priority and switch once, so that ULE re-picks.  At
+ * the default, PRI_MIN_IDLE, the worker runs again only when nothing else
+ * is runnable and is preempted by anything that wakes
+ * (sched_shouldpreempt(), the cpri >= PRI_MIN_IDLE rule); at
+ * PRI_MAX_TIMESHARE it is the last batch thread.  Either way the worker
+ * stays at the waiting priority only between passes: the next pass begin
+ * restores the class priority before the handler runs, so what ULE may
+ * preempt is the bookkeeping, never a handler.  The deadline callout
+ * raises the worker while it waits on the run queue (ULE requeues and
+ * preempts: sched_thread_priority(), the TD_ON_RUNQ branch).  Not a
+ * yield in the S6.4 sense: the hand-back bit stays clear, because the
+ * worker has forfeited the CPU rather than asked for it back, and a BULK
+ * worker on this CPU runs full passes meanwhile.  The voluntary switch
+ * satisfies the tick guard (td_swvoltick), and the core skips the
+ * round-end yield of a round that ended this way.  The `fired' flag and
+ * the priority are written under the thread lock on both sides, so a
+ * deadline that strikes between the core's decision and this switch is
+ * not undone by it; after the deadline the worker runs on at the class
+ * priority until its own clock rolls the period.
  */
 static void
-kwq_cap_demote(struct kwq_worker *kw)
+kwq_cap_handover(struct kwq_worker *kw)
 {
 	struct thread *td = curthread;
 	uint64_t t0;
@@ -212,9 +221,22 @@ kwq_cap_demote(struct kwq_worker *kw)
 		thread_unlock(td);
 		return;
 	}
-	sched_prio(td, PRI_MIN_IDLE);
+	sched_prio(td, kwq_cap_prio[kw->kw_class]);
 	mi_switch(SW_VOL | SWT_RELINQUISH);	/* releases the thread lock */
 	kw->kw_cap_ns += ks_ticks2ns(kwq_ticks() - t0, kw->kw_ns_scale);
+}
+
+/* Back to the class priority if a hand-over left the worker below it. */
+static inline void
+kwq_class_prio_restore(struct kwq_worker *kw)
+{
+	struct thread *td = curthread;
+
+	if (__predict_true(td->td_base_pri == kw->kw_pri))
+		return;
+	thread_lock(td);
+	sched_prio(td, kw->kw_pri);
+	thread_unlock(td);
 }
 
 /* The period's deadline, run on the worker's CPU from the timer interrupt. */
@@ -260,17 +282,15 @@ kwq_cap_act(struct kwq_worker *kw, enum ks_cap cap, uint64_t wall)
 		callout_reset_sbt_on(&kw->kw_cap_co, sbinuptime() + nstosbt(left),
 		    nstosbt(k->cap_period_ns / 32), kwq_cap_deadline, kw,
 		    kw->kw_cpu, C_ABSOLUTE | C_DIRECT_EXEC);
-		kwq_cap_demote(kw);
+		kwq_cap_handover(kw);
 		break;
 	case KS_CAP_YIELD:
-		/* Already an idle-priority thread: ULE hands the CPU over. */
+		kwq_cap_handover(kw);
 		break;
 	case KS_CAP_RESTORE:
 		callout_stop(&kw->kw_cap_co);
 		kw->kw_cap_fired = false;
-		thread_lock(curthread);
-		sched_prio(curthread, kw->kw_pri);
-		thread_unlock(curthread);
+		kwq_class_prio_restore(kw);
 		break;
 	default:
 		break;
@@ -355,6 +375,12 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	cap = ks_pass_begin(kw, kc, cpu_now,
 	    net ? cpu_now : ks_ticks2ns(t0, kw->kw_ns_scale));
 	kwq_kc_unlock(kc);
+	/*
+	 * S6.3: a pass runs at the class priority.  A hand-over left the
+	 * worker at the waiting priority; one compare puts it back before
+	 * the handler is called (30-80 ns when it fires, S15).
+	 */
+	kwq_class_prio_restore(kw);
 	if (__predict_false(kw->kw_knobs->cap_permille < 1000)) {
 		if (cap == KS_CAP_RESTORE)
 			kwq_cap_act(kw, cap, 0);
@@ -434,17 +460,32 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	kwq_kc_unlock(kc);
 	if (__predict_false(cap != KS_CAP_NONE))
 		kwq_cap_act(kw, cap, wall);
+	else if (__predict_false(kw->kw_knobs->cap_permille >= 1000 &&
+	    td_ast_pending(curthread, TDA_SCHED))) {
+		/*
+		 * Limit off (SCHED.md S6.3): ULE ended this thread's slice
+		 * and asked for a reschedule, which only userret() would
+		 * honour.  Honour it here, between passes, at the priority
+		 * ULE would give a process; the switch clears the request
+		 * (sched_switch()).  With the limit on the hand-over above
+		 * comes first and its switch clears the bit, so this branch
+		 * is inert then.
+		 */
+		kw->kw_slice_yields++;
+		kwq_yield(kw, KWQ_YIELD_SLICE, PRI_USER);
+	}
 
 	/*
 	 * Tick guard (SCHED.md S6.1): unconditional once a tick has passed
 	 * since the last voluntary switch.  It costs at most hz switches per
 	 * second and does not depend on what sched_runnable() can see, which
 	 * is what makes the callout-lateness bound (B7) hold by construction,
-	 * as if_pair's pair_ticked() did.
+	 * as if_pair's pair_ticked() did.  A hand-over just above was a
+	 * voluntary switch and satisfies it.
 	 */
 	if (ks_ticked((u_int)ticks, (u_int)curthread->td_swvoltick)) {
 		kw->kw_tick_yields++;
-		kwq_yield(kw, KWQ_YIELD_TICK);
+		kwq_yield(kw, KWQ_YIELD_TICK, kwq_yield_prio[kw->kw_class]);
 	}
 }
 
@@ -480,6 +521,15 @@ kwq_worker_main(void *arg)
 		if (a == KS_IDLE) {
 			if (kw->kw_exit)
 				goto out;
+			/*
+			 * Sleep at the class priority: a worker that handed
+			 * the CPU over and then ran out of work would
+			 * otherwise wake at the waiting priority and reach
+			 * its first pass only when the CPU idles or the
+			 * deadline raises it.  The priority of a thread that
+			 * is about to sleep interests nobody else.
+			 */
+			kwq_class_prio_restore(kw);
 			kw->kw_sleeping = true;
 			SDT_PROBE3(kwq, , , idle, kw->kw_class, kw->kw_cpu,
 			    kw->kw_busy_ns - kw->kw_idle_busy);
@@ -511,7 +561,8 @@ kwq_worker_main(void *arg)
 			kw->kw_round_wall = wall;
 			y = ks_round_end(kw, wall, sched_runnable());
 			if (y == KS_Y_YIELD)
-				kwq_yield(kw, KWQ_YIELD_ROUND);
+				kwq_yield(kw, KWQ_YIELD_ROUND,
+				    kwq_yield_prio[kw->kw_class]);
 			break;
 		default:
 			break;
@@ -585,10 +636,12 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	KW_U64(kw_yields, "yields", "end-of-round yields");
 	KW_U64(kw_tick_yields, "tick_yields", "yields forced by the tick guard between passes");
 	KW_U64(kw_cap_demotions, "cap_demotions", "periods in which the share limit was reached with other threads runnable (SCHED.md S6.3)");
-	KW_U64(kw_cap_yields, "cap_yields", "times the worker gave the CPU away under the share limit");
+	KW_U64(kw_cap_yields, "cap_yields", "hand-overs at pass end under the share limit");
+	KW_U64(kw_cap_cuts, "cap_cuts", "budget calls answered 0 by the share limit, cutting a pass short at the next item");
 	KW_U64(kw_cap_restores, "cap_restores", "period deadlines that raised the worker back to its class priority");
 	KW_U64(kw_cap_ns, "cap_ns", "wall time given away under the share limit");
 	KW_U64(kw_cap_runon, "cap_runon", "passes ended over the allowance with nothing else runnable (the limit did not bind)");
+	KW_U64(kw_slice_yields, "slice_yields", "yields at ULE's own priority because ULE ended the worker's slice (limit off only)");
 	KW_U64(kw_handbacks, "handbacks", "rounds ended early because a higher class waited");
 	KW_U64(kw_switched, "switched", "passes during which the worker left the CPU (preempted or blocked); NET charges them wall time");
 	KW_U64(kw_busy_ns, "busy_ns", "worker CPU time inside handlers");

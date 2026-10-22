@@ -18,6 +18,7 @@
 #include <sys/mutex.h>
 #include <sys/sx.h>
 #include <sys/proc.h>
+#include <sys/sched.h>
 #include <sys/pcpu.h>
 #include <sys/smp.h>
 #include <sys/sysctl.h>
@@ -127,8 +128,9 @@ SYSCTL_UINT(_kern_kwq_blocking, OID_AUTO, limit, CTLFLAG_RWTUN,
  * kernel thread in the timeshare range from its own CPU use
  * (resetpriority_thread()), which ULE never does.  BLOCKING may go up to
  * PRI_MAX_TIMESHARE; at its PUSER default 4BSD schedules its workers as
- * processes, which a sleeping class tolerates.  The share limit demotes
- * to PRI_MIN_IDLE, which must stay below every class.  The class order
+ * processes, which a sleeping class tolerates.  The share limit's waiting
+ * priority (cap_prio) is validated against the class priority when it is
+ * set, after this check.  The class order
  * NET <= BULK <= BLOCKING is what the hand-back between classes (SCHED.md
  * S6.4) relies on; a setting that breaks either rule resets all three.
  */
@@ -182,6 +184,14 @@ static struct sysctl_oid_list *kwq_queue_oids[KWQ_NCLASS];	/* <class>.queue */
  */
 struct kwq_sched_knobs kwq_knobs[KWQ_NCLASS];
 int kwq_yield_prio[KWQ_NCLASS] = { PUSER, PUSER, PUSER };
+/*
+ * The share limit's waiting priority (SCHED.md S6.3): where a worker over
+ * its allowance waits between passes.  PRI_MIN_IDLE: ULE runs it only when
+ * the CPU would otherwise idle.  PRI_MAX_TIMESHARE is the other useful
+ * value: the last batch slot, which sched_pickcpu() does not take for an
+ * idle CPU.  Anything below the class priority is accepted for experiments.
+ */
+int kwq_cap_prio[KWQ_NCLASS] = { PRI_MIN_IDLE, PRI_MIN_IDLE, PRI_MIN_IDLE };
 static u_int kwq_quantum_us[KWQ_NCLASS] = { 200, 1000, 5000 };
 /*
  * The share limit (SCHED.md S6.3) is on by default at an equal share:
@@ -251,6 +261,22 @@ kwq_sysctl_yield_prio(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
+static int
+kwq_sysctl_cap_prio(SYSCTL_HANDLER_ARGS)
+{
+	int cls = (int)(intptr_t)arg1, val, error;
+
+	val = kwq_cap_prio[cls];
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	/* Strictly below the class priority, down to the last idle slot. */
+	if (val <= kwq_class_priority(cls) || val > PRI_MAX_IDLE)
+		return (EINVAL);
+	kwq_cap_prio[cls] = val;
+	return (0);
+}
+
 #define	KWQ_NKNOBS	5
 static struct kwq_knob kwq_knob_desc[KWQ_NCLASS][KWQ_NKNOBS];
 
@@ -259,7 +285,7 @@ kwq_knobs_register(void)
 {
 	static const struct { const char *name, *descr; u_int lo, hi; } d[KWQ_NKNOBS] = {
 		{ "quantum_us", "CPU time a queue of weight 1 may consume per round", 10, 1000000 },
-		{ "cap_permille", "share of its CPU the worker keeps at kernel priority per cap_period_us while other threads are runnable, in 1/1000; the rest of the period it is an idle-priority thread; 1000 = no limit (SCHED.md S6.3)", 1, 1000 },
+		{ "cap_permille", "share of its CPU the worker may spend in passes per cap_period_us while other threads are runnable, in 1/1000; the rest of the period it waits between passes at cap_prio; 1000 = no limit (SCHED.md S6.3)", 1, 1000 },
 		{ "cap_period_us", "period over which cap_permille is taken", 100, 1000000 },
 		{ "penalty_rounds", "debt clamp in quanta: rounds an overrunning queue is parked at most", 1, 1024 },
 		{ "budget_check_every", "kwq_budget_left() reads the clock at least every this many calls; 1 = every call", 1, 64 },
@@ -285,6 +311,10 @@ kwq_knobs_register(void)
 		    "yield_prio", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
 		    (void *)(intptr_t)cls, 0, kwq_sysctl_yield_prio, "I",
 		    "priority the worker yields at after each round (PUSER=56; 223 lets every user thread run a full slice)");
+		SYSCTL_ADD_PROC(&kwq_knob_sysctl, kwq_class_oids[cls], OID_AUTO,
+		    "cap_prio", CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE,
+		    (void *)(intptr_t)cls, 0, kwq_sysctl_cap_prio, "I",
+		    "priority the worker waits at between passes while over its share limit allowance, never the priority of a pass (PRI_MIN_IDLE=224: runs only when the CPU would otherwise idle; PRI_MAX_TIMESHARE=223: last batch slot, no idle-affinity shortcut); class priority+1..255 (SCHED.md S6.3)");
 		kwq_knobs_apply(cls);
 	}
 }
@@ -543,8 +573,11 @@ kwq_requeue(struct kwq *q, struct kwq_item *head, struct kwq_item *tail,
 
 /*
  * Handler only: nanoseconds of this pass's budget still unspent, 0 when
- * the quantum is exhausted or a higher class waits for the CPU (SCHED.md
- * S4.4, S6.4), telling the handler to requeue its remainder.
+ * the quantum is exhausted, a higher class waits for the CPU, or the
+ * share limit's allowance is spent and something else is runnable
+ * (SCHED.md S4.4, S6.4, S6.3), telling the handler to requeue its
+ * remainder.  The last is the only way the limit reaches into a pass:
+ * the pass itself runs at the class priority to its end.
  */
 uint64_t
 kwq_budget_left(struct kwq *q)
@@ -557,6 +590,11 @@ kwq_budget_left(struct kwq *q)
 	    kw->kw_cur->kc_q == q,
 	    ("kwq_budget_left: not called from a handler of %s", q->kwq_name));
 	if (kwq_higher_waiting(q->kwq_class)) {
+		SDT_PROBE2(kwq, , , budget__hit, q, curcpu);
+		return (0);
+	}
+	if (__predict_false(ks_cap_spent(kw)) && sched_runnable()) {
+		kw->kw_cap_cuts++;
 		SDT_PROBE2(kwq, , , budget__hit, q, curcpu);
 		return (0);
 	}

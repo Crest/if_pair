@@ -546,12 +546,26 @@ do_yield(int c)
 	S.ticks = S.ticks0 + (u_int)((S.now - S.wall0) / TICK_NS);
 }
 
-/* The handler's budget query as the kernel makes it (S4.4). */
+/* Something else runnable on this CPU: a lower class, an external thread
+   the yield priority admits, or a higher class waiting (S6.4). */
+static bool
+runnable_any(int c)
+{
+	for (int d = 0; d < c; d++)
+		if (S.waiting[d]) return (true);
+	return (runnable_below(c));
+}
+
+/* The handler's budget query as the kernel makes it (S4.4, S6.3). */
 static uint64_t
 sim_budget(int c, struct kwq_worker *kw)
 {
 	uint64_t left;
 
+	if (ks_cap_spent(kw) && runnable_any(c)) {	/* S6.3: the budget cut */
+		kw->kw_cap_cuts++;
+		return (0);
+	}
 	if (!ks_budget_need_clock(kw, &left))
 		return (left);
 	return (ks_budget_left(kw, S.cputime[c]));
@@ -583,7 +597,8 @@ run_pass(int c, struct kwq_cpu *kc)
 	/* The handler: the batch is what was queued at pass start. */
 	while (nbatch > 0 && !stop) {
 		bool hb = (c == C_BULK && S.waiting[C_NET]);	/* S6.4 */
-		uint64_t left = hb ? 0 : sim_budget(c, kw);
+		/* Only the check-first handler queries before its first item. */
+		uint64_t left = (sq->hk == H_FIRSTBUDGET) ? (hb ? 0 : sim_budget(c, kw)) : 1;
 
 		if (sq->hk == H_REQUEUEALL) { sq->requeued += nbatch; break; }
 		if (sq->hk == H_FIRSTBUDGET && left == 0) { sq->requeued += nbatch; break; }
@@ -677,7 +692,11 @@ run_class(int c, bool one_round)
 			return;
 		case KS_SERVE:
 			run_pass(c, kc);
-			/* S6.3: the share limit gives the CPU away like a yield. */
+			/*
+			 * S6.3: the hand-over at pass end.  Modelled as a yield
+			 * (the external thread or the lower class runs); the
+			 * kernel's waiting priority has no analogue here.
+			 */
 			switch (ks_cap_check(kw, S.now, runnable_below(c) || higher)) {
 			case KS_CAP_DEMOTE:
 			case KS_CAP_YIELD:
@@ -752,10 +771,11 @@ report(const char *title)
 		struct kwq_worker *kw = &S.w[c];
 		if (kw->kw_passes == 0) continue;
 		printf("  %s: rounds %" PRIu64 " passes %" PRIu64 " yields %" PRIu64
-		    " handbacks %" PRIu64 " cap_yields %" PRIu64 " busy %.3f s\n",
+		    " handbacks %" PRIu64 " cap_yields %" PRIu64 " cap_cuts %" PRIu64
+		    " busy %.3f s\n",
 		    c == C_NET ? "net " : "bulk", kw->kw_rounds, kw->kw_passes,
 		    kw->kw_yields, kw->kw_handbacks, kw->kw_cap_yields,
-		    (double)kw->kw_busy_ns / NS_PER_S);
+		    kw->kw_cap_cuts, (double)kw->kw_busy_ns / NS_PER_S);
 	}
 	for (int i = 0; i < S.nq && i < 12; i++) {
 		struct simq *sq = S.qs[i];
@@ -882,6 +902,49 @@ sc_overrun(uint64_t secs)
 	    (double)o->service_ns / a->service_ns);
 	if ((double)o->service_ns > 1.5 * (double)a->service_ns)
 		fail("overrun: overrunner share %.2f exceeds 1.5 with penalty cap 32", (double)o->service_ns / a->service_ns);
+	return (S.violations);
+}
+
+/*
+ * S6.3, the budget cut: with the limit on and something else runnable, a
+ * worker over its allowance ends its passes at the next item, so the
+ * contended passes are one item long and the cut is counted.  With the
+ * limit off nothing is cut.
+ */
+static int
+sc_cut(uint64_t secs)
+{
+	struct simq *a;
+	uint64_t passes_on, items_on;
+
+	sim_reset(0, 0, 0, 0);
+	S.ext_kind = 1;				/* an interactive thread, always runnable */
+	for (int c = 0; c < NCLASS; c++) {
+		S.knobs[c].cap_permille = 500;
+		S.knobs[c].cap_allow_ns = S.knobs[c].cap_period_ns / 2;
+	}
+	a = addq(C_NET, 1, P_FLOOD, H_COOP, 20 * NS_PER_US); a->flood_depth = 256;
+	run_for(secs * NS_PER_S);
+	report("cut: cooperative flood over its allowance with an interactive thread runnable");
+	if (S.w[C_NET].kw_cap_yields == 0) fail("S6.3: no hand-overs");
+	if (S.w[C_NET].kw_cap_cuts == 0) fail("S6.3: no budget cuts");
+	/* Every hand-over follows a cut pass of one item (plus the pass that spent the allowance). */
+	if (S.w[C_NET].kw_cap_cuts < S.w[C_NET].kw_cap_yields / 2)
+		fail("S6.3: %" PRIu64 " cuts for %" PRIu64 " hand-overs", S.w[C_NET].kw_cap_cuts, S.w[C_NET].kw_cap_yields);
+	passes_on = a->kc.kc_passes; items_on = a->items_out;
+	printf("  info limit on: %" PRIu64 " items in %" PRIu64 " passes (%.1f per pass), %" PRIu64 " cuts, %" PRIu64 " hand-overs\n",
+	    items_on, passes_on, (double)items_on / passes_on, S.w[C_NET].kw_cap_cuts, S.w[C_NET].kw_cap_yields);
+
+	sim_reset(0, 0, 0, 0);
+	S.ext_kind = 1;
+	a = addq(C_NET, 1, P_FLOOD, H_COOP, 20 * NS_PER_US); a->flood_depth = 256;
+	run_for(secs * NS_PER_S);
+	if (S.w[C_NET].kw_cap_cuts != 0 || S.w[C_NET].kw_cap_yields != 0)
+		fail("S6.3: limit off but %" PRIu64 " cuts, %" PRIu64 " hand-overs", S.w[C_NET].kw_cap_cuts, S.w[C_NET].kw_cap_yields);
+	if ((double)a->items_out / a->kc.kc_passes <= (double)items_on / passes_on)
+		fail("S6.3: passes are not shorter with the limit on (%.1f vs %.1f items per pass)",
+		    (double)items_on / passes_on, (double)a->items_out / a->kc.kc_passes);
+	printf("  ok  limit off: %.1f items per pass, no cuts\n", (double)a->items_out / a->kc.kc_passes);
 	return (S.violations);
 }
 
@@ -1272,6 +1335,7 @@ static struct scenario scenarios[] = {
 	{ "overrun",	sc_overrun,	3, 1 },
 	{ "overrun_idle", sc_overrun_idle, 3, 1 },
 	{ "handback",	sc_handback,	2, 1 },
+	{ "cut",	sc_cut,		2, 1 },
 	{ "storm",	sc_storm,	2, 1 },
 	{ "nnew",	sc_nnew,	2, 1 },
 	{ "manyq",	sc_manyq,	1, 1 },

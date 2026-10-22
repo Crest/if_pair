@@ -62,12 +62,13 @@ SDT_PROBE_DECLARE(kwq, , , budget__hit);
 /* kwq:::yield reasons */
 #define	KWQ_YIELD_ROUND	0
 #define	KWQ_YIELD_TICK	1
-#define	KWQ_YIELD_CAP	2	/* the share limit, S6.3 */
+#define	KWQ_YIELD_CAP	2	/* the share limit's hand-over, S6.3 */
+#define	KWQ_YIELD_SLICE	3	/* ULE ended the slice (limit off), S6.3 */
 
 /* kwq:::cap events */
 #define	KWQ_CAP_PASS	0	/* a pass begins under the limit (budget in arg5) */
-#define	KWQ_CAP_DEMOTE	1	/* allowance spent: deadline armed, CPU given away */
-#define	KWQ_CAP_YIELD	2	/* still over: given away again */
+#define	KWQ_CAP_DEMOTE	1	/* allowance spent, first hand-over: deadline armed */
+#define	KWQ_CAP_YIELD	2	/* hand-over, same period */
 #define	KWQ_CAP_RESTORE	3	/* the period ended while over */
 #define	KWQ_CAP_DEADLINE 4	/* the deadline callout ran */
 

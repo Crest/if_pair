@@ -177,7 +177,8 @@ struct kwq_worker {
 	int64_t			kw_bc_last;	/* elapsed at that read, ns */
 	uint64_t		kw_cap_start;	/* S6.3 period start, worker wall ns */
 	uint64_t		kw_cap_used;	/* pass time charged in this period */
-	bool			kw_cap_over;	/* allowance spent: giving the CPU away */
+	bool			kw_cap_over;	/* a hand-over happened this period */
+	bool			kw_cap_handed;	/* the last pass ended in a hand-over */
 	volatile bool		kw_cap_fired;	/* the period's deadline callout ran */
 	struct callout		kw_cap_co;	/* raises the priority back at the period's end */
 	uint64_t		kw_round_wall;	/* sbinuptime ns at the last round end (kwq:::round-end) */
@@ -197,6 +198,7 @@ struct kwq_worker {
 	uint64_t		kw_rounds, kw_passes, kw_wakeups, kw_yields,
 				kw_tick_yields, kw_handbacks, kw_cap_demotions,
 				kw_cap_yields, kw_cap_restores, kw_cap_ns, kw_cap_runon,
+				kw_cap_cuts, kw_slice_yields,
 				kw_busy_ns, kw_idle_ns, kw_budget_calls, kw_budget_reads, kw_switched;
 } __aligned(KWQ_LINE);
 
@@ -205,6 +207,7 @@ LIST_HEAD(kwq_list, kwq);
 extern struct kwq_list kwq_all;		/* every queue, under kwq_sx (kwq.c) */
 extern const char *kwq_class_names[KWQ_NCLASS];
 extern int kwq_yield_prio[KWQ_NCLASS];
+extern int kwq_cap_prio[KWQ_NCLASS];
 
 int	kwq_class_priority(enum kwq_class cls);
 

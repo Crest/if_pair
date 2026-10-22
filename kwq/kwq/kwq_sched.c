@@ -30,12 +30,14 @@ ks_worker_init(struct kwq_worker *kw, const struct kwq_sched_knobs *k,
 	kw->kw_cap_start = wall_now;
 	kw->kw_cap_used = 0;
 	kw->kw_cap_over = false;
+	kw->kw_cap_handed = false;
 	kw->kw_knobs = k;
 	kw->kw_bc_calls = 0;
 	kw->kw_bc_last = 0;
 	kw->kw_budget_calls = kw->kw_budget_reads = 0;
 	kw->kw_rounds = kw->kw_passes = kw->kw_yields = 0;
 	kw->kw_cap_demotions = kw->kw_cap_yields = kw->kw_cap_runon = 0;
+	kw->kw_cap_cuts = 0;
 	kw->kw_handbacks = kw->kw_busy_ns = 0;
 }
 
@@ -250,15 +252,18 @@ ks_pass_begin(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 	kw->kw_cur = kc;
 	kw->kw_pass_start = cpu_now;
 	kw->kw_pass_budget = kc->kc_deficit;
+	kw->kw_cap_handed = false;		/* a pass follows the hand-over */
 	/*
 	 * S6.3: the period may have ended while the worker waited (the
 	 * deadline brought it back), so roll it over here, or the first
 	 * pass of the period would run on the full deficit.  Under the
 	 * allowance a pass may spend no more than what is left of it, so a
 	 * cooperative handler stops one item over the allowance instead of
-	 * one quantum over.  Over it the budget is the deficit again: the
-	 * worker runs there only because nothing else wants the CPU, and
-	 * one-item passes would be S14 case 4.
+	 * one quantum over.  Over it the budget is the deficit again: with
+	 * nothing else runnable the worker runs full passes (work
+	 * conserving), and when something else is runnable the budget cut
+	 * (ks_cap_spent() in the handler's budget query) ends the pass at
+	 * the next item, so one-item passes happen only while contended.
 	 */
 	if (k->cap_permille < 1000) {
 		if (ks_cap_period(kw, wall_now))
@@ -363,12 +368,19 @@ ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 }
 
 /*
- * S6.1.  The yield is skipped when nothing else is runnable.
+ * S6.1.  The yield is skipped when nothing else is runnable, and (S6.3)
+ * when the round's last pass handed the CPU over under the share limit:
+ * the worker is at the waiting priority then, and a yield at yield_prio
+ * would put it ahead of the threads the hand-over was for.
  */
 enum ks_yield
 ks_round_end(struct kwq_worker *kw, uint64_t wall_now __unused, bool runnable)
 {
 	kw->kw_rounds++;
+	if (kw->kw_cap_handed) {
+		kw->kw_cap_handed = false;
+		return (KS_Y_NONE);
+	}
 	if (!runnable)
 		return (KS_Y_NONE);
 	kw->kw_yields++;
@@ -401,6 +413,7 @@ ks_cap_check(struct kwq_worker *kw, uint64_t wall_now, bool runnable)
 		return (KS_CAP_NONE);
 	}
 	kw->kw_cap_yields++;
+	kw->kw_cap_handed = true;
 	if (!kw->kw_cap_over) {
 		kw->kw_cap_over = true;
 		kw->kw_cap_demotions++;
