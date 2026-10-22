@@ -159,9 +159,8 @@ then `kwq_destroy()`.
    CPU from everyone, interactive users included, for as long as its
    pass runs; kwq charges and parks its queue and counts it in
    `overruns`, which is where to look when latency elsewhere is
-   unexplained.  (Specified 2026-10-21, SCHED.md S6.3; as of 56eb9b6 a
-   worker over its share still runs passes at idle priority, where a
-   waking thread preempts the handler.)
+   unexplained.  (SCHED.md S6.3; specified 2026-10-21, implemented
+   2026-10-22.)
 3. **A NET or BULK handler must not sleep.**  No `tsleep`, no sx locks,
    no `M_WAITOK`, no `copyin`.  This is asserted; it panics under
    INVARIANTS rather than deadlocking in production.

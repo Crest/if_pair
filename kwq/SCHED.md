@@ -560,14 +560,14 @@ as open in PLAN P4b goal 2; the ULE side is a kernel matter.
 
 ### 6.3 Share limit (on by default, an equal share)
 
-Status, 2026-10-21: this section is the specification decided after
-PLAN P4d's campaign.  The code at 56eb9b6 implements the earlier form,
-in which a worker over its allowance ran its passes as an idle-priority
-thread and was preempted inside them (stage A of
-samples/p4d_2026-10-21_*); the form below was measured as stage C from
-branch kwq-p4d-passprio and costs nothing measurable against it.
-Implementing this text is P4d's next step; until then the source
-comments describe 56eb9b6.
+Status: specified 2026-10-21 after PLAN P4d's campaign, implemented
+2026-10-22 (branch kwq-p4d-passlevel; the source comments describe this
+text).  The earlier form, in which a worker over its allowance ran its
+passes as an idle-priority thread and was preempted inside them, is
+stage A of samples/p4d_2026-10-21_*; the pass-level form was first
+measured as stage C from branch kwq-p4d-passprio and costs nothing
+measurable against it.  The implementation's own measurements are in the
+fidelity paragraph below as they arrive.
 
 Purpose: Mogul's "limit on CPU usage" feedback, for the case the yield
 cannot serve: user threads, interactive or CPU-bound, on a CPU a worker

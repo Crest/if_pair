@@ -832,10 +832,13 @@ Phases
     invariant with the budget-check hand-over and no forfeiture rule;
     the handler contract (docs/overview.md S4, KWQ.md S3, cheatsheet
     5.1), the whitepaper, reference and OBSERVABILITY follow it, each
-    marking what 56eb9b6 still does.  Next: implement (a rewrite of the
-    demotion path, `cap_cuts`, `cap_prio`, the simulator), re-measure with
-    compare.sh against A and C on the three machines, then the measured
-    paragraphs; the NIC-fed flow on lab stays unmeasured.
+    marking what 56eb9b6 still did.  IMPLEMENTED 2026-10-22 on branch
+    kwq-p4d-passlevel: the demotion path rewritten to the hand-over
+    (pass begin restores the class priority, the budget cut `cap_cuts`,
+    `cap_prio`, `slice_yields`), the simulator follows with the `cut`
+    scenario; guest ATF suite 22/22.  Next: re-measure with compare.sh
+    against A and C on the three machines, then the measured paragraphs;
+    the NIC-fed flow on lab stays unmeasured.
     Mechanisms that were looked at, with what the kernel does about
     each:
     - a preempted handler holds a sleep mutex of the stack (tcpinp,

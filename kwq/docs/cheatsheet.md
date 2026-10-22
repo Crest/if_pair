@@ -276,13 +276,12 @@ everyone waiting behind it.
 user thread on that CPU for its whole pass, and the share limit can
 only hand over afterwards.  `overruns` on your queue is the signature.
 
-**Status:** as of 56eb9b6 the code still implements the previous rule,
-under which a worker over its share runs passes at idle priority and a
-waking thread preempts the handler mid-item.  Until the pass-level rule
-is implemented, a read-held rwlock or SMR section across real work can
-hold a waiter for up to a share-limit period, because readers have no
-owner to lend priority to; the P4d campaign (../NOTES.md 2026-10-21)
-found no such wait on the pair but the exposure is real.
+**History:** until 2026-10-22 a worker over its share ran its passes at
+idle priority and a waking thread preempted the handler mid-item, so a
+read-held rwlock or SMR section across real work could hold a waiter
+for up to a share-limit period (readers have no owner to lend priority
+to).  The P4d campaign (../NOTES.md 2026-10-21) found no such wait on
+the pair; the rule above removed the exposure.
 
 ## 6. Teardown
 

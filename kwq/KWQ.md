@@ -654,7 +654,7 @@ re-entrant from it; the class decides the rest.
 | `kwq_activate` | no | no | configuration-time only, asserted |
 | `kwq_drain`, `kwq_destroy` | no | no | sleep, and waiting for a queue from a handler deadlocks; asserted |
 | waiting for another queue's items to finish | no | no | use the `kwq_scatter` completion callback |
-| taking sleep mutexes, rwlocks (read or write), rmlocks; SMR read sections | yes, for the item | yes | queue locks are leaves, so client locks may be held across `kwq_enqueue`.  A pass runs at the class priority and is preempted by nothing but interrupt threads (SCHED.md S6.3, the invariant), so a handler's hold time is the item's and no lock's propagation behaviour matters to it.  (The code at 56eb9b6 still demotes inside passes; docs/cheatsheet.md 5.1 says what that means until the pass-level form is implemented) |
+| taking sleep mutexes, rwlocks (read or write), rmlocks; SMR read sections | yes, for the item | yes | queue locks are leaves, so client locks may be held across `kwq_enqueue`.  A pass runs at the class priority and is preempted by nothing but interrupt threads (SCHED.md S6.3, the invariant), so a handler's hold time is the item's and no lock's propagation behaviour matters to it.  (docs/cheatsheet.md 5.1; implemented 2026-10-22) |
 | taking a spin mutex, `critical_enter`, `sched_pin` | yes, release before return | yes | while held, only `KWQ_F_SPIN` queues may be enqueued to |
 | sleeping (`tsleep`, `cv_wait`, sx, lockmgr, `M_WAITOK`, `copyin`) | no, asserted | yes | |
 | `M_NOWAIT` allocation | yes, handle `NULL` | yes | |
@@ -1291,7 +1291,7 @@ Per worker: `kern.kwq.<class>.cpu.<N>.`
 | `cpu.<N>.cap_restores` | counter | RD | | period deadlines that raised a waiting worker back to its class priority (P4c) |
 | `cpu.<N>.cap_ns` | counter | RD | | wall time given away under the share limit (P4c) |
 | `cpu.<N>.cap_runon` | counter | RD | | passes ended over the allowance with nothing else runnable (P4c) |
-| `cpu.<N>.slice_yields` | counter | RD | | yields at ULE's own priority because ULE ended the worker's slice; limit off only (specified 2026-10-21, not in 56eb9b6) |
+| `cpu.<N>.slice_yields` | counter | RD | | yields at ULE's own priority because ULE ended the worker's slice; limit off only (P4d, 2026-10-22) |
 | `cpu.<N>.handbacks` | counter | RD | | rounds ended early because a higher class waited (P1) |
 | `cpu.<N>.budget_calls` | counter | RD | | `kwq_budget_left()` calls by handlers on this worker (P2) |
 | `cpu.<N>.budget_reads` | counter | RD | | of those, the ones that read the clock (SCHED.md S4.4) (P2) |
@@ -1457,8 +1457,8 @@ Options, in order of preference:
     pass short through the budget; ULE runs the worker again when the CPU would otherwise idle,
     and a callout at the period's end raises it back; a pass is never
     preempted by a user thread, so handlers hold their locks at the
-    class priority (specified 2026-10-21 after P4d; 56eb9b6 still
-    demotes inside passes).  The time given away is bounded by the
+    class priority (specified 2026-10-21 after P4d, implemented
+    2026-10-22).  The time given away is bounded by the
     period, the cost is two priority changes per pass and one callout
     per contended period.  With the limit off the worker honours
     `TDA_SCHED` at pass end and yields at `PRI_USER` as `userret()` would
@@ -2432,6 +2432,10 @@ decision deferred until real clients show what fan-in they produce.
   priority of the share limit became the per-class RWTUN knob
   `cap_prio` (default `PRI_MIN_IDLE`, `PRI_MAX_TIMESHARE` the other
   useful value, the rest for experiments).
+- 2026-10-22: the pass-level share limit implemented (branch
+  kwq-p4d-passlevel): pass begin restores the class priority, the
+  budget cut (`cap_cuts`), the hand-over at `cap_prio`, `slice_yields`
+  with the limit off; the status marks of 2026-10-21 removed.
 - 2026-10-20: the CPU-share cap of SCHED.md S6.3 is replaced by the
   share limit: `cap_permille` of a `cap_period_us` period in wall time,
   the pass budget clamped to the allowance, over it an idle-priority

@@ -549,11 +549,11 @@ The anti-gaming grace window (one round) is compile time.
 | `switched` | passes during which the worker left the CPU (preempted or blocked); NET charges them wall time |
 | `cap_demotions` | periods in which the share limit was reached with other threads runnable |
 | `cap_yields` | hand-overs at pass end under the share limit |
-| `cap_cuts` | budget calls answered 0 by the share limit, cutting a pass short (specified 2026-10-21; not in 56eb9b6) |
+| `cap_cuts` | budget calls answered 0 by the share limit, cutting a pass short (SCHED.md S6.3) |
 | `cap_restores` | period deadlines that raised a waiting worker back to its class priority |
 | `cap_ns` | wall time given away under the share limit |
 | `cap_runon` | passes that ended over the allowance with nothing else runnable: the limit did not bind |
-| `slice_yields` | yields at ULE's own priority for the worker because ULE ended its slice; limit off only (specified 2026-10-21; not in 56eb9b6) |
+| `slice_yields` | yields at ULE's own priority for the worker because ULE ended its slice; limit off only (SCHED.md S6.3) |
 | `busy_ns` | CPU time inside handlers |
 | `idle_ns` | wall time asleep with nothing queued |
 | `round` | current round number (gauge) |
