@@ -19,8 +19,9 @@
 # value a new vnet does not inherit); a tq stage loads the taskqueue driver
 # and accepts jail: entries too.  For kwq stages the worker's own counters over the
 # tput1 and udp_load windows are recorded too (switched, yields, tick
-# yields, share-limit demotions per second, and the longest
-# doorbell-to-pass latency), where the stage has them.  Stages run interleaved: all of them once per repetition (REPS,
+# yields, share-limit demotions, hand-overs and budget cuts, slice
+# yields per second, and the longest doorbell-to-pass latency), where the
+# stage has them.  Stages run interleaved: all of them once per repetition (REPS,
 # default 1), so a drift of the machine over the hour lands on every stage
 # alike.  Every number goes to OUT_TSV (required) as
 # "stage<TAB>rep<TAB>test<TAB>metric<TAB>value", one row per metric, and
@@ -308,19 +309,19 @@ busiest_kwq_delta() {	# two snapshots of the per-CPU pass counters -> the CPU th
 }
 kwq_passes() { sysctl kern.kwq.net.cpu 2>/dev/null | awk -F'[.:]' '$6 == "passes" { print $5, $NF }'; }
 oid0() { sysctl -n "$1" 2>/dev/null || echo 0; }	# a counter an older stage may lack
-kwq_counters() {	# W -> "switched yields tick_yields cap_demotions wakeups passes items wakes_deferred wake_defer_ns wakes_low wake_low_ns wakes_count wakes_deadline" (0 where absent)
+kwq_counters() {	# W -> "switched yields tick_yields cap_demotions wakeups passes items wakes_deferred wake_defer_ns wakes_low wake_low_ns wakes_count wakes_deadline cap_yields cap_cuts slice_yields" (0 where absent)
 	_w=kern.kwq.net.cpu.$1
 	_it=$(( $(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$1.items") + $(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$1.items") ))
-	echo "$(oid0 $_w.switched) $(oid0 $_w.yields) $(oid0 $_w.tick_yields) $(oid0 $_w.cap_demotions) $(oid0 $_w.wakeups) $(oid0 $_w.passes) $_it $(oid0 $_w.wakes_deferred) $(oid0 $_w.wake_defer_ns) $(oid0 $_w.wakes_low) $(oid0 $_w.wake_low_ns) $(( $(oid0 $_w.wakes_count) + $(oid0 $_w.wake_promotions_count) )) $(( $(oid0 $_w.wakes_deadline) + $(oid0 $_w.wake_promotions_deadline) )) $(oid0 $_w.db_batched) $(oid0 $_w.db_flushed) $(oid0 $_w.wake_idle_cpu)"
+	echo "$(oid0 $_w.switched) $(oid0 $_w.yields) $(oid0 $_w.tick_yields) $(oid0 $_w.cap_demotions) $(oid0 $_w.wakeups) $(oid0 $_w.passes) $_it $(oid0 $_w.wakes_deferred) $(oid0 $_w.wake_defer_ns) $(oid0 $_w.wakes_low) $(oid0 $_w.wake_low_ns) $(( $(oid0 $_w.wakes_count) + $(oid0 $_w.wake_promotions_count) )) $(( $(oid0 $_w.wakes_deadline) + $(oid0 $_w.wake_promotions_deadline) )) $(oid0 $_w.db_batched) $(oid0 $_w.db_flushed) $(oid0 $_w.wake_idle_cpu) $(oid0 $_w.cap_yields) $(oid0 $_w.cap_cuts) $(oid0 $_w.slice_yields)"
 }
 kwq_rows() {	# TEST before after secs: the worker's counters per second and the longest doorbell-to-pass latency
 	[ "$KIND" = kwq ] || return 0
 	# the wake-moderation rows (PLAN P4e): wakeups/s, items per pass, deferred or
 	# low-priority wake episodes per second and their mean length in us, and how
 	# many of them ended by the count and by the deadline (0 on a build without them)
-	printf '%s\n%s\n' "$2" "$3" | awk -v dt="$4" 'NR == 1 { for (i = 1; i <= 16; i++) a[i] = $i }
-	    NR == 2 { for (i = 1; i <= 16; i++) d[i] = $i - a[i]; ep = d[8] + d[10]; ns = d[9] + d[11];
-	        printf("kwq_switched_s=%d kwq_yields_s=%d kwq_tick_yields_s=%d kwq_dem_s=%d kwq_wakeups_s=%d kwq_items_per_pass=%.2f kwq_wake_ep_s=%d kwq_wake_ep_us=%.1f kwq_wake_count_s=%d kwq_wake_deadline_s=%d kwq_db_batched_s=%d kwq_db_flushed_s=%d kwq_wake_idlecpu_s=%d", d[1] / dt, d[2] / dt, d[3] / dt, d[4] / dt, d[5] / dt, d[6] > 0 ? d[7] / d[6] : 0, ep / dt, ep > 0 ? ns / ep / 1000 : 0, d[12] / dt, d[13] / dt, d[14] / dt, d[15] / dt, d[16] / dt) }' > "$OUT/kwqrows"
+	printf '%s\n%s\n' "$2" "$3" | awk -v dt="$4" 'NR == 1 { for (i = 1; i <= 19; i++) a[i] = $i }
+	    NR == 2 { for (i = 1; i <= 19; i++) d[i] = $i - a[i]; ep = d[8] + d[10]; ns = d[9] + d[11];
+	        printf("kwq_switched_s=%d kwq_yields_s=%d kwq_tick_yields_s=%d kwq_dem_s=%d kwq_wakeups_s=%d kwq_items_per_pass=%.2f kwq_wake_ep_s=%d kwq_wake_ep_us=%.1f kwq_wake_count_s=%d kwq_wake_deadline_s=%d kwq_db_batched_s=%d kwq_db_flushed_s=%d kwq_wake_idlecpu_s=%d kwq_capy_s=%d kwq_cuts_s=%d kwq_slice_s=%d", d[1] / dt, d[2] / dt, d[3] / dt, d[4] / dt, d[5] / dt, d[6] > 0 ? d[7] / d[6] : 0, ep / dt, ep > 0 ? ns / ep / 1000 : 0, d[12] / dt, d[13] / dt, d[14] / dt, d[15] / dt, d[16] / dt, d[17] / dt, d[18] / dt, d[19] / dt) }' > "$OUT/kwqrows"
 	_ml=$(( $(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$WCPU.maxlat_ns") > $(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$WCPU.maxlat_ns") ? $(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$WCPU.maxlat_ns") : $(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$WCPU.maxlat_ns") ))
 	for kv in $(cat "$OUT/kwqrows") "kwq_maxlat_us=$((_ml / 1000))"; do row "$1" "${kv%%=*}" "${kv#*=}"; done
 	log "$STAGE rep $REP $1 $(cat "$OUT/kwqrows") kwq_maxlat_us=$((_ml / 1000))"
