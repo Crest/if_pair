@@ -1,0 +1,101 @@
+# stock epair reproducer, guest, 2026-10-27 14:19:43 guest time; kldstat:
+Id Refs Address                Size Name
+ 1   31 0xffffffff80200000  2586c50 kernel
+ 5    1 0xffffffff82e34000     22c8 dtraceall.ko
+ 6   12 0xffffffff82e37000    1c290 opensolaris.ko
+ 7   11 0xffffffff83000000  205dc88 dtrace.ko
+ 8    1 0xffffffff82e54000     21c8 dtaudit.ko
+ 9    1 0xffffffff82e57000     21cc dtmalloc.ko
+10    1 0xffffffff82e5a000     2cd8 dtnfscl.ko
+11    1 0xffffffff82e5d000     3295 fbt.ko
+12    1 0xffffffff82e61000     33c0 kinst.ko
+13    1 0xffffffff82e66000    2c5d4 fasttrap.ko
+14    1 0xffffffff82e93000     32b0 sdt.ko
+15    1 0xffffffff82e97000     91cc systrace.ko
+16    1 0xffffffff82ea1000     91cc systrace_freebsd32.ko
+17    1 0xffffffff82eab000     22c4 profile.ko
+
+# ps (reproducer, kldunload, jail -r):
+31731   Is wait        10:48 sh -c tar xf - -C /root; date +%T; ROUNDS=100 sh /root/reproducer-epair.sh; echo "exit=$?"; date +%T
+31734    I wait        10:48 sh /root/reproducer-epair.sh
+54588    D ifnet_de    09:39 kldunload if_epair
+54589    D vnet_sys    09:39 jail -r lor2
+
+# procstat -kk of the two blocked threads:
+  PID    TID COMM                TDNAME              KSTACK                       
+54588 100253 kldunload           -                   mi_switch+0x172 sleepq_switch+0x109 _sx_xlock_hard+0x513 _sx_xlock+0xac if_clone_detach+0xe7 vnet_deregister_sysuninit+0x95 linker_file_sysuninit+0x147 linker_file_unload+0x2a9 kern_kldunload+0x190 amd64_syscall+0x169 fast_syscall_common+0xf8 
+54589 100588 jail                -                   mi_switch+0x172 sleepq_switch+0x109 _sx_slock_hard+0x2ed _sx_slock_int+0xad vnet_destroy+0x128 prison_deref+0xaf5 sys_jail_remove+0x15c amd64_syscall+0x169 fast_syscall_common+0xf8 
+
+# every thread blocked on a sleepable lock:
+54588 100253 kldunload           -                   mi_switch+0x172 sleepq_switch+0x109 _sx_xlock_hard+0x513 _sx_xlock+0xac if_clone_detach+0xe7 vnet_deregister_sysuninit+0x95 linker_file_sysuninit+0x147 linker_file_unload+0x2a9 kern_kldunload+0x190 amd64_syscall+0x169 fast_syscall_common+0xf8 
+54589 100588 jail                -                   mi_switch+0x172 sleepq_switch+0x109 _sx_slock_hard+0x2ed _sx_slock_int+0xad vnet_destroy+0x128 prison_deref+0xaf5 sys_jail_remove+0x15c amd64_syscall+0x169 fast_syscall_common+0xf8 
+
+# jls -d (the dying jail is NOT listed: it left allprison before vnet_destroy):
+   JID  IP Address      Hostname                      Path
+# jls -d jid name dying:
+
+# rounds before the hang: epair creations since the loop started:
+1977
+1977
+# last messages:
+epair1a: Ethernet address: 58:9c:fc:10:d9:2e
+epair1b: Ethernet address: 58:9c:fc:10:e1:ed
+epair1a: link state changed to UP
+epair1b: link state changed to UP
+
+# witness (new reports since the reboot at 12:13):
+2296:Oct 24 23:59:05 kwqvm kernel: lock order reversal:
+3697:Oct 27 12:15:22 kwqvm kernel: lock order reversal:
+ 2:19PM  up  2:06, 0 users, load averages: 0.55, 1.19, 0.96
+
+# dtrace timing of one round, before the shape that hits (fbt::vnet_destroy, vnet_deregister_sysuninit, if_clone_detach; syscalls jail_remove, kldunload); us since the trace started
+# (a) jails without a process: both vnet_destroy run synchronously inside jail -r, the unload comes after both
+
+2947652 us  jail_remove syscall  jail
+2947677 us  if_clone_detach      tid 100587
+2947684 us  if_clone_detach      tid 100587
+2947687 us  if_clone_detach      tid 100587
+2947695 us  vnet_destroy entry   tid 100587 jail
+3007634 us  if_clone_detach      tid 100587
+3007643 us  if_clone_detach      tid 100587
+3007645 us  if_clone_detach      tid 100587
+3007648 us  if_clone_detach      tid 100587
+3012326 us  vnet_destroy return  tid 100587
+3014784 us  jail_remove syscall  jail
+3014798 us  if_clone_detach      tid 100587
+3014802 us  if_clone_detach      tid 100587
+3014804 us  if_clone_detach      tid 100587
+3014808 us  vnet_destroy entry   tid 100587 jail
+3031669 us  if_clone_detach      tid 100587
+3031676 us  if_clone_detach      tid 100587
+3031679 us  if_clone_detach      tid 100587
+3031681 us  if_clone_detach      tid 100587
+3041190 us  vnet_destroy return  tid 100587
+3042986 us  deregister_sysuninit tid 100587 kldunload
+3042991 us  if_clone_detach      tid 100587
+
+# (b) a process in each jail: the first vnet_destroy on the jail_remove taskqueue (tid 100017), the second synchronously in jail -r after waiting for the detach lock, the unload after both because the shell ran it after jail -r returned
+
+2147401 us  jail_remove syscall  jail
+2147418 us  if_clone_detach      tid 100094
+2147423 us  if_clone_detach      tid 100094
+2147425 us  if_clone_detach      tid 100094
+2147544 us  vnet_destroy entry   tid 100017 kernel
+2150104 us  jail_remove syscall  jail
+2150116 us  if_clone_detach      tid 100094
+2170200 us  if_clone_detach      tid 100017
+2170207 us  if_clone_detach      tid 100017
+2170209 us  if_clone_detach      tid 100017
+2170210 us  if_clone_detach      tid 100017
+2178598 us  if_clone_detach      tid 100094
+2178602 us  if_clone_detach      tid 100094
+2178605 us  vnet_destroy return  tid 100017
+2178608 us  vnet_destroy entry   tid 100094 jail
+2198907 us  if_clone_detach      tid 100094
+2198914 us  if_clone_detach      tid 100094
+2198917 us  if_clone_detach      tid 100094
+2198918 us  if_clone_detach      tid 100094
+2208544 us  vnet_destroy return  tid 100094
+2211887 us  deregister_sysuninit tid 100094 kldunload
+2211892 us  if_clone_detach      tid 100094
+

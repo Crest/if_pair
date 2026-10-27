@@ -1,0 +1,21 @@
+# Reliability of reproducer-epair.sh (stock epair, GENERIC-DEBUG guest), 2026-10-27.
+# One "round" = create two epairs + two vnet jails in the hitting shape, tear
+# them down, unload if_epair.  A trial runs up to 300 rounds; it stops at the
+# first deadlock (the reproducer's shell freezes in `jail -r lor2`).  Detected
+# by the round counter freezing for 36 s, then the guest panicked for an
+# immediate reboot (GENERIC-DEBUG's DEADLKRES would panic the same hang on its
+# own after ~30 min; it did once, see guest-epair-deadlkres-panic.txt).
+#
+# trial   round at which it deadlocked   wall time
+#   A      234                           (first run, pre-detection-fix driver)
+#   1       23                            56 s
+#   2       52                            87 s
+#   3       25                            56 s
+#   4       25                            63 s
+#
+# 5 of 5 trials deadlocked; none reached 300 rounds.  Clean trials 1-4 hit at
+# a median of 25 rounds (range 23-52).  Thread states captured at the freeze
+# were noisy (ps caught a thread mid-block, reported as R); the authoritative
+# blocked stacks are in guest-stacks-2026-10-27.txt and
+# guest-epair-repro-2026-10-27.txt (kldunload D on ifnet_de in if_clone_detach,
+# jail -r D on vnet_sys in vnet_destroy).

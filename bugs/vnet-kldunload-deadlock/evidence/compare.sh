@@ -1,0 +1,1 @@
+../../../tests/compare.sh

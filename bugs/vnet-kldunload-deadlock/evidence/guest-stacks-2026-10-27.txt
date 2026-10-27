@@ -1,0 +1,80 @@
+Kernel stacks and process state of the deadlocked guest, captured over
+ssh on 2026-10-27 between 12:10 and 12:12 guest time, about 28 minutes
+into the hang (the kldunload started at 11:42 during tests/compare.sh,
+stage CHW, COMPETITOR=intr, right after its udp_load test removed the
+stage's two vnet jails).  Guest: bhyve, 4 vCPU, FreeBSD 15.1
+GENERIC-DEBUG (WITNESS, INVARIANTS), uptime 18 days.
+
+$ procstat -kk 18449
+  PID    TID COMM                TDNAME              KSTACK
+18449 100131 kldunload           -                   mi_switch+0x172 sleepq_switch+0x109 _sx_xlock_hard+0x513 _sx_xlock+0xac if_clone_detach+0xe7 vnet_deregister_sysuninit+0x95 linker_file_sysuninit+0x147 linker_file_unload+0x2a9 kern_kldunload+0x190 amd64_syscall+0x169 fast_syscall_common+0xf8
+
+$ procstat -kk -a | grep -E "_sx_|rw_|lockmgr|kwq|clone|vnet"
+    0 100017 kernel              jail_remove taskq   mi_switch+0x172 sleepq_switch+0x109 _sx_slock_hard+0x2ed _sx_slock_int+0xad vnet_destroy+0x128 prison_deref+0xaf5 taskqueue_run_locked+0x1c2 taskqueue_thread_loop+0xd3 fork_exit+0x82 fork_trampoline+0xe
+    0 161484 kernel              kwq_net/0           mi_switch+0x172 sleepq_switch+0x109 msleep_spin_sbt+0x156 kwq_worker_main+0x61c fork_exit+0x82 fork_trampoline+0xe
+    (kwq_net/1..3 and kwq_bulk/0..3 identical: idle workers asleep)
+18449 100131 kldunload           -                   (as above)
+
+No other thread in the system was blocked on an sx, rw or lockmgr
+lock.  Only these two threads are in the cycle:
+
+  jail_remove taskq (tid 100017): vnet_destroy() holds
+    ifnet_detach_sxlock exclusively (sys/net/vnet.c:300) and waits in
+    _sx_slock for vnet_sysinit_sxlock, taken shared by the inlined
+    vnet_sysuninit() (vnet.c:644).
+  kldunload (pid 18449): vnet_deregister_sysuninit() holds
+    vnet_sysinit_sxlock exclusively (vnet.c:602) and the vnet list
+    lock shared (vnet.c:603), calls the module's VNET_SYSUNINIT
+    (if_pair's vnet_pair_uninit -> ifc_detach_cloner ->
+    if_clone_detach) which waits in _sx_xlock for ifnet_detach_sxlock
+    (sys/net/if_clone.c:685).
+
+$ ps axo pid,ppid,stat,wchan,etime,command | awk '$2==17057 || $1==17057'
+17057 10044    I wait            30:19 sh compare.sh /root/stages/charge_guest.txt
+18449 17057    D ifnet_de        28:20 kldunload if_pair
+
+$ kldstat -v | grep -A3 "if_pair\|kwq"
+1553    2 0xffffffff82e8b000     dda8 kwq.ko (/root/stages/TK/kwq.ko)
+	Contains modules:
+		 Id Name
+		3647 kwq
+(if_pair.ko no longer listed: the linker had already removed it from
+the file list; its sysuninits were still running.)
+
+$ jls -d
+   JID  IP Address      Hostname                      Path
+    18                                                /
+   874                                                /
+   875                                                /
+$ jls -d jid name dying
+875 ifp_compare_c true
+(874 ifp_compare_s and 875 ifp_compare_c are the stage's two vnet
+jails, removed with `jail -r` seconds before the kldunload; 18 is a
+dying jail left from a battery on 2026-10-24.)
+
+$ ifconfig -a | grep -E "^[a-z]"
+vtnet0: ...
+lo0: ...
+(no pair interfaces left in the host vnet)
+
+$ dmesg | tail -5
+Limiting tcp reset response from 433 to 185 packets/sec
+pair1a: link state changed to DOWN
+pair1b: link state changed to DOWN
+pair0a: link state changed to DOWN
+pair0b: link state changed to DOWN
+
+$ vmstat -m | grep -i -E "ifnet|vnet|jail|pair"
+           ifnet    7 14336 9657 16,32,128,256,512,1024,2048
+            vnet    5   320  876 64
+       vnet_data    6 688128  877
+  vnet_data_free    1    32  413 32
+           epair    0     0   16 128
+         if_pair    0     0    4 64
+
+$ sysctl debug.witness.watch
+debug.witness.watch: 1
+
+The state was then preserved with `sysctl debug.kdb.panic=1` at
+12:13 guest time: /var/crash/vmcore.0 and info.0 on the guest (see
+guest-env-witness-info0.txt), and the guest rebooted.

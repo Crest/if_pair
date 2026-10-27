@@ -1,0 +1,43 @@
+From 6d09c218883f68010846e8ac0278d4318d81ad2c Mon Sep 17 00:00:00 2001
+From: John Doe <j.doe@example.org>
+Date: Tue, 27 Oct 2026 13:15:20 +0100
+Subject: [PATCH] tests: Wait for the stage's jails to die before unloading the
+ pair module
+
+A vnet jail is torn down asynchronously by prison_deref's task, and
+unloading the cloner while that runs deadlocked the guest's kernel:
+vnet_destroy holds ifnet_detach_sxlock and waits for the vnet sysinit
+lock, vnet_deregister_sysuninit (kldunload) holds the sysinit lock and
+waits in if_clone_detach for the former (2026-10-27, charge battery
+under the intr competitor, vmcore.0 on the guest).  stage_down now
+polls jls -d until both jail names are gone, 20 s at most.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019T3ZHN67bvH6HX4Qqtdvp9
+---
+ tests/compare.sh | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/tests/compare.sh b/tests/compare.sh
+index bf5af51..941ba22 100644
+--- a/tests/compare.sh
++++ b/tests/compare.sh
+@@ -265,6 +265,15 @@ stage_down() {
+ 	[ -n "${SPID2:-}" ] && { kill $SPID2 2>/dev/null; wait $SPID2 2>/dev/null; SPID2=""; }
+ 	[ -n "$PAIR2A" ] && ifconfig "$PAIR2A" destroy 2>/dev/null
+ 	jail -f /dev/null -r "$JS" >/dev/null 2>&1; jail -f /dev/null -r "$JC" >/dev/null 2>&1
++	# A vnet jail dies asynchronously (prison_deref's task destroys the
++	# vnet); unloading the cloner while it is dying deadlocks the kernel
++	# (vnet_destroy holds ifnet_detach_sxlock and wants the vnet sysinit
++	# lock, vnet_deregister_sysuninit holds that and wants the former:
++	# seen on the guest 2026-10-27), so wait until both jails are gone.
++	n=0; while jls -d name 2>/dev/null | grep -qx -e "$JS" -e "$JC"; do
++		[ $n -ge 200 ] && { log "WARNING: $JS/$JC still dying after 20 s; unloading anyway"; break; }
++		sleep 0.1; n=$((n+1))
++	done
+ 	ifconfig "$PAIRA" destroy 2>/dev/null
+ 	for kv in $KNOBS; do sysctl -q "$kv" >/dev/null; done
+ 	if kldstat -q -m kwq_test; then intr_stress_stop; sleep 0.3; kldunload kwq_test || fail "stage $STAGE: kldunload kwq_test failed"; fi
+-- 
+2.56.0
+

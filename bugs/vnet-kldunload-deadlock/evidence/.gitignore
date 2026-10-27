@@ -1,0 +1,16 @@
+# Symlinks to evidence that lives outside the tree and is not committed:
+# the two crash dumps and their headers (591 MB and 352 MB, kept in
+# ~/if_pair-scratch/crash), the guest's debug kernel, and the 15.1 source
+# files the report cites by file and line (/bhyve/src-15.1).  Listed by
+# name, not by pattern, so a new real file here is never hidden by
+# accident.  bugreport.md names every target's path.
+guest-vmcore.0
+guest-info.0
+guest-epair-vmcore.1
+guest-epair-info.1
+guest-kernel.debug
+src-15.1-sys-net-vnet.c
+src-15.1-sys-net-if_clone.c
+src-15.1-sys-net-if_epair.c
+src-15.1-sys-kern-kern_jail.c
+src-15.1-sys-kern-kern_linker.c

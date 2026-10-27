@@ -1,0 +1,77 @@
+Verification of the if_pair MOD_UNLOAD cloner-detach fix (commit 3be931a)
+against the reproducer, on the GENERIC-DEBUG test VM, 2026-10-27.
+Pre-fix = ead65d1, fix = 3be931a, both built for the guest and staged in
+/root/ifpairfix/{prefix,fix}.  Reproducer: reproducer-ifpair.sh, the same
+hitting shape as the epair reproducer (jail 1 with a process so its vnet
+dies asynchronously, kldunload if_pair backgrounded, jail 2 bare so its
+vnet dies in the jail -r syscall), kwq kept loaded.
+
+CONTROL (pre-fix, ead65d1): permanent deadlock within tens of rounds,
+same signature as stock epair (kldunload D on ifnet_de in if_clone_detach
+under vnet_deregister_sysuninit; jail -r D on vnet_sys in vnet_destroy).
+Needs a panic to recover; never clears.
+
+FIX (3be931a): no permanent deadlock.  A background run reached round 225
+and a patient run completed (see below) with kwq kept loaded.
+
+A trap in measuring this: on the slow debug guest a *normal* vnet
+teardown spends several seconds in epoch drain, and my first detectors,
+which flagged any round frozen > 36 s, kept catching those transient
+stalls and mistaking them for the deadlock.  The stack of one such
+"stuck" jail -r, captured live, is NOT the if_pair path at all - it is
+the loopback interface's own teardown draining epoch, and it cleared on
+its own after 60 s:
+
+  jail <pid>  mi_switch sched_ule_bind epoch_drain_callbacks
+      if_detach_internal if_detach lo_clone_destroy
+      if_clone_destroyif_flags if_clone_detach vnet_loif_uninit
+      vnet_destroy prison_deref sys_jail_remove
+
+(That lo0 path takes ifnet_detach_sxlock under the vnet sysinit lock the
+same way if_pair's did - every per-vnet cloner does, which is why the
+base lock-order bug is not specific to if_pair - but on a jail-death it
+only recurses on a lock vnet_destroy already holds, so it is slow here,
+not deadlocked.)  The permanent deadlock, by contrast, never clears and
+DEADLKRES panics it after ~30 min.  The final verification therefore
+flags a freeze as a deadlock only if it lasts past 180 s; transient
+epoch drains clear well under 60 s.
+
+RESULT:
+
+Same reproducer, same patient detector (freeze > 180 s = permanent):
+
+  pre-fix (ead65d1): PERMANENT DEADLOCK at round 111, frozen the full
+    180 s (and would stay; DEADLKRES panics it at ~30 min).  Stacks:
+      kldunload 77521: _sx_xlock_hard if_clone_detach+0xe7
+        vnet_deregister_sysuninit+0x95 linker_file_sysuninit
+        linker_file_unload kern_kldunload        (wants ifnet_detach_sxlock)
+      jail     77522: _sx_slock_hard vnet_destroy+0x128 prison_deref
+        sys_jail_remove                           (wants vnet_sysinit_sxlock)
+    the documented AB/BA, if_pair's VNET_SYSUNINIT being the thread that
+    wants ifnet_detach_sxlock under the exclusive sysinit lock.
+
+  fix (3be931a): completed 500 rounds, "no deadlock in 500 rounds", no
+    permanent freeze, guest never rebooted; also a prior 300-round run
+    and a 225-round background run, all clean.  Only transient
+    epoch-drain stalls (above), which clear on their own.
+
+CONCLUSION: the fix removes the permanent unload-vs-dying-vnet deadlock
+for if_pair on this kernel.  It does not touch the base lock order, so
+epair(4), vlan(4) and any other per-vnet cloner keep the bug; the base
+PR remains the real resolution.  The harness wait (jls -d + 2 s) stays
+as defence in depth.
+
+lab and a07 (GENERIC kernels, no DEADLKRES), fixed module 3be931a only,
+same reproducer, 180 s freeze watcher, no forced panics (these two boxes
+are rebooted only on crest's decision):
+  lab (Ryzen 5800X, amd64): PASS, 500 rounds, no permanent deadlock,
+    ~0.6 s per round, uptime continuous (4:56 -> 5:04).
+  a07 (128-core Ampere, arm64): PASS, 200 rounds, no permanent deadlock,
+    ~12 s per round (the 128-CPU epoch drains), uptime continuous (6 d).
+On a07 every vnet teardown drains epoch across all 128 CPUs, so jail -r
+and kldunload sit in D state (wchan EDRAIN / ifnet_de) for seconds each
+round and the round rate is ~10 s; those stalls clear on their own, the
+same transient epoch_drain_callbacks seen on the guest, not the deadlock.
+The pre-fix control was NOT run on lab or a07: it deadlocks the kernel
+permanently and a reboot of either box is crest's call.
+

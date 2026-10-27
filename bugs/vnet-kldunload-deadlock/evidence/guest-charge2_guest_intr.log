@@ -1,0 +1,52 @@
+compare: ok: build victim
+compare: stages: W0 CHW CHC CHS CHH ; reps 2; results in /root/charge2_guest_intr.tsv
+compare: ok: load /root/stages/W0/kwq.ko
+compare: ok: load /root/stages/W0/if_pair.ko
+compare: ok: load /root/wakeflat/TK/kwq_test.ko
+compare: ok: create jail ifp_compare_s
+compare: ok: create jail ifp_compare_c
+compare: ok: move pair0a
+compare: ok: move pair0b
+compare: ok: mtu
+compare: ok: addresses
+compare: ok: smoke ping
+compare: W0: seed 3649129314, worker CPU 1, iperf3 client ports 40003 40007 40018 40022 40027 40033 40034 40036 40038 40041 40047 40049 40065 40074 40078 40090, UDP source port 40005
+twoq: ok: intr_load
+twoq: W0 rep 1 twoq q1_items=3435767 q1_overruns=68 q1_overruns_switched=0 q1_debts=14 q1_parks=73 q2_items=3428818 q2_overruns=86 q2_overruns_switched=0 q2_debts=14 q2_parks=91 share1=0.501 gbit1=4.10 gbit2=4.10
+coloc: W0 rep 1 coloc kwq_switched_s=6850 kwq_yields_s=13770 kwq_tick_yields_s=35 kwq_dem_s=2 kwq_wakeups_s=6834 kwq_items_per_pass=4.26 kwq_wake_ep_s=0 kwq_wake_ep_us=0.0 kwq_wake_count_s=0 kwq_wake_deadline_s=0 kwq_db_batched_s=0 kwq_db_flushed_s=0 kwq_wake_idlecpu_s=0 kwq_ticks_s=0 kwq_ticks_empty_s=0 kwq_ticks_single_s=0 kwq_db_skipped_s=0 kwq_overruns_s=0 kwq_overruns_switched_s=0 kwq_prio_violations=0 kwq_maxlat_us=1541
+coloc: W0 rep 1 coloc gbit=7.08 passes/s=20724 items/pass=4.26
+rwlock: ok: intr_load
+rwlock: W0 rep 1 rwlock udpecho2 n=3076 wl_p50=1 wl_p99=5 wl_max=40 udp n=6560 rtt_p50=157 rtt_p99=526 rtt_max=62005 lost=0 rwblock/s=0 rwblock_max_us=0 gbit=8.98
+preempt: ok: intr_load
+cat: /root/charge2_out_intr/competitor: No such file or directory
+preempt: W0 rep 1 preempt vol/s=0 vol_max=51 pre/s=0 pre_avg=0 pre_max=0 pre_gt100=0 pre_gt500=0 gbit=9.24 competitor=
+spin: W0 rep 1 spin share=0.5280 gbit=6.92 sys=0.500 user=0.500 idle=0.000 intr=0.000
+timer: W0 rep 1 timer timer n=5000 late_avg=197 late_p99=610 late_max=1039 turn_avg=398 turn_p99=805 turn_max=1142 catchups=0 gbit=9.45
+udp_load: W0 rep 1 udp_load kwq_switched_s=154 kwq_yields_s=5 kwq_tick_yields_s=101 kwq_dem_s=3 kwq_wakeups_s=2509 kwq_items_per_pass=4.54 kwq_wake_ep_s=0 kwq_wake_ep_us=0.0 kwq_wake_count_s=0 kwq_wake_deadline_s=0 kwq_db_batched_s=0 kwq_db_flushed_s=0 kwq_wake_idlecpu_s=0 kwq_ticks_s=0 kwq_ticks_empty_s=0 kwq_ticks_single_s=0 kwq_db_skipped_s=0 kwq_overruns_s=0 kwq_overruns_switched_s=0 kwq_prio_violations=0 kwq_maxlat_us=2423
+udp_load: W0 rep 1 udp_load udp n=4920 rtt_p50=120 rtt_p99=294 rtt_max=93390 lost=0 gbit=9.25
+udp_load: ok: load /root/stages/TK/kwq.ko
+udp_load: ok: load /root/stages/TK/if_pair.ko
+udp_load: ok: load /root/wakeflat/TK/kwq_test.ko
+udp_load: ok: set kern.kwq.net.tick_us=50
+udp_load: ok: set kern.kwq.net.charge=0
+udp_load: ok: create jail ifp_compare_s
+udp_load: ok: create jail ifp_compare_c
+udp_load: ok: move pair0a
+udp_load: ok: move pair0b
+udp_load: ok: mtu
+udp_load: ok: addresses
+udp_load: ok: smoke ping
+udp_load: CHW: seed 3482556864, worker CPU 1, iperf3 client ports 40005 40016 40018 40019 40027 40032 40040 40042 40043 40045 40046 40047 40049 40054 40068 40075, UDP source port 40000
+twoq: ok: intr_load
+twoq: CHW rep 1 twoq q1_items=3377056 q1_overruns=85 q1_overruns_switched=7 q1_debts=26 q1_parks=95 q2_items=3387588 q2_overruns=56 q2_overruns_switched=5 q2_debts=21 q2_parks=67 share1=0.499 gbit1=4.16 gbit2=4.14
+coloc: CHW rep 1 coloc kwq_switched_s=6696 kwq_yields_s=13608 kwq_tick_yields_s=37 kwq_dem_s=2 kwq_wakeups_s=6673 kwq_items_per_pass=4.21 kwq_wake_ep_s=0 kwq_wake_ep_us=0.0 kwq_wake_count_s=0 kwq_wake_deadline_s=0 kwq_db_batched_s=0 kwq_db_flushed_s=0 kwq_wake_idlecpu_s=0 kwq_ticks_s=12 kwq_ticks_empty_s=0 kwq_ticks_single_s=0 kwq_db_skipped_s=13 kwq_overruns_s=0 kwq_overruns_switched_s=0 kwq_prio_violations=10 kwq_maxlat_us=1830
+coloc: CHW rep 1 coloc gbit=7.00 passes/s=20482 items/pass=4.21
+rwlock: ok: intr_load
+rwlock: CHW rep 1 rwlock udpecho2 n=3056 wl_p50=2 wl_p99=6 wl_max=45 udp n=6468 rtt_p50=157 rtt_p99=658 rtt_max=66841 lost=0 rwblock/s=0 rwblock_max_us=0 gbit=8.98
+preempt: ok: intr_load
+cat: /root/charge2_out_intr/competitor: No such file or directory
+preempt: CHW rep 1 preempt vol/s=0 vol_max=8 pre/s=0 pre_avg=0 pre_max=0 pre_gt100=0 pre_gt500=0 gbit=9.22 competitor=
+spin: CHW rep 1 spin share=0.5280 gbit=6.88 sys=0.464 user=0.536 idle=0.000 intr=0.000
+timer: CHW rep 1 timer timer n=5000 late_avg=201 late_p99=629 late_max=1085 turn_avg=399 turn_p99=792 turn_max=1708 catchups=0 gbit=9.38
+udp_load: CHW rep 1 udp_load kwq_switched_s=158 kwq_yields_s=10 kwq_tick_yields_s=102 kwq_dem_s=2 kwq_wakeups_s=2272 kwq_items_per_pass=4.64 kwq_wake_ep_s=0 kwq_wake_ep_us=0.0 kwq_wake_count_s=0 kwq_wake_deadline_s=0 kwq_db_batched_s=0 kwq_db_flushed_s=0 kwq_wake_idlecpu_s=0 kwq_ticks_s=189 kwq_ticks_empty_s=34 kwq_ticks_single_s=2 kwq_db_skipped_s=169 kwq_overruns_s=1 kwq_overruns_switched_s=0 kwq_prio_violations=8 kwq_maxlat_us=1830
+udp_load: CHW rep 1 udp_load udp n=5099 rtt_p50=123 rtt_p99=293 rtt_max=80278 lost=0 gbit=9.22

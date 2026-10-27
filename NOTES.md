@@ -5990,3 +5990,32 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   a stricter entry; S9's idle-class wait for the same-CPU producer; W2
   for sparse cross-CPU senders.  Machines: all kwq modules unloaded,
   a07 uptime unchanged, tcp_rack+tcphpts still loaded on lab.
+
+2026-10-27: if_pair unload-deadlock fix (commit 3be931a on kwq).  The
+  base-kernel AB/BA that hung the guest during the P4e battery (kldunload
+  of a per-vnet cloner racing a dying jail's vnet_destroy;
+  bugs/vnet-kldunload-deadlock) is avoided driver-side: pair_detach_cloners()
+  detaches every vnet's cloner from MOD_UNLOAD, walking VNET_FOREACH under
+  the vnet list lock and taking ifnet_detach_sxlock in base's own order
+  (list then detach), so vnet_pair_uninit() takes no lock on the unload
+  path; vnet_pair_init() skips attaching once unloading.  Reproduced and
+  fix verified on the test VM only: reproducer-ifpair.sh in the hitting
+  shape (jail 1 with a process = async vnet death, kldunload backgrounded,
+  jail 2 bare = sync death), pre-fix ead65d1 deadlocks permanently within
+  tens of rounds (kldunload D in if_clone_detach under
+  vnet_deregister_sysuninit, jail -r D in vnet_destroy), fixed 3be931a
+  clears 500 rounds.  A measurement trap: on the slow debug guest a normal
+  vnet teardown stalls several seconds in epoch_drain_callbacks (lo0's
+  vnet_loif_uninit), which over-eager freeze detectors mistook for the
+  deadlock; the real one never clears (DEADLKRES panics it at ~30 min), so
+  the verification flags only freezes past 180 s.  The driver fix covers
+  if_pair alone; epair/vlan keep the base bug, so the PR
+  (bugs/vnet-kldunload-deadlock/bugreport.md) is the real resolution.  The
+  compare.sh jls -d wait stays as defence in depth.
+  Tried on lab and a07 the same evening (fixed module 3be931a only, no
+  pre-fix control there: deliberately hanging either box is crest's
+  decision): lab 500 rounds clean at ~0.6 s/round, a07 200 rounds clean
+  at ~12 s/round (every vnet teardown drains epoch across 128 CPUs, so
+  jail -r / kldunload show D states of seconds that clear), uptimes
+  continuous, modules left unloaded.
+

@@ -1,0 +1,81 @@
+commit c624e04a0bd0ab147ec64c17e3e53f5ebc769dcf
+Author: Zhenlei Huang <zlei@FreeBSD.org>
+Date:   Mon Apr 13 12:38:44 2026 +0800
+
+    if_clone: Make ifnet_detach_sxlock opaque to consumers
+    
+    The change e133271fc1b5e introduced ifnet_detach_sxlock, and change
+    6d2a10d96fb5 widened its coverage, but there are still consumers,
+    net80211 and tuntap e.g., want it. Instead of sprinkling it everywhere,
+    make it opaque to consumers.
+    
+    Out of tree drivers shall also benefit from this change.
+    
+    Reviewed by:    kp
+    MFC after:      2 weeks
+    Differential Revision:  https://reviews.freebsd.org/D56298
+    
+    (cherry picked from commit e9fc0c538264355bd3fd9120c650078281c2a290)
+
+diff --git a/sys/net/if.c b/sys/net/if.c
+index 2da0afbeabc9..223082b675e4 100644
+--- a/sys/net/if.c
++++ b/sys/net/if.c
+@@ -3017,11 +3017,8 @@ ifioctl(struct socket *so, u_long cmd, caddr_t data, struct thread *td)
+ 	case SIOCIFDESTROY:
+ 		error = priv_check(td, PRIV_NET_IFDESTROY);
+ 
+-		if (error == 0) {
+-			sx_xlock(&ifnet_detach_sxlock);
++		if (error == 0)
+ 			error = if_clone_destroy(ifr->ifr_name);
+-			sx_xunlock(&ifnet_detach_sxlock);
+-		}
+ 		goto out_noref;
+ 
+ 	case SIOCIFGCLONERS:
+diff --git a/sys/net/if_clone.c b/sys/net/if_clone.c
+index 066547ceeeb3..04558b6af5ec 100644
+--- a/sys/net/if_clone.c
++++ b/sys/net/if_clone.c
+@@ -441,6 +441,14 @@ if_clone_destroyif_flags(struct if_clone *ifc, struct ifnet *ifp, uint32_t flags
+ {
+ 	int err;
+ 
++	/*
++	 * XXXZL: To avoid racing with if_vmove() so that we will have
++	 * stable if_vnet.
++	 * This have a good effect, that is, the destroying of tightly
++	 * coupled cloned interfaces such as epair(4) is serialized,
++	 * although the driver is responsible to take care of that.
++	 */
++	sx_assert(&ifnet_detach_sxlock, SA_XLOCKED);
+ 	/*
+ 	 * Given that the cloned ifnet might be attached to a different
+ 	 * vnet from where its cloner was registered, we have to
+@@ -467,7 +475,12 @@ if_clone_destroyif_flags(struct if_clone *ifc, struct ifnet *ifp, uint32_t flags
+ int
+ if_clone_destroyif(struct if_clone *ifc, struct ifnet *ifp)
+ {
+-	return (if_clone_destroyif_flags(ifc, ifp, 0));
++	int err;
++
++	sx_xlock(&ifnet_detach_sxlock);
++	err = if_clone_destroyif_flags(ifc, ifp, 0);
++	sx_xunlock(&ifnet_detach_sxlock);
++	return (err);
+ }
+ 
+ static struct if_clone *
+@@ -669,9 +682,11 @@ if_clone_detach(struct if_clone *ifc)
+ 	V_if_cloners_count--;
+ 	IF_CLONERS_UNLOCK();
+ 
++	sx_xlock(&ifnet_detach_sxlock);
+ 	/* destroy all interfaces for this cloner */
+ 	while (!LIST_EMPTY(&ifc->ifc_iflist))
+ 		if_clone_destroyif_flags(ifc, LIST_FIRST(&ifc->ifc_iflist), IFC_F_FORCE);
++	sx_xunlock(&ifnet_detach_sxlock);
+ 
+ 	IF_CLONE_REMREF(ifc);
+ }

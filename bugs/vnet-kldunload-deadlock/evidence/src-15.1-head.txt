@@ -1,0 +1,1 @@
+88e7371d9dc26f85dfc1b008cbe59ebc7e4a33da 2026-08-24 Add UPDATING entries and bump version
