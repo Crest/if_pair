@@ -225,6 +225,22 @@ stage_down() {
 	[ -n "${SPID2:-}" ] && { kill $SPID2 2>/dev/null; wait $SPID2 2>/dev/null; SPID2=""; }
 	[ -n "$PAIR2A" ] && ifconfig "$PAIR2A" destroy 2>/dev/null
 	jail -f /dev/null -r "$JS" >/dev/null 2>&1; jail -f /dev/null -r "$JC" >/dev/null 2>&1
+	# A vnet jail dies asynchronously: jail -r returns, the jail stays
+	# listed by jls -d while anything still references it (its exiting
+	# processes, TIME_WAIT sockets for their 2MSL), and the moment the
+	# last reference drops it leaves the list and prison_deref destroys
+	# its vnet.  Unloading the cloner during that vnet_destroy deadlocks
+	# the kernel (vnet_destroy holds ifnet_detach_sxlock and wants the
+	# vnet sysinit lock, vnet_deregister_sysuninit holds that and wants
+	# the former: the guest, 2026-10-27, reproduced with stock epair).
+	# So wait until both jails have left the list, then a further two
+	# seconds for the vnet teardown that follows their disappearance,
+	# which userland cannot observe.  Mitigation, not a fix.
+	n=0; while jls -d name 2>/dev/null | grep -qx -e "$JS" -e "$JC"; do
+		[ $n -ge 200 ] && { log "WARNING: $JS/$JC still dying after 20 s; unloading anyway"; break; }
+		sleep 0.1; n=$((n+1))
+	done
+	sleep 2
 	ifconfig "$PAIRA" destroy 2>/dev/null
 	for kv in $KNOBS; do sysctl -q "$kv" >/dev/null; done
 	kldunload "$MOD" || fail "stage $STAGE: kldunload $MOD failed (pgrep dtrace?)"
