@@ -7,14 +7,17 @@
 #
 # STAGEFILE has one stage per line:
 #
-#   LABEL kwq KWQ_KO IFPAIR_KO [sysctl=value ...] [kenv:name=value ...]
-#   LABEL tq  -      IFPAIR_TQ_KO
+#   LABEL kwq KWQ_KO IFPAIR_KO [sysctl=value ...] [kenv:name=value ...] [jail:sysctl=value ...]
+#   LABEL tq  -      IFPAIR_TQ_KO [jail:sysctl=value ...]
 #
 # a kwq stage loads KWQ_KO then IFPAIR_KO (both from the same commit), sets
 # the sysctls, and restores them after; a kenv: entry is set in the kernel
 # environment before the load, for loader tunables such as
-# kern.kwq.net.priority, and unset after the unload; a tq stage loads the
-# taskqueue driver.  For kwq stages the worker's own counters over the
+# kern.kwq.net.priority, and unset after the unload; a jail: entry is set
+# inside both vnet jails after they are created and before any socket exists
+# in them (per-vnet knobs such as net.inet.tcp.functions_default, whose host
+# value a new vnet does not inherit); a tq stage loads the taskqueue driver
+# and accepts jail: entries too.  For kwq stages the worker's own counters over the
 # tput1 and udp_load windows are recorded too (switched, yields, tick
 # yields, share-limit demotions per second, and the longest
 # doorbell-to-pass latency), where the stage has them.  Stages run interleaved: all of them once per repetition (REPS,
@@ -176,10 +179,11 @@ iperf_rate() {	# after wait: the rate, and the error line if the run failed
 
 stage_up() {	# KIND KWQ_KO IFPAIR_KO knobs...
 	KIND=$1; KWQ_KO=$2; IFPAIR_KO=$3; shift 3
-	KNOBS=""; KENVS=""
+	KNOBS=""; KENVS=""; JKNOBS=""
 	for kv in "$@"; do
 		case $kv in
 		kenv:*) must "kenv ${kv#kenv:}" kenv "${kv#kenv:}"; KENVS="$KENVS ${kv#kenv:}" ;;
+		jail:*) JKNOBS="$JKNOBS ${kv#jail:}" ;;
 		esac
 	done
 	if [ "$KIND" = kwq ]; then
@@ -187,7 +191,7 @@ stage_up() {	# KIND KWQ_KO IFPAIR_KO knobs...
 		must "load $IFPAIR_KO" kldload "$IFPAIR_KO"
 		PAIR=pair; MOD=if_pair
 		for kv in "$@"; do
-			case $kv in kenv:*) continue;; esac
+			case $kv in kenv:*|jail:*) continue;; esac
 			_o=${kv%%=*}; _orig=$(sysctl -n "$_o") || fail "stage $STAGE: no knob $_o"
 			KNOBS="$KNOBS $_o=$_orig"
 			must "set $kv" sysctl -q "$kv"
@@ -204,6 +208,7 @@ stage_up() {	# KIND KWQ_KO IFPAIR_KO knobs...
 	must "move $PAIRB" ifconfig "$PAIRB" vnet "$JC"
 	must "mtu" sh -c "jexec $JS ifconfig $PAIRA mtu $MTU && jexec $JC ifconfig $PAIRB mtu $MTU"
 	must "addresses" sh -c "jexec $JS ifconfig $PAIRA inet $SRV/32 $CLI up && jexec $JC ifconfig $PAIRB inet $CLI/32 $SRV up"
+	for kv in $JKNOBS; do must "jail knob $kv" sh -c "jexec $JS sysctl -q $kv && jexec $JC sysctl -q $kv"; done
 	must_retry 5 "smoke ping" jexec "$JC" ping -q -o -c 2 -t 2 $SRV
 	jexec "$JS" "$VICTIM" udpecho $UDPPORT >/dev/null 2>&1 &
 	UPID=$!
@@ -236,7 +241,7 @@ ports() {	# the ports that put both flows on WCPU under this load's seed
 		# stream: Address already in use", seen on a07 and lab)
 		set -- $("$VICTIM" ports "$seed" "$NCPU" "$WCPU" $CLI $SRV $TCPPORT $UDPPORT 16) || fail "no ports for CPU $WCPU"
 		CPORTS=$(echo "${1#cports=}" | tr ',' ' '); UPORT=${2#uport=}
-		set -- $("$VICTIM" ports "$seed" "$NCPU" "$WCPU" $CLI $SRV $TCPPORT2 $UDPPORT2 2) || fail "no ports for CPU $WCPU (second set)"
+		set -- $("$VICTIM" ports "$seed" "$NCPU" "$WCPU" $CLI $SRV $TCPPORT2 $UDPPORT2 16) || fail "no ports for CPU $WCPU (second set)"
 		CPORTS2=$(echo "${1#cports=}" | tr ',' ' '); UPORT2=${2#uport=}
 		set -- $("$VICTIM" ports "$seed" "$NCPU" "$WCPU" $CLI2 $SRV2 $TCPPORT2 $UDPPORT 2) || fail "no ports for CPU $WCPU (second pair)"
 		CPORTS3=$(echo "${1#cports=}" | tr ',' ' ')
@@ -287,13 +292,19 @@ busiest_kwq_delta() {	# two snapshots of the per-CPU pass counters -> the CPU th
 }
 kwq_passes() { sysctl kern.kwq.net.cpu 2>/dev/null | awk -F'[.:]' '$6 == "passes" { print $5, $NF }'; }
 oid0() { sysctl -n "$1" 2>/dev/null || echo 0; }	# a counter an older stage may lack
-kwq_counters() {	# W -> "switched yields tick_yields cap_demotions" (0 where absent)
-	echo "$(oid0 kern.kwq.net.cpu.$1.switched) $(oid0 kern.kwq.net.cpu.$1.yields) $(oid0 kern.kwq.net.cpu.$1.tick_yields) $(oid0 kern.kwq.net.cpu.$1.cap_demotions)"
+kwq_counters() {	# W -> "switched yields tick_yields cap_demotions wakeups passes items wakes_deferred wake_defer_ns wakes_low wake_low_ns wakes_count wakes_deadline" (0 where absent)
+	_w=kern.kwq.net.cpu.$1
+	_it=$(( $(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$1.items") + $(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$1.items") ))
+	echo "$(oid0 $_w.switched) $(oid0 $_w.yields) $(oid0 $_w.tick_yields) $(oid0 $_w.cap_demotions) $(oid0 $_w.wakeups) $(oid0 $_w.passes) $_it $(oid0 $_w.wakes_deferred) $(oid0 $_w.wake_defer_ns) $(oid0 $_w.wakes_low) $(oid0 $_w.wake_low_ns) $(( $(oid0 $_w.wakes_count) + $(oid0 $_w.wake_promotions_count) )) $(( $(oid0 $_w.wakes_deadline) + $(oid0 $_w.wake_promotions_deadline) )) $(oid0 $_w.db_batched) $(oid0 $_w.db_flushed) $(oid0 $_w.wake_idle_cpu)"
 }
 kwq_rows() {	# TEST before after secs: the worker's counters per second and the longest doorbell-to-pass latency
 	[ "$KIND" = kwq ] || return 0
-	printf '%s\n%s\n' "$2" "$3" | awk -v dt="$4" 'NR == 1 { for (i = 1; i <= 4; i++) a[i] = $i }
-	    NR == 2 { printf("kwq_switched_s=%d kwq_yields_s=%d kwq_tick_yields_s=%d kwq_dem_s=%d", ($1 - a[1]) / dt, ($2 - a[2]) / dt, ($3 - a[3]) / dt, ($4 - a[4]) / dt) }' > "$OUT/kwqrows"
+	# the wake-moderation rows (PLAN P4e): wakeups/s, items per pass, deferred or
+	# low-priority wake episodes per second and their mean length in us, and how
+	# many of them ended by the count and by the deadline (0 on a build without them)
+	printf '%s\n%s\n' "$2" "$3" | awk -v dt="$4" 'NR == 1 { for (i = 1; i <= 16; i++) a[i] = $i }
+	    NR == 2 { for (i = 1; i <= 16; i++) d[i] = $i - a[i]; ep = d[8] + d[10]; ns = d[9] + d[11];
+	        printf("kwq_switched_s=%d kwq_yields_s=%d kwq_tick_yields_s=%d kwq_dem_s=%d kwq_wakeups_s=%d kwq_items_per_pass=%.2f kwq_wake_ep_s=%d kwq_wake_ep_us=%.1f kwq_wake_count_s=%d kwq_wake_deadline_s=%d kwq_db_batched_s=%d kwq_db_flushed_s=%d kwq_wake_idlecpu_s=%d", d[1] / dt, d[2] / dt, d[3] / dt, d[4] / dt, d[5] / dt, d[6] > 0 ? d[7] / d[6] : 0, ep / dt, ep > 0 ? ns / ep / 1000 : 0, d[12] / dt, d[13] / dt, d[14] / dt, d[15] / dt, d[16] / dt) }' > "$OUT/kwqrows"
 	_ml=$(( $(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$WCPU.maxlat_ns") > $(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$WCPU.maxlat_ns") ? $(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$WCPU.maxlat_ns") : $(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$WCPU.maxlat_ns") ))
 	for kv in $(cat "$OUT/kwqrows") "kwq_maxlat_us=$((_ml / 1000))"; do row "$1" "${kv%%=*}" "${kv#*=}"; done
 	log "$STAGE rep $REP $1 $(cat "$OUT/kwqrows") kwq_maxlat_us=$((_ml / 1000))"
@@ -404,7 +415,7 @@ t_coloc() {
 	# the receiver on W: a second iperf3 server pinned there, the flow's data to it
 	cpuset -l "$WCPU" jexec "$JS" iperf3 -s -p $TCPPORT2 >/dev/null 2>&1 &
 	_s2=$!; sleep 0.3
-	set -- $CPORTS2; _cp=$1; CPORTS2="$2 $1"
+	set -- $CPORTS2; _cp=$1; shift; CPORTS2="$* $_cp"
 	k0=$(kwq_passes); q0=$(kwq_counters "$WCPU"); i0=$(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$WCPU.items"); j0=$(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$WCPU.items")
 	IPERF=$OUT/iperf.$STAGE.$REP.coloc
 	cpuset -l "$OTHERS" jexec "$JC" iperf3 -f g -c $SRV -p $TCPPORT2 -P 1 --cport "$_cp" -t "$SECS" > "$IPERF" 2>&1
