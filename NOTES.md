@@ -5747,3 +5747,246 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   the budget-check lever (kwq_budget_left() returns 0 while over the
   allowance and sched_runnable() is true) so the bound is one item;
   keep the client guidance of docs/cheatsheet.md 5.1 as advice.
+
+2026-10-24: PLAN P4e, wake moderation (interrupt coalescing's analogue),
+  research and design study, no code: kwq/WAKE.md.  Read on lab's 15.1
+  sources: ULE preempts on wake only at priorities <= preempt_thresh
+  (PRI_MIN_KERN, 40; PI_NET is PI_INTR, 1; PRI_MIN_TIMESHARE 56;
+  PRI_MIN_IDLE 224) and always an idle CPU; its idle thread spins
+  idlespins (10000) times before cpu_idle() when the CPU switched more
+  than idlespinthresh times in the last tick, and tdq_notify() skips
+  the IPI for an idle thread outside cpu_idle(), so a remote wake to a
+  recently busy CPU is already IPI-free.  em(4): rx_int_delay (restarting)
+  and rx_abs_int_delay (absolute), AIM on by default with three
+  latency targets (70k/20k/4k ints/s) from bytes per packet; ix(4)
+  AIM off, max_interrupt_rate 31250; cxgbe holdoff timers {1,5,10,50,
+  100,200} us and counts {1,8,16,32}; mlx5 rx_coalesce_usecs/pkts/mode
+  and Linux's Net DIM (bandwidth, then pps, then event rate; profile
+  table; parking).  iflib rx is NAPI (rx_budget 16, interrupt
+  re-enabled only on a short poll, watchdog callout on an empty one);
+  tx uses mp_ring (IDLE/BUSY/STALLED/ABDICATED, the producer that
+  finds IDLE drains; tx_abdicate hands it to the task).  netisr hybrid
+  dispatches in the producer only if the workstream is not running,
+  dispatching or scheduled, and signals once at the end.  taskqueue
+  coalesces by ta_pending; swi_sched(SWI_DELAY) sets need without
+  scheduling.  tcp_hpts: per-CPU thread, sleep halved/doubled between
+  dyn_minsleep 250 us and dyn_maxsleep 5 ms by slots processed, and
+  above cnt_thresh (100) connections producers do not wake it
+  (nowake_over_thresh: "the timer is a backstop").  virtio event_idx
+  via virtqueue_postpone_intr() SHORT/LONG/EMPTIED in vtnet.  Linux:
+  napi_defer_hard_irqs + gro_flush_timeout, IRQ suspension (Cai and
+  Karsten, SIGMETRICS 2024; 6.13 irq-suspend-timeout), busy poll,
+  SQPOLL's need-wakeup flag.  Transfer: kwq already coalesces every
+  wake but the first of a backlog; the poll (W1) was declined
+  2026-10-11; direct dispatch (W5) is barred for NET; what is left is
+  the deferred doorbell (W2: wake_items + wake_delay_us per queue, one
+  callout per worker at 49-80 ns against a 2-6 us wake, kwq_kick() as
+  xmit_more's receiving end), its adaptive count (W2a) and the
+  non-preempting wake with promotion at the deadline (W4, the S6.3
+  hand-over applied to the wake, for the same-CPU producer the guest
+  showed).  Proposal, stages, metrics and exit criteria in WAKE.md S5
+  and PLAN P4e.  Nothing built; nothing decided beyond recording.
+
+2026-10-24: PLAN P4e built and measured: W2 the deferred doorbell
+  (kwq-wake-defer 5ac763c: wake_items, wake_delay_us, wake_co_local,
+  kwq_kick(), counters wakes_*) and W4 the non-preempting wake
+  (kwq-wake-prio a20dc0f: wake_prio plus the same two knobs, counters
+  wakes_low/wake_self/wake_promotions_*; kwq_test prod_prio and a
+  producer on the worker CPU), each in its own scratchpad worktree,
+  smoke-tested on the guest (ATF 22/22 and 21/22 with the known
+  whole-suite gaming flake).  compare.sh on lab and the guest, ten
+  stages, three repetitions (samples/p4e_compare_2026-10-24_two_
+  machines.txt, p4e_compare_{lab,guest}_2026-10-24.tsv; compare.sh
+  gained kwq_wakeups_s, kwq_items_per_pass and the wake-episode rows,
+  and the coloc test joined the default battery for this run); kwq_test
+  rows on all three machines through the session's bench/wake_rows.sh
+  (p4e_rows_{a07,lab,guest}_2026-10-24.txt); a07's battery ran at
+  19:45-20:22 after crest unloaded their if_pair.ko.  The W4 fork
+  agent was cut off by the session rate limit mid-test; its diff was
+  reviewed, built, smoke-tested and committed by hand.
+  Readings (WAKE.md S7 for the tables): sparse sender on a07 (3 us per
+  packet, worker 0.5 us): 788 k wakes per 3 s and 21 % of the sender's
+  CPU in kwq_enqueue() at the baseline; W2 at 10 us 185 k wakes, 7 %,
+  +15 % packets, queue latency mean 1 -> 6 us; deadline alone at 50 us
+  45 k wakes, 2 %, mean 23 us.  Round-trip price exact: lab udp_idle
+  p50 7 us -> 30/51/115/221 at 10/20/50/100 (2 x deadline x 17/16 + 1);
+  a07 pingpong one-way +10.3/20.9/52.7/105.9 us; W4 +1 us.  lab's
+  single flow is worker-saturated (sys 0.996, 694 wakes/s): no stage
+  moves it.  Guest tput1: W2 cuts the worker CPU's sys share 14-29 % at
+  +1-9 % Gbit/s.  Same-CPU producer (coloc): lab W0 55.8 Gbit/s with
+  53.6 k switched passes/s, T 98.1; W2 +12/+15/+24 % at 10/20/50 us,
+  switches -85..-95 %, items/pass 4 -> 19; W4 at 56 +17 %, switches
+  58/s, items/pass unchanged (the gain is the receiver not being
+  preempted in its socket-lock section); kwq_test coloc on a07 1486
+  ns/item at 1 item/pass -> 260-285 (W2 count 8, W4) -> 74 (deadline
+  alone, 934/pass).  Fan-in with the free handler is bistable (one
+  producer 8.4 M at 195/pass, two 3.0 M at 3/pass) and every setting
+  flips the one-producer case into the 3-items attractor: a pass-rhythm
+  effect, not a wake effect.  Side effects: interrupts +34-99 % (one
+  callout per moderated wake); share-limit columns unchanged; W4 at
+  223 costs the bulk flow 9 % beside a UDP flow and ULE's static_boost
+  makes 223 sleep as 120, so 56 is the setting that means something;
+  W4 on an idle target CPU is pure overhead (+25 % enqueue cost, +0.25
+  us round trip).  Recommendation: both off by default; W2 deadline-only
+  (no count: it capped every same-CPU row at 7 items per pass and
+  flipped fan-in) as a per-queue opt-in at 10-20 us for sparse,
+  non-request-reply producers; W4 at 56 as a class knob once it wakes
+  at the class priority when the worker's CPU is idle (pc_curthread is
+  the idle thread) and arms nothing; unify the branches, re-measure.
+  lab's rows (producer on the consumer's SMT sibling) add: deadline-only
+  doubles fan-in with one producer (12.8 M at 4/pass -> 29.1 M at 25/pass,
+  DT20) and lifts two producers 9.9 -> 17.5 M, while count 8 loses 7-25 %
+  and W4 a third; coloc 1142 -> 190 (count 8, either candidate) -> 46-65
+  ns/item (deadline alone); sparse sender 908 k wakes and 7 % of its CPU
+  -> 193 k and 2 % at 10 us.  a07's battery: tput1 37.5 Gbit/s, 35.5 k wakes/s, 3 items/pass, sys
+  0.81 at W0; W2 count 8 sys -19..-22 %, items/pass 5.8, wakes only
+  -4..-10 % (the count ends deferrals at 7 us), Gbit -2..-10 %;
+  deadline-only 50 us wakes -87 %, sys -12 %, Gbit -8 %; W4 nothing
+  (Gbit -4..-11 %); udp_idle 13 -> 33/55/119/228 us; coloc 17.7 Gbit/s
+  (T 32.9): W2 +9/+25/+32/+43 %, W4 +9 % (223) / -1 % (56) with switches
+  -99 %; timer late_p99 100 -> 197-307 us under W2 and +56-110 % under
+  W4 (longer passes), exec avg +12-24 % under W2; machine intr 284 k ->
+  342-461 k/s.  Interrupts: one timer interrupt per moderated wake
+  (one-shot event timer, 1/16 precision, no merge; W4's callout_stop()
+  leaves the programmed timer to fire empty), so an early-ended
+  deferral pays twice.  Latency budget per case in WAKE.md S7.5.
+  Nothing merged.
+
+2026-10-25: the TCP stacks over the pair, asked after the P4e battery:
+  freebsd, rack and bbr, each with W0, T, W2 (8, 20 us) and the deadline
+  alone (50 us), three machines, three repetitions (samples/p4e_stack_
+  2026-10-25_three_machines.txt, p4e_stack_{a07,lab,guest}_2026-10-25.tsv).
+  compare.sh gained the jail: knob prefix, set inside both vnet jails
+  after their creation, because net.inet.tcp.functions_default is a
+  per-vnet pointer (VNET_DEFINE_STATIC tcp_func_set_ptr) and a new jail
+  starts on the freebsd stack whatever the host says (verified on lab:
+  host set to rack, fresh vnet jail reports freebsd); hence every
+  earlier battery, a07's included, ran on freebsd although a07's host
+  default is rack.  Readings: the stack is the largest effect of the
+  campaign and the same for T as for W0.  bbr: 2 Gbit/s on every
+  single-flow test on all three machines, sixteen flows a tenth to a
+  half of freebsd's.  rack: a07 one flow -6 %, sixteen flows 366 ->
+  110, machine (256 flows) +14 %, UDP-beside-flow 39 -> 8; lab one flow
+  135 -> 85, sixteen 74 -> 106, machine 71 -> 92; guest everything 0.3
+  Gbit/s (hz 100 gives the pacer a 10 ms tick).  Receiver pinned to the
+  worker CPU: both paced stacks 0.04-0.8 Gbit/s on every machine (the
+  hpts thread, the receiver and the worker on one CPU).  rack's single
+  flow wakes a07's worker 161 times a second instead of 34.7 k (the
+  pacer coalesces), and the machine test's unpinned timer is 99 % less
+  late under rack everywhere.  W2 under rack and bbr: the same 2 x
+  deadline + 1 us on the UDP round trip, the same CPU saving where the
+  worker wakes often, nothing where the pacer already batches; under
+  rack on a07 sixteen flows improve 110 -> 194/215 with W2, the one
+  multi-flow number moderation moved.  WAKE.md S8.  Modules: tcp_rack
+  stayed loaded on lab and tcp_bbr on a07 after the runs (kldunload:
+  Device busy, lingering pcbs); retry later.
+
+2026-10-25: PLAN P4e follow-up: W7 pass-scoped doorbell batching
+  (kwq-wake-batch 74443c0: batch_doorbell, counters db_*), W4 with the
+  idle-class wait and the idle-CPU shortcut (kwq-wake-idle ab7bb9d:
+  wake_idle, counter wake_idle_cpu, the sleeper raised at once and no
+  callout when its CPU's current thread is the idle thread), and their
+  merge (kwq-wake-combo 12a7788), each smoke-tested in the guest (ATF
+  22/22, 22/22, 21/22 with the gaming flake); compare.sh battery W0,
+  T, BD, WI (224, idle class, no count, 200 us), WS (56, count 8, 50 us),
+  CB on the three machines, three repetitions (samples/p4e_combo_2026-
+  10-25_three_machines.txt and TSVs), kwq_test rows (p4e_rows_*_2026-
+  10-25.txt) and a counter battery (p4e_combo_db_*).  The guest's
+  numbers are a GENERIC-DEBUG kernel's: direction, not magnitude.
+  Changed: the pinned receiver (coloc) +38 % lab, +69 % a07, +18 %
+  guest under WI and CB (items/pass 4 -> 67/24/13, switched passes
+  -85..-98 %, episodes = the 200 us deadline), against +13..+25 % for
+  WS and the first W4's +17/+9/-10; the rows' same-CPU case 46 ns/item
+  at 1023/pass on lab (W0 1140 at 1), 74 on a07 (1502), every hardware
+  episode ended by the worker's own turn after 35/59 us; the single
+  flow no longer loses (lab -2 %, a07 +8 %, guest 0; the first W4 -4..
+  -11 %), udp_idle +1 us everywhere, wake_idle_cpu accounts for all
+  single-flow wakes; interrupts +3 % a07 / +23-37 % lab, guest under WI
+  (first W4 +74-99 %); a07's pinned timer p99 -40 % (WI) / -57 % (WS);
+  pingpong lab 1.91 -> 1.29 us.  Stayed the same: batching, db_batched
+  0 in every real flow on every machine (probe on the guest: both
+  directions of a TCP flow hash to one worker, the worker rings its own
+  doorbell 53 k times awake, the iperf3 thread 6 k times asleep; a
+  forwarder keeps the flow key too; the mechanism needs a client that
+  changes it, P6's wg/GELI); BD's coloc rows equal W0 once run with the
+  right test module (the sweep had paired the batch build with its own
+  kwq_test.ko without prod_prio: a cross-CPU run); the sparse cross-CPU
+  sender is hurt more, not less (enqueue lab 232 -> 348-365 ns, a07
+  882 -> 1560 ns and -19 % packets: the remote promotion costs the
+  producer what the callout arm did or more, and dropping it would
+  give up the bound since ULE migrates work onto a CPU whose only
+  runnable thread is idle-class); fan-in on lab's SMT sibling -20..
+  -35 % under every W4 variant, a07/guest within their bistability.
+  Instabilities: CB's lab single flow in two modes between batteries
+  (137 Gbit/s at 629 wakes/s vs 104 at 34.9 k); WI's single-flow
+  maxlat 268-341 us (the deadline); the UDP flow beside the bulk flow
+  pays the wait on the guest (121 -> 158 us) and not on lab.  WAKE.md
+  S9.  Recommendation: this W4 (idle class, shortcut, no count) is the
+  one to keep for shared CPUs, deadline 50-100 us the next sweep;
+  batching stays on its branch; W2 remains the sparse-sender mechanism.
+  Machines: tcp_rack+tcphpts still loaded on lab (busy), all kwq
+  modules unloaded everywhere; a07 uptime unchanged.
+
+2026-10-27: PLAN P4e, the SPEC-p4e tests implemented and run (branch
+  kwq-wake-tick, d5597a0 spec, 71ca39e module and kwq_test, 5258b7e
+  harness, fixes a31f251 01d9b02 78143f6 5685f2e b323af4 6d09c21; nothing
+  merged).  Built: the tick regime (kern.kwq.<class>.tick_us: a worker
+  whose last two doorbell wakes were within L sleeps with a timeout of
+  L and skips the doorbell until a tick serves at most one element;
+  exponential entry hold-off after barren episodes only), the charge
+  modes (kern.kwq.net.charge wall/cpu/split/hybrid, overruns_switched),
+  the pass-start priority assertion (prio_violations, KWQ_HARD_INVARIANTS
+  panics), kwq_test burst/intr_load/prod_gap_us/prod_prio, compare.sh
+  sparse/udp_burst/udp_burst_load/COMPETITOR=intr/coloc counters/per-CPU
+  timer interrupts, tests/kwq_rows.sh with the conformance rows, four
+  ATF cases (25/26 on the guest, charge_modes skips).  Batteries on the
+  three machines: tick (W0 T TK20/50/100), burst, accounting (W0 CHW
+  CHC CHS CHH under the burst and intr competitors, split re-run after
+  its fix), rows; samples/p4e_tick_*, p4e_burst_*, p4e_charge{2,3,4}_*,
+  p4e_rows_*_2026-10-27, the three-machine summaries p4e_tick_,
+  p4e_burst_, p4e_charge_2026-10-27_three_machines.txt.  WAKE.md S10.
+  Findings: the regime's sleep rate is at the interval-stabbing bound
+  within 20 % for lambda L of 2-10 (lab 39.5k/16.4k/8.3k sleeps/s
+  against 33.2k/16.6k/9.1k at 100k items/s, a07 the same), off by
+  design below lambda L = 1 (every row equals W0), drain-limited above
+  20 (fewer sleeps than the bound, latency set by the drain); the
+  sender's enqueue falls to the append's cost (lab 46-54 ns, a07
+  186-210) without W2's callout; the same-CPU burst trades 62
+  preemptions for L of last-item latency (the idle-class wait of S9 is
+  the better tool there); the short burst with a long sleep is the
+  regime's wrong customer (udp_burst 16 per 200 us: last reply 15 ->
+  67/122 us on lab at 50/100, bursts/s -18/-32 %) because "two wakes
+  within L" is met by every burst: the entry rule needs density over
+  more than one burst.  Accounting: under the burst competitor the
+  well-behaved twoq queue overruns 230 (lab) / 404-420 (a07) times per
+  run under wall time, every one switched, and parks as often; every
+  CPU-time mode makes it 0; cpu breaks fairness (spinner share 0.51 ->
+  0.36/0.41, timer +5/+16 %), split keeps it (spinner 0.514/0.512 vs
+  wall 0.512/0.511, timer and preemptions equal, debts -91/-41 %),
+  hybrid equals split on overruns and wall on fairness but has the most
+  priority violations and the worst UDP median; the intr competitor
+  (20 us per 100 us in interrupt context) overruns nothing under any
+  mode because td_runtime includes interrupt time: the two clocks
+  differ by exactly the preemptions and not at all for interrupts.
+  prio_violations is nonzero in every tick stage (lab 0.5-35, a07
+  17-206 per run) and all of it is the base tree's share-limit demotion
+  between passes, which kwq-p4d-passlevel removes: that branch merges
+  first or the hard build panics.  Defects the tests found: tick exit
+  judged on the entering round, ping-pong re-entry, hold-off after
+  coalescing episodes, split's share-limit clock wrong at pass end and
+  then at pass begin (p4e_charge2_* CHS is the bug: spinner 0.03, 22 ms
+  timer lateness), the victim's dependent burst chain, the intr knob
+  order; and the base kernel's vnet_destroy / vnet_deregister_sysuninit
+  deadlock when a cloner is unloaded while a vnet jail is still dying
+  (the guest hung 30 min, panicked for /var/crash/vmcore.0 there;
+  reproduced later the same day with stock epair alone, report and
+  reproducer in bugs/vnet-kldunload-deadlock; a jail leaves jls -d the
+  moment its last reference drops and the vnet teardown follows, so
+  compare.sh waits for the names to vanish and then two seconds more).  Guest GENERIC-DEBUG: direction
+  only; its overruns fall 84-90 % rather than to 0 under the CPU-time
+  modes (bhyve steal time is CPU time to the thread clock).
+  Recommendation: split charging as the NET default after the
+  pass-level merge; the tick regime as a class opt-in at 20-50 us with
+  a stricter entry; S9's idle-class wait for the same-CPU producer; W2
+  for sparse cross-CPU senders.  Machines: all kwq modules unloaded,
+  a07 uptime unchanged, tcp_rack+tcphpts still loaded on lab.

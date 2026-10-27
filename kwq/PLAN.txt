@@ -873,6 +873,127 @@ Phases
     churn during load; a second pair whose workers wait on the first's
     locks).
 
+[OPEN 2026-10-24] P4e  Wake moderation, interrupt coalescing's analogue:
+    should kwq grow a mechanism that defers or suppresses wakeups to cut
+    the wake and context-switch rate, and what would it do to the API
+    and the implementation?  The question (crest, 2026-10-24).
+    RESEARCHED 2026-10-24: kwq/WAKE.md holds the literature, the
+    FreeBSD prior art read from 15.1's sources (NIC ITR/AIM/DIM, NAPI
+    and Linux IRQ suspension, netisr hybrid, mp_ring, tcp_hpts, virtio
+    event_idx, ULE's idle spin and preemption rule) and the transfer to
+    kwq.  Findings that frame it: kwq already coalesces every wake but
+    the first of a backlog (the doorbell, KWQ.md S16); the consumer-side
+    poll was built and declined 2026-10-11 (kwq-spin-experiment: zero
+    wakeups, same throughput, the CPU went to the poll); direct
+    dispatch is barred for NET by the lock recursion; the regimes with
+    something to gain are the sparse single flow (31 k wakeups/s on
+    a07, 2-8 us per sleep-wake pair), fan-in with one or two producers
+    (1-2 items per pass, SCHED.md S15.7) and the same-CPU producer the
+    worker preempts at PI_NET (guest: 9.5 k lock blocks/s, 50 k
+    switches/s).  Candidates (WAKE.md S4-S5), all default off:
+    W2 a deferred doorbell with a per-queue count `wake_items` and
+    deadline `wake_delay_us`, one callout per worker (49-80 ns to arm,
+    schedprobe) in place of a 2-6 us wake, `kwq_kick()` as the
+    end-of-burst call; W2a the count set by the worker from its recent
+    batch sizes (virtio event_idx, IX); W4 the wake at a non-preempting
+    `wake_prio` promoted at the deadline (the S6.3 hand-over applied to
+    the wake), for the same-CPU producer; W3 timer-only is a setting of
+    W2; W1 poll and W5 hybrid dispatch are not rebuilt.  Stages and
+    metrics: compare.sh (tput1 tput16 udp_idle udp_load coloc spin
+    timer exec machine), kwq_test fanin 1/2/4/16 at one item per call,
+    cost, pingpong (the round trip must grow by exactly the deadline),
+    t_30/t_31/t_32, on the three machines.  Exit: W2 stays if the
+    sparse-flow wake rate falls 5x with throughput inside the spread,
+    CPU per packet down, the fan-in rows move, and the added latency
+    equals the deadline; W2a earns a default only if it matches the best
+    static setting everywhere untuned; W4 stays if it removes the
+    guest's lock-block pattern (3x) without moving a07 and lab.
+    Otherwise decline and record, as for the poll.  Order: W2 from kwq
+    now (the kwq_test rows need no iperf); W4 after the P4d merge, on
+    the pass-level share limit's callout.  Not decided: whether to
+    build at all; this entry is the research and the proposal.
+    BUILT AND MEASURED 2026-10-24 (crest's go-ahead the same day):
+    W2 on kwq-wake-defer 5ac763c and W4 on kwq-wake-prio a20dc0f (W4
+    built from ead65d1 with its own deadline callout rather than on
+    the P4d branch, so the three builds share a base); compare.sh on
+    lab and the guest with ten stages (W0, T, W2 at 10/20/50/100 us
+    with count 8, the deadline alone at 20 and 50, W4 at 223 and 56),
+    three repetitions, plus kwq_test rows (fan-in, cost, pingpong,
+    ifpair shapes, the same-CPU producer) on all three machines;
+    samples/p4e_compare_2026-10-24_three_machines.txt, p4e_rows_*;
+    a07's battery ran in the evening after crest unloaded their
+    if_pair.ko.
+    WAKE.md S7 has the tables, the per-case latency budget and the
+    recommendation.  In short: W2 is interrupt coalescing (a07, one
+    sparse sender: 76 % fewer wakes and the sender's enqueue cost from
+    21 % to 7 % of its CPU for 10 us, +15 % packets) at an exact price
+    of 2 x deadline + 1 us on a round trip; a07's real sparse flow
+    (35 k wakes/s) gives up 20 % of the worker's CPU for 2-10 % of its
+    throughput, since its ACK clock pays the deadline too; a saturated
+    worker (lab's flow) gains nothing; the same-CPU producer gains
+    12-25 % on lab and 9-43 % on a07 (W2) and 17 % on lab, 9 % on a07
+    (W4, zero idle-latency cost, preemptions gone); every moderated
+    wake is one timer interrupt (intr +21-99 %), paid twice when the
+    count ends the deferral early; larger passes lengthen a07's
+    interactive timer lateness 2-3x;
+    a count threshold of 8 hurt in two cases and helped in none;
+    the fan-in bistability is a pass-rhythm effect no wake mechanism
+    touches.  Recommended: both stay off by default; W2 deadline-only
+    as a per-queue opt-in at 10-20 us; W4 at 56 as a class knob after
+    giving it the idle-CPU shortcut (wake at class priority when the
+    worker's CPU is idle, arm nothing), a coarser callout precision,
+    the pass-length effect in S6.3; then unify the branches and
+    re-measure with a many-sparse-connections test added.  Not
+    merged; crest decides.
+    STACKS 2026-10-25 (WAKE.md S8): freebsd, rack and bbr crossed with
+    W0, T and two W2 settings on the three machines; the stack is the
+    largest effect and independent of kwq (T tracks W0 per stack), bbr
+    runs 2 Gbit/s on every single flow, rack is -6 % to -37 % on one
+    flow and -70 % to +43 % on sixteen by machine, both paced stacks
+    fail with the receiver on the worker CPU; W2's budget holds under
+    every stack.  All earlier batteries were on the freebsd stack (a
+    new vnet does not inherit the host default; compare.sh jail: knob).
+    FOLLOW-UP 2026-10-25: W7 pass-scoped doorbell batching
+    (kwq-wake-batch 74443c0), W4 with the idle-class wait and the
+    idle-CPU shortcut (kwq-wake-idle ab7bb9d), and their combination
+    (kwq-wake-combo 12a7788); measured against W0 and T on the three
+    machines; WAKE.md S9.  Result: the idle-class W4 lifts the pinned
+    receiver +38 % lab / +69 % a07 / +18 % guest with the single flow
+    and the idle latency intact (the first W4 lost both), interrupts
+    mostly recovered on a07; batching never engages (a flow's two
+    directions share one worker: symmetric flow hash) and waits for
+    a flow-key-changing client; the sparse cross-CPU sender pays more
+    for the shortcut's remote promotion (a07 +77 % enqueue), so W2
+    stays its mechanism.  Guest figures are GENERIC-DEBUG: direction
+    only.  Next: a 50-100 us deadline sweep for the idle-class wait,
+    the two-mode single flow on lab, and the unification of W2 and
+    this W4 behind the shared knobs.  Nothing merged.
+    SPECIFIED 2026-10-27: kwq/tests/SPEC-p4e.md, the tests the two
+    campaigns lacked (a producer with a duty cycle, interrupt load on
+    the worker CPU, many sparse connections, the lower bound as a
+    conformance row), the corrections to the existing ones (one test
+    module per battery, coloc's ports and counters, twoq under the
+    accounting modes, per-CPU timer interrupts), the module hooks they
+    need (tick counters, overruns_switched, the charge knob, the
+    priority assertion) and the ATF cases, with the prediction each
+    row is judged against.
+    IMPLEMENTED AND RUN 2026-10-27 (kwq-wake-tick, 71ca39e..6d09c21;
+    WAKE.md S10, NOTES.md 2026-10-27): the tick regime sleeps at the
+    bound within 20 % for lambda L 2-10 and stays off below 1, the
+    sender's enqueue falls to the append's cost; its wrong customer is
+    the short burst with a long sleep (tail pays L; the entry rule is
+    what to change); wall time punishes a preempted worker 230-420
+    switched overruns = parks per run, every CPU-time mode 0; cpu
+    breaks fairness, split keeps it, hybrid adds nothing; interrupt
+    context is invisible to both clocks; prio_violations counts the
+    base tree's demoted passes (kwq-p4d-passlevel merges first).
+    Recommended: split as the NET default after the pass-level merge,
+    the tick as an opt-in at 20-50 us with a stricter entry, S9's
+    idle-class wait for the same-CPU producer, W2 for sparse senders.
+    Found on the way: a base-kernel deadlock unloading a cloner while
+    a vnet jail dies (guest vmcore.0; compare.sh waits for jls -d).
+    Nothing merged; crest decides.
+
 [DECIDED 2026-10-09] Fork resolved: continue with kwq; netisr is to be
     reimplemented on top of kwq (KWQ.md S8 migration step 2, PLAN P8's
     "first in-tree conversion") rather than improved on its own.  The

@@ -2445,3 +2445,9 @@ decision deferred until real clients show what fan-in they produce.
   tests/t_34_interactive.sh on three machines: the share a pinned user
   thread gets is within two points of `1000 - cap_permille` (PLAN P4c,
   samples/t34_*).  Default off.
+- 2026-10-24: PLAN P4e, wake moderation: kwq/WAKE.md records the
+  literature, the FreeBSD prior art and the design options for
+  deferring the first wake of a burst (deferred doorbell with count and
+  deadline, adaptive count, non-preempting wake).  S16's position
+  stands until the comparison is measured; nothing in the API changes
+  yet.
