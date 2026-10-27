@@ -1118,6 +1118,19 @@ vnet_pair_init(const void *unused __unused)
 		.destroy_f = pair_clone_destroy,
 	};
 
+	/*
+	 * A vnet created while the module is unloading (jail -c racing
+	 * kldunload) must not attach a cloner: MOD_UNLOAD has already run
+	 * pair_detach_cloners() and will not run again, so this cloner would
+	 * be left for the per-vnet VNET_SYSUNINIT to detach under
+	 * vnet_sysinit_sxlock - the very path pair_detach_cloners() exists to
+	 * avoid (see it for the deadlock).  The read is unlocked on purpose:
+	 * it only narrows an already microscopic window, and vnet_pair_uninit
+	 * still detaches anything that slips through, so correctness does not
+	 * rest on it.
+	 */
+	if (pair_unloading)
+		return;
 	V_pair_cloner = ifc_attach_cloner(pairname, &req);
 }
 VNET_SYSINIT(vnet_pair_init, SI_SUB_PSEUDO, SI_ORDER_ANY,
@@ -1126,10 +1139,58 @@ VNET_SYSINIT(vnet_pair_init, SI_SUB_PSEUDO, SI_ORDER_ANY,
 static void
 vnet_pair_uninit(const void *unused __unused)
 {
+	/*
+	 * On the module-unload path pair_detach_cloners() has already
+	 * detached this vnet's cloner and cleared the pointer, so there is
+	 * nothing to do and, crucially, if_clone_detach() is not called here
+	 * under the exclusive vnet_sysinit_sxlock (the deadlock).  On the
+	 * jail-destruction path the pointer is still set and we detach as
+	 * before; there vnet_destroy() already holds ifnet_detach_sxlock and
+	 * this acquisition recurses on it, which is safe and is not the
+	 * deadlock (that is unload vs. a *different* jail's vnet_destroy).
+	 */
+	if (V_pair_cloner == NULL)
+		return;
 	ifc_detach_cloner(V_pair_cloner);
+	V_pair_cloner = NULL;
 }
 VNET_SYSUNINIT(vnet_pair_uninit, SI_SUB_INIT_IF, SI_ORDER_ANY,
     vnet_pair_uninit, NULL);
+
+/*
+ * Detach this module's cloner from every vnet, from MOD_UNLOAD, so that
+ * the per-vnet VNET_SYSUNINIT runs above need not and the module leaves
+ * no cloner behind.  This is the second half of the unload-deadlock
+ * avoidance (pair_sweep() is the first); see pair_sweep() for the full
+ * lock-order story.  The walk takes the vnet list lock and then, inside
+ * if_clone_detach(), ifnet_detach_sxlock - the same order base's own
+ * vnet_deregister_sysuninit() uses (list held shared, then the detach
+ * lock), so it adds no new reversal.  It runs only in the unloading
+ * thread, under neither vnet_sysinit_sxlock, so it can briefly wait on a
+ * concurrent jail's vnet_destroy() (which holds ifnet_detach_sxlock and
+ * wants only vnet_sysinit_sxlock, available) but cannot deadlock with it.
+ * Without VIMAGE there is a single implicit vnet, no jails and no
+ * vnet_deregister_sysuninit, so there is nothing to walk and nothing to
+ * deadlock: vnet_pair_uninit() detaches the one cloner as before.
+ */
+static void
+pair_detach_cloners(void)
+{
+#ifdef VIMAGE
+	VNET_ITERATOR_DECL(vnet_iter);
+
+	VNET_LIST_RLOCK();
+	VNET_FOREACH(vnet_iter) {
+		CURVNET_SET(vnet_iter);
+		if (V_pair_cloner != NULL) {
+			ifc_detach_cloner(V_pair_cloner);
+			V_pair_cloner = NULL;
+		}
+		CURVNET_RESTORE();
+	}
+	VNET_LIST_RUNLOCK();
+#endif
+}
 
 /*
  * Destroy every remaining pair, from MOD_UNLOAD, before the linker
@@ -1144,8 +1205,19 @@ VNET_SYSUNINIT(vnet_pair_uninit, SI_SUB_INIT_IF, SI_ORDER_ANY,
  * Sweeping here runs under neither vnet lock and takes
  * ifnet_detach_sxlock first - the order every ioctl destroyer
  * already imposes - so the later detach loops find empty cloner
- * lists and never take ifnet_detach_sxlock under
- * vnet_sysinit_sxlock.
+ * lists.
+ *
+ * Emptying the lists is no longer enough on its own.  Base commit
+ * c624e04a0bd0 (in 15.1) moved sx_xlock(&ifnet_detach_sxlock) into
+ * if_clone_detach() around the whole loop, so ifc_detach_cloner() now
+ * takes that lock even for an empty cloner - which, left to the per-vnet
+ * VNET_SYSUNINIT, is again taken under the exclusive vnet_sysinit_sxlock
+ * and deadlocks against a concurrent jail's vnet_destroy().  So the
+ * cloners themselves are detached from MOD_UNLOAD too, by
+ * pair_detach_cloners(), after this sweep; the VNET_SYSUNINIT then
+ * finds V_pair_cloner NULL and takes no lock.  Reproduced with stock
+ * epair(4) and verified fixed here on the test VM, 2026-10-27
+ * (bugs/vnet-kldunload-deadlock).
  *
  * ENXIO means a pair sits in the create-return window (its 'a' side
  * not yet linked by the framework); it is skipped and reaped by the
@@ -1198,8 +1270,10 @@ pair_modevent(module_t mod, int type, void *data)
 		sx_xlock(&pair_sx);
 		pair_unloading = true;
 		sx_xunlock(&pair_sx);
-		if (type == MOD_UNLOAD)
+		if (type == MOD_UNLOAD) {
 			pair_sweep();
+			pair_detach_cloners();
+		}
 		return (0);
 	case MOD_LOAD:
 		pair_hash_seed = arc4random();
