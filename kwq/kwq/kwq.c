@@ -202,6 +202,26 @@ static u_int kwq_quantum_us[KWQ_NCLASS] = { 200, 1000, 5000 };
 static u_int kwq_cap_permille[KWQ_NCLASS] = { 500, 500, 500 };
 static u_int kwq_cap_period_us[KWQ_NCLASS] = { 1000, 1000, 1000 };
 static u_int kwq_penalty_rounds[KWQ_NCLASS] = { 32, 32, 32 };
+/*
+ * The tick regime's bound L (../KWQ.md S16, PLAN P4e): with it set, a
+ * worker whose recent sleeps were denser than L sleeps with L as its
+ * timeout and producers place their lists without waking it.  0 = off,
+ * the doorbell regime, which is the default because an isolated item must
+ * pay one sleep-wake and nothing else (SCHED.md B5a).
+ */
+u_int kwq_tick_us[KWQ_NCLASS] = { 0, 0, 0 };
+/*
+ * The idle-class wait for same-CPU producers (../KWQ.md S16, PLAN P4e):
+ * with it set, an enqueue from the worker's own CPU does not preempt the
+ * producer; the worker is made runnable in the idle class at the class's
+ * cap_prio (the share limit's waiting priority, SCHED.md S6.3 - the same
+ * knob, not a second one) and is promoted to the class priority when it
+ * gets the CPU by itself or when this deadline strikes.  An enqueue from
+ * another CPU rings the plain doorbell, because the measured cost of
+ * waiting on a cross-CPU wake fell on the sparse sender (a07 +77 %
+ * enqueue, WAKE.md).  0 = off, today's behaviour.
+ */
+u_int kwq_wake_delay_us[KWQ_NCLASS] = { 0, 0, 0 };
 static u_int kwq_budget_check_every[KWQ_NCLASS] = { 8, 8, 8 };
 static struct sysctl_ctx_list kwq_knob_sysctl;
 
@@ -218,7 +238,6 @@ kwq_knobs_apply(int cls)
 	struct kwq_sched_knobs *k = &kwq_knobs[cls];
 
 	k->quantum_ns = (uint64_t)kwq_quantum_us[cls] * 1000;
-	k->grace_rounds = 1;
 	k->cap_permille = kwq_cap_permille[cls];
 	k->cap_period_ns = (uint64_t)kwq_cap_period_us[cls] * 1000;
 	k->cap_allow_ns = k->cap_period_ns * k->cap_permille / 1000;
@@ -277,7 +296,7 @@ kwq_sysctl_cap_prio(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
-#define	KWQ_NKNOBS	5
+#define	KWQ_NKNOBS	7
 static struct kwq_knob kwq_knob_desc[KWQ_NCLASS][KWQ_NKNOBS];
 
 static void
@@ -289,6 +308,8 @@ kwq_knobs_register(void)
 		{ "cap_period_us", "period over which cap_permille is taken", 100, 1000000 },
 		{ "penalty_rounds", "debt clamp in quanta: rounds an overrunning queue is parked at most", 1, 1024 },
 		{ "budget_check_every", "kwq_budget_left() reads the clock at least every this many calls; 1 = every call", 1, 64 },
+		{ "wake_delay_us", "the idle-class wait for same-CPU producers (KWQ.md S16): an enqueue from the worker's own CPU makes the worker runnable in the idle class at cap_prio and this is the deadline by which it is promoted to the class priority; an enqueue from another CPU rings the plain doorbell; 0 = off", 0, 1000000 },
+		{ "tick_us", "the tick regime's latency bound L (KWQ.md S16): after three consecutive sleeps shorter than L the worker sleeps with L as its timeout and producers place their lists without waking it, until a tick serves one element or none; 0 = off, the doorbell regime", 0, 100000 },
 	};
 	u_int *vars[KWQ_NKNOBS];
 	int cls, i;
@@ -298,6 +319,7 @@ kwq_knobs_register(void)
 		vars[0] = &kwq_quantum_us[cls]; vars[1] = &kwq_cap_permille[cls];
 		vars[2] = &kwq_cap_period_us[cls];
 		vars[3] = &kwq_penalty_rounds[cls]; vars[4] = &kwq_budget_check_every[cls];
+		vars[5] = &kwq_wake_delay_us[cls]; vars[6] = &kwq_tick_us[cls];
 		for (i = 0; i < KWQ_NKNOBS; i++) {
 			struct kwq_knob *kn = &kwq_knob_desc[cls][i];
 
@@ -446,13 +468,13 @@ kwq_target_cpu(struct kwq *q, int cpu)
  * wakeup can never be lost (../NOTES.md, the if_pair invariant).
  */
 static inline bool
-kwq_kc_added(struct kwq_cpu *kc, u_int added)
+kwq_kc_added(struct kwq_cpu *kc, u_int added, bool urgent)
 {
 	if (kc->kc_depth == added)
 		kc->kc_empty_since = sbinuptime();
 	if (kc->kc_state == KWQ_CPU_IDLE) {
 		kc->kc_state = KWQ_CPU_WAKING;
-		kwq_doorbell(kc);
+		kwq_doorbell(kc, urgent);
 		return (true);
 	}
 	return (false);
@@ -490,7 +512,7 @@ kwq_enqueue(struct kwq *q, int cpu, struct kwq_item *it)
 	}
 	kwq_list_append(kc, it, false);
 	depth = ++kc->kc_depth;
-	woke = kwq_kc_added(kc, 1);
+	woke = kwq_kc_added(kc, 1, false);
 	kwq_kc_unlock(kc);
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);
 	return (0);
@@ -531,7 +553,7 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 	kwq_list_concat(kc, head, tail);
 	kc->kc_depth += n;
 	depth = kc->kc_depth;
-	woke = kwq_kc_added(kc, n);
+	woke = kwq_kc_added(kc, n, false);
 	kwq_kc_unlock(kc);
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);	/* once per call */
 	return (0);
@@ -655,7 +677,7 @@ kwq_notify(struct kwq *q, struct kwq_notifier *nf)
 	kwq_list_append(kc, &nf->kn_item, true);
 	kc->kc_depth++;
 	kc->kc_nnotify++;
-	kwq_kc_added(kc, 1);
+	kwq_kc_added(kc, 1, true);	/* a signal: no regime holds it back */
 	kwq_kc_unlock(kc);
 	return (true);
 }
@@ -739,7 +761,7 @@ kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf)
 	    kc->kc_state == KWQ_CPU_RUNNING) {
 		if (kc->kc_state == KWQ_CPU_IDLE) {
 			kc->kc_state = KWQ_CPU_WAKING;
-			kwq_doorbell(kc);
+			kwq_doorbell(kc, true);	/* a cancel waits for no regime */
 		}
 		kwq_kc_wait(kc, "kwqncl");
 	}
@@ -879,6 +901,9 @@ kwq_sysctl_register(struct kwq *q)
 		KC_U64(kc_maxdepth, "maxdepth", "high-water mark of depth at pass start");
 		KC_U64(kc_maxlat_ns, "maxlat_ns", "largest oldest-element age seen at pass start");
 		KC_U64(kc_overruns, "overruns", "passes that exceeded their budget by more than one quantum x weight");
+		KC_U64(kc_overruns_switched, "overruns_switched", "of those, passes during which the worker left the CPU (preempted or blocked): the system's excess, not the handler's");
+		KC_U64(kc_doorbells, "doorbells", "wakeups performed for this list");
+		KC_U64(kc_doorbells_skipped, "doorbells_skipped", "lists placed while the worker's tick was armed: no wakeup (KWQ.md S16)");
 		KC_U64(kc_parks, "parks", "rounds skipped for a deficit <= 0");
 		KC_U64(kc_debts, "debts", "doorbells sent to the ring because the queue went idle owing time");
 		KC_U64(kc_glitches, "glitches", "passes whose CPU-time delta was negative or > 1 s (ticker fault; charged one quantum)");
@@ -1043,7 +1068,7 @@ kwq_drain(struct kwq *q)
 				if (STAILQ_EMPTY(&kc->kc_list))
 					break;
 				kc->kc_state = KWQ_CPU_WAKING;
-				kwq_doorbell(kc);
+				kwq_doorbell(kc, true);	/* a drain waits for no regime */
 			}
 			kwq_kc_wait(kc, "kwqdrn");
 		}

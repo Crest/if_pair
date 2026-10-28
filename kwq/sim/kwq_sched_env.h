@@ -24,12 +24,12 @@ struct kwq_cpu {
 	u_int			kc_state;
 	u_int			kc_onlist;
 	u_int			kc_warm;
-	u_int			kc_idle_round;
+	u_int			kc_idle_served;
 	u_int			kc_src;
 	int64_t			kc_deficit;
 	uint64_t		kc_glitches, kc_debts, kc_bc_avg;
-	uint64_t		kc_passes, kc_overruns, kc_parks, kc_boosts,
-				kc_grace;
+	uint64_t		kc_passes, kc_overruns, kc_overruns_switched,
+				kc_parks, kc_boosts, kc_grace;
 	u_int			kc_weight;
 	struct simq		*kc_sq;		/* simulator back pointer */
 };
@@ -40,6 +40,7 @@ struct kwq_worker {
 	u_int			kw_nactive;
 	u_int			kw_nnew;
 	uint64_t		kw_round;
+	uint64_t		kw_served_us;
 	u_int			kw_phase;
 	int			kw_ring_left;
 	int			kw_tail_left;
@@ -54,6 +55,7 @@ struct kwq_worker {
 	uint64_t		kw_cap_used;
 	bool			kw_cap_over;
 	bool			kw_cap_handed;
+	bool			kw_pass_switched;	/* never set in the simulator */
 	const struct kwq_sched_knobs *kw_knobs;
 	uint64_t		kw_rounds, kw_passes, kw_yields, kw_cap_demotions,
 				kw_cap_yields, kw_cap_cuts, kw_cap_runon, kw_handbacks,

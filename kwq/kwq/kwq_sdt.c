@@ -51,8 +51,18 @@ SDT_PROBE_DEFINE6(kwq, , , cap, "int", "int", "int", "uint64_t", "uint64_t",
     "int64_t");
 /* class, cpu, busy ns since the last wakeup */
 SDT_PROBE_DEFINE3(kwq, , , idle, "int", "int", "uint64_t");
-/* class, cpu, the worker's state when rung (0 awake, 1 polling, 2 asleep) */
+/*
+ * class, cpu, the worker's state when rung (0 awake, 1 polling, 2 asleep,
+ * 6 asleep with the tick armed)
+ */
 SDT_PROBE_DEFINE3(kwq, , , doorbell, "int", "int", "int");
+/* a tick wake: class, cpu, elements the previous tick served (KWQ.md S16) */
+SDT_PROBE_DEFINE3(kwq, , , tick, "int", "int", "uint64_t");
+/*
+ * a worker waiting in the idle class is promoted: class, cpu, reason
+ * (KWQ_WAKE_*), ns since the wait began (KWQ.md S16)
+ */
+SDT_PROBE_DEFINE4(kwq, , , wake, "int", "int", "int", "uint64_t");
 /* P6: from cpu, to cpu, items */
 SDT_PROBE_DEFINE4_XLATE(kwq, , , steal, "struct kwq *", "kwqinfo_t *",
     "int", "int", "int", "int", "int", "int");

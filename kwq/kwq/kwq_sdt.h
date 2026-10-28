@@ -48,6 +48,8 @@ SDT_PROBE_DECLARE(kwq, , , yield);
 SDT_PROBE_DECLARE(kwq, , , cap);
 SDT_PROBE_DECLARE(kwq, , , idle);
 SDT_PROBE_DECLARE(kwq, , , doorbell);
+SDT_PROBE_DECLARE(kwq, , , tick);
+SDT_PROBE_DECLARE(kwq, , , wake);
 SDT_PROBE_DECLARE(kwq, , , steal);
 SDT_PROBE_DECLARE(kwq, , , worker__block);
 SDT_PROBE_DECLARE(kwq, , , worker__spawn);
@@ -58,6 +60,19 @@ SDT_PROBE_DECLARE(kwq, , , budget__hit);
 #define	KWQ_DB_AWAKE	0
 #define	KWQ_DB_POLLING	1
 #define	KWQ_DB_ASLEEP	2
+#define	KWQ_DB_LOWPRI	4	/* asleep, made runnable in the idle class (KWQ.md S16) */
+#define	KWQ_DB_TICKED	6	/* asleep with the tick armed: placed, not woken (KWQ.md S16) */
+
+/*
+ * kwq:::wake reasons: why a worker waiting in the idle class was promoted
+ * to the class priority (KWQ.md S16).  The numbers are those of the
+ * kwq-wake-idle branch; 0, 1 and 3 were its count-threshold and kwq_kick()
+ * reasons, which are not implemented (a count threshold is not a knob).
+ */
+#define	KWQ_WAKE_DEADLINE	2	/* wake_delay_us passed */
+#define	KWQ_WAKE_URGENT		4	/* a notifier, a drain, a cancel, or an
+					   enqueue from another CPU */
+#define	KWQ_WAKE_SELF		5	/* the worker got the CPU by itself */
 
 /* kwq:::yield reasons */
 #define	KWQ_YIELD_ROUND	0

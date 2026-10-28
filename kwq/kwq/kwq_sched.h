@@ -14,17 +14,18 @@
  * Fields the core uses (names are those of kwq_internal.h):
  *
  *   struct kwq_cpu:    kc_active (TAILQ_ENTRY), kc_state, kc_onlist,
- *                      kc_warm, kc_idle_round (u_int), kc_src, kc_deficit
- *                      (int64_t ns), kc_passes, kc_overruns, kc_parks, kc_glitches,
+ *                      kc_warm, kc_idle_served (u_int), kc_src, kc_deficit
+ *                      (int64_t ns), kc_passes, kc_overruns,
+ *                      kc_overruns_switched, kc_parks, kc_glitches,
  *                      kc_debts, kc_bc_avg (uint64_t ns per budget call),
  *                      kc_boosts, kc_grace
  *   struct kwq_worker: kw_new, kw_active (TAILQ_HEAD of kwq_cpu),
  *                      kw_nactive, kw_nnew (u_int list lengths),
- *                      kw_round (uint64_t), kw_phase,
+ *                      kw_round, kw_served_us (uint64_t), kw_phase,
  *                      kw_ring_left, kw_tail_left, kw_want_new, kw_cur,
  *                      kw_served, kw_pass_start, kw_pass_budget,
  *                      kw_cap_start, kw_cap_used (wall ns), kw_cap_over,
- *                      kw_cap_handed (bool), kw_knobs, kw_rounds,
+ *                      kw_cap_handed, kw_pass_switched (bool), kw_knobs, kw_rounds,
  *                      kw_passes, kw_yields, kw_cap_demotions,
  *                      kw_cap_yields, kw_cap_cuts, kw_cap_runon,
  *                      kw_handbacks, kw_busy_ns,
@@ -62,7 +63,6 @@
 /* Per-class knobs the core reads; the owner keeps them current. */
 struct kwq_sched_knobs {
 	uint64_t	quantum_ns;	/* Q, validated 10 us .. 1 s */
-	uint32_t	grace_rounds;	/* GRACE_ROUNDS, 1 */
 	uint32_t	budget_check_every;	/* K of S4.4: clock read at least every K calls, 1..64 */
 	uint32_t	cap_permille;	/* S6.3 share limit in 1/1000; 1000 = off */
 	uint64_t	cap_period_ns;	/* the period the share is taken over */
@@ -196,6 +196,35 @@ ks_cap_spent(const struct kwq_worker *kw)
 	const struct kwq_sched_knobs *k = kw->kw_knobs;
 
 	return (k->cap_permille < 1000 && kw->kw_cap_used >= k->cap_allow_ns);
+}
+
+/*
+ * The grace window of S4.6, in microseconds of service: one ring's worth,
+ * Q x kw_nactive as the doorbell finds it.  An empty ring counts as one
+ * entry, so a queue returning to a worker that has nothing else still has
+ * a window (its own next refill is what the boost would have given it).
+ *
+ * kw_nactive counts the ring only: the queue whose pass is in progress is
+ * off it, and most doorbells arrive during a pass, so with a single
+ * competitor the window is usually the 0 -> 1 case, exactly Q (measured
+ * on the guest's gaming case, 2026-10-28: every boosted doorbell there
+ * read kw_nactive 0 with the flood mid-pass).  Counting the in-pass
+ * queue as well, Q x (kw_nactive + 1), was measured against this on that
+ * case and is within the noise (8 of 12 runs against 9 of 12), so the
+ * window stays as S4.6 and S8 define it.
+ */
+static inline uint32_t
+ks_grace_service_us(const struct kwq_worker *kw)
+{
+	uint64_t n = kw->kw_nactive != 0 ? kw->kw_nactive : 1;
+	uint64_t us = kw->kw_knobs->quantum_ns / 1000 * n;
+
+	/*
+	 * Clamped so that the unsigned 32-bit difference the doorbell takes
+	 * keeps its meaning (S13): a window of half the counter's range is
+	 * already 36 minutes of service at any quantum.
+	 */
+	return (us > 0x7fffffffu ? 0x7fffffffu : (uint32_t)us);
 }
 
 /* Per-queue refill amount, Q x w. */

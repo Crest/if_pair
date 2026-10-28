@@ -19,6 +19,7 @@ ks_worker_init(struct kwq_worker *kw, const struct kwq_sched_knobs *k,
 	kw->kw_nactive = 0;
 	kw->kw_nnew = 0;
 	kw->kw_round = 0;
+	kw->kw_served_us = 0;
 	kw->kw_phase = KWQ_PH_IDLE;
 	kw->kw_ring_left = 0;
 	kw->kw_tail_left = -1;
@@ -47,7 +48,7 @@ ks_queue_init(struct kwq_cpu *kc)
 	kc->kc_state = KWQ_CPU_IDLE;
 	kc->kc_onlist = KWQ_ON_NONE;
 	kc->kc_warm = 0;
-	kc->kc_idle_round = 0;
+	kc->kc_idle_served = 0;
 	kc->kc_src = KWQ_SRC_NONE;
 	kc->kc_deficit = 0;
 	kc->kc_passes = kc->kc_overruns = kc->kc_parks = 0;
@@ -65,11 +66,16 @@ ks_ring_append(struct kwq_worker *kw, struct kwq_cpu *kc)
 }
 
 /*
- * S4.1.  A warm queue (left the ring within the grace window) goes back
- * to the ring with its deficit as it is (0 after idle); anything else is
- * boosted through the new list.  Only the low 32 bits of the round
- * counter are kept per queue (S13): the unsigned difference is what
- * matters.
+ * S4.1.  A warm queue (left the ring less than one ring's worth of
+ * service ago) goes back to the ring with its deficit as it is (0 after
+ * idle); anything else is boosted through the new list.  The window is
+ * service, not rounds: the share limit's budget cut (S6.3) ends passes
+ * early, so a cut round delivers a fraction of a quantum per competitor
+ * and rounds come faster than service does; counting rounds then boosted
+ * a burst-and-pause producer on every burst (SCHED.md S4.6, measured on
+ * the guest's gaming case, 2026-10-28).  Only the low 32 bits of the
+ * service counter are kept per queue (S13): the unsigned difference is
+ * what matters.
  */
 bool
 ks_doorbell(struct kwq_worker *kw, struct kwq_cpu *kc)
@@ -82,8 +88,8 @@ ks_doorbell(struct kwq_worker *kw, struct kwq_cpu *kc)
 		kc->kc_debts++;
 		boost = false;
 	} else if ((kc->kc_warm & KWQ_WARM) &&
-	    (uint32_t)kw->kw_round - kc->kc_idle_round <=
-	    kw->kw_knobs->grace_rounds) {
+	    (uint32_t)kw->kw_served_us - kc->kc_idle_served <=
+	    ks_grace_service_us(kw)) {
 		ks_ring_append(kw, kc);
 		kc->kc_grace++;
 		boost = false;
@@ -339,6 +345,7 @@ ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 	kw->kw_passes++;
 	kw->kw_busy_ns += (uint64_t)dt;
 	kw->kw_cap_used += (uint64_t)dt;
+	kw->kw_served_us += (uint64_t)dt / 1000;	/* service delivered, S4.6 */
 	/*
 	 * An overrun is a pass that exceeded its budget by more than one
 	 * quantum: a cooperative handler that stops after the item which
@@ -346,6 +353,8 @@ ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 	 */
 	if (dt > kw->kw_pass_budget + q) {
 		kc->kc_overruns++;
+		if (kw->kw_pass_switched)	/* the system's excess, S6.3 */
+			kc->kc_overruns_switched++;
 		KS_HOOK_OVERRUN(kw, kc, (uint64_t)(dt - kw->kw_pass_budget));
 	}
 	kc->kc_deficit -= dt;
@@ -358,7 +367,7 @@ ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 	} else {
 		kc->kc_state = KWQ_CPU_IDLE;
 		kc->kc_warm = (kc->kc_src == KWQ_SRC_RING) ? KWQ_WARM : 0;
-		kc->kc_idle_round = (uint32_t)kw->kw_round;
+		kc->kc_idle_served = (uint32_t)kw->kw_served_us;
 		if (kc->kc_deficit < 0)
 			kc->kc_warm |= KWQ_DEBT;	/* debt survives idle (S4.3) */
 		else

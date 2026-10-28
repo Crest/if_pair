@@ -30,6 +30,14 @@ DEBUG_FLAGS?=	-g
 .if !defined(KWQ_INSTALL_DEBUG)
 INSTALL_NODEBUG=
 .endif
+# The priority promise of ../KWQ.md S3 is a KASSERT at every pass start
+# (kwq_worker.c).  The default build counts violations in
+# kern.kwq.<class>.cpu.<N>.prio_violations instead of panicking, so that a
+# machine under test reports rather than dies; make KWQ_HARD_INVARIANTS=1
+# asserts.  Under the pass-level share limit the counter reads zero.
+.if !defined(KWQ_HARD_INVARIANTS)
+CFLAGS+=	-DKWQ_SOFT_INVARIANTS
+.endif
 # make KWQ_NO_SDT=1: probe sites compiled out, to measure the disabled-probe cost
 .if defined(KWQ_NO_SDT)
 CFLAGS+=	-DKWQ_NO_SDT

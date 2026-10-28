@@ -17,7 +17,7 @@
  *
  * Scenarios: fairness latency gaming overrun overrun_idle handback storm
  * nnew manyq budgetjump glitch wrap ratechange badhandler random
- * sweep_grace sweep_boost.
+ * grace_pause sweep_boost.
  */
 
 #include <sys/types.h>
@@ -142,8 +142,9 @@ struct simq {
 	uint64_t	backlog_ns;	/* wall time spent with work queued */
 	uint64_t	backlog_since;
 	int		heap_pos;	/* -1 when not in the heap */
+	uint64_t	ring_passes;	/* passes served from the ring (I5 counts these) */
 	/* oracle for the grace rule */
-	uint64_t	idle_round;	/* kw_round when it went idle (64-bit) */
+	uint64_t	idle_served;	/* kw_served_us when it went idle (64-bit) */
 	bool		idle_from_ring;
 	bool		idle_with_debt;	/* kc_warm & KWQ_DEBT when it went idle */
 	int		boost_viol;
@@ -227,7 +228,6 @@ sim_reset(uint64_t wall0, uint64_t cpu0, uint64_t round0, u_int ticks0)
 		S.max_overshoot = 0;
 		S.glitch_pos_pass = S.glitch_neg_pass = 0;
 		S.knobs[c].quantum_ns = c == C_NET ? 200 * NS_PER_US : 1000 * NS_PER_US;
-		S.knobs[c].grace_rounds = 1;
 		S.knobs[c].cap_permille = 1000;
 		S.knobs[c].cap_period_ns = 1 * NS_PER_MS;
 		S.knobs[c].cap_allow_ns = S.knobs[c].cap_period_ns;
@@ -249,13 +249,13 @@ addq(int cls, u_int weight, enum prod_kind pk, enum hand_kind hk, uint64_t cost)
 
 	sq->id = S.nq; sq->cls = cls; sq->pk = pk; sq->hk = hk; sq->cost = cost;
 	sq->kc.kc_weight = weight; sq->kc.kc_sq = sq;
-	sq->kc.kc_idle_round = (u_int)S.w[cls].kw_round;
+	sq->kc.kc_idle_served = (u_int)S.w[cls].kw_served_us;
 	ks_queue_init(&sq->kc);
-	sq->kc.kc_idle_round = (u_int)S.w[cls].kw_round;
+	sq->kc.kc_idle_served = (u_int)S.w[cls].kw_served_us;
 	dq_init(&sq->q, 64);
 	sq->next_t = S.now;
 	sq->heap_pos = -1;
-	sq->idle_round = S.w[cls].kw_round;
+	sq->idle_served = S.w[cls].kw_served_us;
 	if (cost > S.cmax[cls]) S.cmax[cls] = cost;
 	S.qs[S.nq++] = sq;
 	return (sq);
@@ -331,7 +331,15 @@ check_invariants(int c)
 	}
 }
 
-/* I5 bookkeeping: snapshot the ring at round start, verify at round end. */
+/*
+ * I5 bookkeeping: snapshot the ring at round start, verify at round end.
+ * Only passes served *from the ring* count, since I5 is about the refill:
+ * a queue that empties, waits out the grace window (one ring's worth of
+ * service, which a round of long passes exceeds) and returns is boosted
+ * through the new list, and that boosted pass may fall in the same round
+ * as its ring pass.  Under the round-counted grace rule a same-round
+ * re-arrival was always warm, so the two could not be told apart here.
+ */
 static void
 round_snapshot(int c)
 {
@@ -341,7 +349,7 @@ round_snapshot(int c)
 
 	TAILQ_FOREACH(kc, &kw->kw_active, kc_active) {
 		S.round_members[c][i] = kc->kc_sq->id;
-		S.round_start_snapshot[c][i] = kc->kc_passes + kc->kc_parks;
+		S.round_start_snapshot[c][i] = kc->kc_sq->ring_passes + kc->kc_parks;
 		i++;
 	}
 	S.nround_members[c] = i;
@@ -361,9 +369,10 @@ round_verify(int c, bool handback)
 	if (handback) return;
 	for (int i = 0; i < S.nround_members[c]; i++) {
 		struct simq *sq = S.qs[S.round_members[c][i]];
-		uint64_t d = sq->kc.kc_passes + sq->kc.kc_parks - S.round_start_snapshot[c][i];
+		uint64_t d = sq->ring_passes + sq->kc.kc_parks - S.round_start_snapshot[c][i];
 		if (d != 1)
-			fail("I5: q%d had %" PRIu64 " passes+parks in round %" PRIu64, sq->id, d, S.w[c].kw_round);
+			fail("I5: q%d had %" PRIu64 " ring passes+parks in round %" PRIu64,
+			    sq->id, d, S.w[c].kw_round);
 	}
 }
 
@@ -384,14 +393,23 @@ enqueue(struct simq *sq, uint64_t t)
 			struct kwq_worker *kw = &S.w[sq->cls];
 			bool boost, expect_boost;
 
-			/* Oracle for S4.6: warm iff idle from the ring within grace rounds. */
+			/*
+			 * Oracle for S4.6: warm iff it went idle from the ring
+			 * and the worker has delivered less than one ring's
+			 * worth of service since, Q x kw_nactive us as the
+			 * doorbell finds the ring (an empty ring counts as one).
+			 */
+			uint64_t grace = kw->kw_knobs->quantum_ns / 1000 *
+			    (kw->kw_nactive != 0 ? kw->kw_nactive : 1);
+
 			expect_boost = !sq->idle_with_debt && !(sq->idle_from_ring &&
-			    kw->kw_round - sq->idle_round <= kw->kw_knobs->grace_rounds);
+			    kw->kw_served_us - sq->idle_served <= grace);
 			boost = ks_doorbell(kw, &sq->kc);
 			if (boost != expect_boost) {
 				sq->boost_viol++;
-				fail("I6: q%d boost=%d expected %d (idle_from_ring %d, debt %d, rounds since idle %" PRIu64 ")",
-				    sq->id, boost, expect_boost, sq->idle_from_ring, sq->idle_with_debt, kw->kw_round - sq->idle_round);
+				fail("I6: q%d boost=%d expected %d (idle_from_ring %d, debt %d, service since idle %" PRIu64 " us, window %" PRIu64 " us)",
+				    sq->id, boost, expect_boost, sq->idle_from_ring, sq->idle_with_debt,
+				    kw->kw_served_us - sq->idle_served, grace);
 			}
 			sq->doorbell_t = t;
 			S.sleeping[sq->cls] = false;
@@ -590,6 +608,8 @@ run_pass(int c, struct kwq_cpu *kc)
 		if (l > sq->lat_new_max) sq->lat_new_max = l;
 		sq->doorbell_t = 0;
 	}
+	if (kc->kc_src == KWQ_SRC_RING)
+		sq->ring_passes++;
 	S.now += PASS_OVERHEAD_NS; S.cputime[c] += PASS_OVERHEAD_NS;
 	check_invariants(c);
 	S.round_had_pass[c] = true;
@@ -650,7 +670,7 @@ run_pass(int c, struct kwq_cpu *kc)
 	ks_pass_end(kw, kc, S.cputime[c], !dq_empty(&sq->q));
 	if (kc->kc_state == KWQ_CPU_IDLE) {
 		sq->backlog_ns += S.now - sq->backlog_since;
-		sq->idle_round = kw->kw_round;
+		sq->idle_served = kw->kw_served_us;
 		sq->idle_from_ring = (kc->kc_warm & KWQ_WARM) != 0;
 		sq->idle_with_debt = (kc->kc_warm & KWQ_DEBT) != 0;
 		arm_pause(sq);
@@ -1117,14 +1137,20 @@ sc_wrap(uint64_t secs)
 	uint64_t wall0 = UINT64_MAX - 700 * NS_PER_MS;
 	uint64_t cpu0 = UINT64_MAX - 300 * NS_PER_MS;
 	uint64_t round0 = UINT64_MAX - 20;
+	uint64_t served0 = UINT32_MAX - 2000;	/* the service counter's low 32 bits */
 	u_int ticks0 = UINT_MAX - 400;
 
 	/* Everything starts just below its wrap and runs through it. */
 	sim_reset(wall0, cpu0, round0, ticks0);
+	/*
+	 * The grace rule's clock too: kc_idle_served keeps the low 32 bits of
+	 * kw_served_us, so the queues start 2 ms of service below that wrap
+	 * and the doorbell's unsigned difference runs through it (S4.6, S13).
+	 */
+	for (int c = 0; c < NCLASS; c++)
+		S.w[c].kw_served_us = served0;
 	a = addq(C_NET, 1, P_FLOOD, H_COOP, 20 * NS_PER_US); a->flood_depth = 64;
 	b = addq(C_NET, 1, P_BURSTPAUSE, H_COOP, 20 * NS_PER_US); b->burst = 8; b->pause_ns = 30 * NS_PER_US;
-	/* kc_idle_round near the 32-bit wrap too */
-	b->kc.kc_idle_round = (u_int)round0;
 	run_for(secs * NS_PER_S);
 	report("wrap: wall, cpu time, round counter and ticks through their wraps");
 	if (S.w[C_NET].kw_round < 1000 || S.w[C_NET].kw_round > 100000000)
@@ -1133,8 +1159,12 @@ sc_wrap(uint64_t secs)
 	if (S.now > wall0) fail("wrap: wall clock did not wrap (now %" PRIu64 ")", S.now);
 	if (S.cputime[C_NET] > cpu0) fail("wrap: cpu time did not wrap");
 	if (S.ticks > ticks0) fail("wrap: ticks did not wrap (%u)", S.ticks);
-	printf("  ok  wall %" PRIu64 " cpu %" PRIu64 " round %" PRIu64 " ticks %u after the wraps; %" PRIu64 " items, %" PRIu64 " grace hits\n",
-	    S.now, S.cputime[C_NET], S.w[C_NET].kw_round, S.ticks, a->items_out, b->kc.kc_grace);
+	if (S.w[C_NET].kw_served_us <= served0)
+		fail("wrap: the service counter did not pass its 32-bit wrap (%" PRIu64 ")",
+		    S.w[C_NET].kw_served_us);
+	printf("  ok  wall %" PRIu64 " cpu %" PRIu64 " round %" PRIu64 " served %" PRIu64 " us ticks %u after the wraps; %" PRIu64 " items, %" PRIu64 " grace hits\n",
+	    S.now, S.cputime[C_NET], S.w[C_NET].kw_round, S.w[C_NET].kw_served_us,
+	    S.ticks, a->items_out, b->kc.kc_grace);
 	/* ks_ticks2ns exactness vs 128-bit reference */
 	{
 		uint64_t rates[] = { 1000000000ULL, 2999999999ULL, 3600000000ULL, 100000000ULL, 0 };
@@ -1276,26 +1306,32 @@ sc_random(uint64_t secs)
 	return (S.violations);
 }
 
+/*
+ * The grace window is derived (one ring's worth of service, S4.6), not a
+ * knob, so there is nothing to sweep: the scenario varies the producer's
+ * pause instead and shows where the window stops covering it.  Until
+ * 2026-10-28 this was sweep_grace over GRACE_ROUNDS 1 and 2, whose two
+ * halves were indistinguishable (SCHED.md S12).
+ */
 static int
-sc_sweep_grace(uint64_t secs)
+sc_grace_pause(uint64_t secs)
 {
 	uint64_t pauses[] = { 10, 50, 200, 500, 2000 };
 
-	printf("== sweep_grace: burst-and-pause (32 x 20 us) against a flood; share and boosts\n");
-	printf("  pause_us grace  share  boosts  grace_hits  flood_lat_max_us\n");
-	for (u_int g = 1; g <= 2; g++) {
-		for (size_t i = 0; i < sizeof(pauses) / sizeof(pauses[0]); i++) {
-			struct simq *a, *b;
-			sim_reset(0, 0, 0, 0);
-			S.knobs[C_NET].grace_rounds = g;
-			a = addq(C_NET, 1, P_FLOOD, H_COOP, 20 * NS_PER_US); a->flood_depth = 256;
-			b = addq(C_NET, 1, P_BURSTPAUSE, H_COOP, 20 * NS_PER_US);
-			b->burst = 32; b->pause_ns = pauses[i] * NS_PER_US;
-			run_for(secs * NS_PER_S);
-			printf("  %8" PRIu64 " %5u  %.3f  %-7" PRIu64 " %-11" PRIu64 " %.1f\n",
-			    pauses[i], g, (double)b->service_ns / a->service_ns,
-			    b->kc.kc_boosts, b->kc.kc_grace, (double)a->lat_max / NS_PER_US);
-		}
+	printf("== grace_pause: burst-and-pause (32 x 20 us) against a flood; share and boosts\n");
+	printf("  (the window is Q x the ring length at the doorbell: Q .. 2Q here)\n");
+	printf("  pause_us quantum_us  share  boosts  grace_hits  flood_lat_max_us\n");
+	for (size_t i = 0; i < sizeof(pauses) / sizeof(pauses[0]); i++) {
+		struct simq *a, *b;
+		sim_reset(0, 0, 0, 0);
+		a = addq(C_NET, 1, P_FLOOD, H_COOP, 20 * NS_PER_US); a->flood_depth = 256;
+		b = addq(C_NET, 1, P_BURSTPAUSE, H_COOP, 20 * NS_PER_US);
+		b->burst = 32; b->pause_ns = pauses[i] * NS_PER_US;
+		run_for(secs * NS_PER_S);
+		printf("  %8" PRIu64 " %10" PRIu64 "  %.3f  %-7" PRIu64 " %-11" PRIu64 " %.1f\n",
+		    pauses[i], S.knobs[C_NET].quantum_ns / 1000,
+		    (double)b->service_ns / a->service_ns,
+		    b->kc.kc_boosts, b->kc.kc_grace, (double)a->lat_max / NS_PER_US);
 	}
 	return (S.violations);
 }
@@ -1345,7 +1381,7 @@ static struct scenario scenarios[] = {
 	{ "ratechange",	sc_ratechange,	1, 1 },
 	{ "badhandler",	sc_badhandler,	2, 1 },
 	{ "random",	sc_random,	36, 100 },
-	{ "sweep_grace", sc_sweep_grace, 2, 1 },
+	{ "grace_pause", sc_grace_pause, 2, 1 },
 	{ "sweep_boost", sc_sweep_boost, 2, 1 },
 	{ NULL, NULL, 0, 0 }
 };

@@ -140,27 +140,229 @@ kwq_cputime_ns_tick(struct kwq_worker *kw, uint64_t *tick)
 }
 
 /*
+ * The idle-class wait for same-CPU producers (../KWQ.md S16, off unless
+ * kern.kwq.<class>.wake_delay_us is set).  A wake at the class priority
+ * preempts whatever runs on the worker's CPU at its next instruction, so
+ * a producer on that CPU never gets to finish its burst (the guest's
+ * receiver blocked 9.5 k times a second inside its socket-lock section,
+ * ../NOTES.md 2026-10-09).  For a producer on the worker's own CPU the
+ * worker is therefore made runnable in the idle scheduling class at the
+ * class's cap_prio instead: ULE runs it when the producer sleeps or when
+ * its CPU would otherwise idle, and the deadline below bounds the wait.
+ * The idle class, rather than cap_prio in the worker's own class, because
+ * ULE rewrites a timeshare sleeper's priority to PRI_MIN_BATCH when it is
+ * worse (static_boost), which would make every parking priority 120; in
+ * the idle class the priority stands and sched_priority() leaves it
+ * alone.  The class is restored with the priority at the promotion.
+ *
+ * Promote a worker waiting in the idle class.  kw_mtx held, kw_lowpri
+ * set.  On a thread on the run queue ULE requeues it and preempts
+ * (sched_thread_priority(), the TD_ON_RUNQ branch).
+ */
+static void
+kwq_wake_promote(struct kwq_worker *kw, int reason)
+{
+	struct thread *td = kw->kw_td;
+	uint64_t ns;
+
+	mtx_assert(&kw->kw_mtx, MA_OWNED);
+	KASSERT(kw->kw_lowpri, ("kwq_wake_promote: not waiting"));
+	/*
+	 * A deadline still pending would fire as a no-op, one timer
+	 * interrupt per wake; stopping it costs 49-80 ns (tools/schedprobe).
+	 * The deadline handler clears kw_wake_armed before it calls here, so
+	 * it never stops itself.
+	 */
+	if (kw->kw_wake_armed) {
+		callout_stop(&kw->kw_wake_co);
+		kw->kw_wake_armed = false;
+	}
+	if (td != NULL) {
+		thread_lock(td);
+		sched_class(td, kw->kw_pri_class);	/* back from the idle class */
+		sched_prio(td, kw->kw_pri);
+		thread_unlock(td);
+	}
+	kw->kw_lowpri = false;
+	ns = kwq_sbt2ns(sbinuptime() - kw->kw_wake_since);
+	kw->kw_wake_low_ns += ns;
+	switch (reason) {
+	case KWQ_WAKE_DEADLINE:
+		kw->kw_wake_prom_deadline++;
+		break;
+	case KWQ_WAKE_SELF:
+		kw->kw_wake_self++;
+		break;
+	default:
+		kw->kw_wake_prom_urgent++;
+		break;
+	}
+	SDT_PROBE4(kwq, , , wake, kw->kw_class, kw->kw_cpu, reason, ns);
+}
+
+/* The wait's deadline, on the worker's CPU (the producer's, here). */
+static void
+kwq_wake_deadline(void *arg)
+{
+	struct kwq_worker *kw = arg;
+
+	mtx_lock_spin(&kw->kw_mtx);
+	kw->kw_wake_armed = false;
+	if (kw->kw_lowpri)
+		kwq_wake_promote(kw, KWQ_WAKE_DEADLINE);
+	mtx_unlock_spin(&kw->kw_mtx);
+}
+
+/*
+ * Make the sleeping worker runnable in the idle class for a producer on
+ * its own CPU and arm the deadline.  kw_mtx held, kw_sleeping true, the
+ * worker's thread alive.  There is no idle-CPU shortcut here (the branch
+ * this comes from raised a worker at once when its CPU was idle): the
+ * producer is running on that CPU, so the CPU is never idle.  The
+ * deadline is armed on the worker's CPU, which is the producer's own, so
+ * it is a local callout wheel either way and the branch's
+ * kern.kwq.wake_co_local knob has nothing to choose between.
+ */
+static void
+kwq_wake_park(struct kwq_worker *kw, struct kwq_cpu *kc)
+{
+	struct thread *td = kw->kw_td;
+	sbintime_t delay;
+
+	mtx_assert(&kw->kw_mtx, MA_OWNED);
+	delay = (sbintime_t)kwq_wake_delay_us[kw->kw_class] * SBT_1US;
+	kw->kw_sleeping = false;
+	kc->kc_doorbells++;
+	kw->kw_wakes_low++;
+	kw->kw_wake_since = sbinuptime();
+	thread_lock(td);
+	sched_class(td, PRI_IDLE);
+	sched_prio(td, kwq_cap_prio[kw->kw_class]);
+	thread_unlock(td);
+	kw->kw_lowpri = true;
+	wakeup_one(kw->kw_chan);
+	kw->kw_wake_armed = true;
+	callout_reset_sbt_on(&kw->kw_wake_co, kw->kw_wake_since + delay,
+	    delay >> 4, kwq_wake_deadline, kw, kw->kw_cpu,
+	    C_ABSOLUTE | C_DIRECT_EXEC);
+}
+
+/*
  * Ring the doorbell for kc: place it with the core (new list or, by the
  * grace rule, the ring) and wake the worker if it sleeps.  Called with kc
  * locked; kc_mtx (sleep or spin) -> kw_mtx (spin) is the lock order.
+ * `urgent' (a notifier, a drain, a cancel) is never held back.
+ *
+ * Precedence of the two opt-in regimes of ../KWQ.md S16, both decided
+ * here: a worker in the tick regime skips the doorbell whatever the
+ * producer's CPU, because its own timeout serves this list within L;
+ * otherwise a producer on the worker's own CPU takes the idle-class path
+ * when wake_delay_us is set; otherwise the plain doorbell wakes the
+ * worker at the class priority, as it always has.  An urgent ring takes
+ * neither regime, and neither does a producer on another CPU, which is
+ * owed one sleep-wake and nothing else (SCHED.md B5a).
  */
 void
-kwq_doorbell(struct kwq_cpu *kc)
+kwq_doorbell(struct kwq_cpu *kc, bool urgent)
 {
 	struct kwq_worker *kw;
+	int state;
 
 	kw = kwq_workers[kc->kc_q->kwq_class][kc->kc_cpu];
 	mtx_lock_spin(&kw->kw_mtx);
 	KASSERT(kc->kc_onlist == KWQ_ON_NONE, ("kwq_doorbell: %s cpu%d on list %u",
 	    kc->kc_q->kwq_name, kc->kc_cpu, kc->kc_onlist));
 	ks_doorbell(kw, kc);
-	SDT_PROBE3(kwq, , , doorbell, kc->kc_q->kwq_class, kc->kc_cpu,
-	    kw->kw_sleeping ? KWQ_DB_ASLEEP : KWQ_DB_AWAKE);
-	if (kw->kw_sleeping) {
+	if (!kw->kw_sleeping) {
+		state = KWQ_DB_AWAKE;
+		/*
+		 * Awake but still waiting in the idle class for its CPU: an
+		 * urgent ring, or an item from another CPU, is owed the
+		 * class priority now, so the wait ends here.
+		 */
+		if (__predict_false(kw->kw_lowpri) &&
+		    (urgent || curcpu != kc->kc_cpu))
+			kwq_wake_promote(kw, KWQ_WAKE_URGENT);
+	} else if (kw->kw_tick && !urgent) {
+		/*
+		 * The tick regime (KWQ.md S16): the worker sleeps with the
+		 * class's bound as its timeout and will serve this list then.
+		 * The list is placed, nothing is woken, so the producer pays
+		 * the append alone.
+		 */
+		kc->kc_doorbells_skipped++;
+		state = KWQ_DB_TICKED;
+	} else if (!urgent && kwq_wake_delay_us[kw->kw_class] != 0 &&
+	    curcpu == kc->kc_cpu && kw->kw_td != NULL) {
+		kwq_wake_park(kw, kc);
+		state = KWQ_DB_LOWPRI;
+	} else {
 		kw->kw_sleeping = false;
+		kc->kc_doorbells++;
 		wakeup_one(kw->kw_chan);
+		state = KWQ_DB_ASLEEP;
 	}
+	SDT_PROBE3(kwq, , , doorbell, kc->kc_q->kwq_class, kc->kc_cpu, state);
 	mtx_unlock_spin(&kw->kw_mtx);
+}
+
+/*
+ * The tick regime's entry (KWQ.md S16), at a doorbell wake: three
+ * consecutive sleeps shorter than the bound L, which is density over more
+ * than one burst.  The first build entered on two wakes within L, which
+ * every burst of two items satisfies, and so charged a short burst with a
+ * long pause one L on its tail for one saved wake (WAKE.md S10.3).  A
+ * sleep of L or more resets the count, and the hold-off left by a barren
+ * episode bars the entry until it expires.
+ */
+static void
+kwq_tick_entry(struct kwq_worker *kw, sbintime_t tick, sbintime_t slept,
+    sbintime_t now)
+{
+	if (tick == 0 || slept >= tick) {
+		kw->kw_tick_short = 0;
+		return;
+	}
+	if (kw->kw_tick || ++kw->kw_tick_short < KWQ_TICK_ENTER ||
+	    now < kw->kw_tick_holdoff)
+		return;
+	kw->kw_tick = true;
+	kw->kw_tick_coalesced = false;
+	kw->kw_tick_short = 0;
+	kw->kw_tick_enters++;
+	kw->kw_tick_start = now;
+}
+
+/*
+ * The exit (KWQ.md S16): a tick whose round served one element or none
+ * coalesced nothing, so the next element pays a wake rather than waiting
+ * L for nothing, and a silence leaves no timer armed.  An episode in
+ * which no tick coalesced anything doubles the entry hold-off, 2L up to
+ * 1024L; one that did coalesce clears it, or bursts spaced about twice
+ * the bound would enter only every other burst.
+ */
+static void
+kwq_tick_exit(struct kwq_worker *kw, sbintime_t tick, sbintime_t now)
+{
+	if (kw->kw_tick_items == 0)
+		kw->kw_ticks_empty++;
+	else
+		kw->kw_ticks_single++;
+	kw->kw_tick = false;
+	kw->kw_tick_short = 0;
+	kw->kw_tick_exits++;
+	kw->kw_tick_ns += kwq_sbt2ns(now - kw->kw_tick_start);
+	if (kw->kw_tick_coalesced) {
+		kw->kw_tick_backoff = 2 * tick;
+		kw->kw_tick_holdoff = 0;
+	} else {
+		kw->kw_tick_barren++;
+		if (kw->kw_tick_backoff < 2 * tick)
+			kw->kw_tick_backoff = 2 * tick;
+		else if (kw->kw_tick_backoff < 1024 * tick)
+			kw->kw_tick_backoff *= 2;
+		kw->kw_tick_holdoff = now + kw->kw_tick_backoff;
+	}
 }
 
 /*
@@ -256,6 +458,14 @@ kwq_cap_deadline(void *arg)
 	mtx_lock_spin(&kw->kw_mtx);
 	td = kw->kw_td;
 	if (td != NULL) {
+		/*
+		 * Both deadlines can be pending at once: end the idle-class
+		 * wait first, so that the worker comes out of this with its
+		 * own class and the class priority, not the class priority
+		 * inside the idle class (KWQ.md S16).
+		 */
+		if (__predict_false(kw->kw_lowpri))
+			kwq_wake_promote(kw, KWQ_WAKE_URGENT);
 		thread_lock(td);
 		kw->kw_cap_fired = true;
 		sched_prio(td, kw->kw_pri);
@@ -383,10 +593,25 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	    net ? cpu_now : ks_ticks2ns(t0, kw->kw_ns_scale));
 	kwq_kc_unlock(kc);
 	/*
-	 * S6.3: a pass runs at the class priority.  A hand-over left the
-	 * worker at the waiting priority; one compare puts it back before
-	 * the handler is called (30-80 ns when it fires, S15).
+	 * S6.3 and the promise of ../KWQ.md S3: a pass runs at the class
+	 * priority, or above it if a turnstile lent one, and in the class
+	 * the worker started in.  One compare puts the worker back if a
+	 * hand-over left it at the waiting priority (30-80 ns when it
+	 * fires, S15), and the same compare is the tripwire: under the
+	 * pass-level share limit the hand-over re-asserts the priority the
+	 * moment its switch returns, so prio_violations reads zero.  The
+	 * default build counts, make KWQ_HARD_INVARIANTS=1 asserts.
 	 */
+	if (__predict_false(curthread->td_priority > kw->kw_pri ||
+	    curthread->td_pri_class != kw->kw_pri_class)) {
+		kw->kw_prio_violations++;
+#ifndef KWQ_SOFT_INVARIANTS
+		KASSERT(0, ("kwq: %s/%d pass at priority %d class %d, expected %d/%d",
+		    kwq_class_names[kw->kw_class], kw->kw_cpu,
+		    curthread->td_priority, curthread->td_pri_class,
+		    kw->kw_pri, kw->kw_pri_class));
+#endif
+	}
 	kwq_class_prio_restore(kw);
 	if (__predict_false(kw->kw_knobs->cap_permille < 1000)) {
 		if (cap == KS_CAP_RESTORE)
@@ -450,11 +675,13 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	mtx_lock_spin(&kw->kw_mtx);
 	cpu_now = kwq_cputime_ns_tick(kw, &t1);
 	kc->kc_cycles += t1 - t0;
-	if (__predict_false(curthread->td_runtime != kw->kw_pass_rt)) {
+	kw->kw_pass_switched = (curthread->td_runtime != kw->kw_pass_rt);
+	if (__predict_false(kw->kw_pass_switched)) {
 		/* The worker left the CPU during this pass (S1a.4). */
 		kc->kc_switched++;
 		kw->kw_switched++;
 	}
+	kw->kw_tick_items += n;			/* what this tick's round served */
 	SDT_PROBE5(kwq, , , pass__end, q, kc->kc_cpu, n,
 	    cpu_now - kw->kw_pass_start, (int)(kc->kc_requeued - requeued0));
 	ks_pass_end(kw, kc, cpu_now, has_work);
@@ -503,9 +730,10 @@ kwq_worker_main(void *arg)
 	struct kwq_cpu *kc;
 	enum ks_action a;
 	enum ks_yield y;
-	sbintime_t t0;
+	sbintime_t t0, t1, tick;
 	uint64_t rate;
 	uint64_t wall;
+	int rv;
 
 #ifdef SMP
 	/* Before sched_bind() to a CPU, wait for all CPUs to go on-line. */
@@ -515,6 +743,7 @@ kwq_worker_main(void *arg)
 	thread_lock(curthread);
 	sched_prio(curthread, kw->kw_pri);
 	sched_bind(curthread, kw->kw_cpu);
+	kw->kw_pri_class = curthread->td_pri_class;	/* the pass assertion */
 	thread_unlock(curthread);
 	kw->kw_rate = kwq_tickrate();
 	kw->kw_ns_scale = ks_ns_scale(kw->kw_rate);
@@ -537,14 +766,62 @@ kwq_worker_main(void *arg)
 			 * is about to sleep interests nobody else.
 			 */
 			kwq_class_prio_restore(kw);
+			/*
+			 * The tick regime (../KWQ.md S16): leave it after a
+			 * tick whose round served one element or none.
+			 * kw_tick_round is set only when the last wake was
+			 * the timeout, so the round that entered the regime,
+			 * which a doorbell woke, is not judged by it.  A
+			 * tick_us of 0 (the knob turned off meanwhile) ends
+			 * it too.
+			 */
+			tick = (sbintime_t)kwq_tick_us[kw->kw_class] * SBT_1US;
+			if (__predict_false(kw->kw_tick) && (tick == 0 ||
+			    (kw->kw_tick_round && kw->kw_tick_items <= 1)))
+				kwq_tick_exit(kw, tick, sbinuptime());
 			kw->kw_sleeping = true;
 			SDT_PROBE3(kwq, , , idle, kw->kw_class, kw->kw_cpu,
 			    kw->kw_busy_ns - kw->kw_idle_busy);
 			t0 = sbinuptime();
-			msleep_spin(kw->kw_chan, &kw->kw_mtx, "kwqidle", 0);
-			kw->kw_idle_ns += kwq_sbt2ns(sbinuptime() - t0);
-			kw->kw_wakeups++;
+			/*
+			 * In the regime the sleep carries the bound as its
+			 * timeout (precision L/8, so the timer may be
+			 * coalesced with others); outside it the sleep is
+			 * untimed and only a doorbell ends it.  No callout of
+			 * kwq's own: the sleep's timeout is the tick.
+			 */
+			if (__predict_false(kw->kw_tick)) {
+				rv = msleep_spin_sbt(kw->kw_chan, &kw->kw_mtx,
+				    "kwqtick", tick, tick >> 3, 0);
+			} else {
+				msleep_spin(kw->kw_chan, &kw->kw_mtx, "kwqidle", 0);
+				rv = 0;
+			}
+			t1 = sbinuptime();
+			kw->kw_idle_ns += kwq_sbt2ns(t1 - t0);
 			kw->kw_idle_busy = kw->kw_busy_ns;
+			/*
+			 * Got the CPU in the idle class before anyone
+			 * promoted us (KWQ.md S16): the producer finished its
+			 * burst or its CPU went idle, which is the case the
+			 * wait exists for.
+			 */
+			if (__predict_false(kw->kw_lowpri))
+				kwq_wake_promote(kw, KWQ_WAKE_SELF);
+			kw->kw_tick_round = (rv == EWOULDBLOCK);
+			if (kw->kw_tick_round && kw->kw_tick_items > 1)
+				kw->kw_tick_coalesced = true;	/* the last tick paid */
+			if (rv == EWOULDBLOCK) {
+				/* The tick: nobody woke us, we wake ourselves. */
+				kw->kw_sleeping = false;
+				kw->kw_ticks++;
+				SDT_PROBE3(kwq, , , tick, kw->kw_class, kw->kw_cpu,
+				    kw->kw_tick_items);
+			} else {
+				kw->kw_wakeups++;
+				kwq_tick_entry(kw, tick, t1 - t0, t1);
+			}
+			kw->kw_tick_items = 0;
 			mtx_unlock_spin(&kw->kw_mtx);
 			continue;
 		}
@@ -651,6 +928,19 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	KW_U64(kw_slice_yields, "slice_yields", "yields at ULE's own priority because ULE ended the worker's slice (limit off only)");
 	KW_U64(kw_handbacks, "handbacks", "rounds ended early because a higher class waited");
 	KW_U64(kw_switched, "switched", "passes during which the worker left the CPU (preempted or blocked); NET charges them wall time");
+	KW_U64(kw_ticks, "ticks", "wakes by the tick regime's own timeout (KWQ.md S16)");
+	KW_U64(kw_ticks_empty, "ticks_empty", "ticks that found nothing (the regime ends)");
+	KW_U64(kw_ticks_single, "ticks_single", "ticks whose round served one element (the regime ends)");
+	KW_U64(kw_tick_enters, "tick_enters", "entries into the tick regime (three consecutive sleeps shorter than tick_us)");
+	KW_U64(kw_tick_exits, "tick_exits", "times the regime ended");
+	KW_U64(kw_tick_ns, "tick_ns", "wall time spent in the tick regime");
+	KW_U64(kw_tick_barren, "tick_barren", "episodes in which no tick coalesced anything (each doubles the entry hold-off, 2 x tick_us up to 1024 x)");
+	KW_U64(kw_wakes_low, "wakes_low", "wakes in the idle class for a producer on the worker's own CPU (KWQ.md S16)");
+	KW_U64(kw_wake_self, "wake_self", "of those, the worker got the CPU and promoted itself");
+	KW_U64(kw_wake_prom_deadline, "wake_promotions_deadline", "of those, promoted by the wake_delay_us deadline");
+	KW_U64(kw_wake_prom_urgent, "wake_promotions_urgent", "of those, promoted by a notifier, a drain, a cancel, an enqueue from another CPU or the share limit's deadline");
+	KW_U64(kw_wake_low_ns, "wake_low_ns", "wall time spent waiting in the idle class");
+	KW_U64(kw_prio_violations, "prio_violations", "passes that began below the class priority or outside its class (0; counted under KWQ_SOFT_INVARIANTS, asserted otherwise)");
 	KW_U64(kw_busy_ns, "busy_ns", "worker CPU time inside handlers");
 	KW_U64(kw_idle_ns, "idle_ns", "wall time asleep with nothing queued");
 	KW_U64(kw_round, "round", "current round number");
@@ -685,6 +975,7 @@ kwq_workers_start(struct sysctl_oid_list **cpu_oids)
 			    M_WAITOK | M_ZERO);
 			mtx_init(&kw->kw_mtx, "kwq worker", NULL, MTX_SPIN);
 			callout_init(&kw->kw_cap_co, 1);
+			callout_init(&kw->kw_wake_co, 1);
 			ks_worker_init(kw, &kwq_knobs[cls], 0);
 			kw->kw_class = cls;
 			kw->kw_cpu = cpu;
@@ -737,6 +1028,9 @@ kwq_workers_stop(void)
 				continue;
 			mtx_lock_spin(&kw->kw_mtx);
 			kw->kw_exit = true;
+			/* An unload waits for no regime (KWQ.md S16). */
+			if (kw->kw_lowpri)
+				kwq_wake_promote(kw, KWQ_WAKE_URGENT);
 			if (kw->kw_sleeping) {
 				kw->kw_sleeping = false;
 				wakeup_one(kw->kw_chan);
@@ -746,6 +1040,7 @@ kwq_workers_stop(void)
 				    0);
 			mtx_unlock_spin(&kw->kw_mtx);
 			callout_drain(&kw->kw_cap_co);
+			callout_drain(&kw->kw_wake_co);
 			mtx_destroy(&kw->kw_mtx);
 			free(kw, M_KWQ);
 			kwq_workers[cls][cpu] = NULL;

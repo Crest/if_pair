@@ -71,7 +71,7 @@ struct kwq_cpu {
 	 * IDLE <-> non-IDLE transitions happen under kc_mtx (and kw_mtx);
 	 * the worker moves it between non-IDLE values under kw_mtx alone,
 	 * which producers, who only test for IDLE under kc_mtx, tolerate.
-	 * kc_onlist, kc_warm and kc_idle_round are under kw_mtx.
+	 * kc_onlist, kc_warm and kc_idle_served are under kw_mtx.
 	 */
 	struct mtx		kc_mtx;
 	STAILQ_HEAD(, kwq_item)	kc_list;	/* items and notifiers, arrival order */
@@ -82,11 +82,15 @@ struct kwq_cpu {
 	u_short			kc_waiters;	/* drain/cancel sleepers on kc */
 	u_char			kc_onlist;	/* enum kwq_onlist */
 	u_char			kc_warm;	/* KWQ_WARM | KWQ_DEBT (SCHED.md S4.3, S4.6) */
-	u_int			kc_idle_round;	/* low 32 bits of kw_round at idle */
+	u_int			kc_idle_served;	/* low 32 bits of kw_served_us when the
+						   queue went idle from the ring (S4.6) */
 	sbintime_t		kc_empty_since;	/* sbinuptime at empty -> non-empty */
 	TAILQ_ENTRY(kwq_cpu)	kc_active;	/* worker's new list or ring */
 	uint64_t		kc_rejected;	/* ENOBUFS/ENXIO, producer under lock */
 	uint64_t		kc_coalesced;	/* kwq_notify() no-ops */
+	uint64_t		kc_doorbells;	/* wakeups performed for this list */
+	uint64_t		kc_doorbells_skipped;	/* lists placed while the worker's tick
+						   was armed: no wakeup (KWQ.md S16) */
 
 	/* Block 1..: consumer-private, written only by the owning worker. */
 	struct kwq		*kc_q __aligned(KWQ_LINE);
@@ -101,6 +105,9 @@ struct kwq_cpu {
 	uint64_t		kc_maxdepth;	/* sampled at pass start */
 	uint64_t		kc_maxlat_ns;	/* oldest-item age at pass start */
 	uint64_t		kc_overruns;	/* passes > budget + Qw */
+	uint64_t		kc_overruns_switched;	/* of those, passes during which the
+						   worker left the CPU: the system's
+						   excess, not the handler's (S6.3) */
 	uint64_t		kc_parks;	/* rounds skipped for a deficit <= 0 */
 	uint64_t		kc_boosts;	/* passes served from the new list */
 	uint64_t		kc_grace;	/* doorbells sent to the ring by the grace rule */
@@ -144,9 +151,10 @@ CTASSERT(__offsetof(struct kwq, kwq_active) == KWQ_LINE);
 struct kwq_worker {
 	/*
 	 * Block 0: shared with producers (doorbell) under kw_mtx, a spin mutex
-	 * so that KWQ_F_SPIN producers may ring it.  kw_round is a plain
-	 * store by the worker, read by producers under kw_mtx for the grace
-	 * rule (SCHED.md S3).
+	 * so that KWQ_F_SPIN producers may ring it.  kw_served_us and
+	 * kw_nactive are plain stores by the worker, read by producers under
+	 * kw_mtx for the grace rule, one possibly stale read per doorbell
+	 * (SCHED.md S3, S4.6).
 	 */
 	struct mtx		kw_mtx;
 	TAILQ_HEAD(, kwq_cpu)	kw_new;		/* newly non-empty: boosted */
@@ -155,8 +163,13 @@ struct kwq_worker {
 	u_int			kw_nnew;	/* length of kw_new (SCHED.md S3) */
 	bool			kw_sleeping;
 	bool			kw_exit;
+	bool			kw_lowpri;	/* made runnable in the idle class at
+						   cap_prio, not yet promoted (KWQ.md S16) */
 	struct thread		*kw_td;
 	uint64_t		kw_round;
+	uint64_t		kw_served_us;	/* microseconds of pass service delivered
+						   since the worker started; advances only
+						   inside passes (SCHED.md S4.6) */
 	void			*kw_chan;	/* wait channel (kwq_worker.c) */
 
 	/* Block 1..: private to the worker (ks_* run under kw_mtx anyway). */
@@ -181,6 +194,36 @@ struct kwq_worker {
 	bool			kw_cap_handed;	/* the last pass ended in a hand-over */
 	volatile bool		kw_cap_fired;	/* the period's deadline callout ran */
 	struct callout		kw_cap_co;	/* raises the priority back at the period's end */
+	bool			kw_pass_switched;	/* the pass just ended left the CPU */
+	int			kw_pri_class;	/* td_pri_class at start; the priority
+						   assertion and the idle-class wait */
+	/*
+	 * The tick regime (KWQ.md S16, off unless kern.kwq.<class>.tick_us is
+	 * set): the worker sleeps with the class's bound L as its timeout and
+	 * producers place their lists without waking it.  Entered from a
+	 * doorbell wake after KWQ_TICK_ENTER consecutive sleeps shorter than
+	 * L, subject to the hold-off; left after a tick whose round served
+	 * one element or none.
+	 */
+	/*
+	 * The idle-class wait for same-CPU producers (KWQ.md S16, off unless
+	 * kern.kwq.<class>.wake_delay_us is set): an enqueue from the
+	 * worker's own CPU makes the worker runnable in the idle class at
+	 * cap_prio instead of preempting the producer; the deadline below,
+	 * or the worker getting the CPU by itself, promotes it back.
+	 */
+	struct callout		kw_wake_co;	/* the wake_delay_us deadline */
+	bool			kw_wake_armed;	/* kw_wake_co is pending */
+	sbintime_t		kw_wake_since;	/* when the idle-class wait began */
+
+	bool			kw_tick;	/* in the regime (under kw_mtx) */
+	bool			kw_tick_round;	/* the round in progress began with a tick */
+	bool			kw_tick_coalesced;	/* some tick of this episode served > 1 */
+	u_int			kw_tick_short;	/* consecutive sleeps shorter than L */
+	sbintime_t		kw_tick_holdoff;	/* no entry before this time */
+	sbintime_t		kw_tick_backoff;	/* the current hold-off, 2L .. 1024L */
+	sbintime_t		kw_tick_start;	/* sbinuptime of the entry */
+	uint64_t		kw_tick_items;	/* elements served since the last wake */
 	uint64_t		kw_round_wall;	/* sbinuptime ns at the last round end (kwq:::round-end) */
 	uint64_t		kw_idle_busy;	/* kw_busy_ns at the last wakeup (kwq:::idle) */
 	const struct kwq_sched_knobs *kw_knobs;
@@ -199,7 +242,11 @@ struct kwq_worker {
 				kw_tick_yields, kw_handbacks, kw_cap_demotions,
 				kw_cap_yields, kw_cap_restores, kw_cap_ns, kw_cap_runon,
 				kw_cap_cuts, kw_slice_yields,
-				kw_busy_ns, kw_idle_ns, kw_budget_calls, kw_budget_reads, kw_switched;
+				kw_busy_ns, kw_idle_ns, kw_budget_calls, kw_budget_reads, kw_switched,
+				kw_ticks, kw_ticks_empty, kw_ticks_single, kw_tick_enters,
+				kw_tick_exits, kw_tick_ns, kw_tick_barren, kw_prio_violations,
+				kw_wakes_low, kw_wake_self, kw_wake_prom_deadline,
+				kw_wake_prom_urgent, kw_wake_low_ns;
 } __aligned(KWQ_LINE);
 
 extern struct kwq_worker **kwq_workers[KWQ_NCLASS];	/* [class][cpu] */
@@ -208,6 +255,17 @@ extern struct kwq_list kwq_all;		/* every queue, under kwq_sx (kwq.c) */
 extern const char *kwq_class_names[KWQ_NCLASS];
 extern int kwq_yield_prio[KWQ_NCLASS];
 extern int kwq_cap_prio[KWQ_NCLASS];
+extern u_int kwq_tick_us[KWQ_NCLASS];	/* the tick regime's bound L; 0 = off (KWQ.md S16) */
+extern u_int kwq_wake_delay_us[KWQ_NCLASS];	/* the idle-class wait's deadline; 0 = off */
+
+/*
+ * How many consecutive sleeps shorter than L enter the tick regime
+ * (KWQ.md S16).  Three: the first build entered on two doorbell wakes
+ * within L, which every burst of two items satisfies, and so charged a
+ * short burst with a long pause one L on its tail for one saved wake
+ * (WAKE.md S10.3).
+ */
+#define	KWQ_TICK_ENTER	3
 
 int	kwq_class_priority(enum kwq_class cls);
 
@@ -257,7 +315,9 @@ kwq_sbt2ns(sbintime_t sbt)
 /* kwq_worker.c */
 int	kwq_workers_start(struct sysctl_oid_list **cpu_oids);
 void	kwq_workers_stop(void);
-void	kwq_doorbell(struct kwq_cpu *kc);	/* kc locked, state IDLE */
+void	kwq_doorbell(struct kwq_cpu *kc, bool urgent);	/* kc locked, state IDLE;
+					   `urgent' (a notifier, a drain, a cancel)
+					   is never held back by a regime */
 bool	kwq_higher_waiting(enum kwq_class cls);	/* hand-back flags, this CPU */
 uint64_t kwq_cputime_ns(struct kwq_worker *kw);
 uint64_t kwq_cputime_ns_tick(struct kwq_worker *kw, uint64_t *tick);
