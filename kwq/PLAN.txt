@@ -844,6 +844,15 @@ Phases
     if_pair was loaded and in use).  Next: a07, merge, then decide the
     cap_prio default on the preemption-versus-placement trade; the
     NIC-fed flow on lab stays unmeasured.
+    REBASED 2026-10-28: kwq-p4d-passlevel onto kwq; its ATF run found
+    the `gaming` case failing four of six times with 3 to 8 boosts
+    where it allows two in three seconds, and none in six runs without
+    the budget cut, because a cut ends passes early and a round
+    therefore no longer stands for one quantum of service per
+    competitor, which is what the grace rule counted; the rule is
+    respecified in service, GRACE_SERVICE one ring's worth (SCHED.md
+    S4.6, S8, S12, S17), and the documents follow.  a07 remains
+    unmeasured.
     Mechanisms that were looked at, with what the kernel does about
     each:
     - a preempted handler holds a sleep mutex of the stack (tcpinp,
@@ -1001,6 +1010,23 @@ Phases
     Found on the way: a base-kernel deadlock unloading a cloner while
     a vnet jail dies (guest vmcore.0; compare.sh waits for jls -d).
     Nothing merged; crest decides.
+    SPECIFIED 2026-10-28: the findings folded into the specification -
+    the grace rule in service and the restated anti-gaming bound
+    (SCHED.md S4.6, S7 B6), the latency rows B5a-c (S7), what NET's
+    wall-time charge is exact up to, why it stays, split charging as a
+    candidate and overruns_switched (S6.3), the interval-stabbing lower
+    bound with the two opt-in regimes and the two dead ends (KWQ.md
+    S16), the priority promise to the handler and its tripwire (S3),
+    the cloner lifecycle rule (S8) - and the documents follow
+    (docs/overview.md S4, docs/cheatsheet.md 5.1-5.2, docs/reference.md,
+    OBSERVABILITY.md).  Implementation on branch kwq-p4f for
+    measurement: the grace rule in service, the tick regime with the
+    stricter entry (three consecutive sleeps shorter than L), the
+    idle-class wait for same-CPU producers (wake_delay_us, the worker
+    parking at cap_prio), the counters (ticks*, doorbells_skipped,
+    overruns_switched, wake*, prio_violations) and the priority
+    assertion, without the charge modes, which wait for a battery that
+    produces interrupt threads or lock blocks.
 
 [DECIDED 2026-10-09] Fork resolved: continue with kwq; netisr is to be
     reimplemented on top of kwq (KWQ.md S8 migration step 2, PLAN P8's

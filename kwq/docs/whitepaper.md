@@ -408,8 +408,11 @@ fresh quantum per burst at the expense of continuously backlogged
 queues.  Xen's credit scheduler and Linux's CFS sleeper fairness were
 both gamed exactly this way, and EEVDF's repair, keeping lag across
 sleeps, is the same idea as kwq's: a queue that goes idle *from the
-ring* records the round number, and a re-arrival within the grace window
-rejoins the ring rather than the new list.  A queue that goes idle from
+ring* records how much service the worker had delivered by then, and a
+re-arrival before one ring's worth more has gone to the other queues
+(`GRACE_SERVICE`, SCHED.md S4.6; a round count until 2026-10-28, when the
+share limit's budget cut made rounds shorter than the service they stood
+for) rejoins the ring rather than the new list.  A queue that goes idle from
 the new list, the genuinely light one the mechanism exists for, is
 eligible again immediately.
 

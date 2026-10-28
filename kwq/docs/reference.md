@@ -5,7 +5,10 @@ types and flags, the error and context rules, the sysctl tree, the
 DTrace provider, the DDB command and the build.  Names, ranges and
 defaults are exact as of 2026-10-01 and were read from the code, not
 from the design documents.  Where this and `../KWQ.md` or `../SCHED.md`
-differ, those are normative.
+differ, those are normative.  The entries added on 2026-10-28, the two
+optional wake regimes and their counters, come from the specification
+and from the branch that implements them for measurement; section 15
+says which of them the merged module has.
 
 Contents: 1 synopsis; 2 types; 3 flags and constants; 4 functions;
 5 the handler contract; 6 errors; 7 caller contexts; 8 what a handler
@@ -394,6 +397,51 @@ void fn(struct kwq *q, struct kwq_item *head, int n, void *ctx);
 - The handler may be called concurrently on different CPUs for the same
   queue, one pass per CPU at a time.
 
+### Priority, promised
+
+A handler runs at its class's priority from the call to its return and
+may assume it; the worker demotes, yields or hands the CPU over only
+between handlers, so a handler must not depend on priority propagation
+to anything it blocks (KWQ.md S3, SCHED.md S6.3).  A module built with
+`KWQ_HARD_INVARIANTS` panics on a pass that begins below the class
+priority; the default build counts it in the worker's
+`prio_violations`, which reads zero on a conforming build (it read the
+share limit's demoted passes on the tree before the pass-level limit).
+
+### Latency the items see
+
+The bounds a client may design against, from SCHED.md S7:
+
+| row | case | bound | measured |
+|---|---|---|---|
+| B5a | an item that finds its worker asleep | one sleep-wake and nothing else: the doorbell, the switch-in, one pass.  Nothing in kwq may delay the first wake of a backlog | 8 to 14 us through a pair on the two hardware test machines, within 1 us of a direct wakeup |
+| B5b | an item beside a busy queue on the same CPU | the pass in progress (B1) plus one quantum-bounded pass of the other queue; the tick regime adds its bound `tick_us` to this row and nothing to B5a | p99 25 to 38 us for a request-reply flow beside a bulk flow |
+| B5c | a user thread competing for the worker's CPU | at most one `cap_period` plus one pass, the share limit's hand-over, not a ULE slice: a deliberate fairness cost | p99 120 to 720 us, against 62 us for the taskqueue driver that never yields |
+
+B6, anti-gaming, is stated in the same service unit as the grace rule:
+a queue obtains at most one boost per idle period during which the
+worker delivered more than one ring's worth of service to other
+queues, and the share limit's budget cut does not change that window
+(SCHED.md S4.6, S7).
+
+### How a pass is charged
+
+A NET pass is charged the wall time it spanned, a BULK pass the
+thread's CPU time (SCHED.md S1a.4, S6.3).  For NET the wall-time charge
+is exact up to interrupt threads and lock blocks, both counted in the
+worker's `switched`, and it stays: interrupt *context* is inside both
+the wall clock and the thread's `td_runtime`, so no charge mode can
+exclude it, and the hundreds of switched overruns per run that wall
+time was seen to charge came from the earlier form of the share limit,
+a demoted worker preempted inside its passes, which the pass-level
+invariant removes.  Split charging (the thread's CPU time to the
+deficit, wall time to the limit and the round) is the one alternative
+with a measured contract and is the candidate if `switched` ever shows
+interrupt threads or lock blocks in numbers; it is to be decided by a
+battery that produces them, not by argument.  `overruns_switched`
+attributes an overrun: `overruns - overruns_switched` is the handler's
+own excess, the remainder is the system's.
+
 ## 6. Errors
 
 | call | error | cause and what the caller does |
@@ -526,6 +574,8 @@ module is preloaded.  Out-of-range values are refused with `EINVAL`.
 | `cap_permille` | RWTUN | 1 .. 1000 | 500 | share limit: the share of its CPU the worker may spend in passes per period while other threads are runnable, in 1/1000; the rest of the period it waits between passes as an idle-priority thread.  Equal share by default, 1000 = off, and the worker then obeys ULE's slice end as a process would (SCHED.md S6.3) |
 | `cap_period_us` | RWTUN | 100 .. 1000000 | 1000 | the share limit's period, the longest the CPU is given away at a time |
 | `cap_prio` | RWTUN | class priority + 1 .. 255 | 224 (`PRI_MIN_IDLE`) | the priority the worker waits at between passes while over its allowance, never the priority of a pass.  224 runs only when the CPU would otherwise idle and is preempted by anything that wakes; 223 (`PRI_MAX_TIMESHARE`) is the other useful value, the last batch slot, which ULE does not treat as idle when placing a waking thread.  The rest of the range is for experiments (SCHED.md S6.3) |
+| `tick_us` | RWTUN | 0 .. 100000 | 0 (off) | the tick regime's bound `L` (KWQ.md S16, opt-in): while a worker's producer is dense its sleep has a timeout of `tick_us`, producers append without ringing the doorbell, and the timeout serves what accumulated.  0 is the doorbell regime, one wake per backlog |
+| `wake_delay_us` | RWTUN | 0 = off | 0 (off) | the idle-class wait's deadline (KWQ.md S16, opt-in): an enqueue from the worker's own CPU makes the worker runnable in the idle class at `cap_prio` instead of preempting the producer, and it runs when the producer sleeps or at this deadline, whichever is first.  0 is the preempting doorbell.  An enqueue from another CPU rings the doorbell at either setting |
 | `yield_prio` | RW | class priority .. 223 | 56 (`PUSER`) | priority of the end-of-round yield.  223 lets every user thread run a full slice, which is the setting for the case where an interactive process turns CPU-bound and its latency spikes with `yields` normal and no kwq counter explaining them.  The one knob that is not a loader tunable |
 | `priority` | RDTUN | 0 .. 55 (net, bulk), 0 .. 223 (blocking), net <= bulk <= blocking | 1 (net), 2 (bulk), 56 (blocking) | the class's worker priority, settable only before the module loads (loader.conf or kenv(1)); a setting outside the range or out of order resets all three to the defaults with a console message.  Every knob exists for `blocking` too, although the class has no workers |
 
@@ -534,7 +584,64 @@ and its rate, `tsc`, `cntvct`, `timebase`, or the kernel's `cpu_ticks` as
 the fallback; `clock_fast` (RDTUN, default 1) set to 0 at load keeps
 `cpu_ticks()`, for A/B measurements (SCHED.md S15.2).
 
-The anti-gaming grace window (one round) is compile time.
+The anti-gaming grace window is not a knob: it is `GRACE_SERVICE`, one
+ring's worth of service, `quantum_us` times the ring length read at the
+doorbell, counted on a per-worker service counter that stands still
+while the worker sleeps.  The compile-time `GRACE_ROUNDS` of one round
+that it replaced on 2026-10-28 is gone, because the share limit's
+budget cut ends passes early and a round then no longer stands for one
+quantum of service per competitor (SCHED.md S4.6, S8).
+
+### The two optional wake regimes
+
+Both are class knobs, both off by default, neither part of the KPI: a
+client cannot ask for them and cannot refuse them, and both are sized
+so that an isolated item still pays only one sleep-wake (B5a).
+Specified 2026-10-28 (KWQ.md S16), measured on branch `kwq-wake-tick`
+and `kwq-wake-idle` (WAKE.md S9, S10), implemented for measurement on
+branch `kwq-p4f`: not in the merged module.
+
+**`tick_us`, the tick regime.**  Range 0 to 100000 us, default 0, off.
+A worker enters the regime from a doorbell wake once its recent wakes
+were denser than `tick_us` over more than one burst (three consecutive
+sleeps shorter than `tick_us`), not from a single dense pair of wakes.
+Inside it the sleep has a timeout of `tick_us` with precision
+`tick_us/8`, producers append and count `doorbells_skipped` but ring
+nothing, and the timeout runs one round over what accumulated.  It
+leaves on a tick that served one element or none, back to the untimed
+sleep, so a silence costs one timer interrupt and nothing stays armed;
+an episode that coalesced nothing doubles an entry hold-off from
+`2 x tick_us` to `1024 x tick_us`, one that coalesced resets it.
+*Contract*: an item that arrives while the regime is on waits at most
+`tick_us` plus the pass in progress; sleeps per second within 20 % of
+the interval-stabbing bound where the arrival rate times `tick_us` is
+2 to 10, equal to the doorbell's below 1, drain-limited above 20.
+*Cost*: the producer pays only the append (46 to 54 ns on the smaller
+hardware test machine, 186 to 210 ns on the 128-core Ampere, against
+200 to 1100 ns with the wake); the worker pays one timer interrupt per
+tick; every
+co-scheduled small flow on that worker pays `tick_us`.  *When to use*:
+a dense cross-CPU producer on a worker that is busy but not saturated,
+where the wake is dear, at 20 to 50 us; never where a latency-sensitive
+flow shares the worker, and never as a default.
+
+**`wake_delay_us`, the idle-class wait for same-CPU producers.**
+Default 0, off.  An enqueue from the worker's own CPU does not preempt
+the producer: the worker is made runnable in the idle class at
+`cap_prio` and runs when the producer sleeps or at the deadline,
+whichever is first, raised by the deadline callout; an urgent caller
+raises it at once.  An enqueue from another CPU rings the doorbell as
+before, because the cost of making a cross-CPU wake wait falls on the
+sparse sender (+77 % enqueue on the 128-core Ampere).  *Contract*: an
+item from the worker's CPU waits at most the deadline.  *Cost*: one
+callout arm per wait episode on the worker's own CPU, and the deadline
+itself for any item whose producer does not sleep.  *When to use*: a
+receiver or producer pinned to its worker's CPU, where the doorbell
+otherwise preempts the producer once per item; a same-CPU burst is then
+served once, when its producer is done (+18 to +69 % measured), with
+the idle latency and the fairness columns unchanged.  `cap_prio`'s
+default is one decision for both this wait and the share limit's wait
+between passes (SCHED.md S6.3).
 
 ### Per-worker counters, `kern.kwq.<class>.cpu.<N>.`
 
@@ -554,6 +661,18 @@ The anti-gaming grace window (one round) is compile time.
 | `cap_ns` | wall time given away under the share limit |
 | `cap_runon` | passes that ended over the allowance with nothing else runnable: the limit did not bind |
 | `slice_yields` | yields at ULE's own priority for the worker because ULE ended its slice; limit off only (SCHED.md S6.3) |
+| `prio_violations` | passes that began below the class priority: the tripwire of the priority promise, 0 on a conforming build, a panic with `KWQ_HARD_INVARIANTS` (KWQ.md S3) |
+| `ticks` | tick-regime timeouts that fired (`tick_us` > 0) |
+| `ticks_empty` | of those, the ones that found nothing queued |
+| `ticks_single` | of those, the ones that served one element: the regime's exit condition |
+| `tick_enters`, `tick_exits` | regime episodes entered and left |
+| `tick_ns` | wall time spent in the tick regime |
+| `tick_barren` | episodes that coalesced nothing, each doubling the entry hold-off |
+| `wakes_low` | wakes placed in the idle class at `cap_prio` instead of preempting a same-CPU producer (`wake_delay_us` > 0): one per wait episode |
+| `wake_low_ns` | total length of those wait episodes; divided by `wakes_low`, the mean wait |
+| `wake_self` | wait episodes the worker ended by getting the CPU on its own, the producer having slept |
+| `wake_promotions_deadline` | wait episodes the deadline callout ended |
+| `wake_promotions_urgent` | wait episodes an urgent caller cut short |
 | `busy_ns` | CPU time inside handlers |
 | `idle_ns` | wall time asleep with nothing queued |
 | `round` | current round number (gauge) |
@@ -588,9 +707,12 @@ The anti-gaming grace window (one round) is compile time.
 | `maxdepth` | high-water mark of `depth` at pass start since `reset` |
 | `maxlat_ns` | longest doorbell-to-first-pass latency since `reset` |
 | `overruns` | passes that exceeded budget by more than one quantum x weight.  A handler whose single item costs more than a quantum overruns however carefully it checks, because of the progress rule: such a client wants a class with a larger quantum, or smaller items |
+| `overruns_switched` | of those, the passes during which the worker left the CPU: `overruns - overruns_switched` is the handler's own excess, the remainder the system's (SCHED.md S6.3) |
+| `doorbells` | rings performed by producers for this (queue, CPU) |
+| `doorbells_skipped` | appends made while the worker's tick was armed, which rang nothing (`tick_us` > 0) |
 | `parks` | rounds the queue was skipped for owing time |
 | `boosts` | passes served from the new list |
-| `grace` | doorbells sent to the ring instead of the new list by the anti-gaming rule |
+| `grace` | doorbells sent to the ring instead of the new list by the anti-gaming rule, the queue having returned before one ring's worth of service went to the others (SCHED.md S4.6) |
 | `debts` | doorbells sent to the ring because the queue went idle owing time |
 | `glitches` | passes whose CPU-time delta was negative or over 1 s |
 
@@ -625,12 +747,15 @@ default build produces.
 | `cap` | the share limit (SCHED.md S6.3) | untranslated: `arg0` class, `arg1` cpu, `arg2` event (0 a pass begins under the limit, 1 allowance spent and CPU given away, 2 given away again, 3 period ended while over, 4 deadline callout ran), `arg3` ns into the period, `arg4` ns used of it, `arg5` the pass's budget ns (event 0) |
 | `idle` | worker about to sleep | untranslated: `arg0` class, `arg1` cpu, `arg2` busy ns since it woke |
 | `doorbell` | a (queue, CPU) placed with its worker | untranslated: `arg0` class, `arg1` cpu, `arg2` worker state when rung: 0 awake, 1 polling, 2 asleep |
+| `tick` | the tick regime's timeout fired (`tick_us` > 0, KWQ.md S16); the regime build only | untranslated worker probe; its arguments are not specified yet |
 | `steal` | defined, never fires yet (P6) | `arg1` from cpu, `arg2` to cpu, `arg3` items |
 | `worker-block`, `worker-spawn`, `worker-exit` | defined, never fire yet (P7) | untranslated: `arg0` cpu, `arg1` workers, `arg2` runnable |
 
-`round-end`, `yield`, `cap`, `idle` and `doorbell` are worker probes rather than
-queue probes: they carry no `kwqinfo_t`, so their arguments start at
-`arg0` with the class id.  Twenty-one probes in total.
+`round-end`, `yield`, `cap`, `idle`, `doorbell` and `tick` are worker
+probes rather than queue probes: they carry no `kwqinfo_t`, so their
+arguments start at `arg0` with the class id.  Twenty-one probes in the
+merged module; `tick` is the twenty-second, on the branch that
+implements the regime.
 
 Measured cost on a 128-core Neoverse-N1: probes compiled in but disabled
 cost 0.6 % of a saturated worker's throughput; an enabled probe costs
@@ -702,6 +827,11 @@ or installed so the dependency resolves.
 | `KWQ_BLOCKING` | refused at create with a log line; no workers of that class exist (P7) |
 | `KWQ_F_RESERVE`, `nreserve != 0` | asserted at create, not cleanly refused (P7) |
 | cache-domain refinement of `KWQ_CPU_ANY` | NUMA domain only (P6) |
+| grace rule in service, `GRACE_SERVICE` one ring's worth (replaces `GRACE_ROUNDS`) | specified 2026-10-28; on branch `kwq-p4f` for measurement, not merged |
+| tick regime (`tick_us`), its counters and the `tick` probe | specified 2026-10-28; on branch `kwq-p4f` for measurement, not merged |
+| idle-class wait for same-CPU producers (`wake_delay_us`) and its counters | specified 2026-10-28; on branch `kwq-p4f` for measurement, not merged |
+| priority assertion and `prio_violations`, `overruns_switched` | specified 2026-10-28; on branch `kwq-p4f` for measurement, not merged |
+| split charging of a NET pass | candidate only, pending a battery that produces interrupt threads or lock blocks (SCHED.md S6.3) |
 | `kwq(9)` and `dtrace_kwq(4)` man pages | P8 |
 
 Clients: `if_pair(4)` runs on kwq and is measured against a frozen copy

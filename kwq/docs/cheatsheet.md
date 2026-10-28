@@ -260,6 +260,16 @@ your handler holds, it holds at the class priority for as long as the
 item takes.  You do not need to know which lock types propagate priority
 and which do not; that was the point of specifying it this way.
 
+This is promised to the handler, and the promise is checked (KWQ.md S3,
+"Priority, promised"): the priority holds from the call to the return,
+the worker demotes, yields or hands the CPU over only between handlers,
+and a handler must not depend on priority propagation to anything it
+blocks.  A module built with `KWQ_HARD_INVARIANTS` panics on a pass
+that begins below the class priority; the default build counts it in
+`kern.kwq.<class>.cpu.<N>.prio_violations`, which reads zero on a
+conforming build, so a non-zero value is kwq's bug or a knob outside
+the specification, never the client's.
+
 **Recommended:** hold locks for the item, not for the pass.  Take a
 lock, finish the item, release it, then check the budget.  The hold time
 of one item is the longest anything waits for you, and the item is also
@@ -282,6 +292,37 @@ read-held rwlock or SMR section across real work could hold a waiter
 for up to a share-limit period (readers have no owner to lend priority
 to).  The P4d campaign (../NOTES.md 2026-10-21) found no such wait on
 the pair; the rule above removed the exposure.
+
+### 5.2 What latency a client may assume, and the two optional regimes
+
+Three rows, from SCHED.md S7; they are what to design against, and
+there is nothing better to assume:
+
+- **B5a, an isolated item.**  An item that finds its worker asleep pays
+  one sleep-wake and nothing else, the doorbell, the switch-in, one
+  pass: 8 to 14 us through a pair on the two hardware test machines,
+  within a microsecond of a direct wakeup.  Nothing in kwq may delay
+  the first wake of a backlog.
+- **B5b, an item beside a busy queue on the same CPU.**  The pass in
+  progress plus one quantum-bounded pass of the other queue; p99 25 to
+  38 us measured for a request-reply flow beside a bulk flow.
+- **B5c, a user thread competing for the CPU.**  At most one
+  `cap_period` plus one pass, the share limit's hand-over, not a ULE
+  slice: a deliberate fairness cost, p99 120 to 720 us measured.
+
+Two class knobs an operator may turn on trade latency for CPU on top of
+B5b, both off by default and neither visible in the KPI (KWQ.md S16;
+specified 2026-10-28 and implemented on branch `kwq-p4f` for
+measurement, so a merged module has neither knob yet):
+
+| knob | what it does to your queue |
+|---|---|
+| `kern.kwq.<class>.tick_us` | the worker sleeps with a timeout of `tick_us` while its producer is dense, producers append without ringing the doorbell (`doorbells_skipped`), and what accumulated is served when the tick fires: an item that arrives while the regime is on waits at most `tick_us` plus the pass in progress.  Off (0) by default, 20 to 50 us where it is worth having |
+| `kern.kwq.<class>.wake_delay_us` | an enqueue from the worker's own CPU no longer preempts the producer: the worker becomes runnable in the idle class at `cap_prio` and runs when the producer sleeps or at this deadline, whichever is first.  An item from the worker's CPU waits at most the deadline; an enqueue from another CPU rings the doorbell as before |
+
+Neither knob touches B5a, by construction.  If your client's latency
+budget cannot absorb `tick_us`, say so in its documentation: the knob
+is the operator's, per class, and your queue shares the class.
 
 ## 6. Teardown
 
@@ -396,6 +437,19 @@ its vnet dies.  For an interface that can be moved with `if_vmove()` the
 cached vnet is simply wrong after the move; the interface itself is the
 authority.
 
+**Warning, for a client that registers an interface cloner per vnet:**
+detach every vnet's cloner from the `MOD_UNLOAD` handler, before the
+linker runs the SYSUNINITs, walking the vnet list and taking
+`ifnet_detach_sxlock` in base's own order, and make the
+`VNET_SYSUNINIT` a no-op on the unload path (KWQ.md S8; `if_pair`'s
+`pair_detach_cloners()` is the reference).  A per-vnet
+`if_clone_detach()` run from `vnet_deregister_sysuninit()` deadlocks
+the base kernel against a dying vnet's `vnet_destroy()`: reproduced
+with stock epair in five of five trials, so unloading such a module
+while a vnet jail is still dying wedges the machine.  This is a base
+lock-order bug, not kwq's, and it is reported; the rule above is how a
+client stays out of it.
+
 ## 9. Enqueueing from an interrupt filter
 
 **For:** a driver whose primary interrupt handler (not its ithread) must
@@ -503,6 +557,49 @@ from later passes yourself.
 probes cost 0.6 % of a saturated worker; an enabled pass-level probe is
 about 140 ns per firing a few times per pass, while `enqueue` fires per
 item and costs more than kwq's own per-item work.
+
+**Recommended:** when a client's latency does not match B5a to B5c
+(5.2), read the counters of the two optional regimes and the priority
+tripwire before suspecting your handler.  Per worker,
+`kern.kwq.<class>.cpu.<N>.`:
+
+```sh
+# is the tick regime on, how often does it fire, and is it coalescing?
+sysctl kern.kwq.net.tick_us kern.kwq.net.cpu.3.ticks \
+       kern.kwq.net.cpu.3.ticks_empty kern.kwq.net.cpu.3.ticks_single \
+       kern.kwq.net.cpu.3.tick_enters kern.kwq.net.cpu.3.tick_exits \
+       kern.kwq.net.cpu.3.tick_ns kern.kwq.net.cpu.3.tick_barren
+
+# how many of your doorbells were skipped because a tick was armed
+sysctl kern.kwq.net.queue.myq.cpu.3.doorbells \
+       kern.kwq.net.queue.myq.cpu.3.doorbells_skipped
+
+# is the idle-class wait on, and what ends the wait episodes?
+sysctl kern.kwq.net.wake_delay_us kern.kwq.net.cpu.3.wakes_low \
+       kern.kwq.net.cpu.3.wake_low_ns kern.kwq.net.cpu.3.wake_self \
+       kern.kwq.net.cpu.3.wake_promotions_deadline \
+       kern.kwq.net.cpu.3.wake_promotions_urgent
+
+# did any pass begin below the class priority?  it must read 0
+sysctl kern.kwq.net.cpu.3.prio_violations
+
+# an overrun: the handler's, or the system's?
+sysctl kern.kwq.net.queue.myq.cpu.3.overruns \
+       kern.kwq.net.queue.myq.cpu.3.overruns_switched
+```
+
+`ticks` are the timeouts that fired, `ticks_empty` those that found
+nothing, `ticks_single` those that served one element (the regime's
+exit condition), `tick_enters` and `tick_exits` the episodes, `tick_ns`
+the wall time spent in the regime and `tick_barren` the episodes that
+coalesced nothing and therefore doubled the entry hold-off.
+`wakes_low` counts the waits placed in the idle class and
+`wake_low_ns` their total length, so the quotient is the mean wait;
+`wake_self` are the waits the worker ended by getting the CPU on its
+own, `wake_promotions_deadline` those the deadline ended and
+`wake_promotions_urgent` those an urgent caller cut short.
+`overruns - overruns_switched` is your handler's own excess; the rest
+is time the worker spent off the CPU inside your pass.
 
 **Warning:** a non-zero `glitches` on any queue means this machine's
 `cpu_ticks()` is not monotonic (seen on Ampere Altra).  Every CPU-time
