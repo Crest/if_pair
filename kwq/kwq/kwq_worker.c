@@ -321,6 +321,45 @@ kwq_doorbell(struct kwq_cpu *kc, bool urgent)
 }
 
 /*
+ * An urgent item added to a list that is already placed with the core
+ * (KWQ.md S16).  kwq_doorbell() rings only when a list goes from idle to
+ * placed, so in either regime the first item of a window places the list
+ * and every item after it rings nothing: without this, an urgent item
+ * that is not the first one still waits for the tick, which is the
+ * common case for a small packet behind a bulk segment.  This wakes the
+ * worker without touching the placement, which is what the tick would
+ * have done, and ends the idle-class wait if one is running.  Called
+ * with kc locked and kc_state KWQ_CPU_WAKING (placed and not yet
+ * served): a running pass needs no wake, and a parked queue cannot be
+ * served before its refill.  Returns true if it woke anything, for the
+ * enqueue probe.
+ */
+bool
+kwq_urgent_nudge(struct kwq_cpu *kc)
+{
+	struct kwq_worker *kw;
+	bool woke = false;
+
+	kw = kwq_workers[kc->kc_q->kwq_class][kc->kc_cpu];
+	mtx_lock_spin(&kw->kw_mtx);
+	if (__predict_false(kw->kw_lowpri)) {
+		kwq_wake_promote(kw, KWQ_WAKE_URGENT);
+		woke = true;
+	} else if (kw->kw_sleeping) {
+		kw->kw_sleeping = false;
+		kc->kc_doorbells++;
+		kw->kw_wakes_urgent++;
+		wakeup_one(kw->kw_chan);
+		woke = true;
+	}
+	if (woke)
+		SDT_PROBE3(kwq, , , doorbell, kc->kc_q->kwq_class, kc->kc_cpu,
+		    KWQ_DB_ASLEEP);
+	mtx_unlock_spin(&kw->kw_mtx);
+	return (woke);
+}
+
+/*
  * The tick regime's entry (KWQ.md S16), at a doorbell wake: three
  * consecutive sleeps shorter than the bound L, which is density over more
  * than one burst.  The first build entered on two wakes within L, which
@@ -953,6 +992,7 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	KW_U64(kw_wake_self, "wake_self", "of those, the worker got the CPU and promoted itself");
 	KW_U64(kw_wake_prom_deadline, "wake_promotions_deadline", "of those, promoted by the wake_delay_us deadline");
 	KW_U64(kw_wake_prom_urgent, "wake_promotions_urgent", "of those, promoted by a notifier, a drain, a cancel, an enqueue from another CPU or the share limit's deadline");
+	KW_U64(kw_wakes_urgent, "wakes_urgent", "wakes of a sleeping worker by an urgent item added to a list already placed with the core (kwq_enqueue_urgent(), a notifier): the wake neither regime would have given it");
 	KW_U64(kw_wake_low_ns, "wake_low_ns", "wall time spent waiting in the idle class");
 	KW_U64(kw_prio_violations, "prio_violations", "passes that began below the class priority or outside its class (0; counted under KWQ_SOFT_INVARIANTS, asserted otherwise)");
 	KW_U64(kw_busy_ns, "busy_ns", "worker CPU time inside handlers");

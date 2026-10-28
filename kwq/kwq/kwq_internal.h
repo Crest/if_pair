@@ -246,7 +246,7 @@ struct kwq_worker {
 				kw_ticks, kw_ticks_empty, kw_ticks_single, kw_tick_enters,
 				kw_tick_exits, kw_tick_ns, kw_tick_barren, kw_prio_violations,
 				kw_wakes_low, kw_wake_self, kw_wake_prom_deadline,
-				kw_wake_prom_urgent, kw_wake_low_ns;
+				kw_wake_prom_urgent, kw_wake_low_ns, kw_wakes_urgent;
 } __aligned(KWQ_LINE);
 
 extern struct kwq_worker **kwq_workers[KWQ_NCLASS];	/* [class][cpu] */
@@ -318,6 +318,9 @@ void	kwq_workers_stop(void);
 void	kwq_doorbell(struct kwq_cpu *kc, bool urgent);	/* kc locked, state IDLE;
 					   `urgent' (a notifier, a drain, a cancel)
 					   is never held back by a regime */
+bool	kwq_urgent_nudge(struct kwq_cpu *kc);	/* kc locked, state WAKING: wake a
+					   sleeping worker for an urgent item
+					   added to an already placed list */
 bool	kwq_higher_waiting(enum kwq_class cls);	/* hand-back flags, this CPU */
 uint64_t kwq_cputime_ns(struct kwq_worker *kw);
 uint64_t kwq_cputime_ns_tick(struct kwq_worker *kw, uint64_t *tick);

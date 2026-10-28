@@ -477,6 +477,13 @@ kwq_kc_added(struct kwq_cpu *kc, u_int added, bool urgent)
 		kwq_doorbell(kc, urgent);
 		return (true);
 	}
+	/*
+	 * The list is already placed, so no doorbell is owed; an urgent item
+	 * added behind another one is owed a wake all the same, which is the
+	 * whole point of the exemption (../KWQ.md S16).
+	 */
+	if (__predict_false(urgent) && kc->kc_state == KWQ_CPU_WAKING)
+		return (kwq_urgent_nudge(kc));
 	return (false);
 }
 
