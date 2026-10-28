@@ -160,7 +160,15 @@ then `kwq_destroy()`.
    pass runs; kwq charges and parks its queue and counts it in
    `overruns`, which is where to look when latency elsewhere is
    unexplained.  (SCHED.md S6.3; specified 2026-10-21, implemented
-   2026-10-22.)
+   2026-10-22.)  The priority is a promise the handler may rely on, not
+   an accident of the current code: it holds from the call to the
+   return, so a handler never has to reason about which lock types lend
+   priority to a waiter it blocks, and the worker demotes, yields or
+   hands the CPU over only between handlers (KWQ.md S3, "Priority,
+   promised").  The promise has a tripwire: a build with
+   `KWQ_HARD_INVARIANTS` panics on a pass that begins below the class
+   priority, and the default build counts such a pass in the worker's
+   `prio_violations`, which reads zero on a conforming build.
 3. **A NET or BULK handler must not sleep.**  No `tsleep`, no sx locks,
    no `M_WAITOK`, no `copyin`.  This is asserted; it panics under
    INVARIANTS rather than deadlocking in production.
@@ -174,6 +182,26 @@ then `kwq_destroy()`.
    `kwq_enqueue()` and `kwq_notify()` work from an ithread, a callout,
    netisr or another handler, and from an interrupt filter if the queue
    was created `KWQ_F_SPIN`.
+
+**Two optional regimes, and what latency to assume.**  An item that
+finds its worker asleep pays one sleep-wake and nothing else, the
+doorbell, the switch-in, one pass: 8 to 14 us through a pair on the two
+hardware test machines, within a microsecond of a direct wakeup
+(SCHED.md S7, B5a).  Beside a busy queue on the same CPU the wait is the
+pass in progress plus one quantum-bounded pass of that queue (B5b), and
+against a user thread competing for the CPU it is at most one
+`cap_period` plus one pass, the share limit's hand-over and a deliberate
+fairness cost (B5c).  Two class knobs, both off by default and neither
+part of the API, buy CPU time with latency on top of those rows (KWQ.md
+S16): `tick_us`, under which a worker whose producer is dense sleeps
+with a timeout and producers append without ringing the doorbell, so an
+item arriving while the regime is on waits at most `tick_us` plus the
+pass in progress; and `wake_delay_us`, under which an enqueue from the
+worker's own CPU no longer preempts the producer but makes the worker
+runnable in the idle class, to run when the producer sleeps or at that
+deadline, whichever comes first.  Neither delays the first wake of a
+backlog, by construction, so B5a holds whatever an operator has set.  A
+client should assume those three rows and nothing better.
 
 ## 5. What kwq is not
 
