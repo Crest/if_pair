@@ -62,6 +62,19 @@
  *       latency of a connection setup (SYN, SYN-ACK, ACK through the
  *       pair, pcb insert and free: SMR and hash-lock work) p50 / p99 /
  *       max us and the count.
+ *   victim udpburst HOST PORT SECS SPORT BURST GAP_US
+ *       Request-reply in bursts (kwq/tests/SPEC-p4e.md 3.2): BURST
+ *       datagrams back to back, each answered before the next is sent,
+ *       then GAP_US of sleep, for SECS.  Reports the round-trip time of
+ *       the first request of each burst (first_p50/p99/max: what the
+ *       wake of an idle worker costs) and of the last one (last_p50/
+ *       p99/max: what a burst's tail waits), all requests (rtt_p99),
+ *       lost requests and the number of bursts.
+ *   victim uports SEED NCPU SRC DST UDPPORT COUNT
+ *       COUNT source ports from 40000 up whose UDP flows SRC:port ->
+ *       DST:UDPPORT spread evenly over the NCPU worker CPUs (round robin
+ *       by hash), printed space-separated: the many-connections test
+ *       (SPEC-p4e.md 3.1) gives each flow one of them.
  */
 #include <sys/param.h>
 #include <sys/linker.h>
@@ -546,6 +559,138 @@ do_udp(const char *host, int port, int secs, int sport, long gap_us)
 	return (0);
 }
 
+static int
+do_udpburst(const char *host, int port, int secs, int sport, int burst,
+    long gap_us)
+{
+	struct sockaddr_in sin;
+	struct timespec t0, t1, end, gap = { 0, gap_us * 1000L };
+	struct pollfd pfd;
+	char buf[64];
+	struct timespec *sent;
+	long *first, *last, *all, *rtts, lost = 0, nb = 0, d;
+	char *got;
+	size_t cap, nf = 0, nl = 0, na = 0;
+	int s, i;
+
+	if (burst < 1)
+		burst = 1;
+	sent = calloc((size_t)burst, sizeof(*sent));
+	rtts = calloc((size_t)burst, sizeof(*rtts));
+	got = calloc((size_t)burst, 1);
+	if (sent == NULL || rtts == NULL || got == NULL)
+		return (1);
+	cap = (size_t)secs * 1000000L / (gap_us > 0 ? gap_us : 1) + 1000;
+	first = calloc(cap, sizeof(*first));
+	last = calloc(cap, sizeof(*last));
+	all = calloc(cap * (size_t)burst + 1, sizeof(*all));
+	s = socket(AF_INET, SOCK_DGRAM, 0);
+	if (first == NULL || last == NULL || all == NULL || s < 0)
+		return (1);
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	if (sport > 0) {
+		sin.sin_port = htons((uint16_t)sport);
+		if (bind(s, (struct sockaddr *)&sin, sizeof(sin)) != 0)
+			return (1);
+	}
+	sin.sin_port = htons((uint16_t)port);
+	if (inet_pton(AF_INET, host, &sin.sin_addr) != 1 ||
+	    connect(s, (struct sockaddr *)&sin, sizeof(sin)) != 0)
+		return (1);
+	memset(buf, 'b', sizeof(buf));
+	pfd.fd = s;
+	pfd.events = POLLIN;
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	end.tv_sec += secs;
+	for (;;) {
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		if (t0.tv_sec > end.tv_sec ||
+		    (t0.tv_sec == end.tv_sec && t0.tv_nsec >= end.tv_nsec))
+			break;
+		/*
+		 * A burst: all B requests fired back to back, then the replies
+		 * collected; each payload carries its index so a reply's RTT
+		 * is measured against its own send (SPEC-p4e S3.2).  A chain
+		 * that waited for each reply before the next send would be a
+		 * dependent request-reply flow, not a burst.
+		 */
+		for (i = 0; i < burst; i++) {
+			long idx = i;
+
+			clock_gettime(CLOCK_MONOTONIC, &sent[i]);
+			memcpy(buf, &idx, sizeof(idx));
+			if (send(s, buf, sizeof(buf), 0) != (ssize_t)sizeof(buf))
+				return (1);
+			got[i] = 0;
+		}
+		for (i = 0; i < burst; i++) {
+			long idx;
+
+			if (poll(&pfd, 1, 200) != 1 || recv(s, buf, sizeof(buf), 0) <= 0)
+				break;
+			memcpy(&idx, buf, sizeof(idx));
+			if (idx < 0 || idx >= burst || got[idx])
+				continue;
+			clock_gettime(CLOCK_MONOTONIC, &t1);
+			got[idx] = 1;
+			rtts[idx] = ts_sub_us(&t1, &sent[idx]);
+		}
+		for (i = 0; i < burst; i++) {
+			if (got[i]) {
+				d = rtts[i];
+			} else {
+				lost++;
+				d = 200000;
+			}
+			if (na < cap * (size_t)burst)
+				all[na++] = d;
+			if (i == 0 && nf < cap)
+				first[nf++] = d;
+			if (i == burst - 1 && nl < cap)
+				last[nl++] = d;
+		}
+		nb++;
+		if (gap_us > 0)
+			nanosleep(&gap, NULL);
+	}
+	qsort(first, nf, sizeof(*first), cmp);
+	qsort(last, nl, sizeof(*last), cmp);
+	qsort(all, na, sizeof(*all), cmp);
+	printf("udpburst bursts=%ld n=%zu first_p50=%ld first_p99=%ld first_max=%ld "
+	    "last_p50=%ld last_p99=%ld last_max=%ld rtt_p99=%ld lost=%ld\n",
+	    nb, na, nf ? first[nf / 2] : 0, nf ? first[nf * 99 / 100] : 0,
+	    nf ? first[nf - 1] : 0, nl ? last[nl / 2] : 0, nl ? last[nl * 99 / 100] : 0,
+	    nl ? last[nl - 1] : 0, na ? all[na * 99 / 100] : 0, lost);
+	return (0);
+}
+
+static int
+do_uports(uint32_t seed, unsigned ncpu, const char *src, const char *dst,
+    int udpport, int count)
+{
+	struct in_addr s, d;
+	unsigned *per, c, want;
+	int p, n = 0;
+
+	if (inet_pton(AF_INET, src, &s) != 1 || inet_pton(AF_INET, dst, &d) != 1 ||
+	    ncpu == 0 || count < 1)
+		return (1);
+	per = calloc(ncpu, sizeof(*per));
+	if (per == NULL)
+		return (1);
+	want = ((unsigned)count + ncpu - 1) / ncpu;
+	for (p = 40000; p < 65000 && n < count; p++) {
+		c = flow_cpu(seed, ncpu, s, d, 17, p, udpport);
+		if (per[c] >= want)
+			continue;
+		per[c]++;
+		printf("%s%d", n++ ? " " : "", p);
+	}
+	printf("\n");
+	return (n == count ? 0 : 1);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -575,6 +720,13 @@ main(int argc, char **argv)
 		return (do_cpu((uint32_t)strtoul(argv[2], NULL, 0),
 		    (unsigned)atoi(argv[3]), argv[4], argv[5], atoi(argv[6]),
 		    atoi(argv[7]), atoi(argv[8])));
+	if (argc >= 8 && strcmp(argv[1], "udpburst") == 0)
+		return (do_udpburst(argv[2], atoi(argv[3]), atoi(argv[4]),
+		    atoi(argv[5]), atoi(argv[6]), atol(argv[7])));
+	if (argc >= 8 && strcmp(argv[1], "uports") == 0)
+		return (do_uports((uint32_t)strtoul(argv[2], NULL, 0),
+		    (unsigned)atoi(argv[3]), argv[4], argv[5], atoi(argv[6]),
+		    atoi(argv[7])));
 	if (argc >= 5 && strcmp(argv[1], "udp") == 0)
 		return (do_udp(argv[2], atoi(argv[3]), atoi(argv[4]),
 		    argc > 5 ? atoi(argv[5]) : 0, argc > 6 ? atol(argv[6]) : 500));
@@ -582,6 +734,8 @@ main(int argc, char **argv)
 	    "exec COUNT [GAP_MS] | udpecho PORT | udp HOST PORT SECS [SPORT [GAP_US]] | "
 	    "ports SEED NCPU CPU SRC DST TCPPORT UDPPORT [COUNT] | seed MODULE | "
 	    "cpu SEED NCPU SRC DST PROTO SPORT DPORT | udpecho2 PORT SECS GAP_MS | "
-	    "tcpecho PORT | tcpconn HOST PORT SECS [GAP_MS]\n");
+	    "tcpecho PORT | tcpconn HOST PORT SECS [GAP_MS] | "
+	    "udpburst HOST PORT SECS SPORT BURST GAP_US | "
+	    "uports SEED NCPU SRC DST UDPPORT COUNT\n");
 	return (2);
 }

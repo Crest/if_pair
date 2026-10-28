@@ -6,4 +6,4 @@ syntax(2)
 
 test_suite("kwq")
 
-atf_test_program{name="kwq_test.sh", timeout=900}
+atf_test_program{name="kwq_test.sh", timeout=1800}

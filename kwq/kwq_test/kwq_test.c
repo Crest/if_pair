@@ -11,6 +11,11 @@
  *                                             #     tq_baseline switch_baseline
  *                                             #     pingpong pingpong_tq clocks
  *                                             # P4 shape: ifpair
+ *                                             # P4e: burst (SPEC-p4e 2.1, 2.4)
+ *   sysctl kern.kwq_test.intr_cpu=1 kern.kwq_test.intr_us=100 \
+ *          kern.kwq_test.intr_work_ns=20000 kern.kwq_test.intr_secs=10
+ *                                             # interrupt load on CPU 1 beside
+ *                                             # any scenario (SPEC-p4e 2.2)
  *   sysctl kern.kwq_test.items=1000 kern.kwq_test.reps=1000
  *   sysctl kern.kwq_test.run=1
  *   sysctl kern.kwq_test                      # poll result_state until
@@ -94,6 +99,11 @@ static u_int	kt_spread = 1;
 static u_int	kt_prod_ns = 1000;	/* sender's stack work per packet before the enqueue */
 static u_int	kt_cons_ns = 1500;	/* receiver's stack work per packet in the handler */
 static u_int	kt_nnf = 64;		/* mix: notifiers in use (<= 64) */
+static u_int	kt_prod_gap_us = 0;	/* ifpair: a sender's pause between packets; 0 = flat out */
+/* burst (SPEC-p4e 2.1, 2.4) */
+static u_int	kt_burst_items = 64;	/* mode 0: items per burst */
+static u_int	kt_burst_gap_us = 500;	/* mode 0: the gap after a burst; 1, 2: the spacing (mean) */
+static u_int	kt_burst_mode = 0;	/* 0 on/off bursts, 1 constant spacing, 2 exponential spacing */
 
 /* Results. */
 static char	kt_state[16] = "idle";
@@ -117,6 +127,12 @@ static uint64_t	kt_r_requeues;		/* mix: kwq_requeue() calls by the handler */
 static uint64_t	kt_r_patterns;		/* mix: patterns checked */
 static uint64_t	kt_r_with, kt_r_without;	/* mixstarve: items with/without the notifier */
 static uint64_t	kt_r_wcpu;		/* mix: the worker CPU */
+/* burst: a burst's first item served after a gap, and its last item, age at service */
+static uint64_t	kt_r_bursts;
+static uint64_t	kt_r_first_p50_us, kt_r_first_p99_us, kt_r_first_max_us;
+static uint64_t	kt_r_last_p50_us, kt_r_last_p99_us, kt_r_last_max_us;
+/* intr_load (independent of the run) */
+static uint64_t	kt_r_intr_fired, kt_r_intr_late, kt_r_intr_work_ns;
 
 /* Per-run state shared with handlers. */
 static struct mtx kt_mtx;
@@ -150,7 +166,29 @@ SYSCTL_UINT(_kern_kwq_test, OID_AUTO, limit, CTLFLAG_RW, &kt_limit, 0,
 SYSCTL_INT(_kern_kwq_test, OID_AUTO, cpu, CTLFLAG_RW, &kt_cpu, 0,
     "target CPU (-1 = round robin for P0, CPU 1 for P1b)");
 SYSCTL_INT(_kern_kwq_test, OID_AUTO, pcpu, CTLFLAG_RW, &kt_pcpu_knob, 0,
-    "producer CPU of the two-CPU scenarios (-1 = the CPU after the target; on an SMT machine that is its sibling)");
+    "producer CPU of the two-CPU scenarios (-1 = the CPU after the target; on an SMT machine that is its sibling; may equal the target: the producer then shares the worker's CPU)");
+/*
+ * The flood, pingpong and taskqueue producers run at the priority they
+ * inherit from kthread_add(), a kernel one (41 here), which is better than
+ * kwq's yield_prio (56) and than any wake_prio: a same-CPU run with them
+ * measures the round-end yield, never the wake's preemption.  prod_prio
+ * puts them at a user-range priority instead (a network client's producer
+ * is a user thread in sendmsg(2) at its own priority), so that the
+ * non-preempting wake (WAKE.md S4.5) can be exercised on one CPU.
+ */
+static int	kt_prod_prio = -1;
+SYSCTL_INT(_kern_kwq_test, OID_AUTO, prod_prio, CTLFLAG_RW, &kt_prod_prio, 0,
+    "priority of the producer threads (-1 = as created, a kernel priority; 56..223 = a user-range priority)");
+
+static void
+kt_prod_bind(int cpu)
+{
+	thread_lock(curthread);
+	sched_bind(curthread, cpu);
+	if (kt_prod_prio >= PRI_MIN_TIMESHARE && kt_prod_prio <= PRI_MAX_TIMESHARE)
+		sched_prio(curthread, kt_prod_prio);
+	thread_unlock(curthread);
+}
 SYSCTL_INT(_kern_kwq_test, OID_AUTO, allow_panic, CTLFLAG_RW, &kt_allow_panic,
     0, "allow scenarios that are expected to panic");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, secs, CTLFLAG_RW, &kt_secs, 0,
@@ -176,6 +214,14 @@ SYSCTL_UINT(_kern_kwq_test, OID_AUTO, prod_ns, CTLFLAG_RW, &kt_prod_ns, 0,
     "ifpair scenario: sender-side busy work per packet before the enqueue, ns");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, cons_ns, CTLFLAG_RW, &kt_cons_ns, 0,
     "ifpair scenario: receiver-side busy work per packet in the handler, ns");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, prod_gap_us, CTLFLAG_RW, &kt_prod_gap_us, 0,
+    "ifpair: microseconds each sender pauses between packets (0 = flat out; SPEC-p4e 2.3)");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, burst_items, CTLFLAG_RW, &kt_burst_items, 0,
+    "burst: items per burst (mode 0)");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, burst_gap_us, CTLFLAG_RW, &kt_burst_gap_us, 0,
+    "burst: the gap after a burst (mode 0), or the item spacing (mode 1) or its mean (mode 2), in us");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, burst_mode, CTLFLAG_RW, &kt_burst_mode, 0,
+    "burst: 0 = on/off bursts of burst_items then burst_gap_us; 1 = one item every burst_gap_us; 2 = exponential spacing with mean burst_gap_us");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, nnf, CTLFLAG_RW, &kt_nnf, 0,
     "mix: notifiers in use, 1..64");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, qname, CTLFLAG_RW, kt_qname, sizeof(kt_qname),
@@ -242,6 +288,26 @@ SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_with, CTLFLAG_RD,
     &kt_r_with, 0, "mixstarve: items delivered beside the re-arming notifier");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_without, CTLFLAG_RD,
     &kt_r_without, 0, "mixstarve: items delivered alone");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_bursts, CTLFLAG_RD, &kt_r_bursts, 0,
+    "burst: bursts produced");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_first_p50_us, CTLFLAG_RD, &kt_r_first_p50_us, 0,
+    "burst: age of a burst's first item at service, median, us (bucket upper bound)");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_first_p99_us, CTLFLAG_RD, &kt_r_first_p99_us, 0,
+    "burst: the same, 99th percentile");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_first_max_us, CTLFLAG_RD, &kt_r_first_max_us, 0,
+    "burst: the same, maximum (exact)");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_last_p50_us, CTLFLAG_RD, &kt_r_last_p50_us, 0,
+    "burst: age of a burst's last item at service, median, us");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_last_p99_us, CTLFLAG_RD, &kt_r_last_p99_us, 0,
+    "burst: the same, 99th percentile");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_last_max_us, CTLFLAG_RD, &kt_r_last_max_us, 0,
+    "burst: the same, maximum (exact)");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_intr_fired, CTLFLAG_RD, &kt_r_intr_fired, 0,
+    "intr_load: handler runs since the last start");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_intr_late, CTLFLAG_RD, &kt_r_intr_late, 0,
+    "intr_load: runs that began more than one period after their deadline");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_intr_work_ns, CTLFLAG_RD, &kt_r_intr_work_ns, 0,
+    "intr_load: busy time spent in interrupt context, ns");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_wcpu, CTLFLAG_RD,
     &kt_r_wcpu, 0, "mix: the worker CPU used");
 
@@ -261,6 +327,12 @@ static uint64_t
 kt_sbt2us(sbintime_t d)
 {
 	return (((uint64_t)d * 1000000ULL) >> 32);
+}
+
+static inline uint64_t
+kt_sbt2ns(sbintime_t d)
+{
+	return ((uint64_t)sbttons(d));
 }
 
 /*
@@ -332,8 +404,13 @@ kt_other_cpu(int cpu)
 {
 	int c = cpu;
 
+	/*
+	 * An explicit pcpu may equal the target CPU: the producer then shares
+	 * the worker's CPU, the case the non-preempting wake (WAKE.md S4.5)
+	 * exists for.  The default stays the next CPU.
+	 */
 	if (kt_pcpu_knob >= 0 && kt_pcpu_knob <= mp_maxid &&
-	    !CPU_ABSENT(kt_pcpu_knob) && kt_pcpu_knob != cpu)
+	    !CPU_ABSENT(kt_pcpu_knob))
 		return (kt_pcpu_knob);
 	do {
 		c = (c + 1) % (mp_maxid + 1);
@@ -612,9 +689,18 @@ struct kt_flood {
 	bool		stamp;		/* items carry an enqueue stamp */
 	bool		empty_handler;
 	/* producer mode */
-	enum { F_FLOOD, F_BURSTPAUSE, F_IFPAIR, F_NONE } mode;
+	enum { F_FLOOD, F_BURSTPAUSE, F_IFPAIR, F_BURST, F_NONE } mode;
 	u_int		burst;
 	u_int		pause_us;
+	/* ifpair: a sender's pause between packets, ns (0 = none) */
+	uint64_t	gap_ns;
+	/* burst (SPEC-p4e 2.1): mode, spacing, PRNG; the handler's burst state */
+	u_int		burst_mode;
+	uint64_t	burst_gap_ns;
+	uint64_t	prng;
+	bool		expect_first;	/* the next item served starts a burst */
+	uint64_t	bursts;
+	uint64_t	passes;
 	/* ifpair: targets cpu .. cpu + spread - 1, spin ticks per packet */
 	u_int		spread;
 	u_int		nprod;		/* senders of this interface: kt_scale[idx .. idx + nprod - 1] */
@@ -720,6 +806,7 @@ static void kt_fanin_handler(struct kt_flood *f, struct kwq_item *head, int n);
 static void kt_flood_handler_one(struct kt_flood *f, struct kwq_item *head, int n);
 static void kt_ifpair_handler(struct kt_flood *f, struct kwq_item *head, int n);
 static void kt_ifpair_producer(struct kt_flood *f);
+static void kt_burst_handler(struct kt_flood *f, struct kwq_item *head, int n);
 
 static void
 kt_flood_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
@@ -746,6 +833,8 @@ kt_flood_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 	}
 	if (f->mode == F_IFPAIR)
 		kt_ifpair_handler(f, head, n);
+	else if (f->mode == F_BURST)
+		kt_burst_handler(f, head, n);
 	else if (f->fanin)
 		kt_fanin_handler(f, head, n);
 	else
@@ -906,6 +995,216 @@ kt_flood_handler_one(struct kt_flood *f, struct kwq_item *head, int n)
 	kt_flood_return_list(f, &back, done);
 }
 
+/*
+ * burst (SPEC-p4e 2.1, 2.4): latency histograms in quarter-octave buckets
+ * (four buckets per power of two: a bucket's width is 19 % of its value),
+ * nanoseconds in, the bucket's upper bound in microseconds out; the
+ * maximum is kept exactly.  One burst scenario runs at a time.
+ */
+#define	KT_HIST_N	(64 * 4)
+static uint64_t	kt_hist_first[KT_HIST_N], kt_hist_last[KT_HIST_N];
+static uint64_t	kt_hist_first_n, kt_hist_last_n, kt_hist_first_max, kt_hist_last_max;
+
+static inline u_int
+kt_hist_bucket(uint64_t ns)
+{
+	int msb;
+
+	if (ns < 4)
+		return ((u_int)ns);
+	msb = fls((int)(ns >> 32)) ? 32 + fls((int)(ns >> 32)) - 1 : fls((int)ns) - 1;
+	return ((u_int)msb * 4 + (u_int)((ns >> (msb - 2)) & 3));
+}
+
+static uint64_t
+kt_hist_bound_us(u_int b)
+{
+	uint64_t ns;
+
+	if (b < 8)		/* 0..3 ns exact; 4..7 unused */
+		return (0);
+	ns = ((uint64_t)(4 + (b & 3) + 1)) << ((b / 4) - 2);	/* upper bound of the bucket */
+	return ((ns + 999) / 1000);
+}
+
+static uint64_t
+kt_hist_pct(const uint64_t *h, uint64_t n, u_int pct)
+{
+	uint64_t acc = 0, want;
+	u_int b;
+
+	if (n == 0)
+		return (0);
+	want = (n * pct + 99) / 100;
+	for (b = 0; b < KT_HIST_N; b++) {
+		acc += h[b];
+		if (acc >= want)
+			return (kt_hist_bound_us(b));
+	}
+	return (kt_hist_bound_us(KT_HIST_N - 1));
+}
+
+static void
+kt_hist_add(uint64_t *h, uint64_t *n, uint64_t *max, uint64_t ns)
+{
+	h[kt_hist_bucket(ns)]++;
+	(*n)++;
+	if (ns > *max)
+		*max = ns;
+}
+
+/*
+ * The burst handler: cons_spin per item, the budget honoured per item,
+ * items back to the pool in one batch.  An item with ti_seen set is the
+ * last of its burst; the item after it (or the first ever) starts one.
+ * Ages are read against one sbinuptime() per pass, as the ifpair handler
+ * does.
+ */
+static void
+kt_burst_handler(struct kt_flood *f, struct kwq_item *head, int n)
+{
+	struct kwq_item *it, *next;
+	struct titem *ti;
+	struct kt_itemq back = STAILQ_HEAD_INITIALIZER(back);
+	uint64_t t0, now, age;
+	int done = 0;
+
+	t0 = kt_ticks();
+	now = (uint64_t)sbinuptime();
+	for (it = head; it != NULL; it = next) {
+		next = KWQ_ITEM_NEXT(f->q, it);
+		ti = __containerof(it, struct titem, ti_item);
+		if (ti->ti_magic != TITEM_MAGIC)
+			panic("kwq_test: bad burst item %p", ti);
+		age = now > ti->ti_seq ? kt_sbt2ns((sbintime_t)(now - ti->ti_seq)) : 0;
+		if (f->expect_first) {
+			kt_hist_add(kt_hist_first, &kt_hist_first_n, &kt_hist_first_max, age);
+			f->expect_first = false;
+		}
+		if (ti->ti_seen != 0) {
+			kt_hist_add(kt_hist_last, &kt_hist_last_n, &kt_hist_last_max, age);
+			f->expect_first = true;
+		}
+		if (f->cons_spin != 0)
+			kt_spin_ticks(f->cons_spin);
+		KWQ_ITEM_INIT(it);
+		STAILQ_INSERT_TAIL(&back, it, kwi_link);
+		done++;
+		if (next != NULL && kwq_budget_left(f->q) == 0) {
+			kwq_requeue(f->q, next, NULL, n - done);
+			f->requeued += n - done;
+			break;
+		}
+	}
+	f->cycles += kt_tickdelta(t0);
+	f->items_out += done;
+	f->passes++;
+	kt_flood_return_list(f, &back, done);
+}
+
+/* xorshift64*: good enough for an arrival process. */
+static inline uint64_t
+kt_prng(uint64_t *st)
+{
+	uint64_t x = *st;
+
+	x ^= x >> 12; x ^= x << 25; x ^= x >> 27;
+	*st = x;
+	return (x * 0x2545F4914F6CDD1DULL);
+}
+
+/*
+ * An exponential gap with mean `mean' ns: -ln(U) x mean, with -ln(U) from
+ * the integer part of -log2(U) (the leading zeros of a 64-bit U) plus a
+ * 64-entry table of the fraction, in 1/65536.  Capped at 32 x mean.
+ */
+static uint64_t
+kt_exp_gap(uint64_t *st, uint64_t mean)
+{
+	static const uint16_t log2_frac[64] = {	/* log2(1 + i/64) x 65536 */
+	    0, 1455, 2866, 4236, 5568, 6863, 8124, 9352, 10549, 11716, 12855, 13968,
+	    15055, 16117, 17156, 18173, 19168, 20143, 21098, 22034, 22952, 23852,
+	    24736, 25604, 26455, 27292, 28114, 28922, 29717, 30498, 31267, 32024,
+	    32768, 33501, 34223, 34934, 35634, 36324, 37004, 37674, 38335, 38986,
+	    39629, 40263, 40888, 41505, 42114, 42715, 43309, 43895, 44473, 45045,
+	    45609, 46167, 46718, 47262, 47800, 48332, 48858, 49378, 49892, 50400,
+	    50903, 51400 };
+	uint64_t u, nlog2;	/* -log2(U) in 1/65536 */
+	int lz;
+
+	u = kt_prng(st);
+	if (u == 0)
+		u = 1;
+	lz = 63 - (fls((int)(u >> 32)) ? 32 + fls((int)(u >> 32)) - 1 : fls((int)u) - 1);
+	/* U = u / 2^64 = m x 2^(-lz-1) with m in [1, 2): -log2 U = lz + 1 - log2 m */
+	nlog2 = ((uint64_t)(lz + 1) << 16) - log2_frac[(u << lz >> 57) & 63];
+	/* x ln 2 (45426 / 65536), then x mean */
+	return ((((nlog2 * 45426) >> 16) * mean) >> 16 < 32 * mean ?
+	    ((nlog2 * 45426) >> 16) * mean >> 16 : 32 * mean);
+}
+
+/* Wait `ns': sleep with a loose precision from 100 us up, spin below. */
+static void
+kt_gap(uint64_t ns)
+{
+	if (ns == 0)
+		return;
+	if (ns >= 100000)
+		pause_sbt("ktgap", nstosbt(ns), nstosbt(ns / 8), 0);
+	else
+		kt_spin_ticks(kt_ns2ticks(ns));
+}
+
+/*
+ * The burst producer: mode 0 enqueues burst_items back to back and then
+ * waits burst_gap; modes 1 and 2 enqueue one item per gap, constant or
+ * exponentially distributed (SPEC-p4e 2.4).  Every item is stamped; the
+ * last item of a burst (every item in modes 1 and 2) carries ti_seen = 1.
+ */
+static void
+kt_burst_producer(struct kt_flood *f)
+{
+	struct kwq_item *it;
+	struct titem *ti;
+	uint64_t t0, gap;
+	u_int k, nb;
+
+	f->expect_first = true;
+	f->prng = 0x9E3779B97F4A7C15ULL ^ (uint64_t)(uintptr_t)f;
+	while (!f->stop) {
+		nb = f->burst_mode == 0 ? f->burst : 1;
+		for (k = 0; k < nb && !f->stop; k++) {
+			mtx_lock(&f->mtx);
+			it = STAILQ_FIRST(&f->free);
+			if (it == NULL) {
+				kt_pool_wait(f);	/* releases f->mtx */
+				k--;
+				continue;
+			}
+			STAILQ_REMOVE_HEAD(&f->free, kwi_link);
+			f->nfree--;
+			mtx_unlock(&f->mtx);
+			if (f->prod_spin != 0)
+				kt_spin_ticks(f->prod_spin);
+			KWQ_ITEM_INIT(it);
+			ti = __containerof(it, struct titem, ti_item);
+			ti->ti_seen = (k == nb - 1) ? 1 : 0;
+			ti->ti_seq = (uint64_t)sbinuptime();
+			t0 = kt_ticks();
+			if (kwq_enqueue(f->q, f->cpu, it) != 0) {
+				kt_flood_return(f, it);
+				f->rejected++;
+			} else
+				f->produced++;
+			f->prod_ticks += kt_tickdelta(t0);
+		}
+		f->bursts++;
+		gap = f->burst_mode == 2 ? kt_exp_gap(&f->prng, f->burst_gap_ns) :
+		    f->burst_gap_ns;
+		kt_gap(gap);
+	}
+}
+
 static void
 kt_flood_producer(void *arg)
 {
@@ -916,11 +1215,13 @@ kt_flood_producer(void *arg)
 	u_int k;
 	int error;
 
-	thread_lock(curthread);
-	sched_bind(curthread, f->pcpu);
-	thread_unlock(curthread);
+	kt_prod_bind(f->pcpu);
 	if (f->mode == F_IFPAIR) {
 		kt_ifpair_producer(f);
+		goto out;
+	}
+	if (f->mode == F_BURST) {
+		kt_burst_producer(f);
 		goto out;
 	}
 	while (!f->stop) {
@@ -1096,6 +1397,9 @@ kt_ifpair_producer(struct kt_flood *f)
 			f->rejected += k;
 		} else
 			f->produced += k;
+		/* A sparse sender (SPEC-p4e 2.3): the pause between packets. */
+		if (f->gap_ns != 0)
+			kt_gap(f->gap_ns);
 	}
 }
 
@@ -1405,6 +1709,7 @@ kt_run_ifpair(void)
 			f->nprod = nprod;
 			f->prod_spin = kt_ns2ticks(kt_prod_ns);
 			f->cons_spin = kt_ns2ticks(kt_cons_ns);
+			f->gap_ns = (uint64_t)kt_prod_gap_us * 1000;
 		}
 	}
 	t0 = sbinuptime();
@@ -1451,10 +1756,10 @@ kt_run_ifpair(void)
 	kt_r_cons_pct = wall_ticks ? spin_ticks * 100 / (wall_ticks * ncons) : 0;
 	kt_r_cycles_a = spin_ticks * 1000000000ULL / kt_tick_hz;	/* packet work, ns */
 	kt_r_cycles_b = hand_ticks * 1000000000ULL / kt_tick_hz;	/* handler calls, ns */
-	snprintf(kt_msg, sizeof(kt_msg), "%u ifaces x %u workers x %u senders, spin %u/%u ns, batch %u: "
+	snprintf(kt_msg, sizeof(kt_msg), "%u ifaces x %u workers x %u senders, spin %u/%u ns, batch %u, gap %u us: "
 	    "%ju pkt/s (%ju..%ju per sender); enqueue %ju ns = %ju%% of sender CPU, %ju over 2 us; "
 	    "workers %ju%% in packet work, %ju passes; queue latency mean %ju max %ju us; %ju rejects, %ju window waits",
-	    nif, spread, nprod, kt_prod_ns, kt_cons_ns, kt_batch,
+	    nif, spread, nprod, kt_prod_ns, kt_cons_ns, kt_batch, kt_prod_gap_us,
 	    (uintmax_t)(wall_us ? total * 1000000 / wall_us : 0),
 	    (uintmax_t)(wall_us ? lo * 1000000 / wall_us : 0),
 	    (uintmax_t)(wall_us ? hi * 1000000 / wall_us : 0),
@@ -1723,6 +2028,168 @@ kt_run_cost(void)
 	    (a->prod_ticks * 1000000000ULL / kt_tick_hz) / a->produced : 0;
 }
 
+/*
+ * burst (SPEC-p4e 2.1 and, through burst_mode 1 and 2, the conformance rows
+ * of 2.4): one queue on cpu, one producer on pcpu (prod_prio applies), the
+ * arrival process set by burst_mode, burst_items and burst_gap_us.  Reads:
+ * result_bursts, the first-item and last-item latency percentiles,
+ * result_runs (passes), result_in/out, result_ns_per_item (wall per item),
+ * result_prod_ns_per_item (the enqueue).  The worker's wakeups, ticks and
+ * the rest are kwq's own counters, read by the runner.
+ */
+static void
+kt_run_burst(void)
+{
+	struct kt_flood *a;
+	sbintime_t t0;
+	uint64_t wall_us;
+	u_int npool;
+	int cpu, pcpu;
+
+	if (kt_burst_mode > 2 || kt_burst_items == 0) {
+		kt_fail("burst: burst_mode 0..2, burst_items >= 1");
+		return;
+	}
+	cpu = kt_cpu >= 0 ? kt_cpu : 1;
+	if (CPU_ABSENT(cpu)) cpu = 0;
+	pcpu = kt_other_cpu(cpu);
+	npool = 4 * kt_burst_items;
+	if (npool < 256) npool = 256;
+	if (kt_items > npool) npool = kt_items;
+	memset(kt_hist_first, 0, sizeof(kt_hist_first));
+	memset(kt_hist_last, 0, sizeof(kt_hist_last));
+	kt_hist_first_n = kt_hist_last_n = kt_hist_first_max = kt_hist_last_max = 0;
+	a = kt_floods[0] = kt_flood_create(0, "kta", 1, npool, 0, true, cpu, pcpu);
+	if (a->q == NULL) return;
+	a->mode = F_BURST;
+	a->stamp = true;
+	a->burst = kt_burst_items;
+	a->burst_mode = kt_burst_mode;
+	a->burst_gap_ns = (uint64_t)kt_burst_gap_us * 1000;
+	a->prod_spin = kt_ns2ticks(kt_prod_ns);
+	a->cons_spin = kt_ns2ticks(kt_cons_ns);
+	t0 = sbinuptime();
+	kt_flood_start(a);
+	pause("ktrun", kt_secs * hz);
+	kt_flood_stop(a);
+	wall_us = kt_sbt2us(sbinuptime() - t0);
+	kt_floods_report(a, NULL);
+	kt_r_runs = a->passes;
+	kt_r_bursts = a->bursts;
+	kt_r_first_p50_us = kt_hist_pct(kt_hist_first, kt_hist_first_n, 50);
+	kt_r_first_p99_us = kt_hist_pct(kt_hist_first, kt_hist_first_n, 99);
+	kt_r_first_max_us = (kt_hist_first_max + 999) / 1000;
+	kt_r_last_p50_us = kt_hist_pct(kt_hist_last, kt_hist_last_n, 50);
+	kt_r_last_p99_us = kt_hist_pct(kt_hist_last, kt_hist_last_n, 99);
+	kt_r_last_max_us = (kt_hist_last_max + 999) / 1000;
+	kt_r_maxlat_a_us = kt_r_first_max_us;
+	kt_r_maxlat_b_us = kt_r_last_max_us;
+	kt_r_ns_per_item = a->items_out ? wall_us * 1000 / a->items_out : 0;
+	kt_r_prod_ns_per_item = a->produced ?
+	    (a->prod_ticks * 1000000000ULL / kt_tick_hz) / a->produced : 0;
+	snprintf(kt_msg, sizeof(kt_msg), "burst mode %u, %u items, gap %u us, spin %u/%u ns: "
+	    "%ju bursts, %ju items, %ju passes (%ju items/pass), %ju bursts/s; "
+	    "first-item latency p50 %ju p99 %ju max %ju us, last-item p50 %ju p99 %ju max %ju us; %ju rejects",
+	    kt_burst_mode, kt_burst_items, kt_burst_gap_us, kt_prod_ns, kt_cons_ns,
+	    (uintmax_t)a->bursts, (uintmax_t)a->items_out, (uintmax_t)a->passes,
+	    (uintmax_t)(a->passes ? a->items_out / a->passes : 0),
+	    (uintmax_t)(wall_us ? a->bursts * 1000000 / wall_us : 0),
+	    (uintmax_t)kt_r_first_p50_us, (uintmax_t)kt_r_first_p99_us, (uintmax_t)kt_r_first_max_us,
+	    (uintmax_t)kt_r_last_p50_us, (uintmax_t)kt_r_last_p99_us, (uintmax_t)kt_r_last_max_us,
+	    (uintmax_t)a->rejected);
+}
+
+/*
+ * intr_load (SPEC-p4e 2.2): interrupt context on a CPU beside any scenario.
+ * A direct callout on intr_cpu re-arms itself every intr_us and busy-waits
+ * intr_work_ns with DELAY() in the timer interrupt, for intr_secs; the
+ * duty cycle is refused above 50 %.  Writing intr_secs > 0 starts it, 0
+ * stops it; it stops itself at the end and at unload.  Independent of the
+ * run state machine, so it can straddle scenarios.
+ */
+static struct callout	kt_intr_co;
+static int	kt_intr_cpu = -1;
+static u_int	kt_intr_us = 100;
+static u_int	kt_intr_work_ns = 20000;
+static u_int	kt_intr_secs_knob;
+static volatile bool kt_intr_on;
+static sbintime_t kt_intr_end, kt_intr_next, kt_intr_period;
+static u_int	kt_intr_work_us;	/* DELAY() argument, rounded up */
+
+SYSCTL_INT(_kern_kwq_test, OID_AUTO, intr_cpu, CTLFLAG_RW, &kt_intr_cpu, 0,
+    "intr_load: the CPU the interrupt load runs on (-1 = none)");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, intr_us, CTLFLAG_RW, &kt_intr_us, 0,
+    "intr_load: period of the interrupt load, us");
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, intr_work_ns, CTLFLAG_RW, &kt_intr_work_ns, 0,
+    "intr_load: busy time per interrupt, ns (at most 200000; duty cycle at most 50 %)");
+
+static void
+kt_intr_handler(void *arg __unused)
+{
+	sbintime_t now;
+
+	if (!kt_intr_on)
+		return;
+	now = sbinuptime();
+	if (now >= kt_intr_end) {
+		kt_intr_on = false;
+		return;
+	}
+	kt_r_intr_fired++;
+	if (now > kt_intr_next + kt_intr_period)
+		kt_r_intr_late++;
+	DELAY(kt_intr_work_us);
+	kt_r_intr_work_ns += kt_intr_work_us * 1000;
+	do
+		kt_intr_next += kt_intr_period;
+	while (kt_intr_next <= now);
+	callout_reset_sbt_on(&kt_intr_co, kt_intr_next, kt_intr_period / 8,
+	    kt_intr_handler, NULL, kt_intr_cpu, C_ABSOLUTE | C_DIRECT_EXEC);
+}
+
+static void
+kt_intr_stop(void)
+{
+	kt_intr_on = false;
+	callout_drain(&kt_intr_co);
+}
+
+static int
+kt_sysctl_intr_secs(SYSCTL_HANDLER_ARGS)
+{
+	u_int v;
+	int error;
+
+	v = kt_intr_secs_knob;
+	error = sysctl_handle_int(oidp, &v, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (v == 0) {
+		kt_intr_stop();
+		kt_intr_secs_knob = 0;
+		return (0);
+	}
+	if (kt_intr_on)
+		return (EBUSY);
+	if (kt_intr_cpu < 0 || kt_intr_cpu > (int)mp_maxid || CPU_ABSENT(kt_intr_cpu) ||
+	    kt_intr_us == 0 || kt_intr_work_ns == 0 || kt_intr_work_ns > 200000 ||
+	    kt_intr_work_ns * 2 > (uint64_t)kt_intr_us * 1000)
+		return (EINVAL);
+	kt_intr_secs_knob = v;
+	kt_r_intr_fired = kt_r_intr_late = kt_r_intr_work_ns = 0;
+	kt_intr_work_us = (kt_intr_work_ns + 999) / 1000;
+	kt_intr_period = (sbintime_t)kt_intr_us * SBT_1US;
+	kt_intr_next = sbinuptime() + kt_intr_period;
+	kt_intr_end = sbinuptime() + (sbintime_t)v * SBT_1S;
+	kt_intr_on = true;
+	callout_reset_sbt_on(&kt_intr_co, kt_intr_next, kt_intr_period / 8,
+	    kt_intr_handler, NULL, kt_intr_cpu, C_ABSOLUTE | C_DIRECT_EXEC);
+	return (0);
+}
+SYSCTL_PROC(_kern_kwq_test, OID_AUTO, intr_secs,
+    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, NULL, 0, kt_sysctl_intr_secs, "IU",
+    "intr_load: write the seconds to run (starts it: intr_cpu, intr_us, intr_work_ns), 0 stops it");
+
 /* tq_baseline: the same producer into a taskqueue with epair's shape. */
 static struct taskqueue *kt_tq;
 static struct task kt_tq_task;
@@ -1760,9 +2227,7 @@ kt_tq_producer(void *arg)
 	uint64_t t0;
 	bool sched;
 
-	thread_lock(curthread);
-	sched_bind(curthread, f->pcpu);
-	thread_unlock(curthread);
+	kt_prod_bind(f->pcpu);
 	while (!f->stop) {
 		mtx_lock(&f->mtx);
 		it = STAILQ_FIRST(&f->free);
@@ -1973,9 +2438,7 @@ kt_pp_producer(void *arg)
 	struct kt_pp *pp = arg;
 	uint64_t t0;
 
-	thread_lock(curthread);
-	sched_bind(curthread, pp->pcpu);
-	thread_unlock(curthread);
+	kt_prod_bind(pp->pcpu);
 	while (!pp->stop) {
 		pp->in_flight = 1;
 		KWQ_ITEM_INIT(&pp->item.ti_item);
@@ -3061,6 +3524,8 @@ kt_thread(void *arg __unused)
 	kt_r_enq_slow = kt_r_enq_pct = kt_r_cons_pct = kt_r_pool_waits = 0;
 	kt_r_inversions = kt_r_exact_errors = kt_r_calls = kt_r_requeues = 0;
 	kt_r_patterns = kt_r_with = kt_r_without = kt_r_wcpu = 0;
+	kt_r_bursts = kt_r_first_p50_us = kt_r_first_p99_us = kt_r_first_max_us = 0;
+	kt_r_last_p50_us = kt_r_last_p99_us = kt_r_last_max_us = 0;
 	kt_msg[0] = '\0';
 
 	if (strcmp(kt_scenario, "lifecycle") == 0 ||
@@ -3112,6 +3577,8 @@ kt_thread(void *arg __unused)
 		kt_run_mixdrain(KWQ_F_DISCARD);
 	else if (strcmp(kt_scenario, "cost") == 0)
 		kt_run_cost();
+	else if (strcmp(kt_scenario, "burst") == 0)
+		kt_run_burst();
 	else if (strcmp(kt_scenario, "tq_baseline") == 0)
 		kt_run_tq_baseline();
 	else if (strcmp(kt_scenario, "switch_baseline") == 0)
@@ -3186,6 +3653,7 @@ kt_modevent(module_t mod __unused, int type, void *data __unused)
 	case MOD_LOAD:
 		kt_calibrate_ticks();
 		mtx_init(&kt_mtx, "kwq_test", NULL, MTX_DEF);
+		callout_init(&kt_intr_co, 1);
 		kt_last_seq = malloc(sizeof(*kt_last_seq) * (mp_maxid + 1),
 		    M_KWQ_TEST, M_WAITOK | M_ZERO);
 		return (0);
@@ -3196,6 +3664,7 @@ kt_modevent(module_t mod __unused, int type, void *data __unused)
 			return (EBUSY);
 		}
 		mtx_unlock(&kt_mtx);
+		kt_intr_stop();
 		kt_floods_destroy();
 		free(kt_last_seq, M_KWQ_TEST);
 		mtx_destroy(&kt_mtx);
