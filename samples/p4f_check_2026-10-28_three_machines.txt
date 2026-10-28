@@ -1,0 +1,130 @@
+# bench/p4f_check.py, 2026-10-28: compliance of the kwq-p4f batteries with the specification, per machine.
+
+## lab
+PASS  B5a udp_idle rtt_p50 P vs W0 (tol 1.0 us)                                        W0 8.0 P 8.0
+PASS  B5a udp_burst_1_2000 first_p50 P vs W0 (tol 1.0 us)                              W0 8.0 P 9.0
+PASS  B5a udp_idle rtt_p50 PT50 vs W0 (tol 1.0 us)                                     W0 8.0 PT50 8.0
+PASS  B5a udp_burst_1_2000 first_p50 PT50 vs W0 (tol 1.0 us)                           W0 8.0 PT50 8.0
+PASS  B5a udp_idle rtt_p50 PW vs W0 (tol 1.0 us)                                       W0 8.0 PW 8.0
+PASS  B5a udp_burst_1_2000 first_p50 PW vs W0 (tol 1.0 us)                             W0 8.0 PW 9.0
+PASS  B5a udp_idle rtt_p50 PTW vs W0 (tol 1.0 us)                                      W0 8.0 PTW 8.0
+PASS  B5a udp_burst_1_2000 first_p50 PTW vs W0 (tol 1.0 us)                            W0 8.0 PTW 9.0
+PASS  B5b udp_load p99 <= 50 us at P (hardware)                                        P 33.0
+PASS  B5b PT50 udp_load p99 <= P + L(50)                                               P 33.0 PT50 58.0
+PASS  B5b PW udp_load p99 within 20% of P                                              P 33.0 PW 36.0
+PASS  B5c/S6.3 twoq q1 overruns 0 at P (W0 292.5)                                      overruns 0.0 parks 0.0
+PASS  S6.3 preempt pre_s 0 at P (W0 141.5)                                             pre_s 0.0
+PASS  B5c udp_load p99 <= one cap_period (1000 us) + pass at P                         p99 25.5
+PASS  B6/fairness twoq share1 within 0.45..0.55 at P                                   share1 0.5005
+PASS  S6.3 spin share equal to W0 within 0.05 at P                                     W0 0.5097 P 0.51015
+PASS  B5c/S6.3 twoq q1 overruns 0 at PT50 (W0 292.5)                                   overruns 0.0 parks 0.0
+PASS  S6.3 preempt pre_s 0 at PT50 (W0 141.5)                                          pre_s 0.0
+PASS  B5c udp_load p99 <= one cap_period (1000 us) + pass at PT50                      p99 57.0
+PASS  B6/fairness twoq share1 within 0.45..0.55 at PT50                                share1 0.501
+PASS  S6.3 spin share equal to W0 within 0.05 at PT50                                  W0 0.5097 PT50 0.5111
+PASS  B5c/S6.3 twoq q1 overruns 0 at PW (W0 292.5)                                     overruns 0.0 parks 0.0
+PASS  S6.3 preempt pre_s 0 at PW (W0 141.5)                                            pre_s 0.0
+PASS  B5c udp_load p99 <= one cap_period (1000 us) + pass at PW                        p99 24.5
+PASS  B6/fairness twoq share1 within 0.45..0.55 at PW                                  share1 0.4995
+PASS  S6.3 spin share equal to W0 within 0.05 at PW                                    W0 0.5097 PW 0.50515
+PASS  S3 prio_violations 0 in every row                                                nonzero: []
+FAIL  S16 tick: tput1 wakeups/s at PT50 equals W0 within 20% (lambda L < 1: regime stays off) W0 665.0 PT50 1.0 ticks 365.0 lambdaL 0.03
+FAIL  S16 tick entry: udp_burst 16/200 last p50 at PT50 within 20% of P (stricter entry) P 15.0 PT50 69.0 (W0 12.0)
+FAIL  S16 tick entry: udp_burst 16/200 bursts/s at PT50 within 5% of P                 P 17730.0 PT50 14567.0
+n.a.  B7 timer late p99 at PT50 vs P (reported)                                        P 513.0 PT50 508.0 W0 519.0
+PASS  S16 idle wait: coloc gbit at PW >= P + 10%                                       P 55.9 PW 74.9 W0 56.2 rcv_nivcsw P 160141.0 PW 6134.0
+PASS  S16 idle wait: tput1 gbit at PW within 5% of P                                   P 139.0 PW 139.0
+PASS  S16 idle wait: tput16 gbit at PW within 5% of P                                  P 75.5 PW 75.4
+PASS  P4d merge: tput1 gbit P within 10% of W0                                         W0 143.0 P 139.0
+PASS  P4d merge: tput16 gbit P within 10% of W0                                        W0 77.5 P 75.5
+PASS  P4d merge: udp_load rtt_p50 P within 10% of W0                                   W0 12.0 P 14.0
+PASS  P4d merge: timer late_p99 P within 10% of W0                                     W0 519.0 P 513.0
+PASS  P4d merge: spin share P within 10% of W0                                         W0 0.5101 P 0.5094
+
+lab: 35 PASS, 3 FAIL, 1 n.a.
+
+## a07
+PASS  B5a udp_idle rtt_p50 P vs W0 (tol 1.0 us)                                        W0 14.0 P 13.0
+PASS  B5a udp_burst_1_2000 first_p50 P vs W0 (tol 1.0 us)                              W0 35.0 P 35.0
+PASS  B5a udp_idle rtt_p50 PT50 vs W0 (tol 1.0 us)                                     W0 14.0 PT50 13.0
+PASS  B5a udp_burst_1_2000 first_p50 PT50 vs W0 (tol 1.0 us)                           W0 35.0 PT50 35.0
+PASS  B5a udp_idle rtt_p50 PW vs W0 (tol 1.0 us)                                       W0 14.0 PW 13.0
+PASS  B5a udp_burst_1_2000 first_p50 PW vs W0 (tol 1.0 us)                             W0 35.0 PW 34.0
+PASS  B5a udp_idle rtt_p50 PTW vs W0 (tol 1.0 us)                                      W0 14.0 PTW 13.0
+PASS  B5a udp_burst_1_2000 first_p50 PTW vs W0 (tol 1.0 us)                            W0 35.0 PTW 35.0
+PASS  B5b udp_load p99 <= 50 us at P (hardware)                                        P 39.0
+PASS  B5b PT50 udp_load p99 <= P + L(50)                                               P 39.0 PT50 79.0
+PASS  B5b PW udp_load p99 within 20% of P                                              P 39.0 PW 39.0
+PASS  B5c/S6.3 twoq q1 overruns 0 at P (W0 389.5)                                      overruns 0.0 parks 0.0
+PASS  S6.3 preempt pre_s 0 at P (W0 250.5)                                             pre_s 0.0
+PASS  B5c udp_load p99 <= one cap_period (1000 us) + pass at P                         p99 38.0
+PASS  B6/fairness twoq share1 within 0.45..0.55 at P                                   share1 0.4995
+PASS  S6.3 spin share equal to W0 within 0.05 at P                                     W0 0.51175 P 0.5105
+PASS  B5c/S6.3 twoq q1 overruns 0 at PT50 (W0 389.5)                                   overruns 0.0 parks 0.0
+PASS  S6.3 preempt pre_s 0 at PT50 (W0 250.5)                                          pre_s 0.0
+PASS  B5c udp_load p99 <= one cap_period (1000 us) + pass at PT50                      p99 77.5
+PASS  B6/fairness twoq share1 within 0.45..0.55 at PT50                                share1 0.5015000000000001
+PASS  S6.3 spin share equal to W0 within 0.05 at PT50                                  W0 0.51175 PT50 0.5114000000000001
+FAIL  B5c/S6.3 twoq q1 overruns 0 at PW (W0 389.5)                                     overruns 1.0 parks 0.0
+PASS  S6.3 preempt pre_s 0 at PW (W0 250.5)                                            pre_s 0.5
+PASS  B5c udp_load p99 <= one cap_period (1000 us) + pass at PW                        p99 35.5
+PASS  B6/fairness twoq share1 within 0.45..0.55 at PW                                  share1 0.499
+PASS  S6.3 spin share equal to W0 within 0.05 at PW                                    W0 0.51175 PW 0.51175
+PASS  S3 prio_violations 0 in every row                                                nonzero: []
+PASS  S16 tick: tput1 wakeups/s at PT50 <= 5% of W0 (lambda L >= 1)                    W0 35296.0 PT50 2.0 ticks 4613.0 lambdaL 1.76
+FAIL  S16 tick entry: udp_burst 16/200 last p50 at PT50 within 20% of P (stricter entry) P 28.0 PT50 78.0 (W0 27.0)
+FAIL  S16 tick entry: udp_burst 16/200 bursts/s at PT50 within 5% of P                 P 16304.0 PT50 14154.0
+n.a.  B7 timer late p99 at PT50 vs P (reported)                                        P 146.0 PT50 361.0 W0 211.0
+PASS  S16 idle wait: coloc gbit at PW >= P + 10%                                       P 16.8 PW 24.5 W0 17.1 rcv_nivcsw P 48334.0 PW 5501.0
+PASS  S16 idle wait: tput1 gbit at PW within 5% of P                                   P 37.4 PW 37.4
+PASS  S16 idle wait: tput16 gbit at PW within 5% of P                                  P 358.0 PW 354.0
+PASS  P4d merge: tput1 gbit P within 10% of W0                                         W0 34.7 P 37.4
+PASS  P4d merge: tput16 gbit P within 10% of W0                                        W0 372.0 P 358.0
+PASS  P4d merge: udp_load rtt_p50 P within 10% of W0                                   W0 23.0 P 22.0
+FAIL  P4d merge: timer late_p99 P within 10% of W0                                     W0 211.0 P 146.0
+PASS  P4d merge: spin share P within 10% of W0                                         W0 0.5115 P 0.5103
+
+a07: 34 PASS, 4 FAIL, 1 n.a.
+
+## guest
+PASS  B5a udp_idle rtt_p50 P vs W0 (tol 18.9 us)                                       W0 379.0 P 360.5
+FAIL  B5a udp_burst_1_2000 first_p50 P vs W0 (tol 23.1 us)                             W0 461.5 P 433.5
+PASS  B5a udp_idle rtt_p50 PT50 vs W0 (tol 18.9 us)                                    W0 379.0 PT50 375.0
+PASS  B5a udp_burst_1_2000 first_p50 PT50 vs W0 (tol 23.1 us)                          W0 461.5 PT50 444.5
+PASS  B5a udp_idle rtt_p50 PW vs W0 (tol 18.9 us)                                      W0 379.0 PW 377.0
+PASS  B5a udp_burst_1_2000 first_p50 PW vs W0 (tol 23.1 us)                            W0 461.5 PW 445.0
+FAIL  B5a udp_idle rtt_p50 PTW vs W0 (tol 18.9 us)                                     W0 379.0 PTW 359.5
+FAIL  B5a udp_burst_1_2000 first_p50 PTW vs W0 (tol 23.1 us)                           W0 461.5 PTW 437.0
+n.a.  B5b udp_load p99 <= 50 us at P (hardware)                                        P 325.5
+PASS  B5b PT50 udp_load p99 <= P + L(50)                                               P 325.5 PT50 319.0
+PASS  B5b PW udp_load p99 within 20% of P                                              P 325.5 PW 273.0
+FAIL  B5c/S6.3 twoq q1 overruns 0 at P (W0 122.5)                                      overruns 32.5 parks 34.0
+FAIL  S6.3 preempt pre_s 0 at P (W0 130.5)                                             pre_s 12.0
+PASS  B5c udp_load p99 <= one cap_period (1000 us) + pass at P                         p99 288.0
+PASS  B6/fairness twoq share1 within 0.45..0.55 at P                                   share1 0.4995
+PASS  S6.3 spin share equal to W0 within 0.05 at P                                     W0 0.52555 P 0.5271
+FAIL  B5c/S6.3 twoq q1 overruns 0 at PT50 (W0 122.5)                                   overruns 31.0 parks 45.0
+FAIL  S6.3 preempt pre_s 0 at PT50 (W0 130.5)                                          pre_s 13.5
+PASS  B5c udp_load p99 <= one cap_period (1000 us) + pass at PT50                      p99 369.0
+PASS  B6/fairness twoq share1 within 0.45..0.55 at PT50                                share1 0.5025
+PASS  S6.3 spin share equal to W0 within 0.05 at PT50                                  W0 0.52555 PT50 0.5276000000000001
+FAIL  B5c/S6.3 twoq q1 overruns 0 at PW (W0 122.5)                                     overruns 30.5 parks 52.0
+FAIL  S6.3 preempt pre_s 0 at PW (W0 130.5)                                            pre_s 11.5
+PASS  B5c udp_load p99 <= one cap_period (1000 us) + pass at PW                        p99 302.0
+PASS  B6/fairness twoq share1 within 0.45..0.55 at PW                                  share1 0.501
+PASS  S6.3 spin share equal to W0 within 0.05 at PW                                    W0 0.52555 PW 0.5275
+PASS  S3 prio_violations 0 in every row                                                nonzero: []
+PASS  S16 tick: tput1 wakeups/s at PT50 equals W0 within 20% (lambda L < 1: regime stays off) W0 2905.5 PT50 2661.0 ticks 75.0 lambdaL 0.15
+PASS  S16 tick entry: udp_burst 16/200 last p50 at PT50 within 20% of P (stricter entry) P 241.5 PT50 177.5 (W0 291.5)
+PASS  S16 tick entry: udp_burst 16/200 bursts/s at PT50 within 5% of P                 P 7419.5 PT50 7808.0
+n.a.  B7 timer late p99 at PT50 vs P (reported)                                        P 610.0 PT50 608.0 W0 594.0
+PASS  S16 idle wait: coloc gbit at PW >= P + 10%                                       P 7.205 PW 7.9399999999999995 W0 7.355 rcv_nivcsw P 20720.5 PW 3974.5
+PASS  S16 idle wait: tput1 gbit at PW within 5% of P                                   P 9.76 PW 9.765
+PASS  S16 idle wait: tput16 gbit at PW within 5% of P                                  P 15.6 PW 15.6
+PASS  P4d merge: tput1 gbit P within 10% of W0                                         W0 10.53 P 9.76
+PASS  P4d merge: tput16 gbit P within 10% of W0                                        W0 15.65 P 15.6
+FAIL  P4d merge: udp_load rtt_p50 P within 10% of W0                                   W0 115.0 P 129.0
+PASS  P4d merge: timer late_p99 P within 10% of W0                                     W0 594.0 P 610.0
+PASS  P4d merge: spin share P within 10% of W0                                         W0 0.5278499999999999 P 0.5268999999999999
+
+guest: 27 PASS, 10 FAIL, 2 n.a.  (guest: direction only)
