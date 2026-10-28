@@ -12,18 +12,20 @@
 # every make.  On a remote host the scratch directory is OUTDIR/src and
 # make runs there, so the host needs only make and the kernel sources or
 # objects, not git.  Results: OUTDIR/kwq.ko, OUTDIR/if_pair.ko and, where
-# the commit has it, OUTDIR/if_pair_tq.ko.
+# the commit has it, OUTDIR/if_pair_tq.ko and OUTDIR/kwq_test.ko (the test
+# module of the same commit: one per battery, kwq/tests/SPEC-p4e.md).
 set -e
 HOST=""
 if [ "$1" = -r ]; then HOST=$2; shift 2; fi
 COMMIT=$1; OUTDIR=$2
 [ -n "$COMMIT" ] && [ -n "$OUTDIR" ] || { echo "usage: build_stage.sh [-r HOST] COMMIT OUTDIR" >&2; exit 2; }
 cd "$(dirname "$0")/.."
-PATHS="kwq/kwq if_pair.c Makefile if_pair.4"
+PATHS="kwq/kwq kwq/kwq_test if_pair.c Makefile if_pair.4"
 git cat-file -e "$COMMIT:extras/if_pair_tq/if_pair_tq.c" 2>/dev/null && PATHS="$PATHS extras/if_pair_tq"
 # shellcheck disable=SC2086
 BUILD='set -e; cd "$1"; mkdir -p src; tar -xf - -C src
 cd src/kwq/kwq && make -s $MAKEARGS >/dev/null && cp kwq.ko "$1"
+if [ -d ../kwq_test ]; then cd ../kwq_test && make -s $MAKEARGS >/dev/null && cp kwq_test.ko "$1"; cd ../kwq; fi
 cd ../.. && make -s $MAKEARGS if_pair.ko >/dev/null && cp if_pair.ko "$1"
 if [ -d extras/if_pair_tq ]; then cd extras/if_pair_tq && make -s $MAKEARGS >/dev/null && cp if_pair_tq.ko "$1"; fi
 cd "$1" && ls -l *.ko'
