@@ -6119,3 +6119,16 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   band; the guest 27 / 10, direction only.  Machines left with no
   modules loaded; a07's uptime continuous (7 d 15 h).  Open: the PTW
   interaction, cap_prio, the NIC-fed flow, the deadline sweep.
+  Two notes from the core agent's own verification on the guest after
+  the batteries (its targeted same-CPU burst with a producer that never
+  sleeps, prod_prio 120): the idle-class wait's deadline bounds the
+  promotion, not the pass that follows it, so on that producer the first
+  item's p50 was 230 us against a 100 us deadline (the guest's callout
+  latency; on lab and a07 the rows' episodes end by the worker's own
+  turn at 25-41 us because the producer sleeps), and S16's contract
+  should be read that way; and WITNESS reports the lock order of
+  pair_detach_cloners() (vnet list shared, then ifnet_detach_sxlock) as
+  a reversal at if_pair.c:1182, the same report base's own
+  vnet_deregister_sysuninit() path produced on 2026-10-27, since both
+  take the order the base establishes elsewhere the other way round; it
+  is the inherited hazard the bug report names, not a new one.
