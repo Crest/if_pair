@@ -13,11 +13,17 @@ cd "$(dirname "$0")"
 MODDIR=${MODDIR:-/root/kwq}
 # KWQ_SSH: how to reach a root shell on the test machine (default: the
 # bhyve guest).  For a07: KWQ_SSH="ssh a07 doas -n" MODDIR=/home/crest/if_pair/kwq
+# TESTMOD: the kwq_test.ko to load instead of MODDIR's (one test module for
+# every build of a comparison, kwq/tests/SPEC-p4e.md).  KT_EXTRA adds knobs
+# to every run (e.g. the intr_load stressor: "intr_cpu=1 intr_us=100
+# intr_work_ns=20000 intr_secs=4"); the stressor is switched off after
+# each run.
 KWQ_SSH=${KWQ_SSH:-./kwqvm.sh ssh}
 scenarios=${*:-"lifecycle fifo notify reject discard fairness fairness2 latency gaming overrun yield cost tq_baseline switch_baseline"}
 $KWQ_SSH 'sh -s' <<GUEST
 kldstat -q -m kwq_test && kldunload kwq_test; kldstat -q -m kwq && kldunload kwq
 if [ -f $MODDIR/kwq/kwq.ko ]; then K=$MODDIR/kwq/kwq.ko; T=$MODDIR/kwq_test/kwq_test.ko; else K=$MODDIR/kwq.ko; T=$MODDIR/kwq_test.ko; fi
+T=${TESTMOD:-\$T}
 kldload \$K && kldload \$T || { echo LOADFAIL; exit 1; }
 for kv in ${KWQ_KNOBS:-}; do sysctl kern.kwq.\$kv || { echo KNOBFAIL; exit 1; }; done	# e.g. KWQ_KNOBS="net.budget_check_every=1"
 uname -v | sed 's/^/kernel: /'; sysctl -n kern.hz hw.ncpu hw.machine | tr '\\n' ' ' | sed 's/^/hz ncpu machine: /'; echo
@@ -28,6 +34,7 @@ run() { name=\$1; shift
 	while [ "\$(sysctl -n kern.kwq_test.result_state)" = running ]; do sleep 0.2; [ \$(( \$(date +%s) - start )) -gt 120 ] && { echo "\$name: TIMEOUT"; return 1; }; done
 	R() { sysctl -n kern.kwq_test.result_\$1; }
 	printf '%-16s %-5s in=%s out=%s rej=%s runs=%s cyc_a=%s cyc_b=%s lat_a=%sus lat_b=%sus ns/item=%s prod=%s ns=%s %s\n' "\$name" "\$(R state)" "\$(R in)" "\$(R out)" "\$(R rejected)" "\$(R runs)" "\$(R cycles_a)" "\$(R cycles_b)" "\$(R maxlat_a_us)" "\$(R maxlat_b_us)" "\$(R ns_per_item)" "\$(R prod_ns_per_item)" "\$(R ns)" "\$(R msg)"
+	sysctl -q kern.kwq_test.intr_cpu=-1 >/dev/null 2>&1	# the stressor, if the build has it
 	[ "\$(R state)" = done ]
 }
 C() { sysctl kern.kwq.net.queue.kta.cpu.1 kern.kwq.net.queue.ktb.cpu.1 2>/dev/null | grep -v ": 0\$" | grep -E "boosts|grace|parks|overruns|passes|items|maxlat|requeued" | sed 's/^/    /'
@@ -56,7 +63,7 @@ for s in $scenarios; do
 		ncons=$(( ${IFACES:-1} * ${SPREAD:-1} )); b0=0
 		for c in \$(seq 1 \$ncons); do b0=\$(( b0 + \$(sysctl -n kern.kwq.net.cpu.\$c.busy_ns) )); done
 		if [ -n "${LOCKSTAT:-}" ]; then ( sleep 1; lockstat -C -n 12 sleep 1 2>&1 | grep -E "^Count|kwq|flood" | awk '/^Count/ { if (h++) next } 1' | head -12 | sed 's/^/    lockstat: /' ) & fi
-		run ifpair items=${ITEMS:-1024} batch=${BATCH:-1} ifaces=${IFACES:-1} spread=${SPREAD:-1} fanin=${FANIN:-1} prod_ns=${PROD_NS:-1000} cons_ns=${CONS_NS:-1500} limit=1000000 || rc=1
+		run ifpair items=${ITEMS:-1024} batch=${BATCH:-1} ifaces=${IFACES:-1} spread=${SPREAD:-1} fanin=${FANIN:-1} prod_ns=${PROD_NS:-1000} cons_ns=${CONS_NS:-1500} ${PROD_GAP_US:+prod_gap_us=$PROD_GAP_US} limit=1000000 || rc=1
 		wait
 		b1=0; for c in \$(seq 1 \$ncons); do b1=\$(( b1 + \$(sysctl -n kern.kwq.net.cpu.\$c.busy_ns) )); done
 		busy=\$(( b1 - b0 )); spin=\$(sysctl -n kern.kwq_test.result_cycles_a); wall=\$(sysctl -n kern.kwq_test.result_ns)
@@ -66,6 +73,9 @@ for s in $scenarios; do
 	      echo "    consumer busy ns per item: \$(( (b1 - b0) / it )) (cpu \$wc; items per pass \$(( it / (p1 - p0 > 0 ? p1 - p0 : 1) )), switched passes \$(( s1 - s0 )); clock glitches discarded by the test: \$(sysctl -n kern.kwq_test.result_glitches))" ;;
 	tq_baseline) run tq_baseline items=1024 || rc=1 ;;
 	switch_baseline) run switch_baseline || rc=1 ;;
+	burst)	# SPEC-p4e.md 2.1/2.4: BURST_ITEMS items back to back, BURST_GAP_US apart; BURST_MODE 0 bursts, 1 constant spacing, 2 exponential
+		run burst items=1024 burst_items=${BURST_ITEMS:-64} burst_gap_us=${BURST_GAP_US:-500} burst_mode=${BURST_MODE:-0} cons_ns=${CONS_NS:-500} prod_ns=${PROD_NS:-0} limit=1000000 || rc=1
+		printf '    burst:'; for k in bursts first_p50_us first_p99_us first_max_us last_p50_us last_p99_us last_max_us; do v=\$(sysctl -n kern.kwq_test.result_\$k 2>/dev/null) && printf ' %s=%s' \$k "\$v"; done; echo ;;
 	*) echo "unknown scenario \$s"; rc=1 ;;
 	esac
 done
