@@ -102,8 +102,41 @@
 #   fair      eight flows, spinner on W: per-stream receiver Gbit/s min,
 #             max and coefficient of variation (fairness by CPU)
 # machine additionally records interrupts/s from vmstat -i (the deadline
-# callouts at scale).  tq stages skip the P4d tests except coloc, fair and
-# churn's user-visible parts.
+# callouts at scale) and, since 2026-10-27, intr_w_timer_s and intr_timer_s:
+# the timer interrupts of W and of all CPUs (vmstat -i's cpuN:timer lines on
+# amd64; a dtrace count of fbt::handleevents:entry by CPU on arm64, where the
+# generic timer is one line for all CPUs).  tq stages skip the P4d tests
+# except coloc, fair and churn's user-visible parts.
+# COMPETITOR=intr (kwq stages only) loads the battery's test module
+# (KWQ_TEST_KO, the one kwq_test.ko of the battery) and runs its intr_load
+# stressor on W: a direct callout every 100 us doing 20 us of work in
+# interrupt context, the one preemptor the priority invariant permits
+# (kwq/tests/SPEC-p4e.md 2.2); tq stages fall back to timer with a warning.
+#
+# Tests added for SPEC-p4e.md (off by default):
+#   sparse    SPARSE_N request-reply UDP flows at SPARSE_RATE requests/s
+#             each (default N "16 64" capped at 4 x ncpu, rates "1000 5000"),
+#             source ports spread over the worker CPUs (victim uports), one
+#             echo server: per (N, r) the flows' RTT p50 and p99 as min /
+#             median / max over flows, lost, the sums over all NET workers
+#             of wakeups, ticks and passes per second, items per pass, the
+#             machine's interrupts and timer interrupts per second and its
+#             system CPU share
+#   udp_burst UDP request-reply in bursts (victim udpburst) for each B:G_us
+#             in UDP_BURSTS (default "1:2000 16:200 64:2000 64:50000"):
+#             first-in-burst and last-in-burst RTT p50 / p99, lost, and the
+#             worker's wakeups, ticks and empty ticks per burst, with nothing
+#             else running
+#   udp_burst_load  the same beside the bulk flow on W
+#   coloc     also reports both pair queues' overruns, overruns_switched,
+#             parks and debts on W and the receiver's involuntary context
+#             switches (procstat -r)
+#   twoq      also reports overruns_switched per queue
+# The kwq_* rows gained ticks, empty and single-element ticks, doorbells
+# skipped by the tick, overruns and overruns_switched of both pair queues,
+# prio_violations and the low-priority wakes alone (0 on builds without the
+# counters).  They lost kwq_wake_count_s: the specification dropped the
+# count thresholds, so there is no count-ended wake episode to report.
 #
 # Requires iperf3 and cc (victim.c is built on the fly).  Runs as root.
 . "$(dirname "$0")/lib.sh"
@@ -118,6 +151,11 @@ STAGEFILE=$1
 REPS=${REPS:-1}
 TESTS=${TESTS:-"tput1 tput16 udp_idle udp_load spin timer exec machine"}
 COMPETITOR=${COMPETITOR:-timer}
+SPARSE_N=${SPARSE_N:-"16 64"}
+SPARSE_RATE=${SPARSE_RATE:-"1000 5000"}
+UDP_BURSTS=${UDP_BURSTS:-"1:2000 16:200 64:2000 64:50000"}
+KWQ_TEST_KO=${KWQ_TEST_KO:-}
+ARCH=$(uname -p)
 SECS=${SECS:-8}
 UDPSECS=${UDPSECS:-4}
 MTU=${PAIR_MTU:-16384}
@@ -153,7 +191,7 @@ cp_times() {	# W -> "user nice sys intr idle" of that CPU
 cp_shares() {	# "before" "after" -> "sys=x user=y idle=z" as shares of the interval
 	printf '%s\n%s\n' "$1" "$2" | awk 'NR == 1 { for (i = 1; i <= 5; i++) a[i] = $i }
 	    NR == 2 { t = 0; for (i = 1; i <= 5; i++) { d[i] = $i - a[i]; t += d[i] }
-	        if (t <= 0) t = 1; printf("sys=%.3f user=%.3f idle=%.3f", (d[3] + d[4]) / t, (d[1] + d[2]) / t, d[5] / t) }'
+	        if (t <= 0) t = 1; printf("sys=%.3f user=%.3f idle=%.3f intr=%.3f", (d[3] + d[4]) / t, (d[1] + d[2]) / t, d[5] / t, d[4] / t) }'
 }
 rate_of() {
 	awk '/receiver/ { for (i = 1; i <= NF; i++) if ($i == "Gbits/sec") { r = $(i - 1); if ($0 ~ /^\[SUM\]/) s = r } }
@@ -190,6 +228,10 @@ stage_up() {	# KIND KWQ_KO IFPAIR_KO knobs...
 	if [ "$KIND" = kwq ]; then
 		must "load $KWQ_KO" kldload "$KWQ_KO"
 		must "load $IFPAIR_KO" kldload "$IFPAIR_KO"
+		if [ "$COMPETITOR" = intr ]; then
+			[ -n "$KWQ_TEST_KO" ] || fail "COMPETITOR=intr needs KWQ_TEST_KO"
+			must "load $KWQ_TEST_KO" kldload "$KWQ_TEST_KO"
+		fi
 		PAIR=pair; MOD=if_pair
 		for kv in "$@"; do
 			case $kv in kenv:*|jail:*) continue;; esac
@@ -244,6 +286,7 @@ stage_down() {
 	sleep 2
 	ifconfig "$PAIRA" destroy 2>/dev/null
 	for kv in $KNOBS; do sysctl -q "$kv" >/dev/null; done
+	if kldstat -q -m kwq_test; then intr_stress_stop; sleep 0.3; kldunload kwq_test || fail "stage $STAGE: kldunload kwq_test failed"; fi
 	kldunload "$MOD" || fail "stage $STAGE: kldunload $MOD failed (pgrep dtrace?)"
 	[ "$KIND" = kwq ] && { kldunload kwq || fail "stage $STAGE: kldunload kwq failed"; }
 	for kv in $KENVS; do kenv -u "${kv%%=*}" >/dev/null 2>&1; done
@@ -309,19 +352,47 @@ busiest_kwq_delta() {	# two snapshots of the per-CPU pass counters -> the CPU th
 }
 kwq_passes() { sysctl kern.kwq.net.cpu 2>/dev/null | awk -F'[.:]' '$6 == "passes" { print $5, $NF }'; }
 oid0() { sysctl -n "$1" 2>/dev/null || echo 0; }	# a counter an older stage may lack
-kwq_counters() {	# W -> "switched yields tick_yields cap_demotions wakeups passes items wakes_deferred wake_defer_ns wakes_low wake_low_ns wakes_count wakes_deadline cap_yields cap_cuts slice_yields" (0 where absent)
+q2() {	# field cpu -> the field summed over both pair queues on that CPU (0 where absent)
+	echo $(( $(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$2.$1") + $(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$2.$1") ))
+}
+# kwq_counters prints one 26-field vector; the fields are positional, so a new
+# one is always appended at the end and no index ever moves (kwq_rows,
+# udp_burst_run and any later reader index into it).  In order:
+#
+#    1 switched           2 yields              3 tick_yields       4 cap_demotions
+#    5 wakeups            6 passes              7 items (both pair queues on W)
+#    8 wakes_deferred     9 wake_defer_ns      10 wakes_low        11 wake_low_ns
+#   12 reserved (the count-threshold wakes of the kwq-wake-batch branch; the
+#      specification dropped count thresholds, so no row is emitted from it any
+#      more, but the slot stays so the indices below it do not move)
+#   13 wakes_deadline + wake_promotions_deadline
+#   14 db_batched        15 db_flushed         16 wake_idle_cpu
+#   17 cap_yields        18 cap_cuts           19 slice_yields
+#   20 ticks             21 ticks_empty        22 ticks_single
+#   23 doorbells_skipped (both queues)
+#   24 overruns (both queues)                  25 overruns_switched (both queues)
+#   26 prio_violations
+#
+# Fields 8, 9, 12, 14, 15 and 16 exist only on the wake-moderation campaign's
+# branches and read 0 here; 20..26 are the tick regime's (SPEC-p4e.md S1) and
+# read 0 on a build without them.
+kwq_counters() {	# W -> the 26 fields above (0 where absent)
 	_w=kern.kwq.net.cpu.$1
-	_it=$(( $(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$1.items") + $(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$1.items") ))
-	echo "$(oid0 $_w.switched) $(oid0 $_w.yields) $(oid0 $_w.tick_yields) $(oid0 $_w.cap_demotions) $(oid0 $_w.wakeups) $(oid0 $_w.passes) $_it $(oid0 $_w.wakes_deferred) $(oid0 $_w.wake_defer_ns) $(oid0 $_w.wakes_low) $(oid0 $_w.wake_low_ns) $(( $(oid0 $_w.wakes_count) + $(oid0 $_w.wake_promotions_count) )) $(( $(oid0 $_w.wakes_deadline) + $(oid0 $_w.wake_promotions_deadline) )) $(oid0 $_w.db_batched) $(oid0 $_w.db_flushed) $(oid0 $_w.wake_idle_cpu) $(oid0 $_w.cap_yields) $(oid0 $_w.cap_cuts) $(oid0 $_w.slice_yields)"
+	echo "$(oid0 $_w.switched) $(oid0 $_w.yields) $(oid0 $_w.tick_yields) $(oid0 $_w.cap_demotions) $(oid0 $_w.wakeups) $(oid0 $_w.passes) $(q2 items "$1") $(oid0 $_w.wakes_deferred) $(oid0 $_w.wake_defer_ns) $(oid0 $_w.wakes_low) $(oid0 $_w.wake_low_ns) $(( $(oid0 $_w.wakes_count) + $(oid0 $_w.wake_promotions_count) )) $(( $(oid0 $_w.wakes_deadline) + $(oid0 $_w.wake_promotions_deadline) )) $(oid0 $_w.db_batched) $(oid0 $_w.db_flushed) $(oid0 $_w.wake_idle_cpu) $(oid0 $_w.cap_yields) $(oid0 $_w.cap_cuts) $(oid0 $_w.slice_yields) $(oid0 $_w.ticks) $(oid0 $_w.ticks_empty) $(oid0 $_w.ticks_single) $(q2 doorbells_skipped "$1") $(q2 overruns "$1") $(q2 overruns_switched "$1") $(oid0 $_w.prio_violations)"
 }
 kwq_rows() {	# TEST before after secs: the worker's counters per second and the longest doorbell-to-pass latency
 	[ "$KIND" = kwq ] || return 0
-	# the wake-moderation rows (PLAN P4e): wakeups/s, items per pass, deferred or
-	# low-priority wake episodes per second and their mean length in us, and how
-	# many of them ended by the count and by the deadline (0 on a build without them)
-	printf '%s\n%s\n' "$2" "$3" | awk -v dt="$4" 'NR == 1 { for (i = 1; i <= 19; i++) a[i] = $i }
-	    NR == 2 { for (i = 1; i <= 19; i++) d[i] = $i - a[i]; ep = d[8] + d[10]; ns = d[9] + d[11];
-	        printf("kwq_switched_s=%d kwq_yields_s=%d kwq_tick_yields_s=%d kwq_dem_s=%d kwq_wakeups_s=%d kwq_items_per_pass=%.2f kwq_wake_ep_s=%d kwq_wake_ep_us=%.1f kwq_wake_count_s=%d kwq_wake_deadline_s=%d kwq_db_batched_s=%d kwq_db_flushed_s=%d kwq_wake_idlecpu_s=%d kwq_capy_s=%d kwq_cuts_s=%d kwq_slice_s=%d", d[1] / dt, d[2] / dt, d[3] / dt, d[4] / dt, d[5] / dt, d[6] > 0 ? d[7] / d[6] : 0, ep / dt, ep > 0 ? ns / ep / 1000 : 0, d[12] / dt, d[13] / dt, d[14] / dt, d[15] / dt, d[16] / dt, d[17] / dt, d[18] / dt, d[19] / dt) }' > "$OUT/kwqrows"
+	# The wake-moderation rows (PLAN P4e): wakeups/s, items per pass, deferred or
+	# low-priority wake episodes per second and their mean length in us, the
+	# low-priority wakes alone and the episodes a deadline ended; and the tick
+	# regime's (SPEC-p4e.md S1, S3.6): ticks, empty and single-element ticks and
+	# doorbells the tick absorbed per second, both pair queues' overruns and the
+	# switched ones among them, and prio_violations, which must be 0 in every row.
+	# 0 on a build without the counter.  No count-threshold row: the specification
+	# dropped count thresholds, so kwq_wake_count_s is gone with them.
+	printf '%s\n%s\n' "$2" "$3" | awk -v dt="$4" 'NR == 1 { for (i = 1; i <= 26; i++) a[i] = $i }
+	    NR == 2 { for (i = 1; i <= 26; i++) d[i] = $i - a[i]; ep = d[8] + d[10]; ns = d[9] + d[11];
+	        printf("kwq_switched_s=%d kwq_yields_s=%d kwq_tick_yields_s=%d kwq_dem_s=%d kwq_wakeups_s=%d kwq_items_per_pass=%.2f kwq_wake_ep_s=%d kwq_wake_ep_us=%.1f kwq_wakes_low_s=%d kwq_wake_deadline_s=%d kwq_db_batched_s=%d kwq_db_flushed_s=%d kwq_wake_idlecpu_s=%d kwq_capy_s=%d kwq_cuts_s=%d kwq_slice_s=%d kwq_ticks_s=%d kwq_ticks_empty_s=%d kwq_ticks_single_s=%d kwq_db_skipped_s=%d kwq_overruns_s=%d kwq_overruns_switched_s=%d kwq_prio_violations=%d", d[1] / dt, d[2] / dt, d[3] / dt, d[4] / dt, d[5] / dt, d[6] > 0 ? d[7] / d[6] : 0, ep / dt, ep > 0 ? ns / ep / 1000 : 0, d[10] / dt, d[13] / dt, d[14] / dt, d[15] / dt, d[16] / dt, d[17] / dt, d[18] / dt, d[19] / dt, d[20] / dt, d[21] / dt, d[22] / dt, d[23] / dt, d[24] / dt, d[25] / dt, d[26]) }' > "$OUT/kwqrows"
 	_ml=$(( $(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$WCPU.maxlat_ns") > $(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$WCPU.maxlat_ns") ? $(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$WCPU.maxlat_ns") : $(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$WCPU.maxlat_ns") ))
 	for kv in $(cat "$OUT/kwqrows") "kwq_maxlat_us=$((_ml / 1000))"; do row "$1" "${kv%%=*}" "${kv#*=}"; done
 	log "$STAGE rep $REP $1 $(cat "$OUT/kwqrows") kwq_maxlat_us=$((_ml / 1000))"
@@ -330,6 +401,9 @@ kwq_rows() {	# TEST before after secs: the worker's counters per second and the 
 # A competitor pinned to W beside the flow for the P4d tests; sets KPID.
 competitor_bg() {	# secs
 	case $COMPETITOR in
+	intr) if [ "$KIND" = kwq ]; then intr_stress "$1"; return; fi
+	      log "WARNING: COMPETITOR=intr on a tq stage: using timer"
+	      cpuset -l "$WCPU" "$VICTIM" timer "$1" 100 > "$OUT/competitor" 2>&1 & ;;
 	spin) cpuset -l "$WCPU" "$VICTIM" spin "$1" > "$OUT/competitor" 2>&1 & ;;
 	burst) cpuset -l "$WCPU" "$VICTIM" timer "$1" 400 > "$OUT/competitor" 2>&1 & ;;
 	*) cpuset -l "$WCPU" "$VICTIM" timer "$1" 100 > "$OUT/competitor" 2>&1 & ;;
@@ -346,12 +420,58 @@ dtrace_wait() { [ -n "$DPID" ] && wait $DPID 2>/dev/null; DPID=""; }
 dval() {	# file key -> the value printed as "key value", else 0
 	awk -v k="$2" '$1 == k { print $2; found = 1; exit } END { if (!found) print 0 }' "$1" 2>/dev/null
 }
-q_items() {	# pair-a pair-b cpu -> items overruns debts parks summed over both queues
-	for f in items overruns debts parks; do
+nivcsw() {	# pid -> its involuntary context switches so far (procstat -r), 0 if gone
+	procstat -r "$1" 2>/dev/null | awk '/involuntary context switches/ { print $NF; f = 1 } END { if (!f) print 0 }'
+}
+q_items() {	# pair-a pair-b cpu -> items overruns debts parks overruns_switched summed over both queues
+	for f in items overruns debts parks overruns_switched; do
 		echo $(( $(oid0 "kern.kwq.net.queue.$1.cpu.$3.$f") + $(oid0 "kern.kwq.net.queue.$2.cpu.$3.$f") ))
 	done | tr '\n' ' '
 }
 vmstat_total() { vmstat -i | awk '/^Total/ { print $2 }'; }
+# Timer interrupts: on amd64 vmstat -i has one cpuN:timer line per CPU; on
+# arm64 the generic timer is one line for all CPUs, so the per-CPU count
+# comes from dtrace (fbt::handleevents:entry by cpu) when available.
+tmr_snap() {	# -> "W's timer interrupts, all CPUs' timer interrupts" (amd64) or "- -"
+	if [ "$ARCH" = amd64 ]; then
+		vmstat -i | awk -v w="cpu$WCPU:timer" '$1 ~ /^cpu[0-9]+:timer$/ { t += $2; if ($1 == w) ww = $2 } END { print ww + 0, t + 0 }'
+	else
+		echo "- -"
+	fi
+}
+tmr_bg() {	# secs file: the arm64 substitute, a dtrace count per CPU; sets TPID
+	TPID=""
+	[ "$ARCH" != amd64 ] && [ "$HAVE_DTRACE" = yes ] || return 0
+	dtrace -qn "fbt::handleevents:entry { @c[cpu] = count(); } tick-${1}s { printa(\"cpu%d %@d\\n\", @c); exit(0); }" -o "$2" > /dev/null 2>&1 &
+	TPID=$!
+}
+tmr_rows() {	# TEST "w0 t0" "w1 t1" file secs: intr_w_timer_s and intr_timer_s rows
+	if [ "$ARCH" = amd64 ]; then
+		_w0=${2%% *}; _t0=${2##* }; _w1=${3%% *}; _t1=${3##* }
+		row "$1" intr_w_timer_s $(( (_w1 - _w0) / $5 )); row "$1" intr_timer_s $(( (_t1 - _t0) / $5 ))
+		return 0
+	fi
+	[ -n "${TPID:-}" ] && { wait $TPID 2>/dev/null; TPID=""; }
+	[ -f "$4" ] || return 0
+	row "$1" intr_w_timer_s "$(awk -v w="cpu$WCPU" -v dt="$5" '$1 == w { print int($2 / dt) }' "$4")"
+	row "$1" intr_timer_s "$(awk -v dt="$5" '/^cpu/ { t += $2 } END { print int(t / dt) }' "$4")"
+}
+intr_stress() {	# secs: start the intr_load stressor of the battery's test module on W; sets KPID
+	kldstat -q -m kwq_test || fail "COMPETITOR=intr: kwq_test.ko is not loaded (KWQ_TEST_KO)"
+	# intr_secs starts the stressor, so the CPU, period and work come first
+	must "intr_load" sysctl -q kern.kwq_test.intr_cpu="$WCPU" kern.kwq_test.intr_us=100 kern.kwq_test.intr_work_ns=20000 kern.kwq_test.intr_secs="$1"
+	sleep "$1" &
+	KPID=$!
+}
+intr_stress_stop() { sysctl -q kern.kwq_test.intr_cpu=-1 >/dev/null 2>&1; }
+cp_sys_all() {	# -> the machine-wide "user nice sys intr idle" sums
+	sysctl -n kern.cp_times | awk '{ for (i = 1; i <= NF; i += 5) { u += $i; n += $(i+1); s += $(i+2); q += $(i+3); d += $(i+4) } print u, n, s, q, d }'
+}
+kwq_all() {	# -> "wakeups passes ticks" summed over every NET worker, and the pair's items over every CPU
+	_s=$(sysctl kern.kwq.net.cpu 2>/dev/null | awk -F'[.:]' '$6 == "wakeups" { w += $NF } $6 == "passes" { p += $NF } $6 == "ticks" { t += $NF } END { print w + 0, p + 0, t + 0 }')
+	_i=$(sysctl kern.kwq.net.queue 2>/dev/null | awk -F'[.:]' -v a="$PAIRA" -v b="$PAIRB" '($5 == a || $5 == b) && $8 == "items" { s += $NF } END { print s + 0 }')
+	echo "$_s $_i"
+}
 
 t_tput1() {
 	c0=$(cp_times "$WCPU"); k0=$(kwq_passes); q0=$(kwq_counters "$WCPU"); cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; wait $IPID; c1=$(cp_times "$WCPU"); k1=$(kwq_passes); q1=$(kwq_counters "$WCPU")
@@ -400,10 +520,11 @@ t_exec() {
 	log "$STAGE rep $REP exec $v"
 }
 t_machine() {
-	i0=$(vmstat_total); iperf_bg "$LOADCONNS" "" ""; sleep 2
-	v=$("$VICTIM" timer $((SECS - 3)) 100); wait $IPID; r=$(iperf_rate); i1=$(vmstat_total)
+	i0=$(vmstat_total); t0=$(tmr_snap); tmr_bg "$SECS" "$OUT/tmr.$STAGE.$REP.machine"; iperf_bg "$LOADCONNS" "" ""; sleep 2
+	v=$("$VICTIM" timer $((SECS - 3)) 100); wait $IPID; r=$(iperf_rate); i1=$(vmstat_total); t1=$(tmr_snap)
 	for kv in $v; do case $kv in late_p99=*|late_max=*) row machine "${kv%%=*}" "${kv#*=}";; esac; done
 	row machine gbit "$r"; row machine intr_s $(( (i1 - i0) / SECS ))
+	tmr_rows machine "$t0" "$t1" "$OUT/tmr.$STAGE.$REP.machine" "$SECS"
 	log "$STAGE rep $REP machine $v gbit=$r intr_s=$(( (i1 - i0) / SECS ))"
 }
 
@@ -434,10 +555,15 @@ t_coloc() {
 	_s2=$!; sleep 0.3
 	set -- $CPORTS2; _cp=$1; shift; CPORTS2="$* $_cp"
 	k0=$(kwq_passes); q0=$(kwq_counters "$WCPU"); i0=$(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$WCPU.items"); j0=$(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$WCPU.items")
+	a0=$(q_items "$PAIRA" "$PAIRB" "$WCPU"); n0=$(nivcsw "$_s2")
 	IPERF=$OUT/iperf.$STAGE.$REP.coloc
 	cpuset -l "$OTHERS" jexec "$JC" iperf3 -f g -c $SRV -p $TCPPORT2 -P 1 --cport "$_cp" -t "$SECS" > "$IPERF" 2>&1
 	k1=$(kwq_passes); q1=$(kwq_counters "$WCPU"); i1=$(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$WCPU.items"); j1=$(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$WCPU.items")
+	a1=$(q_items "$PAIRA" "$PAIRB" "$WCPU"); n1=$(nivcsw "$_s2")
 	kill $_s2 2>/dev/null; wait $_s2 2>/dev/null
+	printf '%s\n%s\n' "$a0" "$a1" | awk -v dt="$SECS" 'NR == 1 { for (i = 1; i <= 5; i++) a[i] = $i } NR == 2 { printf("overruns=%d overruns_switched=%d debts=%d parks=%d", $2 - a[2], $5 - a[5], $3 - a[3], $4 - a[4]) }' > "$OUT/colocq"
+	for kv in $(cat "$OUT/colocq"); do row coloc "${kv%%=*}" "${kv#*=}"; done
+	row coloc rcv_nivcsw_s $(( (n1 - n0) / SECS ))
 	r=$(iperf_rate)
 	pw=$(printf '%s\n%s\n' "$k0" "$k1" | awk -v w="$WCPU" '$1 == w { d = $2 - d } END { print d + 0 }')
 	it=$(( i1 - i0 + j1 - j0 ))
@@ -514,7 +640,7 @@ t_twoq() {
 	competitor_bg "$WSECS"; wait $KPID; wait $IPID; wait $_i2
 	a1=$(q_items "$PAIRA" "$PAIRB" "$WCPU"); b1=$(q_items "$PAIR2A" "$PAIR2B" "$WCPU")
 	r1=$(iperf_rate); r2=$(rate_of "$IPERF2")
-	d=$(printf '%s\n%s\n%s\n%s\n' "$a0" "$a1" "$b0" "$b1" | awk 'NR == 1 { for (i = 1; i <= 4; i++) a[i] = $i } NR == 2 { for (i = 1; i <= 4; i++) da[i] = $i - a[i] } NR == 3 { for (i = 1; i <= 4; i++) b[i] = $i } NR == 4 { for (i = 1; i <= 4; i++) db[i] = $i - b[i]; printf("q1_items=%d q1_overruns=%d q1_debts=%d q1_parks=%d q2_items=%d q2_overruns=%d q2_debts=%d q2_parks=%d share1=%.3f", da[1], da[2], da[3], da[4], db[1], db[2], db[3], db[4], (da[1] + db[1]) > 0 ? da[1] / (da[1] + db[1]) : 0) }')
+	d=$(printf '%s\n%s\n%s\n%s\n' "$a0" "$a1" "$b0" "$b1" | awk 'NR == 1 { for (i = 1; i <= 5; i++) a[i] = $i } NR == 2 { for (i = 1; i <= 5; i++) da[i] = $i - a[i] } NR == 3 { for (i = 1; i <= 5; i++) b[i] = $i } NR == 4 { for (i = 1; i <= 5; i++) db[i] = $i - b[i]; printf("q1_items=%d q1_overruns=%d q1_overruns_switched=%d q1_debts=%d q1_parks=%d q2_items=%d q2_overruns=%d q2_overruns_switched=%d q2_debts=%d q2_parks=%d share1=%.3f", da[1], da[2], da[5], da[3], da[4], db[1], db[2], db[5], db[3], db[4], (da[1] + db[1]) > 0 ? da[1] / (da[1] + db[1]) : 0) }')
 	for kv in $d; do row twoq "${kv%%=*}" "${kv#*=}"; done
 	row twoq gbit1 "$r1"; row twoq gbit2 "$r2"
 	log "$STAGE rep $REP twoq $d gbit1=$r1 gbit2=$r2"
@@ -576,6 +702,57 @@ t_fair() {
 	log "$STAGE rep $REP fair $st"
 }
 
+# ---- SPEC-p4e tests
+t_sparse() {
+	[ -n "${SEED:-}" ] || { log "WARNING: sparse needs the module's hash seed (victim seed) to spread the flows; skipped"; return 0; }
+	for n in $SPARSE_N; do
+		_cap=$((NCPU * 4)); [ "$n" -gt "$_cap" ] && n=$_cap
+		sp=$("$VICTIM" uports "$SEED" "$NCPU" $CLI $SRV $UDPPORT "$n") || { log "WARNING: sparse: no $n source ports"; continue; }
+		for r in $SPARSE_RATE; do
+			t=sparse_${n}_${r}; gap=$((1000000 / r))
+			c0=$(cp_sys_all); w0=$(kwq_all); i0=$(vmstat_total); t0=$(tmr_snap); tmr_bg "$UDPSECS" "$OUT/tmr.$STAGE.$REP.$t"
+			rm -f "$OUT/sparse.$STAGE.$REP.$t"; _pids=""
+			for p in $sp; do
+				cpuset -l "$OTHERS" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT $UDPSECS "$p" "$gap" >> "$OUT/sparse.$STAGE.$REP.$t" 2>&1 &
+				_pids="$_pids $!"
+			done
+			# shellcheck disable=SC2086
+			wait $_pids
+			c1=$(cp_sys_all); w1=$(kwq_all); i1=$(vmstat_total); t1=$(tmr_snap)
+			st=$(awk '/^udp n=/ { for (i = 1; i <= NF; i++) { split($i, kv, "="); if (kv[1] == "rtt_p50") p50[n] = kv[2]; if (kv[1] == "rtt_p99") p99[n] = kv[2]; if (kv[1] == "lost") lost += kv[2] } n++ }
+			    function med(a, n,   i, j, t) { for (i = 1; i < n; i++) for (j = i; j > 0 && a[j-1] > a[j]; j--) { t = a[j]; a[j] = a[j-1]; a[j-1] = t } return n ? a[int(n / 2)] : 0 }
+			    function mn(a, n,   i, m) { m = a[0]; for (i = 1; i < n; i++) if (a[i] < m) m = a[i]; return n ? m : 0 }
+			    function mx(a, n,   i, m) { m = a[0]; for (i = 1; i < n; i++) if (a[i] > m) m = a[i]; return n ? m : 0 }
+			    END { printf("flows=%d rtt_p50_min=%d rtt_p50_med=%d rtt_p50_max=%d rtt_p99_min=%d rtt_p99_med=%d rtt_p99_max=%d lost=%d", n, mn(p50, n), med(p50, n), mx(p50, n), mn(p99, n), med(p99, n), mx(p99, n), lost) }' "$OUT/sparse.$STAGE.$REP.$t")
+			kw=$(printf '%s\n%s\n' "$w0" "$w1" | awk -v dt="$UDPSECS" 'NR == 1 { for (i = 1; i <= 4; i++) a[i] = $i } NR == 2 { w = $1 - a[1]; p = $2 - a[2]; k = $3 - a[3]; it = $4 - a[4]; printf("kwq_wakeups_s=%d kwq_ticks_s=%d kwq_passes_s=%d kwq_items_per_pass=%.2f", w / dt, k / dt, p / dt, p > 0 ? it / p : 0) }')
+			sys=$(printf '%s\n%s\n' "$c0" "$c1" | awk 'NR == 1 { for (i = 1; i <= 5; i++) a[i] = $i } NR == 2 { t = 0; for (i = 1; i <= 5; i++) { d[i] = $i - a[i]; t += d[i] } if (t <= 0) t = 1; printf("sys_share=%.3f", (d[3] + d[4]) / t) }')
+			for kv in $st $kw $sys; do row "$t" "${kv%%=*}" "${kv#*=}"; done
+			row "$t" intr_s $(( (i1 - i0) / UDPSECS ))
+			tmr_rows "$t" "$t0" "$t1" "$OUT/tmr.$STAGE.$REP.$t" "$UDPSECS"
+			log "$STAGE rep $REP $t $st $kw $sys intr_s=$(( (i1 - i0) / UDPSECS ))"
+		done
+	done
+}
+udp_burst_run() {	# TESTNAME: one udpburst per B:G of UDP_BURSTS, counters per burst
+	for bg in $UDP_BURSTS; do
+		B=${bg%%:*}; G=${bg#*:}; t=${1}_${B}_${G}
+		q0=$(kwq_counters "$WCPU")
+		u=$(cpuset -l "$OTHERS" jexec "$JC" "$VICTIM" udpburst $SRV $UDPPORT $UDPSECS "$UPORT" "$B" "$G")
+		q1=$(kwq_counters "$WCPU")
+		nb=$(echo "$u" | sed -n 's/.*bursts=\([0-9]*\).*/\1/p'); [ -n "$nb" ] && [ "$nb" -gt 0 ] || nb=1
+		for kv in $u; do case $kv in first_*|last_*|rtt_p99=*|lost=*|bursts=*) row "$t" "${kv%%=*}" "${kv#*=}";; esac; done
+		[ "$KIND" = kwq ] && printf '%s\n%s\n' "$q0" "$q1" | awk -v nb="$nb" 'NR == 1 { for (i = 1; i <= 26; i++) a[i] = $i } NR == 2 { printf("wakeups_per_burst=%.2f ticks_per_burst=%.2f ticks_empty_per_burst=%.2f passes_per_burst=%.2f", ($5 - a[5]) / nb, ($20 - a[20]) / nb, ($21 - a[21]) / nb, ($6 - a[6]) / nb) }' > "$OUT/burstrows"
+		[ "$KIND" = kwq ] && for kv in $(cat "$OUT/burstrows"); do row "$t" "${kv%%=*}" "${kv#*=}"; done
+		log "$STAGE rep $REP $t $u $([ "$KIND" = kwq ] && cat "$OUT/burstrows")"
+	done
+}
+t_udp_burst() { udp_burst_run udp_burst; }
+t_udp_burst_load() {
+	cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; sleep 2
+	udp_burst_run udp_burst_load
+	wait $IPID; r=$(iperf_rate); row udp_burst_load gbit "$r"
+}
+
 battery() {
 	OTHERS=$(others_than "$WCPU")
 	cpuset -l "$OTHERS" -p "$SPID"		# the iperf3 server, off W
@@ -583,7 +760,7 @@ battery() {
 	for t in $TESTS; do
 		TEST=$t	# also the iperf3 report's name; lib.sh's TEST only prefixed the log
 		case $t in
-		tput1|tput16|udp_idle|udp_load|spin|timer|exec|machine|preempt|coloc|rwlock|xcpu|twoq|churn|magnet|fair) t_$t ;;
+		tput1|tput16|udp_idle|udp_load|spin|timer|exec|machine|preempt|coloc|rwlock|xcpu|twoq|churn|magnet|fair|sparse|udp_burst|udp_burst_load) t_$t ;;
 		*) fail "unknown test $t" ;;
 		esac
 	done
