@@ -254,13 +254,17 @@ kwq_wake_park(struct kwq_worker *kw, struct kwq_cpu *kc)
  * `urgent' (a notifier, a drain, a cancel) is never held back.
  *
  * Precedence of the two opt-in regimes of ../KWQ.md S16, both decided
- * here: a worker in the tick regime skips the doorbell whatever the
- * producer's CPU, because its own timeout serves this list within L;
- * otherwise a producer on the worker's own CPU takes the idle-class path
- * when wake_delay_us is set; otherwise the plain doorbell wakes the
- * worker at the class priority, as it always has.  An urgent ring takes
- * neither regime, and neither does a producer on another CPU, which is
- * owed one sleep-wake and nothing else (SCHED.md B5a).
+ * here: a producer on the worker's own CPU takes the idle-class path
+ * when wake_delay_us is set, the tick regime notwithstanding, because
+ * the wait serves this list when the producer sleeps, which is sooner
+ * than the next tick and is what a same-CPU producer asked for (the
+ * other order cost lab's co-located receiver the whole gain of the wait
+ * when both knobs were set, WAKE.md S12); otherwise a worker in the
+ * tick regime skips the doorbell, because its own timeout serves this
+ * list within L; otherwise the plain doorbell wakes the worker at the
+ * class priority, as it always has.  An urgent ring takes neither
+ * regime, and neither does a producer on another CPU, which is owed one
+ * sleep-wake and nothing else (SCHED.md B5a).
  */
 void
 kwq_doorbell(struct kwq_cpu *kc, bool urgent)
@@ -283,6 +287,20 @@ kwq_doorbell(struct kwq_cpu *kc, bool urgent)
 		if (__predict_false(kw->kw_lowpri) &&
 		    (urgent || curcpu != kc->kc_cpu))
 			kwq_wake_promote(kw, KWQ_WAKE_URGENT);
+	} else if (!urgent && kwq_wake_delay_us[kw->kw_class] != 0 &&
+	    curcpu == kc->kc_cpu && kw->kw_td != NULL) {
+		/*
+		 * The idle-class wait (KWQ.md S16), ahead of the tick regime:
+		 * the worker becomes runnable now and runs when this producer
+		 * sleeps, so it serves the list at least as soon as a tick
+		 * would and without preempting the producer.  In the regime
+		 * the sleep this ends carried the bound as its timeout; the
+		 * park cuts it short and the regime itself stands (the wake
+		 * is not a tick, so kw_tick_round stays clear and the round
+		 * is not judged for the exit).
+		 */
+		kwq_wake_park(kw, kc);
+		state = KWQ_DB_LOWPRI;
 	} else if (kw->kw_tick && !urgent) {
 		/*
 		 * The tick regime (KWQ.md S16): the worker sleeps with the
@@ -292,10 +310,6 @@ kwq_doorbell(struct kwq_cpu *kc, bool urgent)
 		 */
 		kc->kc_doorbells_skipped++;
 		state = KWQ_DB_TICKED;
-	} else if (!urgent && kwq_wake_delay_us[kw->kw_class] != 0 &&
-	    curcpu == kc->kc_cpu && kw->kw_td != NULL) {
-		kwq_wake_park(kw, kc);
-		state = KWQ_DB_LOWPRI;
 	} else {
 		kw->kw_sleeping = false;
 		kc->kc_doorbells++;

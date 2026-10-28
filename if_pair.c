@@ -192,11 +192,33 @@ static u_int pair_next_defcpu;
 static uint32_t pair_hash_seed;
 
 /*
- * No sysctls of the driver's own any more: the batch-and-yield knobs
+ * One sysctl of the driver's own.  The batch-and-yield knobs
  * (net.link.pair.batch, batch_overruns) became kwq's per-class quantum
  * and yield rules (kern.kwq.net.*, kwq/OBSERVABILITY.md), and the
  * per-queue counters live under kern.kwq.net.queue.pairNa.
+ *
+ * net.link.pair.urgent_bytes: packets shorter than this ring kwq's
+ * doorbell urgently (kwq_enqueue_urgent()), which is to say past the
+ * opt-in regimes of kwq/KWQ.md S16 - the tick regime's latency bound L
+ * and the idle-class wait's deadline.  The case it exists for is a class
+ * carrying both bulk segments and small latency-bearing packets
+ * (requests, replies, pure ACKs) through one worker: the regimes buy
+ * their wakes from the bulk flow and charge L to the small packets, and
+ * this says which packets do not pay.  0 (the default) is off: every
+ * packet takes the class's regime, which is what the measurements of
+ * kwq/WAKE.md S11 and S12 report.  It costs a wake per small packet, so
+ * it undoes the saving exactly where the small packets are the traffic;
+ * WAKE.md S12.3 measures that trade.
  */
+static u_int pair_urgent_bytes = 0;
+
+SYSCTL_DECL(_net_link);
+static SYSCTL_NODE(_net_link, OID_AUTO, pair, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "if_pair(4)");
+SYSCTL_UINT(_net_link_pair, OID_AUTO, urgent_bytes, CTLFLAG_RWTUN,
+    &pair_urgent_bytes, 0,
+    "packets shorter than this many bytes ring kwq's doorbell past the "
+    "tick regime and the idle-class wait (kwq/KWQ.md S16); 0 = off");
 
 /*
  * Control-plane lock, serializing pair creation, destruction and the
@@ -654,7 +676,12 @@ pair_output(if_t ifp, struct mbuf *m, const struct sockaddr *dst,
 	 */
 	cpu = pair_select_cpu(sc->sc_peer, m, af);
 	KWQ_ITEM_INIT(KWQ_MBUF_ITEM(m));
-	error = kwq_enqueue(sc->sc_peer->sc_q, cpu, KWQ_MBUF_ITEM(m));
+	if (__predict_false(pair_urgent_bytes != 0 &&
+	    len < (int)pair_urgent_bytes))
+		error = kwq_enqueue_urgent(sc->sc_peer->sc_q, cpu,
+		    KWQ_MBUF_ITEM(m));
+	else
+		error = kwq_enqueue(sc->sc_peer->sc_q, cpu, KWQ_MBUF_ITEM(m));
 	if (error != 0) {
 		m_freem(m);
 		if_inc_counter(ifp, IFCOUNTER_OQDROPS, 1);

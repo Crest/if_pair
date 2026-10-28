@@ -483,8 +483,16 @@ kwq_kc_added(struct kwq_cpu *kc, u_int added, bool urgent)
 /*
  * Data path.
  */
-int
-kwq_enqueue(struct kwq *q, int cpu, struct kwq_item *it)
+/*
+ * One item.  `urgent' marks an item whose latency the producer will not
+ * trade for the opt-in regimes of ../KWQ.md S16: it rings the doorbell
+ * past the tick regime and past the idle-class wait, as a notifier, a
+ * drain and a cancel do.  It is for a small, latency-bearing item among
+ * big ones (if_pair's net.link.pair.urgent_bytes), never for the common
+ * case: an urgent item costs a wake, which is what the regimes save.
+ */
+static inline int
+kwq_enqueue_one(struct kwq *q, int cpu, struct kwq_item *it, bool urgent)
 {
 	struct kwq_cpu *kc;
 	u_int depth __unused;	/* SDT arguments */
@@ -512,10 +520,22 @@ kwq_enqueue(struct kwq *q, int cpu, struct kwq_item *it)
 	}
 	kwq_list_append(kc, it, false);
 	depth = ++kc->kc_depth;
-	woke = kwq_kc_added(kc, 1, false);
+	woke = kwq_kc_added(kc, 1, urgent);
 	kwq_kc_unlock(kc);
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);
 	return (0);
+}
+
+int
+kwq_enqueue(struct kwq *q, int cpu, struct kwq_item *it)
+{
+	return (kwq_enqueue_one(q, cpu, it, false));
+}
+
+int
+kwq_enqueue_urgent(struct kwq *q, int cpu, struct kwq_item *it)
+{
+	return (kwq_enqueue_one(q, cpu, it, true));
 }
 
 int
