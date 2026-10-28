@@ -445,13 +445,21 @@ round is one `Qw` of service per competitor.  That holds only while
 passes run to their quantum.  The share limit's budget cut (S6.3) ends
 passes early while the allowance is spent, so a cut round delivers a
 fraction of `Qw` per competitor and rounds come faster than service
-does; a burst-and-pause producer whose pause is unchanged then spans
-more than one round and is boosted on every burst.  Measured on the
-guest with the pass-level limit: the `gaming` ATF case, which allows two
-boosts in three seconds, collected 3 to 8 in four of six runs, and none
-in six runs without the cut.  Counting service instead of rounds keeps
-the rule's premise under the cut: a cut round adds exactly what it
-delivered.
+does; a burst-and-pause producer whose pause is unchanged can then span
+more than one round and be boosted on a burst the rule meant to deny.
+Counting service instead of rounds keeps the rule's premise under the
+cut: a cut round adds exactly what it delivered.  The measurements
+behind the change are weaker than the argument and are recorded as
+such: on the guest the `gaming` ATF case (two boosts allowed in three
+seconds) failed four of six runs with 3 to 8 boosts on the pass-level
+tree and none of six on the tree without the cut, in one session, and
+under a degrading host the service rule passed 9 of 12 against the
+round rule's 1 of 6; in a quiet session later the same day both rules
+passed 12 of 12, and the extra boosts, when they occur, come from the
+test's burst producer stalling for milliseconds behind its CPU-bound
+sibling, which no window of either unit covers.  The service unit is
+therefore specified on the invariance argument, not on a reproduced
+failure.
 
 Rounds remain the unit of the two other things that happen per round,
 and the same sleep argument holds for them.  Refills and

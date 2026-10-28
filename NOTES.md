@@ -6049,3 +6049,41 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   jail -r / kldunload show D states of seconds that clear), uptimes
   continuous, modules left unloaded.
 
+
+2026-10-28: the P4e findings folded into the specification and
+  implemented, branch kwq-p4f (worktree ~/if_pair-scratch/wt/p4f):
+  p4dtrial (kwq 0ec6ec9 + kwq-p4d-passlevel rebased: two mechanical
+  conflicts, compare.sh's counter vector as the union and NOTES in date
+  order) + the spec (1cce0d5: SCHED.md S4.6 grace in service, S6.3 what
+  wall time is exact up to and why it stays, S7 B5a-c and B6; KWQ.md
+  S16 the lower bound and the two opt-in regimes, S3 the priority
+  promise, S8 the cloner rule) + three Opus agents in parallel: core
+  (404ff3e: kw_served_us/kc_idle_served/GRACE_SERVICE and the simulator
+  following; the tick regime from kwq-wake-tick without the charge
+  modes and with the three-short-sleeps entry; the idle-class wait from
+  kwq-wake-idle restricted to same-CPU producers, the producer lowering
+  the sleeping worker rather than the worker pre-lowering itself;
+  overruns_switched, prio_violations with KWQ_HARD_INVARIANTS), tests
+  (071cb87 0e67ecb 118bfb6: SPEC-p4e's scenarios, harness, row runner
+  and three ATF cases, the counter vector appended to 26 fields), docs
+  (c0ad567).  Verified on the guest after the host's nasssd pool ran
+  out of space mid-run and was freed by crest (the guest needed a
+  single-user fsck): ATF 25/25 with knobs off, with tick_us 50, with
+  wake_delay_us 100 and with the hard-invariants build, prio_violations
+  0 throughout; the idle-class path exercised with a same-CPU producer
+  (cost: 733 items per pass at 21 ns against 1 per pass at 270 ns, all
+  18467 wakes parked, 17300 promoted by the deadline, 1167 by the
+  worker itself); the burst's last item waited ~1 ms there against the
+  100 us deadline, the guest's callout latency to confirm on hardware
+  (S9 saw 35-59 us).  The gaming case: this morning 4/6 failures on the
+  pass-level tree with the round rule (3-8 boosts) against 6/6 without
+  the cut, the finding that led to the service unit; tonight, quiet,
+  12/12 for both rules and 6/6 for the plain tree; the agent's 9/12 vs
+  1/6 was measured while the pool filled.  S4.6 says so: the service
+  unit stands on the invariance argument.  Spec corrected on the way:
+  the switched overruns S10 charged to wall time came from the old
+  demotion, so split charging is a candidate pending a battery, not a
+  default.  Not run: the measurement batteries on lab and a07 (the
+  stricter tick entry on the 16-per-200-us burst row, the restricted
+  idle-class wait on coloc and the sparse sender, the service grace
+  under the burst competitor); a07's pass-level measurement; cap_prio.
