@@ -662,6 +662,15 @@ re-entrant from it; the class decides the rest.
 | freeing or handing on the items | yes | yes | the handler owns them |
 | calling a peer stack's input path synchronously | only if it cannot loop back to a lock the enqueuer holds | n/a | the queue is the reentrancy break (2026-08-14 postmortem) |
 
+**Priority, promised (2026-10-28).**  A handler runs at its class's
+priority from the call to its return (SCHED.md S6.3), may assume it,
+and must not depend on priority propagation to anyone it blocks; the
+worker demotes, yields or hands the CPU over only between handlers.  A
+build with `KWQ_HARD_INVARIANTS` panics on a pass that begins below the
+class priority; the default build counts it in `prio_violations`, which
+reads zero on a conforming build (it read the share limit's demoted
+passes on the tree before the pass-level limit, WAKE.md S10.5).
+
 ## 4. Integration with existing kernel services
 
 - **taskqueue(9) / gtaskqueue(9)**: kwq is a standalone service with its
@@ -905,6 +914,20 @@ Order, from ../POOLS.md L10 (infrastructure ships with its clients):
    then GELI.
 5. **iflib** last, its `if_io_tqg` being the largest user and the most
    conservative reviewer base.
+
+**A lifecycle rule for cloner clients (2026-10-27).**  A client that
+registers an interface cloner per vnet detaches every vnet's cloner from
+its MOD_UNLOAD handler, before the linker runs the SYSUNINITs, walking
+the vnet list and taking `ifnet_detach_sxlock` in base's own order
+(list, then detach), and makes its `VNET_SYSUNINIT` a no-op on the
+unload path.  On 15.1 `if_clone_detach()` takes the detach lock
+unconditionally, and a per-vnet detach run from
+`vnet_deregister_sysuninit()`, which holds the vnet sysinit lock
+exclusively, deadlocks against a dying vnet's `vnet_destroy()`, which
+holds the detach lock and wants the sysinit lock; reproduced with stock
+epair in five of five trials, bugs/vnet-kldunload-deadlock.  if_pair's
+`pair_detach_cloners()` is the reference; the base lock order is the
+real bug and is reported.
 
 Non-goals for the first version: queue hierarchies or target queues,
 priority inheritance, synchronous execution APIs, per-item priorities,
@@ -1882,7 +1905,8 @@ previous pass - Mogul's and LRP's "batch what has accumulated", the
 NAPI/`softnet` shape Linux's veth uses (`__netif_rx()` per packet,
 `netif_receive_skb_list()` and GRO at poll time) - with no added latency
 when the system is idle.  The `wakeups`/`items` ratio in S10.6 measures
-how well this works, and inline delivery to bypass the queue is not an
+how well this works, the lower bound at the end of this section says how
+well it can work, and inline delivery to bypass the queue is not an
 option (the panic recorded in ../NOTES.md).
 
 **The consumer batches, in three ways.**  The handler receives the whole
@@ -1920,6 +1944,59 @@ comment above `pair_task_deferred()`); the class quantum in CPU time
 replaces it and PLAN P4 deprecates the sysctl.  The batch is whatever
 accumulated, bounded by time, and the driver decides nothing about its
 size.
+
+**Below the doorbell: the lower bound and two optional regimes (PLAN
+P4e, WAKE.md).**  For a producer at rate `lambda` and a latency bound
+`L` on every item, no scheme can sleep less than `lambda / (1 + lambda
+L)` times a second or serve more than `1 + lambda L` items per wake
+(interval stabbing; WAKE.md S4).  The doorbell is the `L = 0` point of
+that curve, one wake per backlog, and it is the default because an
+isolated item must pay one sleep-wake and nothing else (SCHED.md B5a):
+every mechanism below leaves that row alone.  Measured 2026-10-27, two
+regimes are worth having as opt-ins and two are not:
+
+- *The tick regime*, `kern.kwq.<class>.tick_us` (`L`, 0 = off).  A
+  worker enters it from a doorbell wake when its recent wakes were
+  denser than `L` over more than one burst (three consecutive sleeps
+  shorter than `L`, or two or more items per pass over the last
+  episode; the first build entered on two wakes within `L`, which every
+  burst of two items satisfies, and so charged a short burst with a
+  long pause one `L` on its tail for one saved wake).  Inside it the
+  sleep has a timeout of `L` (precision `L/8`), producers append and
+  count a skipped doorbell but ring nothing, so the producer pays the
+  append only (lab 46 to 54 ns, a07 186 to 210 ns against 200 to 1100
+  with the wake), and the timeout runs one round over what accumulated.
+  It leaves on a tick that serves one element or none, back to the
+  untimed sleep, so a silence costs one timer interrupt and nothing
+  stays armed; an episode that coalesced nothing doubles an entry
+  hold-off from `2L` to `1024L`, one that did resets it.  Contract: an
+  item that arrives while the regime is on waits at most `L` plus the
+  pass in progress; sleeps per second within 20 % of the bound where
+  `lambda L` is 2 to 10, equal to the doorbell's below 1, drain-limited
+  above 20.  Gains where the wake was dear or the worker busy but not
+  saturated (a07's single flow +10 % at 31 k wakes/s, a pinned receiver
+  +16 to +46 %, a 1 M items/s producer +17 to +32 %); nothing on a
+  saturated worker; and the price is `L` on every co-scheduled small
+  flow, which is why it is off by default and sized at 20 to 50 us.
+- *The idle-class wait for same-CPU producers.*  An enqueue from the
+  worker's own CPU does not preempt the producer: the worker is made
+  runnable in the idle class at `cap_prio` (SCHED.md S6.3) and runs when
+  the producer sleeps or at a deadline, whichever is first, raised by
+  the deadline callout; an enqueue from another CPU rings the doorbell
+  as before, because the measured cost of waiting on a cross-CPU wake
+  fell on the sparse sender (a07 +77 % enqueue).  A same-CPU burst is
+  then served once, when its producer is done, instead of one
+  preemption per item: the receiver pinned to its worker's CPU gained
+  38 % on lab, 69 % on a07, 18 % on the guest with the single flow,
+  idle latency and the fairness columns unchanged.  Contract: an item
+  from the worker's CPU waits at most the deadline.
+- *Not specified, by measurement.*  A count threshold (wake after `N`
+  items) hurt in two cases and helped in none, and with a near-zero
+  handler drops fan-in into the three-items-per-pass attractor
+  (SCHED.md S15.7); it is not a knob.  Batching the doorbells a pass
+  rings never engages for a pair, because a flow's two directions hash
+  to one worker, so the worker rings its own doorbells; it waits for a
+  client whose flow key changes between hops.
 
 ## 17. Memory layout: cache lines, sleep channels, NUMA
 
@@ -2265,7 +2342,8 @@ decision deferred until real clients show what fan-in they produce.
   round (BULK was otherwise starved completely under a saturated NET);
   an overrun is a pass more than one quantum over budget (a cooperative
   handler's one-item overshoot no longer counts).  S12's two open
-  questions are answered by sweeps: GRACE_ROUNDS 1, boost Qw.  SCHED.md
+  questions are answered by sweeps: GRACE_ROUNDS 1 (since 2026-10-28
+  `GRACE_SERVICE`, one ring's worth of service, SCHED.md S4.6), boost Qw.  SCHED.md
   S10.1 has the numbers.
 - 2026-09-28 (later): PLAN.txt P7 split into P7a (BLOCKING addendum to
   SCHED.md, multi-server extension of kwq_sched.c, `blocking` scenario
@@ -2449,6 +2527,13 @@ decision deferred until real clients show what fan-in they produce.
   tests/t_34_interactive.sh on three machines: the share a pinned user
   thread gets is within two points of `1000 - cap_permille` (PLAN P4c,
   samples/t34_*).  Default off.
+- 2026-10-28: the P4e findings and the pass-level limit folded in: the
+  grace rule counts service, not rounds (SCHED.md S4.6, after the budget
+  cut broke the round count); the latency rows B5a-c and the restated B6
+  (S7); what NET's wall-time charge is exact up to and why it stays
+  (S6.3); the lower bound, the tick regime and the idle-class wait as
+  opt-ins, and the two dead ends, in S16; the priority promise in the
+  handler contract (S3); the cloner lifecycle rule (S8).
 - 2026-10-24: PLAN P4e, wake moderation: kwq/WAKE.md records the
   literature, the FreeBSD prior art and the design options for
   deferring the first wake of a burst (deferred doorbell with count and
