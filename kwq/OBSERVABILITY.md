@@ -136,7 +136,7 @@ priority tripwire: branch `kwq-p4f`, not the merged module (section 2).
 | `cap_runon` | passes that ended over the allowance with nothing else runnable: the limit did not bind |
 | `slice_yields` | yields at ULE's own priority for the worker because ULE ended its slice; limit off only (SCHED.md S6.3).  compare.sh: `kwq_slice_s` |
 | `prio_violations` | passes that began below the class priority: the tripwire of the priority promise to the handler, 0 on a conforming build, a panic with `KWQ_HARD_INVARIANTS` (KWQ.md S3).  compare.sh: `kwq_prio_violations`, which must read 0 in every row |
-| `ticks` | tick-regime timeouts that fired (`tick_us` > 0).  compare.sh: `kwq_ticks_s` |
+| `ticks` | tick-regime timeouts that fired (`tick_us` > 0).  compare.sh: `kwq_ticks_s`.  With `wake_delay_us` set as well this over-counts: a parked worker that waits in the idle class longer than `tick_us` returns `EWOULDBLOCK` from the timed sleep even though a wakeup arrived, so its park is counted here and not in `wakeups` (WAKE.md S12.1).  `wakes_low` is the trustworthy count of parks |
 | `ticks_empty` | of those, the ones that found nothing queued: the price of a silence under the regime.  compare.sh: `kwq_ticks_empty_s` |
 | `ticks_single` | of those, the ones that served one element: the regime's exit condition, so this counter and `tick_exits` move together.  compare.sh: `kwq_ticks_single_s` |
 | `tick_enters`, `tick_exits` | regime episodes entered and left; equal within one while the flow runs |

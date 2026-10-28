@@ -1885,3 +1885,231 @@ idle-class wait now uses the same knob); the NIC-fed flow, still
 unmeasured on any machine; and the deadline sweep for the idle-class
 wait, 50 to 100 us, which S9 asked for and these batteries ran at 100
 only.
+
+## 12. Mitigations of the S11 regressions (2026-10-29)
+
+Branch kwq-p4g, from kwq-p4f (3ed618c).  Section 11 left five things
+open: the PTW interaction on lab, lab's single flow 3 % below the kwq
+head at P, `cap_prio` 224 against 223, the idle-class wait's deadline,
+and the tick regime's `L` on every co-scheduled small item.  This
+section is what each of them turned out to be.  Stages: the p4f builds
+W0 (kwq head 0ec6ec9), P (kwq-p4f a620727, knobs off), PT50, PW, PTW as
+in S11, and the p4g builds G (the doorbell's precedence swapped,
+959a3dd) and H (G plus the urgent nudge and if_pair's
+`net.link.pair.urgent_bytes`, 80bf240).  Batteries: lab round 1 (the
+seven stages above, tests tput1, tput16, udp_load and coloc, four
+repetitions on one boot), lab round 2 and a07 round 2 (the tick
+mitigations), a07 round 1 and the guest (the two knobs), the guest's
+ATF suite against H with P as the control.  Summaries samples/p4g_*;
+the guest is GENERIC-DEBUG, direction only.
+
+### 12.1 The two regimes together: the doorbell's precedence
+
+S11.4 guessed that the doorbell deciding the tick regime before the
+same-CPU wait cost lab's single flow its 14 %.  The first half of that
+is a real bug and it is fixed; the second half is false, and 12.2 says
+what the 14 % was.
+
+The bug is visible in S11's own counters, in the co-located receiver
+row rather than the single flow.  `coloc` pins the receiver to the
+worker's CPU, so its ACK path is a same-CPU producer and the sender's
+segments arrive cross-CPU; at PW the wait engages 3900 to 4700 times a
+second on all three machines.  At PTW it engaged on a07 (4640 parks a
+second, 22 ticks) and on the guest (2505 parks, 3.5 ticks) and not at
+all on lab (one park in twelve runs, 9200 skipped doorbells a second
+instead).  The asymmetry is the tick regime's exit rule meeting a
+saturated queue: the regime leaves only on a tick that serves one
+element or none, and on lab's `coloc` queue no tick ever does
+(`ticks_empty` and `ticks_single` both 0 in every PT50 and PTW run), so
+the regime latches on the first three short sleeps -- which the
+cross-CPU segments supply before the receiver's first ACK -- and, under
+the old precedence, locks the wait out for the rest of the run.  On a07
+the same regime cannot hold (`ticks_empty` 725 a second at PT50), so
+the wait wins there.  Which of the two mechanisms a co-located producer
+got was therefore decided by the machine, not by the operator.
+
+The fix (959a3dd) decides the wait first for a producer on the worker's
+own CPU and leaves the tick's skip to everyone else.  lab round 1,
+medians of four repetitions:
+
+| lab, coloc | P | PT50 | PW | PTW | GTW |
+|---|---|---|---|---|---|
+| receiver Gbit/s | 57.2 | 70.6 | 76.4 | 71.9 | 75.5 |
+| items per pass | 4.06 | 18.9 | 33.6 | 19.2 | 30.7 |
+| `wakes_low` /s | 0 | 0 | 3900 | 0 | 4254 |
+| `doorbells_skipped` /s | 0 | 9242 | 0 | 9201 | 1 |
+| wait episode us | - | - | 104.7 | - | 104.7 |
+| worker `switched` /s | 54 900 | 2864 | 1380 | 2870 | 1354 |
+
+GTW is PW's behaviour with the tick present: the parks are back, the
+skipped doorbells are gone, the batch and the switch rate are PW's, and
+the throughput follows (+5.0 % over PTW, within 1.2 % of PW).  tput1,
+tput16 and udp_load are unchanged between PTW and GTW, as they must be:
+`wakes_low` is 0 in every one of their rows on every stage, because
+their load generators are pinned off the worker CPU and they have no
+same-CPU producer at all.  That is also why the precedence could not
+have been the single flow's 14 %.
+
+What the combination is still not worth: on lab PW alone is the best
+`coloc` stage at every repetition, so with the fix the tick knob adds
+nothing to a same-CPU producer except its timer interrupts.  The
+recommendation stands that the two are not set together; the fix makes
+the behaviour deterministic rather than making the pair useful.
+
+One counter reads oddly in the combination and it is accounting, not
+behaviour: at GTW the worker reports 4462 `ticks` a second against 81
+`wakeups`, although 4254 of those sleeps were ended by a park.  A
+parked worker waits in the idle class for the episode's 104.7 us, which
+is longer than the 50 us timeout the regime's sleep carries, and
+`sleepq_check_timeout()` then returns `EWOULDBLOCK` even though a
+wakeup also arrived.  So with both knobs set `ticks` counts parked
+wakes too and `wakeups` under-counts them by the same number;
+`wakes_low` is the trustworthy one.  OBSERVABILITY.md says so.
+
+### 12.2 lab's single flow: the tick regime is bimodal, not an interaction
+
+lab round 1 ran the seven stages interleaved, four repetitions on one
+boot.  The single flow:
+
+| lab, tput1 Gbit/s | r1 | r2 | r3 | r4 | median |
+|---|---|---|---|---|---|
+| W0 | 132 | 132 | 136 | 141 | 134 |
+| P | 140 | 140 | 143 | 131 | 140 |
+| PT50 | 121 | 140 | **106** | 137 | 129 |
+| PW | 130 | 139 | 138 | 143 | 138.5 |
+| PTW | 136 | 137 | 139 | 140 | 138 |
+| G | 138 | 136 | 139 | 133 | 137 |
+| GTW | 138 | 139 | 124 | 137 | 137.5 |
+
+PTW does not reproduce S11's 14 %: it is the calmest tick stage on this
+boot.  PT50 is the sick one, with two repetitions of four at 106 and
+121 Gbit/s.  The mechanism is the same in both batteries and it belongs
+to `tick_us` alone, which rules the two-knob interaction out: every
+low repetition in either battery has a runaway tick rate and an idle
+worker to match.  Eighteen tick-stage repetitions across S11 and S12,
+sorted by `ticks` per second:
+
+| `ticks` /s | 350..889 (fourteen reps) | 2987..5898 (four reps) |
+|---|---|---|
+| Gbit/s | 124 to 140, median 137.5 | 102, 106, 120, 121 |
+| worker `w_idle` | 0.002 to 0.07 | 0.19 to 0.31 |
+
+Below about a thousand ticks a second the flow is whole; above about
+three thousand it loses 12 to 25 % and the worker is idle a fifth to a
+third of the time.  Nothing in the stage decides which: the worker is
+saturated either way, and whether its queue empties often enough to
+re-arm the timed sleep thousands of times a second is settled inside
+the first second of the run and then persists, because the regime
+latches (12.1) and every re-arm costs the flow up to `L` before the
+next pass.  It is a bistable interaction between the regime's timeout
+and TCP's window, and `L` = 50 us is large enough on this hardware for
+the low attractor to exist.  S11 read one battery's assignment of the
+dice as a property of PTW; it is a property of `tick_us` at 50 us on a
+saturated bulk flow, and the knob should not be set for one.
+
+The same battery settles S11.1's other loose end: the 3 % between the
+kwq head and the pass-level limit on lab's single flow is not real.
+W0's four repetitions are 132/132/136/141 and P's 140/140/143/131,
+medians 134 and 140 with P now *ahead*; each stage's own spread (9 to
+12 Gbit/s) is larger than the gap and the sign reverses between
+batteries.  tput16 (75.2 against 75.8), udp_load's rate and latency and
+coloc agree: nothing separates W0 from P.
+
+### 12.3 `cap_prio` 224 against 223
+
+`kern.kwq.<class>.cap_prio` is the priority the worker waits at between
+passes while over its allowance, and since kwq-p4f also the priority
+the idle-class wait parks at, so one decision covers both (SCHED.md
+S6.3).  S11 left it open with two arguments: the guest's residue of
+mid-pass preemptions and punished overruns, which 223 was said to
+remove because a timeshare thread cannot preempt priority 223, against
+ULE's idle-CPU placement shortcut, which only 224 gets.  Stages P,
+PW100 and PW50 at each setting on a07 and the guest, the P4d tests
+under the burst competitor (two repetitions) and the latency tests
+under the default one (a07 three, guest two).  **Recommendation: keep
+224.**  Half the argument for 223 holds, the other half is refuted, and
+the argument against it cannot be measured on the machines available.
+
+*What 223 does.*  It removes the preemption residue exactly, on the one
+machine that has one.  The guest's `preempt` row reads 11 and 14
+preemptions a second at 224 (avg 258 to 270 us, max 423 to 596, 42 to
+55 over 100 us) and **0 in every rep** at 223, with and without the
+deadline; the voluntary absences are untouched at about 1030 to 1060 a
+second.  a07 has almost nothing to remove: 0.5 a second at P and PW50
+and 0 at PW100, which 223 takes to 0.  lab and a07 were already at zero
+overruns and zero demotions in S11.
+
+*What it does not do.*  It does **not** remove the guest's punished
+overruns, which was the other half of S11's claim.  The guest's `twoq`
+queues read 24 to 39 overruns per run at 224 and 16 to 35 at 223, and
+the matched comparison PW100 against PW100c223 shows no improvement at
+all while the debts and parks rise (q1 debts 10/7 -> 14/15, q1 parks
+26/53 -> 112/65).  The accounting stays fair throughout -- `share1`
+0.500 to 0.502 and the two flows' rates equal to within 2 % at every
+valid stage -- so those overruns are not costing the queue its share;
+they are the guest's budget overshooting on a GENERIC-DEBUG kernel at
+`hz` 100, not something `cap_prio` governs.  S11's sentence that 223
+"removes it" should be read as "removes the preemptions, not the
+overruns".
+
+*The cost cannot be measured here.*  The placement shortcut is the only
+argument for 224 and neither machine can see it.  a07's `magnet` row,
+the share of an unpinned bystander's on-cpu events that land on the
+worker CPU, is **0.000 in all twelve runs at both settings**: with 128
+CPUs an unpinned timer never needs the worker's CPU, so there is no
+shortcut in use to lose.  The guest's `wake_idle_cpu` counter is 0 in
+every stage of both batteries *including at 224*, so it never took the
+shortcut either.  A machine with few CPUs and a non-debug kernel would
+be needed, and there is none in the set.
+
+*Nothing else moves.*  On a07 at 223: `udp_idle` p50/p99 13/32 us and
+`udp_load` 21-23/37-39 us identical at every stage, the sparse rows
+identical to the digit, `timer` lateness p99 101 to 277 us with the
+repetitions overlapping completely (291/227/211 at 224 against
+101/82/303 at 223), `tput1` 35.5 to 38.1 Gbit/s inside the spread,
+`coloc` items per pass 4.055 at both and 13.36 against 13.03 with the
+deadline.  On the guest: the worker's pass structure is the same to
+three digits (passes 21 k/s, items per pass 4.2, `switched` 6.9 k/s),
+the spinner's share 0.527 and the worker CPU's shares unchanged,
+throughput within 1 %.  `prio_violations` is 0 in every row of every
+stage on both machines.
+
+So 223 buys the removal of a preemption residue that only a debug guest
+has, does not fix that guest's overruns, and its one known cost is
+untestable here.  224 stays the default; the knob and both arguments
+stay documented for the machine that can settle it.
+
+### 12.4 The idle-class wait's deadline, 50 us against 100 us
+
+S9 asked for the sweep and S11 ran only 100 us.  Stages PW50 and PW100
+on a07 and the guest (12.3's battery) and on lab.
+**Recommendation: 100 us**, which is the value S9 and S11 measured; 50
+us gives back about half the gain and buys nothing measurable.
+
+The deadline, not the producer, is what ends the episodes: on a07
+`wake_promotions_deadline` over `wakes_low` is 4678/4694 = 99.7 % at
+100 us and 7825/7840 = 99.8 % at 50 us, on the guest 98.8 % and 99.2 %.
+The measured episode length tracks the knob exactly (a07 106.7 and 53.7
+us, guest 143 and 86).  So on a co-located bulk receiver the knob is
+simply the batch size, and halving it halves the batch:
+
+| coloc | a07 P | a07 PW50 | a07 PW100 | guest P | guest PW50 | guest PW100 |
+|---|---|---|---|---|---|---|
+| Gbit/s | 17.4 | 23.45 | 25.35 | 7.27 | 7.36 | 7.96 |
+| items per pass | 4.06 | 7.55 | 13.36 | 4.27 | 5.81 | 7.72 |
+| worker `switched` /s | 16 723 | 1585 | 945 | 6959 | 1993 | 1489 |
+| receiver involuntary switches /s | 50 094 | 9389 | 5601 | 20 789 | 5451 | 3975 |
+
+50 us keeps 35 % of a07's 46 % gain and 44 % of its batching; on the
+guest it keeps about half of each.  Against that, no latency row
+prefers it anywhere: a07's `udp_idle` (13/32 us), `udp_load` (22/38),
+the sparse rows and the pinned `timer` are identical at 50, 100 and
+off; the guest's `udp_load` p99 is 340 us with no deadline, 288 at 50
+us and **262 at 100 us**, i.e. the longer deadline is the better one
+there too, and its `udp_idle` p50 rises 4 to 9 % with any deadline
+inside a 336 to 406 us spread.  a07's `magnet` bystander lateness max
+is 205 to 275 us at 100 us against 303 to 471 at 50, again the opposite
+of the intuition.  The one row that would favour a short deadline, an
+item whose producer never sleeps paying the full wait, is bounded by
+the knob by construction and shows up as the episode length above;
+nothing in these batteries pays it visibly.
