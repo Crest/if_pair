@@ -1958,10 +1958,15 @@ regimes are worth having as opt-ins and two are not:
 - *The tick regime*, `kern.kwq.<class>.tick_us` (`L`, 0 = off).  A
   worker enters it from a doorbell wake when its recent wakes were
   denser than `L` over more than one burst (three consecutive sleeps
-  shorter than `L`, or two or more items per pass over the last
-  episode; the first build entered on two wakes within `L`, which every
-  burst of two items satisfies, and so charged a short burst with a
-  long pause one `L` on its tail for one saved wake).  Inside it the
+  shorter than `L`; the first build entered on two wakes within `L`).
+  Measured 2026-10-28 (WAKE.md S11): a burst that arrives as one
+  backlog never enters, at any size (the module's cross-CPU bursts
+  wake once at every `L`), and a request-reply burst, whose items are
+  spaced by the round trip, enters at 50 us exactly as the bound says
+  it should (16 requests per 200 us is `lambda L` 4) and pays `L` on
+  its last reply (lab 15 -> 69 us, a07 28 -> 78); no entry rule can
+  tell that producer from a dense one, because it is one.  The cost is
+  sized by `L`, not avoided: 20 us keeps that row within B5b.  Inside it the
   sleep has a timeout of `L` (precision `L/8`), producers append and
   count a skipped doorbell but ring nothing, so the producer pays the
   append only (lab 46 to 54 ns, a07 186 to 210 ns against 200 to 1100
@@ -1989,7 +1994,17 @@ regimes are worth having as opt-ins and two are not:
   preemption per item: the receiver pinned to its worker's CPU gained
   38 % on lab, 69 % on a07, 18 % on the guest with the single flow,
   idle latency and the fairness columns unchanged.  Contract: an item
-  from the worker's CPU waits at most the deadline.
+  from the worker's CPU waits at most the deadline.  Measured
+  2026-10-28 with the same-CPU restriction (WAKE.md S11): the pinned
+  receiver +33 % lab, +46 % a07; the same-CPU producer's cost row 1147
+  -> 36 ns per item on lab, 1512 -> 56 on a07, every episode ended by
+  the worker's own turn (25 / 41 us); the cross-CPU sparse sender and
+  the pingpong round trip equal to the baseline within noise, which
+  the unrestricted wait had failed (a07 +77 % enqueue).  The two
+  regimes together (`tick_us` 50 and `wake_delay_us` 100) cost lab's
+  single flow 14 % that neither costs alone (a07 none); the
+  interaction is not understood and the two are not to be combined by
+  default.
 - *Not specified, by measurement.*  A count threshold (wake after `N`
   items) hurt in two cases and helped in none, and with a near-zero
   handler drops fan-in into the three-items-per-pass attractor

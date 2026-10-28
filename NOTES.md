@@ -6087,3 +6087,35 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   stricter tick entry on the 16-per-200-us burst row, the restricted
   idle-class wait on coloc and the sparse sender, the service grace
   under the burst competitor); a07's pass-level measurement; cap_prio.
+
+2026-10-28/29: the kwq-p4f batteries on the three machines (crest's
+  ask: run the performance tests, compare, check compliance), WAKE.md
+  S11, samples/p4f_{a,b,rows,check}_2026-10-28_three_machines.txt and
+  the TSVs and rows beside them.  Stages W0 (0ec6ec9), T, P (a620727
+  knobs off), PT50, PW (wake_delay_us 100), PTW; battery A the default
+  tests plus coloc, sparse, the bursts, three repetitions (guest two);
+  battery B the P4d tests under the burst competitor; the kwq_test rows
+  at L 0/20/50 and PW.  Findings: the pass-level limit removes every
+  preemption and punished overrun on lab and a07 (292/390 overruns ->
+  0, 142/250 preemptions/s -> 0) with the shares, the spinner and the
+  default rows within 3 % and a07's pinned timer 31-35 % less late; the
+  guest keeps a tenth (the switch-in residue).  The same-CPU-only
+  idle-class wait: pinned receiver +33 % lab, +46 % a07 (the rows:
+  1147 -> 36 ns/item lab, 1512 -> 56 a07, every episode ended by the
+  worker's turn after 25/41 us), and the cross-CPU sparse sender and
+  pingpong equal to W0, which the unrestricted wait had failed.  The
+  tick regime: wakes to ~0 on every dense flow, the isolated item and
+  the one-backlog bursts untouched at every L (the stricter entry
+  works there and keeps the 20 us-gap single sender out at L = 20),
+  but the 16-per-200-us request burst still pays L on its last reply
+  (lab 15 -> 69, a07 28 -> 78 us) because its requests are spaced by
+  the round trip and it is a dense producer by the bound; S16's claim
+  corrected: L sizes that cost, no entry rule removes it.  PTW on lab
+  costs the single flow 14 % that neither regime costs alone (a07
+  none): not understood, not to be combined by default.  prio_violations
+  0 in every row everywhere.  Compliance (bench/p4f_check.py): lab 35
+  pass / 3 fail, a07 34 / 4, all failures the entry claim plus one
+  twoq overrun at PW on a07 and a07's timer improving beyond the 10 %
+  band; the guest 27 / 10, direction only.  Machines left with no
+  modules loaded; a07's uptime continuous (7 d 15 h).  Open: the PTW
+  interaction, cap_prio, the NIC-fed flow, the deadline sweep.

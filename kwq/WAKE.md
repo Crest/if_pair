@@ -1715,3 +1715,173 @@ share and the timer's lateness equal wall's, and under the interrupt
 competitor every mode overruns alike (40 to 52, none switched), the
 debug kernel's own slowness and the hypervisor's steal time being what
 is charged there.
+
+## 11. kwq-p4f measured: the pass-level limit, the grace rule in service, the two regimes (2026-10-28)
+
+The branch kwq-p4f (a620727) is the kwq head with the pass-level share
+limit (SCHED.md S6.3) rebased onto it, the specification of 1cce0d5
+and its implementation: the grace rule counting service (S4.6), the
+tick regime with the three-short-sleeps entry and the idle-class wait
+for same-CPU producers (KWQ.md S16), the counters and the priority
+assertion, no charge modes.  This section is its battery on the three
+machines, one boot each, against the kwq head (W0, 0ec6ec9) and the
+taskqueue driver (T): P is kwq-p4f with the knobs off, PT50 with
+`kern.kwq.net.tick_us=50`, PW with `kern.kwq.net.wake_delay_us=100`,
+PTW with both.  Battery A: the default tests plus coloc, sparse,
+udp_burst and udp_burst_load, three repetitions (guest two); battery B:
+the P4d tests under the burst competitor, two repetitions; the kwq_test
+rows (cost, pingpong, coloc, fan-in, burst, sparse, conformance) with
+the P build's test module at L 0, 20 and 50.  Summaries
+samples/p4f_{a,b,rows}_2026-10-28_three_machines.txt, the compliance
+run samples/p4f_check_2026-10-28_three_machines.txt (bench/p4f_check.py).
+The guest is GENERIC-DEBUG: direction only.
+
+### 11.1 The pass-level limit, merged (P against W0)
+
+| battery B, burst competitor | lab W0 -> P | a07 W0 -> P | guest W0 -> P |
+|---|---|---|---|
+| twoq, the well-behaved queue's overruns per run | 292 -> 0 | 390 -> 0 | 122 -> 32 |
+| its parks | 293 -> 0 | 398 -> 0 | 156 -> 34 |
+| preempt: the worker preempted mid-pass, per second | 142 -> 0 | 250 -> 0 | 130 -> 12 |
+| its voluntary switches per second (the hand-overs) | 452 -> 1380 | 860 -> 1260 | 830 -> 1040 |
+| twoq share of the first queue | 0.496 -> 0.500 | 0.494 -> 0.499 | 0.500 -> 0.499 |
+| spinner's share | 0.510 -> 0.510 | 0.512 -> 0.510 | 0.526 -> 0.527 |
+| pinned timer lateness p99 us | 518 -> 512 | 296 -> 193 | 612 -> 606 |
+
+On the hardware machines every preemption and every punished overrun
+is gone and nothing else moved: the hand-overs became voluntary
+switches, the shares and the spinner's share are unchanged, and a07's
+pinned timer is a third less late because a pass no longer straddles
+the competitor's wake.  The guest keeps a tenth of the preemptions, the
+switch-in residue the P4d notes measured at 14 per second and
+`cap_prio` 223 removes.  Battery A's default rows at P sit within 3 %
+of W0 on lab (single flow 143 -> 139 Gbit/s, sixteen flows 77.5 ->
+75.5, idle RTT equal, the UDP flow beside the bulk flow 12 -> 14 us
+median, 26 -> 33 p99) and a07's single flow gains 8 % (34.7 -> 37.4)
+with its timer lateness down 31 % (211 -> 146 us) in that battery too.
+`prio_violations` is zero in every row of every stage on every
+machine: the priority promise of KWQ.md S3 holds.
+
+### 11.2 The idle-class wait, restricted to same-CPU producers (PW)
+
+| | lab P -> PW | a07 P -> PW | guest P -> PW |
+|---|---|---|---|
+| receiver pinned to the worker CPU, Gbit/s | 55.9 -> 74.9 (+33 %) | 16.8 -> 24.5 (+46 %) | 7.2 -> 7.9 (+10 %) |
+| its involuntary switches per second | 160 000 -> 6 100 | 48 300 -> 5 500 | 20 700 -> 4 000 |
+| items per pass there | 4.1 -> 31.6 | 4.1 -> 13.2 | 4.2 -> 7.7 |
+| same-CPU producer row, ns per item (rows) | 1159 -> 36 | 1512 -> 56 | |
+| its episodes per second, all ended by the worker's own turn | 80 000 at 25 us | 52 000 at 41 us | |
+| single flow Gbit/s | 139 -> 139 | 37.4 -> 37.4 | 9.8 -> 9.8 |
+| idle RTT p50 us | 8 -> 8 | 13 -> 13 | 360 -> 377 |
+| UDP beside the bulk flow p50 / p99 us | 14/33 -> 15/36 | 22/39 -> 22/39 | 129/326 -> 116/273 |
+| cross-CPU sparse sender, enqueue ns (rows, 1 x 20 us) | 204 -> 204 | 1106 -> 1092 | |
+| pingpong round trip ns (rows) | 1898 -> 1892 | 3688 -> 3686 | |
+| sparse 64 flows x 5 k/s: wakes/s, p50 | 572 k -> 554 k, 7 -> 7 | 573 k -> 573 k, 15 -> 15 | |
+
+The gain of section 9's idle-class wait is intact and the cost that
+section recorded is gone: the restriction to the worker's own CPU
+leaves the cross-CPU sparse sender and the round trip exactly where
+the baseline has them, where the unrestricted wait had charged a07's
+sender 77 % more per enqueue.  The module's same-CPU bursts show the
+contract literally: one wake per burst, the burst's last item served
+one microsecond after the producer sleeps, its first item after the
+burst's own duration (6 us for 64 items on lab), the maximum at the
+100 us deadline.  The guest's figures point the same way.
+
+### 11.3 The tick regime with the stricter entry (PT50)
+
+| | lab W0 -> PT50 | a07 W0 -> PT50 |
+|---|---|---|
+| single flow: wakeups/s | 665 -> 1 | 35 300 -> 2 |
+| single flow: Gbit/s, worker system share | 143 -> 137, 0.997 -> 0.981 | 34.7 -> 37.6, 0.789 -> 0.709 |
+| UDP beside the bulk flow p50 / p99 us | 12/26 -> 12/58 | 23/38 -> 38/79 |
+| pinned receiver Gbit/s | 56 -> 70 | 17.1 -> 17.9 |
+| 64 request-reply flows at 5 k/s: wakes/s, p99 us | 571 k -> 390 k, 12 -> 67 | 572 k -> 573 k, 40 -> 41 |
+| udp_burst 16 per 200 us: last reply p50 us, bursts/s | 12 -> 69, 17 800 -> 14 600 | 27 -> 78, 16 300 -> 14 200 |
+| udp_burst 64 per 50 ms: first p99, last p50 us | 54 -> 39, 40 -> 124 | 278 -> 199, 164 -> 201 |
+| pinned timer lateness p99 us | 519 -> 508 | 211 -> 361 |
+| machine interrupts/s | 23 500 -> 28 200 | 274 k -> 267 k |
+| isolated request (1 per 2 ms) p50 us | 8 -> 8 | 35 -> 35 |
+
+The regime behaves as section 10 measured and as S16 specifies, with
+one correction to what the stricter entry was expected to buy.  The
+rows show the entry doing what it can: a burst that arrives as one
+backlog never enters, at any size and any L (one wake per burst in
+every cross-CPU burst row, the isolated request untouched everywhere),
+and the sparse single sender at 20 us gaps no longer enters at L = 20
+(49 185 sleeps, the baseline's; the first build halved them).  But the
+16-request burst through the pair is not one backlog: its requests
+are spaced by the round trip, the worker sleeps between them, three
+of those sleeps are shorter than L, and the regime enters on every
+burst, as the bound says it should for a producer at `lambda L` of 4.
+The last reply then pays L (lab 15 -> 69 us, a07 28 -> 78) and the
+burst rate falls 13 to 18 % because the victim waits for it.  No entry
+rule separates that producer from a dense one, because it is one; the
+cost is sized by L, and at 20 us the same row read 32 us in section
+10.  S16 now says so.  What the regime buys is unchanged: the wakes
+vanish from every dense flow, a07's single flow gains 8 % and 10
+points of CPU, and the price is L on every co-scheduled item (lab's
+sparse flows' p99 12 -> 67 us; a07's never enter, `lambda L` below
+one on 128 workers).
+
+### 11.4 Both regimes (PTW), and one interaction
+
+With both knobs set the pinned receiver reads +28 % on lab and +45 %
+on a07, the wakes are gone and the UDP flow pays the tick, as the two
+alone predict.  One thing neither alone does: lab's single flow falls
+from 139 to 120 Gbit/s (-14 %) with the worker's system share 0.99 ->
+0.81, while a07's single flow is unchanged (+7 %) and the guest's too.
+The interaction is not understood; the precedence in the doorbell
+(the tick regime skips the doorbell before the same-CPU wait is
+considered) is the first thing to look at, and until it is, the two
+are not to be combined by default.
+
+### 11.5 The grace rule in service
+
+The gaming ATF case passes 25/25 suites and 12 of 12 repeated runs on
+the guest with the service unit, and so does the round rule in the
+same quiet session (S4.6 records the sessions in which it did not).
+The simulator's scenarios and 100 seeds pass with a handful of boosts
+and grace hits moved.  Battery B's `fair` row and the twoq shares show
+no change on any machine.  Nothing in these batteries exercises a cut
+round against a burst-and-pause producer directly; the
+`kwq_test gaming` scenario does, and it is what passes.
+
+### 11.6 Compliance with the specification
+
+bench/p4f_check.py scores the rows against the spec on each machine;
+samples/p4f_check_2026-10-28_three_machines.txt is the run.
+
+| specification | lab | a07 | guest (direction) |
+|---|---|---|---|
+| B5a: an isolated item pays one sleep-wake and nothing else, at every stage (idle RTT and the 1-per-2 ms request within 1 us of W0) | pass, 8 of 8 | pass, 8 of 8 | pass within 5 % |
+| B5b: beside a busy queue p99 under 50 us at P; PT50 adds at most L | pass (33; 58) | pass (39; 79) | reported (326; 319) |
+| B5c / S6.3: under a competing user thread the well-behaved queue is not punished (overruns 0, no preemptions), p99 within one period, shares and spinner unchanged | pass, 15 of 15 | pass, 14 of 15 (one overrun in PW's twoq) | residue (32 overruns, 12 preemptions per second) |
+| S3: `prio_violations` zero in every row | pass | pass | pass |
+| S16 tick: wakes gone where the regime enters, the isolated item untouched | pass | pass | regime does not enter (`lambda L` 0.15) |
+| S16 tick entry: the 16-per-200-us request burst left alone | fail, +54 us | fail, +50 us | pass (noise) |
+| S16 idle wait: pinned receiver +10 % or more, single flow, sixteen flows, idle RTT, sparse sender and round trip unchanged | pass | pass | pass |
+| P4d merge: default rows within 10 % of W0 | pass | pass except the timer, which improved 31 % | one row (UDP p50 +12 %) |
+| SPEC-p4e 2.3: sparse senders' sleeps within 20 % of the bound where `lambda L` >= 2, items per pass at 0.6 to 0.8 of it | pass | pass | |
+| SPEC-p4e 2.4: conformance, sleeps at the bound for `lambda L` 2 to 10, drain-limited above | pass | pass | |
+
+Two items fail, both the same item: the specification's claim that
+the stricter entry keeps the 16-per-200-us request burst out of the
+regime, which 11.3 refutes and S16 now states correctly.  Everything
+else the specification promises, the batteries find.
+
+### 11.7 What this settles and what it leaves
+
+Settled: the pass-level limit merges without a measurable cost and
+removes every punished overrun on the hardware machines; the restricted
+idle-class wait is a clean win on shared CPUs with no cost anywhere
+else, which the unrestricted one was not; the tick regime does what the
+bound predicts and costs what the bound predicts, and the entry rule is
+not the lever for a request-reply burst, L is; the priority promise
+holds; the grace rule in service is at least as good as the round rule.
+Left: the PTW interaction on lab; `cap_prio` 224 against 223 (the
+guest's residue says 223, a07's placement argument says 224, and the
+idle-class wait now uses the same knob); the NIC-fed flow, still
+unmeasured on any machine; and the deadline sweep for the idle-class
+wait, 50 to 100 us, which S9 asked for and these batteries ran at 100
+only.

@@ -1027,6 +1027,18 @@ Phases
     overruns_switched, wake*, prio_violations) and the priority
     assertion, without the charge modes, which wait for a battery that
     produces interrupt threads or lock blocks.
+    MEASURED 2026-10-28 on the three machines (WAKE.md S11, samples/
+    p4f_*): the pass-level limit merges at no cost and removes every
+    punished overrun and preemption on lab and a07; the same-CPU-only
+    idle-class wait +33/+46 % on the pinned receiver with the sparse
+    sender and the round trip untouched; the tick regime as the bound
+    predicts, and the stricter entry does not spare a request-reply
+    burst (its requests are spaced by the round trip: a dense producer),
+    so L sizes that cost; PTW costs lab's single flow 14 %, not
+    understood; prio_violations 0 everywhere; the grace rule in service
+    passes gaming 12/12.  Compliance lab 35/3, a07 34/4, the failures
+    the entry claim.  Open: the PTW interaction, cap_prio, the NIC-fed
+    flow, the idle-wait deadline sweep.
 
 [DECIDED 2026-10-09] Fork resolved: continue with kwq; netisr is to be
     reimplemented on top of kwq (KWQ.md S8 migration step 2, PLAN P8's
