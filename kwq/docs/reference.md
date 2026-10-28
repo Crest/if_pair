@@ -205,6 +205,26 @@ IPI wakes its CPU.  There is no drain-to-neighbour path, so a client
 that steers by hash over a machine with halted CPUs will see latency on
 those lists.
 
+### kwq_enqueue_urgent
+
+```c
+int kwq_enqueue_urgent(struct kwq *q, int cpu, struct kwq_item *it);
+```
+
+`kwq_enqueue()` for an item whose latency the caller will not trade for
+the optional regimes of KWQ.md S16: the doorbell is rung at once, past
+the tick regime's bound and past the idle-class wait, as a notifier, a
+drain and a cancel are.  Same arguments, same errors, same guarantees.
+
+The wake is the cost, and the wake is what the regimes save, so this is
+for a small latency-bearing item among big ones, not for the common
+case: if every item is urgent the class may as well have both knobs at
+0.  if_pair exposes it as `net.link.pair.urgent_bytes` (0 = off):
+packets shorter than that many bytes ring urgently, which is the knob
+for a pair carrying bulk segments and small requests, replies or pure
+ACKs through one worker.  A class whose items are all alike does not
+need it.
+
 ### kwq_enqueue_list
 
 ```c
@@ -642,6 +662,14 @@ served once, when its producer is done (+18 to +69 % measured), with
 the idle latency and the fairness columns unchanged.  `cap_prio`'s
 default is one decision for both this wait and the share limit's wait
 between passes (SCHED.md S6.3).
+
+**Both knobs at once.**  A same-CPU producer can satisfy both regimes,
+and the doorbell decides the wait first: the worker becomes runnable
+now and runs when that producer sleeps, which is sooner than the next
+tick and costs no timer interrupt.  Cross-CPU producers still take the
+tick's skip.  The reverse order, which the first build had, made the
+two mutually exclusive and let the machine decide which one a
+co-located receiver got (WAKE.md S12.1).
 
 ### Per-worker counters, `kern.kwq.<class>.cpu.<N>.`
 

@@ -320,9 +320,17 @@ measurement, so a merged module has neither knob yet):
 | `kern.kwq.<class>.tick_us` | the worker sleeps with a timeout of `tick_us` while its producer is dense, producers append without ringing the doorbell (`doorbells_skipped`), and what accumulated is served when the tick fires: an item that arrives while the regime is on waits at most `tick_us` plus the pass in progress.  Off (0) by default, 20 to 50 us where it is worth having |
 | `kern.kwq.<class>.wake_delay_us` | an enqueue from the worker's own CPU no longer preempts the producer: the worker becomes runnable in the idle class at `cap_prio` and runs when the producer sleeps or at this deadline, whichever is first.  An item from the worker's CPU waits at most the deadline; an enqueue from another CPU rings the doorbell as before |
 
-Neither knob touches B5a, by construction.  If your client's latency
+Neither knob touches B5a, by construction.  With both set, a producer
+on the worker's own CPU takes the wait and a producer elsewhere takes
+the tick's skip; the wait wins because it serves the list when that
+producer sleeps, sooner than the next tick.  If your client's latency
 budget cannot absorb `tick_us`, say so in its documentation: the knob
-is the operator's, per class, and your queue shares the class.
+is the operator's, per class, and your queue shares the class.  One
+item can opt out: `kwq_enqueue_urgent()` rings the doorbell past both
+regimes, which is what if_pair's `net.link.pair.urgent_bytes` does for
+packets under a size threshold.  It costs the wake the regimes save, so
+it is for a small latency-bearing minority of the items, not for all of
+them.
 
 ## 6. Teardown
 

@@ -274,9 +274,28 @@ jail -r demo
 .Sh SYSCTL VARIABLES
 The
 .Nm
-driver has no
+driver has one
 .Xr sysctl 8
-variables of its own.
+variable of its own,
+.Va net.link.pair.urgent_bytes
+(RWTUN, default 0, off).
+A packet shorter than this many bytes is handed to
+.Xr kwq 9
+as urgent, which rings the worker's doorbell at once rather than
+letting the packet wait for either of the optional latency regimes of
+the network class,
+.Va kern.kwq.net.tick_us
+and
+.Va kern.kwq.net.wake_delay_us .
+It is the exemption for a pair that carries bulk segments and small
+latency-bearing packets \(em requests, replies, pure ACKs \(em through
+one worker: those regimes buy their wakes from the bulk traffic and
+charge their bound to everything else on the worker, and this says
+which packets do not pay.
+Each exempt packet costs a wake, so a setting high enough to cover the
+bulk traffic undoes the regimes entirely; with both regimes off the
+variable changes nothing.
+.Pp
 How much CPU time a pair's delivery may take before yielding to other
 queues, timers and user processes is governed by the network class of
 .Xr kwq 9 ,

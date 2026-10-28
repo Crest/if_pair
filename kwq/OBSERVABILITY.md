@@ -142,11 +142,11 @@ priority tripwire: branch `kwq-p4f`, not the merged module (section 2).
 | `tick_enters`, `tick_exits` | regime episodes entered and left; equal within one while the flow runs |
 | `tick_ns` | wall time the worker spent inside the regime |
 | `tick_barren` | episodes that coalesced nothing, each doubling the entry hold-off from 2L to 1024L; a growing `tick_barren` means the regime is entering for a producer it cannot help |
-| `wakes_low` | wakes placed in the idle class at `cap_prio` instead of preempting a same-CPU producer (`wake_delay_us` > 0): one per wait episode.  compare.sh: `kwq_wakes_low_s`, and `kwq_wake_ep_s` as the episode rate |
+| `wakes_low` | wakes placed in the idle class at `cap_prio` instead of preempting a same-CPU producer (`wake_delay_us` > 0): one per wait episode.  compare.sh: `kwq_wakes_low_s`, and `kwq_wake_ep_s` as the episode rate.  With `tick_us` set as well this still counts, because the wait is decided before the tick's skip (KWQ.md S16): `wakes_low` near 0 beside a large `doorbells_skipped` on a worker with a same-CPU producer is the symptom of the reversed precedence WAKE.md S12.1 fixed |
 | `wake_low_ns` | total length of those episodes; over `wakes_low` it is the mean wait.  compare.sh: `kwq_wake_ep_us` |
 | `wake_self` | episodes the worker ended by getting the CPU on its own, the producer having slept: the case the wait exists for |
 | `wake_promotions_deadline` | episodes the deadline callout ended, i.e. the producer never slept and the item paid the full deadline.  compare.sh: `kwq_wake_deadline_s` |
-| `wake_promotions_urgent` | episodes an urgent caller cut short |
+| `wake_promotions_urgent` | episodes an urgent caller, a cross-CPU enqueue or the share limit's deadline cut short (`kwq_enqueue_urgent()`, a notifier, a drain, a cancel) |
 | `busy_ns` | CPU time spent inside handlers |
 | `idle_ns` | wall time asleep with nothing queued |
 | `round` | current round number |

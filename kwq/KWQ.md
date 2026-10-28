@@ -2000,11 +2000,7 @@ regimes are worth having as opt-ins and two are not:
   -> 36 ns per item on lab, 1512 -> 56 on a07, every episode ended by
   the worker's own turn (25 / 41 us); the cross-CPU sparse sender and
   the pingpong round trip equal to the baseline within noise, which
-  the unrestricted wait had failed (a07 +77 % enqueue).  The two
-  regimes together (`tick_us` 50 and `wake_delay_us` 100) cost lab's
-  single flow 14 % that neither costs alone (a07 none); the
-  interaction is not understood and the two are not to be combined by
-  default.
+  the unrestricted wait had failed (a07 +77 % enqueue).
 - *Not specified, by measurement.*  A count threshold (wake after `N`
   items) hurt in two cases and helped in none, and with a near-zero
   handler drops fan-in into the three-items-per-pass attractor
@@ -2012,6 +2008,22 @@ regimes are worth having as opt-ins and two are not:
   rings never engages for a pair, because a flow's two directions hash
   to one worker, so the worker rings its own doorbells; it waits for a
   client whose flow key changes between hops.
+- *Precedence, and the urgent exemption* (WAKE.md S12).  Both regimes
+  are decided in the doorbell and a same-CPU producer can satisfy both;
+  the idle-class wait comes first, because it serves the list when the
+  producer sleeps, which is sooner than the next tick, and without the
+  tick's timer interrupt.  Deciding the tick first, as the first build
+  did, made the two mutually exclusive and let the machine pick the
+  winner: with both knobs set lab's co-located receiver lost the wait
+  entirely (4300 parks a second became one, the tick serving 9200 lists
+  a second instead) while a07's kept it (4600 parks, 22 ticks).
+  Cross-CPU producers keep the tick's skip at either setting.  An
+  `urgent` ring (`kwq_enqueue_urgent()`, a notifier, a drain, a cancel)
+  takes neither regime: it is the exemption for a small latency-bearing
+  item among big ones, which if_pair offers as
+  `net.link.pair.urgent_bytes` (0 = off, a packet shorter than that
+  rings urgently).  It costs a wake per exempt item, so it pays only
+  where the small packets are a minority of the traffic.
 
 ## 17. Memory layout: cache lines, sleep channels, NUMA
 
