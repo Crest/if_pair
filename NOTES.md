@@ -6132,3 +6132,33 @@ name and MODULE_DEPEND.  The guest keeps its two build variants under
   vnet_deregister_sysuninit() path produced on 2026-10-27, since both
   take the order the base establishes elsewhere the other way round; it
   is the inherited hazard the bug report names, not a new one.
+
+2026-10-29: kwq-p4g, the S11 regressions and the urgency question
+  (WAKE.md S12).  The doorbell's precedence fixed (959a3dd: the idle-class
+  wait before the tick's skip); lab's single-flow "14 %" and S11.1's 3 %
+  are the test's own per-run bimodality, on a07 too, and not W's SMT
+  sibling (round 4: slow runs with the sibling excluded as well);
+  cap_prio stays 224 (223 removes the guest's preemptions, not its
+  overruns; the placement shortcut is invisible on all three machines);
+  the wait's deadline stays 100 us (it ends 98-99.8 % of the episodes, so
+  it is the batch size); the tick's L costs a co-scheduled flow in
+  proportion to how often the worker sleeps (free at 20 us on lab's
+  saturated worker, 8/11 us on a07); quantum_us is not the timer's lever.
+  urgent_bytes (80bf240) ended every idle-class wait of a pinned receiver
+  (a07 17.1 against 24.8 Gbit/s); crest asked for each resolution on a
+  branch: kwq-p4g-urg1 (docs: exclusive), -urg2 (if_pair: pure TCP ACKs
+  never urgent), -urg3 (kwq: a client's urgent item from the worker's CPU
+  takes the wait; signals keep preempting), -urg4 (kwq: tick_urgent_us,
+  urgent items share one wake inside the tick regime).  Night batteries,
+  REPS 5: 2 and 3 both keep the whole wait; 2 keeps a same-CPU request
+  fast (a07 p50 44 us), 3 makes it wait (138, the wait's own); 2 cannot
+  see TCP in tunnels or protocols over UDP; 4 halves a dense small-request
+  burst's tail (a07 199 against 393 us) at +6 us on a 16-burst; the UDP
+  flow beside a bulk flow is helped only by L = 20 us.  New harness rows
+  coloc_udp, coloc_gif and flows (1, sweet spot, ncpu, 2 x ncpu; a07 peak
+  32 flows, lab 2), the probe's p99.9, sd and IPDV: beyond one flow the
+  stages are indistinguishable within the runs' spread.  t_32/t_33 failed
+  on every p4g build since kwq_enqueue() became a tail call (no fbt
+  return probe); they time kwq_enqueue_one() now and pass.  Notifiers
+  are urgent on every branch, as since kwq-p4f; crest questioned that
+  (iflib is a notifier client); open, unmeasured.

@@ -2386,3 +2386,108 @@ the quantum is not its remedy.
 13.2 items per pass with 4724 parks and 14 ticks a second, PW's figures
 from 12.4; every row without a same-CPU producer equals HT50.  12.1's
 fix holds on the machine where the old order happened to work too.
+
+### 12.6 Urgency against the wait and the tick: four resolutions, measured
+
+12.5 found that an urgent ring ends the idle-class wait, so with
+`urgent_bytes` a receiver pinned to its worker's CPU never parks.  Each
+resolution has its own branch on kwq-p4g's harness (4e49d8d + the
+counters): **urg1** documents the two knobs as exclusive per class (no
+code; its stages run the H build); **urg2** has if_pair never mark a
+TCP segment without data whose only flag is ACK (`pair_pure_ack()`);
+**urg3** lets a client's urgent item from the worker's own CPU take the
+wait (kwq tells signals, notifiers, drains and cancels, from client
+items, `KWQ_RING_*`); **urg4** gives urgent items a bound of their own
+inside the tick regime, `tick_urgent_us`, so that urgent items within
+it share one wake.  Two new rows: `coloc_udp`, a UDP request-reply
+probe pinned to W beside the pinned receiver (at rtprio 10, then at
+timeshare), and `coloc_gif`, the pinned receiver behind a gif(4)
+tunnel.  Night batteries, five repetitions, medians; the guest's ATF
+suite passes 25/25 for urg3 and urg4.
+
+*The wait (battery A, stages H, HW = wait only, O1-O3 = wait +
+`urgent_bytes` 256 on each branch):*
+
+| | H | HW | O1 | O2 | O3 |
+|---|---|---|---|---|---|
+| a07 pinned receiver Gbit/s | 17.1 | 24.8 | 17.1 | 24.8 | 24.8 |
+| lab pinned receiver Gbit/s | 56.1 | 74.6 | 55.1 | 76.0 | 75.7 |
+| a07 probe on W p50 / p99 / p99.9 us | 25 / 40 / 43 | 138 / 177 / 185 | 25 / 40 / 43 | 44 / 84 / 97 | 138 / 176 / 183 |
+| a07 its sd / IPDV us | 6.1 / 7.0 | 37.7 / 39.6 | 6.4 / 7.1 | 15.5 / 18.7 | 38.6 / 40.0 |
+| lab probe on W p50 / p99 / p99.9 us | 9 / 12 / 14 | 129 / 148 / 150 | 9 / 12 / 13 | 48 / 64 / 69 | 87 / 148 / 150 |
+| lab its sd / IPDV us | 1.6 / 1.5 | 46.3 / 41.9 | 1.6 / 1.8 | 12.7 / 12.8 | 46.7 / 54.1 |
+
+Options 2 and 3 both keep the whole wait for the pinned receiver; option
+1 does not.  They part on a small request sent from the worker's own
+CPU while another thread keeps it busy: option 2 serves it urgently
+(a07 p50 44 us, a third of the wait's), option 3 lets it wait like any
+item from that CPU (the wait's figures exactly).  The first battery's
+lab tail for option 3 (p99 377, max 708 us) did not survive: six
+interleaved repetitions read 147.5 against HW's 148, and HW itself
+showed a 3.8 ms maximum there, so it was lab's.  The tunnel row cannot
+decide between them on hardware: uncapped the tunnel saturates its
+worker (a07 10 Gbit/s, 355 items per pass) and never parks, capped at
+4 Gbit/s the receiver keeps up and even HW parks twice a second; the
+guest shows the direction (16 parks a second at HW and O3, 0 at O1 and
+O2: option 2 does not see the ACKs inside the tunnel).
+
+*The tick (battery B, a07; T = 50 us, T1 = T + `urgent_bytes`, T2 the
+same on urg2, T4a / T4b = T1 on urg4 with `tick_urgent_us` 10 / 25,
+T20U = 20 us + `urgent_bytes`):*
+
+| a07 | H | T | T1 | T2 | T4a | T4b | T20U |
+|---|---|---|---|---|---|---|---|
+| UDP beside bulk p99 / sd / IPDV us | 38 / 6.8 / 7.8 | 78 / 14.7 / 16.4 | 61 / 9.9 / 11.1 | 64 / 10.4 / 11.7 | 65 / 10.6 / 11.8 | 67 / 12.1 / 13.9 | 49 / 7.6 / 8.7 |
+| 16-per-200-us burst, last p50 / p99 us | 26 / 33 | 78 / 83 | 27 / 36 | 27 / 34 | 32 / 39 | 50 / 55 | 29 / 36 |
+| 64-per-2-ms burst, last p99 us | 376 | 268 | 393 | 387 | 199 | 216 | 390 |
+| its wakes per burst | 14.2 | 4.0 | 12.1 | 11.5 | 10.1 | 6.8 | 10.6 |
+| 64-per-50-ms burst, last p99 us | 246 | 242 | 264 | 264 | 206 | 211 | 247 |
+| isolated request p50 us | 35 | 35 | 35 | 36 | 35 | 35 | 35 |
+
+Option 4 is the only variant that improves the dense small-request
+burst beyond the regime alone (a07 199 against 268 and H's 376), at
+`tick_urgent_us` on every other urgent item in the regime (the 16-burst
++6 us at 10).  Nothing improves the UDP flow beside a bulk flow except a
+smaller L: 20 us with the exemption has the lowest p99 and jitter of any
+tick stage on both machines (lab 32 / 5.3 against H's 27 / 4.6).  lab's
+burst rows are noisier and point the same way.  No option moves the
+single flow's throughput beyond its spread; every tick stage buys a07's
+worker 8 to 12 points of idle CPU.
+
+What each costs, in one line: option 1 the wait for any client whose
+same-CPU producer sends small items; option 2 the wait for receivers
+whose small packets the pair cannot classify (TCP in a tunnel, QUIC and
+other protocols over UDP); option 3 up to the deadline on a small
+request from a third thread on a busy worker CPU; option 4 its bound on
+every urgent item inside the regime, and nothing outside it.  Options 2
+and 3 fix the wait; option 4 is about the tick and combines with
+either.  Notifiers stay urgent on every branch (all of them file
+notifiers with drains and cancels); whether they should is open
+(PLAN.txt, the NIC-fed flow).
+
+### 12.7 The flow-count battery: 1, the sweet spot, ncpu and 2 x ncpu
+
+`compare.sh flows`: N unpinned flows (iperf3 pairs of up to 128
+streams), the probe pinned to W at rtprio 10 and a second probe off W,
+the stages of 12.6 together.  The sweet spot is each machine's peak at H
+other than 1, ncpu and 2 x ncpu: a07 32 flows (485 Gbit/s, half idle),
+lab 2 (211; lab falls to 72-76 Gbit/s from 16 flows up); on the guest,
+whose plateau runs from 3 to 8 flows within 6 %, 3 was chosen by hand.  Results in samples/p4g_flows_2026-10-29_three_machines.txt.
+
+At one flow nothing separates the stages anywhere: the receiver is not
+on the worker's CPU, the only same-CPU producer is the probe, whose
+parks (a07 641 a second at HW and O3) end at once because the CPU is
+otherwise idle (probe p50 12 to 13 us at every stage).  At ncpu and 2 x
+ncpu the machines are saturated (idle 0.3 to 3 %), throughput is equal
+to the third digit across all ten stages (a07 333.4-333.9 and
+327.4-328.0 Gbit/s, lab 73.5-75.4 and 70.5-71.1), the per-flow spread
+is 11 to 30 % everywhere, and the probes read the scheduler: p50 50 us
+to 1.3 ms, p99 10 to 45 ms, p99.9 up to 76 ms.  The repetitions'
+spread there exceeds every difference between stages (lab 16 flows:
+probe p50 76 to 2370 us within O1's five; a07 32 flows: occasional
+5.5 ms repetitions in any stage), so no stage ranks above another
+beyond noise at the sweet spot or above, and at saturation the wait
+parks about as often with the exemption as without it (a07 128 flows:
+HW 886, O1 844 a second).  The resolutions matter where 12.6 measured
+them, a receiver or requester sharing an otherwise not saturated CPU
+with its worker, and nowhere else in these rows.
