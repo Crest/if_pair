@@ -140,6 +140,34 @@
 #             parks and debts on W and the receiver's involuntary context
 #             switches (procstat -r)
 #   twoq      also reports overruns_switched per queue
+#
+# Tests added for the urgent exemption against the idle-class wait (WAKE.md
+# S12.5, off by default):
+#   coloc_udp  coloc with a UDP request-reply probe pinned to W beside the
+#              pinned receiver (victim udp, one 64-byte request per 500 us,
+#              its echo server pinned off W for the run), twice in the one
+#              flow: 3 s at rtprio 10 (rt_*), which preempts the receiver
+#              and so isolates what the driver adds, then 3 s at the default
+#              timeshare priority (ts_*), which waits for ULE to switch it in
+#              (a waking user thread does not preempt another on GENERIC):
+#              RTT p50 / p99 / max, lost and the sample count n of each;
+#              the receiver's Gbit/s, items per pass and the kwq_* rows over
+#              both.  The probe is a third thread on the worker's CPU whose
+#              small requests are a same-CPU producer while the receiver
+#              keeps that CPU busy.
+#   coloc_gif  coloc through a gif(4) IPIP tunnel over the pair (inner MTU
+#              8192), the flow capped at GIF_RATE (default 4G, iperf3 -b):
+#              the pair sees protocol 4 and nothing of the TCP inside, and
+#              every flow of the tunnel hashes on the outer addresses alone,
+#              so the receiver is pinned to the tunnel's worker CPU (victim
+#              cpu with protocol 4), not to W.  Uncapped, the worker is
+#              saturated by the software checksums (a07: 10 Gbit/s, 355
+#              items per pass, 5 sleeps a second) and never parks, so the
+#              rate is fixed and the cost reads as CPU: Gbit/s, that CPU's
+#              sys / user / idle shares, items per pass, the receiver's
+#              involuntary switches, the kwq_* rows of that CPU, and cpu_ok
+#              (1 if that CPU's worker ran the most passes, the check that
+#              the computed CPU is the tunnel's).
 # The kwq_* rows gained ticks, empty and single-element ticks, doorbells
 # skipped by the tick, overruns and overruns_switched of both pair queues,
 # prio_violations and the low-priority wakes alone (0 on builds without the
@@ -177,6 +205,7 @@ else
 fi
 SRV=10.98.4.1; CLI=10.98.4.2; UDPPORT=47000; TCPPORT=5201
 SRV2=10.98.6.1; CLI2=10.98.6.2; TCPPORT2=5202; UDPPORT2=47001; ECHOPORT=47100
+GSRV=10.98.8.1; GCLI=10.98.8.2; TCPPORT3=5203; GIF_RATE=${GIF_RATE:-4G}
 command -v dtrace >/dev/null 2>&1 && HAVE_DTRACE=yes || HAVE_DTRACE=no
 WCPU=${WCPU:-1}
 CPUS=$(cpuset -g -p $$ | sed -n 's/.*mask: //p' | tr -d ',')
@@ -609,6 +638,62 @@ t_coloc() {
 	kwq_rows coloc "$q0" "$q1" "$SECS"
 	log "$STAGE rep $REP coloc gbit=$r passes/s=$(( pw / SECS )) items/pass=$(awk -v i="$it" -v p="$pw" 'BEGIN { printf("%.2f", p > 0 ? i / p : 0) }')"
 }
+t_coloc_udp() {
+	# coloc, and a request-reply probe pinned to W from the 2nd second on:
+	# its requests are produced on W and land on W's list (UPORT), so they
+	# meet the idle-class wait and the receiver's own small segments there
+	cpuset -l "$WCPU" jexec "$JS" iperf3 -s -p $TCPPORT2 >/dev/null 2>&1 &
+	_s2=$!; sleep 0.3
+	cpuset -l "$OTHERS" -p "$UPID"	# the echo server off W for the run
+	set -- $CPORTS2; _cp=$1; shift; CPORTS2="$* $_cp"
+	IPERF=$OUT/iperf.$STAGE.$REP.coloc_udp
+	cpuset -l "$OTHERS" jexec "$JC" iperf3 -f g -c $SRV -p $TCPPORT2 -P 1 --cport "$_cp" -t "$SECS" > "$IPERF" 2>&1 &
+	_ip=$!; sleep 1
+	k0=$(kwq_passes); q0=$(kwq_counters "$WCPU"); i0=$(q_items "$PAIRA" "$PAIRB" "$WCPU"); n0=$(nivcsw "$_s2"); t0=$(date +%s)
+	u1=$(cpuset -l "$WCPU" rtprio 10 jexec "$JC" "$VICTIM" udp $SRV $UDPPORT 3 "$UPORT" 500)
+	u2=$(cpuset -l "$WCPU" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT 3 "$UPORT" 500)
+	k1=$(kwq_passes); q1=$(kwq_counters "$WCPU"); i1=$(q_items "$PAIRA" "$PAIRB" "$WCPU"); n1=$(nivcsw "$_s2"); dt=$(( $(date +%s) - t0 ))
+	[ "$dt" -gt 0 ] || dt=1
+	wait $_ip; r=$(iperf_rate)
+	kill $_s2 2>/dev/null; wait $_s2 2>/dev/null
+	cpuset -l "$(echo $CPUS | tr ' ' ',')" -p "$UPID"
+	kwq_rows coloc_udp "$q0" "$q1" "$dt"
+	for kv in $u1; do case $kv in n=*|rtt_*|lost=*) row coloc_udp "rt_${kv%%=*}" "${kv#*=}";; esac; done
+	for kv in $u2; do case $kv in n=*|rtt_*|lost=*) row coloc_udp "ts_${kv%%=*}" "${kv#*=}";; esac; done
+	pw=$(printf '%s\n%s\n' "$k0" "$k1" | awk -v w="$WCPU" '$1 == w { d = $2 - d } END { print d + 0 }')
+	it=$(( ${i1%% *} - ${i0%% *} ))
+	ipp=$(awk -v i="$it" -v p="$pw" 'BEGIN { printf("%.2f", p > 0 ? i / p : 0) }')
+	row coloc_udp gbit "$r"; row coloc_udp items_per_pass "$ipp"; row coloc_udp rcv_nivcsw_s $(( (n1 - n0) / dt ))
+	log "$STAGE rep $REP coloc_udp rt: $u1 ts: $u2 gbit=$r items/pass=$ipp"
+}
+t_coloc_gif() {
+	# coloc through a gif(4) tunnel: the outer packets carry protocol 4 and
+	# hash on the outer addresses alone (pair_hash_mbuf()); gif keeps the
+	# mbuf's flow id and the inner TCP learns it, so both directions of every
+	# flow in the tunnel run on CPU(CLI -> SRV, 4), where the receiver goes
+	_gs=$(jexec "$JS" ifconfig gif create) && _gc=$(jexec "$JC" ifconfig gif create) || { log "WARNING: $STAGE: no gif(4), coloc_gif skipped"; return 0; }
+	must "gif tunnel" sh -c "jexec $JS ifconfig $_gs tunnel $SRV $CLI mtu 8192 && jexec $JS ifconfig $_gs inet $GSRV/32 $GCLI up && jexec $JC ifconfig $_gc tunnel $CLI $SRV mtu 8192 && jexec $JC ifconfig $_gc inet $GCLI/32 $GSRV up"
+	if [ -n "${SEED:-}" ]; then GW=$("$VICTIM" cpu "$SEED" "$NCPU" $CLI $SRV 4 0 0); else GW=$WCPU; fi
+	must_retry 5 "gif ping" jexec "$JC" ping -q -o -c 2 -t 2 $GSRV
+	cpuset -l "$GW" jexec "$JS" iperf3 -s -p $TCPPORT3 >/dev/null 2>&1 &
+	_s3=$!; sleep 0.3
+	k0=$(kwq_passes); q0=$(kwq_counters "$GW"); i0=$(q_items "$PAIRA" "$PAIRB" "$GW"); n0=$(nivcsw "$_s3"); c0=$(cp_times "$GW")
+	IPERF=$OUT/iperf.$STAGE.$REP.coloc_gif
+	cpuset -l "$(others_than "$GW")" jexec "$JC" iperf3 -f g -c $GSRV -p $TCPPORT3 -P 1 -b "$GIF_RATE" -t "$SECS" > "$IPERF" 2>&1
+	k1=$(kwq_passes); q1=$(kwq_counters "$GW"); i1=$(q_items "$PAIRA" "$PAIRB" "$GW"); n1=$(nivcsw "$_s3"); c1=$(cp_times "$GW")
+	kill $_s3 2>/dev/null; wait $_s3 2>/dev/null
+	jexec "$JS" ifconfig "$_gs" destroy; jexec "$JC" ifconfig "$_gc" destroy
+	r=$(iperf_rate)
+	[ "$(busiest_kwq_delta "$k0" "$k1")" = "$GW" ] && ok=1 || { ok=0; log "WARNING: $STAGE: the tunnel did not run on CPU $GW"; }
+	pw=$(printf '%s\n%s\n' "$k0" "$k1" | awk -v w="$GW" '$1 == w { d = $2 - d } END { print d + 0 }')
+	it=$(( ${i1%% *} - ${i0%% *} ))
+	ipp=$(awk -v i="$it" -v p="$pw" 'BEGIN { printf("%.2f", p > 0 ? i / p : 0) }')
+	kwq_rows coloc_gif "$q0" "$q1" "$SECS"
+	sh=$(cp_shares "$c0" "$c1")
+	row coloc_gif gbit "$r"; row coloc_gif items_per_pass "$ipp"; row coloc_gif rcv_nivcsw_s $(( (n1 - n0) / SECS )); row coloc_gif cpu_ok "$ok"
+	for kv in $sh; do row coloc_gif "w_${kv%%=*}" "${kv#*=}"; done
+	log "$STAGE rep $REP coloc_gif gbit=$r cpu=$GW cpu_ok=$ok items/pass=$ipp $sh"
+}
 t_rwlock() {
 	[ "$KIND" = kwq ] || return 0
 	cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; sleep 1
@@ -803,7 +888,7 @@ battery() {
 	for t in $TESTS; do
 		TEST=$t	# also the iperf3 report's name; lib.sh's TEST only prefixed the log
 		case $t in
-		tput1|tput16|udp_idle|udp_load|spin|timer|exec|machine|preempt|coloc|rwlock|xcpu|twoq|churn|magnet|fair|sparse|udp_burst|udp_burst_load) t_$t ;;
+		tput1|tput16|udp_idle|udp_load|spin|timer|exec|machine|preempt|coloc|coloc_udp|coloc_gif|rwlock|xcpu|twoq|churn|magnet|fair|sparse|udp_burst|udp_burst_load) t_$t ;;
 		*) fail "unknown test $t" ;;
 		esac
 	done

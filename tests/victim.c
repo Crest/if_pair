@@ -47,7 +47,8 @@
  *       The value of the static pair_hash_seed of the loaded module file
  *       (if_pair.ko or if_pair_tq.ko), through kldsym(2) and /dev/kmem.
  *   victim cpu SEED NCPU SRC DST PROTO SPORT DPORT
- *       The CPU one direction of a flow hashes to (PROTO 6 or 17).
+ *       The CPU one direction of a flow hashes to: the ports count for
+ *       PROTO 6 and 17 only, as in the pair (4 for an IPIP tunnel).
  *   victim udpecho2 PORT SECS GAP_MS
  *       The UDP echo server that also, every GAP_MS, disconnects its own
  *       socket (connect(2) with AF_UNSPEC, which takes the pcb's write
@@ -296,7 +297,8 @@ flow_cpu(uint32_t seed, unsigned ncpu, struct in_addr src, struct in_addr dst,
 	key[1] = dst.s_addr;
 	key[2] = (uint32_t)proto;
 	key[3] = (uint32_t)ports[0] << 16 | ports[1];
-	return (jenkins_hash32(key, 4, seed) % ncpu);
+	return (jenkins_hash32(key, proto == 6 || proto == 17 ? 4 : 3, seed) %
+	    ncpu);
 }
 
 static int
