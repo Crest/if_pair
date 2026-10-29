@@ -227,8 +227,10 @@ need it.  An urgent ring from the worker's own CPU ends the idle-class
 wait as well, so a client whose same-CPU producer marks its own small
 items urgent loses the wait: a receiver pinned to its worker's CPU with
 `urgent_bytes` 256 parked not once and fell back to the doorbell's
-throughput (WAKE.md S12.5).  Until that is resolved, do not combine
-`urgent_bytes` with `wake_delay_us` for a pinned receiver.
+throughput (WAKE.md S12.5).  if_pair therefore never marks a TCP
+segment without data that only acknowledges; the acknowledgements of
+TCP in a tunnel or of a protocol over UDP it cannot see and still
+marks by size.
 
 ### kwq_enqueue_list
 

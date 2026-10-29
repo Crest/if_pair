@@ -56,6 +56,7 @@
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
+#include <netinet/tcp.h>
 
 #include "kwq.h"	/* kwq/kwq/kwq.h: the work queue KPI */
 
@@ -208,7 +209,11 @@ static uint32_t pair_hash_seed;
  * packet takes the class's regime, which is what the measurements of
  * kwq/WAKE.md S11 and S12 report.  It costs a wake per small packet, so
  * it undoes the saving exactly where the small packets are the traffic;
- * WAKE.md S12.5 measures that trade.
+ * WAKE.md S12.5 measures that trade.  A TCP segment without data that
+ * only acknowledges (a pure ACK or window update, pair_pure_ack()) is
+ * never urgent: a receiver pinned to its worker's CPU sends those from
+ * that CPU between passes, and as urgent items they ended every
+ * idle-class wait (WAKE.md S12.5); nobody waits on one for a reply.
  */
 static u_int pair_urgent_bytes = 0;
 
@@ -218,7 +223,8 @@ static SYSCTL_NODE(_net_link, OID_AUTO, pair, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
 SYSCTL_UINT(_net_link_pair, OID_AUTO, urgent_bytes, CTLFLAG_RWTUN,
     &pair_urgent_bytes, 0,
     "packets shorter than this many bytes ring kwq's doorbell past the "
-    "tick regime and the idle-class wait (kwq/KWQ.md S16); 0 = off");
+    "tick regime and the idle-class wait (kwq/KWQ.md S16), pure TCP ACKs "
+    "excepted; 0 = off");
 
 /*
  * Control-plane lock, serializing pair creation, destruction and the
@@ -534,6 +540,62 @@ pair_hash_mbuf(struct mbuf *m, uint32_t af, uint32_t *hashp)
 }
 
 /*
+ * A TCP segment that carries no data and, of SYN, FIN, RST, URG and ACK,
+ * only ACK: a pure acknowledgement or window update, which
+ * net.link.pair.urgent_bytes leaves out.  A fragment, an IPv6 extension
+ * header or a header too short to read is not one (the size rule
+ * decides).  Read with m_copydata() like pair_hash_mbuf(), and only for
+ * packets under the threshold.
+ */
+static bool
+pair_pure_ack(struct mbuf *m, uint32_t af)
+{
+	struct tcphdr th;
+	int len, off;
+
+	len = m->m_pkthdr.len;
+	switch (af) {
+#ifdef INET
+	case AF_INET: {
+		struct ip ip;
+
+		if (len < (int)sizeof(ip))
+			return (false);
+		m_copydata(m, 0, sizeof(ip), (caddr_t)&ip);
+		if (ip.ip_p != IPPROTO_TCP ||
+		    (ip.ip_off & htons(IP_MF | IP_OFFMASK)) != 0)
+			return (false);
+		off = ip.ip_hl << 2;
+		if (off < (int)sizeof(ip))
+			return (false);
+		break;
+	}
+#endif
+#ifdef INET6
+	case AF_INET6: {
+		struct ip6_hdr ip6;
+
+		if (len < (int)sizeof(ip6))
+			return (false);
+		m_copydata(m, 0, sizeof(ip6), (caddr_t)&ip6);
+		if (ip6.ip6_nxt != IPPROTO_TCP)
+			return (false);
+		off = sizeof(ip6);
+		break;
+	}
+#endif
+	default:
+		return (false);
+	}
+	if (len < off + (int)sizeof(th))
+		return (false);
+	m_copydata(m, off, sizeof(th), (caddr_t)&th);
+	return ((tcp_get_flags(&th) &
+	    (TH_SYN | TH_FIN | TH_RST | TH_URG | TH_ACK)) == TH_ACK &&
+	    len == off + (th.th_off << 2));
+}
+
+/*
  * Pick the CPU whose list of the receiving side's queue gets the
  * packet.  Steer by the mbuf's flow id when it carries one (commit
  * d4b5cae49bff documents the ordering policy this feeds); otherwise
@@ -677,7 +739,7 @@ pair_output(if_t ifp, struct mbuf *m, const struct sockaddr *dst,
 	cpu = pair_select_cpu(sc->sc_peer, m, af);
 	KWQ_ITEM_INIT(KWQ_MBUF_ITEM(m));
 	if (__predict_false(pair_urgent_bytes != 0 &&
-	    len < (int)pair_urgent_bytes))
+	    len < (int)pair_urgent_bytes) && !pair_pure_ack(m, af))
 		error = kwq_enqueue_urgent(sc->sc_peer->sc_q, cpu,
 		    KWQ_MBUF_ITEM(m));
 	else
