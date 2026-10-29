@@ -2008,22 +2008,35 @@ bottleneck has moved elsewhere.  The tick stages sit at the deep end
 even the depth is not the tick's to own.  The mode is settled at the
 start of a run and persists for it.
 
-The likely cause is placement, and it is testable.  lab is a Ryzen with
-SMT, its hardware threads paired (0,1), (2,3) and so on, and the worker
-CPU W is 1.  `compare.sh` pins the iperf3 client and server to
-`others_than "$WCPU"`, every CPU but 1, which leaves CPU 0, W's own
-core sibling, in the mask.  When ULE places a sender or receiver thread
-there at the start of a run, it shares a core with the worker for the
-whole run.  That would explain why every driver shows the mode, why the
-mode is sticky per run, and why only lab shows it: a07's Ampere cores
-have no SMT, and neither its single flow nor the guest's is bimodal.
-The prediction: excluding W's sibling from the generators' mask
-removes the slow mode.  Until that is run (12.5's note), lab's
-single-flow medians of three or four repetitions cannot separate two
-stages, S11's 14 % and the "7 %" of 12.5's exemption-alone stage are
-both this mode, and the recommendation against `tick_us` on a saturated
-bulk flow rests on the regime's slow repetitions being among the
-deepest, not on the regime causing them.
+It is not lab's alone.  a07's single flow is bimodal in the same
+batteries, also in knob-free stages: 29.1 to 33 Gbit/s in slow
+repetitions against 35 to 39 in fast ones (S11's W0 and P, round 1's P,
+P223 and PW50c223), and an earlier campaign recorded it there
+independently of the driver (NOTES.md, the taskqueue-port battery: a
+fast regime at 35 to 37 Gbit/s and a slow one at 29 to 32, decided per
+run, attributed to how the sender, its worker, the receiver and the ACK
+worker land on the 128 cores).  a07 has no SMT, so placement on the
+mesh is the general cause the evidence points to, and per-run
+placement has to be recorded before any stage comparison on this row
+can be trusted.
+
+On lab one placement is a specific suspect, and it is testable.  lab is
+a Ryzen with SMT, its hardware threads paired (0,1), (2,3) and so on,
+and the worker CPU W is 1.  `compare.sh` pins the iperf3 client and
+server to `others_than "$WCPU"`, every CPU but 1, which leaves CPU 0,
+W's own core sibling, in the mask.  When ULE places a sender or
+receiver thread there at the start of a run, it shares a core with the
+worker for the whole run, which fits lab's signature (the worker idle,
+its wake rate up) and its depth, deeper than a07's.  The prediction:
+excluding W's sibling from the generators' mask removes lab's deeper
+slow repetitions, and whatever remains is the placement effect a07
+shows too.  `SMT_SIBLINGS=exclude` and the generator-placement rows of
+`tput1` test it (lab round 4).  Until then, single-flow medians of three
+or four repetitions cannot separate two stages on either machine,
+S11's 14 % and the "7 %" of 12.5's exemption-alone stage are both this
+mode, and the recommendation against `tick_us` on a saturated bulk
+flow rests on the regime's slow repetitions being among the deepest,
+not on the regime causing them.
 
 The same battery settles S11.1's other loose end: the 3 % between the
 kwq head and the pass-level limit on lab's single flow is not real.
@@ -2131,3 +2144,69 @@ of the intuition.  The one row that would favour a short deadline, an
 item whose producer never sleeps paying the full wait, is bounded by
 the knob by construction and shows up as the episode length above;
 nothing in these batteries pays it visibly.
+
+### 12.5 The tick regime's `L` on co-scheduled small items
+
+S11.3 put the price of the tick regime at 50 us at up to `L` on every
+item that arrives while it is on: on lab the UDP flow beside the bulk
+flow went from 26 to 58 us at p99, the 16-per-200-us request burst's
+last reply from 15 to 69 us, and 64 sparse request-reply flows' p99
+from 12 to 65 us.  Three mitigations were tried: a smaller bound, an
+exemption for small packets, and a shorter quantum against a07's
+timer lateness.  lab round 2 ran the first two, three repetitions on
+one boot: H (the p4g build 80bf240 with the knobs off), HT20 and HT50
+(`tick_us` 20 and 50), HU (if_pair's `net.link.pair.urgent_bytes`
+256 with the tick off), HT20U and HT50U (both).  Medians:
+
+| lab | H | HT20 | HT50 | HU | HT20U | HT50U |
+|---|---|---|---|---|---|---|
+| UDP beside the bulk flow, p50 / p99 us | 15 / 34 | 16 / 35 | 13 / 58 | 13 / 33 | 12 / 29 | 13 / 44 |
+| 16-per-200-us burst: last reply p50 us | 14 | 34 | 68 | 17 | 14 | 13 |
+| its bursts per second | 17 800 | 16 300 | 15 100 | 17 500 | 17 500 | 17 700 |
+| 64 sparse flows x 5 k/s: p99 us | 12 | 12 | 65 | 12 | 12 | 12 |
+| their worker wakes per second, all CPUs | 572 k | 576 k | 359 k | 572 k | 574 k | 572 k |
+| isolated request (1 per 2 ms) p50 us | 8 | 8 | 8 | 8 | 8 | 8 |
+| pinned timer lateness p99 us | 517 | 517 | 516 | 516 | 517 | 517 |
+
+*The smaller bound.*  At 20 us the regime costs the co-scheduled UDP
+flow nothing (p99 35 against 34) and leaves the sparse flows out of it
+entirely: 20 k requests a second per worker is `lambda L` 0.4, below
+the entry, so their wakes and their latency are the baseline's.  The
+request burst still enters, because its requests are spaced by the
+round trip and three of the worker's sleeps between them are shorter
+than `L` (S11.3), and it still pays `L` on its last reply: 34 us
+against 14, and 8 % fewer bursts.  At 50 us every one of those rows
+pays: UDP p99 +24 us, which breaks B5b's target of under 50 us beside
+a busy queue, sparse p99 +53, the burst's tail +54 and 15 % of its
+rate.  The isolated request is untouched at both settings (B5a), and
+lab's pinned timer never moved at either.
+
+*The exemption.*  `net.link.pair.urgent_bytes` makes if_pair enqueue
+a packet shorter than the threshold with `kwq_enqueue_urgent()`, which
+rings past the tick regime's skipped doorbell, and the urgent nudge
+(80bf240) wakes a ticking worker for an urgent item that lands behind
+others.  Every packet of a request-reply flow is under 256 bytes, so
+the exemption takes exactly the traffic that pays for the tick out of
+it: with both knobs, the sparse flows' wakes return to the baseline's
+count to the thousand (572 k) and their p99 to 12 us, the burst's last
+reply to 13 and 14 us with its rate back, and the UDP flow's p99 to 29
+us at 20 us and 44 at 50 (against 58 without the exemption).  HT20U
+is the first tick stage with no latency cost on any small-traffic row
+of lab.
+
+*What the exemption costs.*  Two things, neither of them visible on
+lab.  Without the tick it is inert by construction: an urgent item
+changes the doorbell only in the tick regime or the idle-class wait,
+and the nudge needs a worker asleep behind a placed list, which the
+plain doorbell never leaves.  HU's one fast repetition (145 Gbit/s,
+519 wakes a second, the worker never idle) is H's; its two slow ones
+are 12.2's mode and say nothing about the exemption.  With the tick,
+the bulk flow's pure ACKs are small packets too, so they ring urgent
+and turn the regime's timer wakes back into doorbell wakes.  lab
+cannot show what that costs, because its single flow saturates the
+worker and sleeps only a few hundred times a second either way: in
+fast repetitions H sleeps about 700 times a second, HT50 about 320
+(2 wakes, 315 ticks), HT50U about 550 (475 wakes, 63 ticks).  The
+regime's wake saving is real where the wake is dear and frequent, a07's
+single flow at 35 k wakes a second, and that is where the exemption's
+price has to be read.

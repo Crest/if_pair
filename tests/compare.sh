@@ -230,15 +230,19 @@ iperf_bg() {	# conns cport pin -> starts the client, sets IPID and IPERF (its re
 }
 gen_sample() {	# client-pid server-pid out: three times in the run, did a thread of the
 		# iperf3 client / server last run on a hardware thread of W's core?
-		# Writes "cli srv" as fractions of the samples (WAKE.md S12.2).
-	_core=",$(smt_siblings "$WCPU"),"; _cs=0; _ss=0
+		# Writes "cli srv" as fractions of the samples to OUT and the
+		# sampled CPUs of every thread to OUT.cpus (WAKE.md S12.2).
+	_core=",$(smt_siblings "$WCPU"),"; _cs=0; _ss=0; _cl=""
 	for _i in 1 2 3; do
 		sleep $(( SECS / 4 ))
-		_c=$(ps -H -o cpu= -p "$1" 2>/dev/null | awk -v c="$_core" '{ if (index(c, "," $1 ",")) h = 1 } END { print h + 0 }')
-		_s=$(ps -H -o cpu= -p "$2" 2>/dev/null | awk -v c="$_core" '{ if (index(c, "," $1 ",")) h = 1 } END { print h + 0 }')
-		_cs=$((_cs + _c)); _ss=$((_ss + _s))
+		_cc=$(ps -H -o cpu= -p "$1" 2>/dev/null | tr -s ' \n' ',' | sed 's/^,//; s/,$//')
+		_sc=$(ps -H -o cpu= -p "$2" 2>/dev/null | tr -s ' \n' ',' | sed 's/^,//; s/,$//')
+		_c=$(echo "$_cc" | tr ',' '\n' | awk -v c="$_core" '$1 != "" { if (index(c, "," $1 ",")) h = 1 } END { print h + 0 }')
+		_s=$(echo "$_sc" | tr ',' '\n' | awk -v c="$_core" '$1 != "" { if (index(c, "," $1 ",")) h = 1 } END { print h + 0 }')
+		_cs=$((_cs + _c)); _ss=$((_ss + _s)); _cl="$_cl cli=$_cc srv=$_sc"
 	done
 	awk -v c="$_cs" -v s="$_ss" 'BEGIN { printf("%.2f %.2f\n", c / 3, s / 3) }' > "$3"
+	echo "${_cl# }" > "$3.cpus"
 }
 iperf_rate() {	# after wait: the rate, and the error line if the run failed
 	r=$(rate_of "$IPERF")
@@ -513,7 +517,7 @@ t_tput1() {
 	kwq_rows tput1 "$q0" "$q1" "$SECS"
 	row tput1 gbit "$r"; for kv in $sh; do row tput1 "w_${kv%%=*}" "${kv#*=}"; done
 	row tput1 cli_wcore "$gc"; row tput1 srv_wcore "$gs"
-	log "$STAGE rep $REP tput1 gbit=$r W=$WCPU $sh cli_wcore=$gc srv_wcore=$gs"
+	log "$STAGE rep $REP tput1 gbit=$r W=$WCPU $sh cli_wcore=$gc srv_wcore=$gs gen_cpus: $(cat "$OUT/gen.$STAGE.$REP.cpus" 2>/dev/null)"
 }
 t_tput16() {
 	iperf_bg 16 "" ""; wait $IPID; r=$(iperf_rate)
