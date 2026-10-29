@@ -2031,8 +2031,9 @@ regimes are worth having as opt-ins and two are not:
   requests keeps the regime's saving at a bounded cost to each (WAKE.md
   S12.5: with the plain exemption a 64-request burst cost 18 wakes).  A
   bound at or above `L` is the tick's own, since the sleep's timeout
-  comes first, and arms nothing; measured, `L/5` beat `L/2` (WAKE.md
-  S12.6).
+  comes first, and arms nothing.  The bound is sized by the requests'
+  spacing, not by `L`: 10 us halved a07's 64-request tail at `L` 50 and
+  20 alike, 4 us at 20 coalesced too little to show (WAKE.md S12.8).
 - *Urgency is a wake hint, not an order (2026-10-29).*  An urgent item
   is appended in arrival order like any other; the flag decides only
   whether and when the worker wakes.  Three ways of letting urgent
