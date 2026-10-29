@@ -77,8 +77,7 @@ must_retry 5 "tunnel ping" jexec "$J1" ping -q -o -c 3 -t 2 "$T2"
 
 case "$(jexec "$J1" ifconfig -m "$G1" | awk -F'[<>]' '/capabilities=/ { print $2; exit }')" in
 *TSO4*) ;;
-*)	log "SKIP: ${G1} does not advertise TSO4 (unpatched gif)"
-	exit 0 ;;
+*)	skip "${G1} does not advertise TSO4 (unpatched gif)" ;;
 esac
 
 jexec "$J2" iperf3 -s >/dev/null 2>&1 &

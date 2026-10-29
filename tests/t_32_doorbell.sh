@@ -16,7 +16,7 @@
 
 test_init
 [ "$PAIR" = pair ] || fail "kwq only"
-command -v iperf3 >/dev/null 2>&1 || { log "SKIP: iperf3 not installed"; exit 0; }
+command -v iperf3 >/dev/null 2>&1 || skip "iperf3 not installed"
 
 SECS=${SECS:-5}
 SPINS=${SPINS:-"0 50"}

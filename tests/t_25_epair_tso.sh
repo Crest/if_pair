@@ -59,9 +59,8 @@ caps() { ifconfig -m "$1" | awk -F"[<>]" "/$2=/ { print \$2; exit }"; }
 
 case "$(caps "$EPA" capabilities)" in
 *TSO4*) ;;
-*)	log "SKIP: ${EPA} does not advertise TSO4 (unpatched if_epair)"
-	ifconfig "$EPA" destroy
-	exit 0 ;;
+*)	ifconfig "$EPA" destroy
+	skip "${EPA} does not advertise TSO4 (unpatched if_epair)" ;;
 esac
 
 case "$(caps "$EPA" options)" in

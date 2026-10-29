@@ -41,8 +41,7 @@ must "move ${PAIRB} into ${J2}" ifconfig "$PAIRB" vnet "$J2"
 case "$(jexec "$J1" ifconfig -m "$PAIRA" | \
     awk -F'[<>]' '/capabilities=/ { print $2; exit }')" in
 *TSO4*) ;;
-*)	log "SKIP: ${PAIRA} does not advertise TSO4"
-	exit 0 ;;
+*)	skip "${PAIRA} does not advertise TSO4" ;;
 esac
 
 must "jail1 side" jexec "$J1" ifconfig "$PAIRA" inet "${A4}/32" "$B4" up

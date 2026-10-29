@@ -11,13 +11,11 @@
 test_init
 
 if [ -n "$(ifconfig -g ${PAIR} 2>/dev/null)" ]; then
-	log "SKIP: pre-existing pair interfaces; refusing to unload"
-	exit 0
+	skip "pre-existing pair interfaces; refusing to unload"
 fi
 KO=$(resolve_ko) || KO=""
 if [ "$MOD_PRELOADED" = yes ] && [ -z "$KO" ]; then
-	log "SKIP: module preloaded and no ${PAIR_MOD}.ko found to reload"
-	exit 0
+	skip "module preloaded and no ${PAIR_MOD}.ko found to reload"
 fi
 
 create_pair
