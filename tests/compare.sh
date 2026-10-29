@@ -228,6 +228,18 @@ iperf_bg() {	# conns cport pin -> starts the client, sets IPID and IPERF (its re
 	$_pin jexec "$JC" iperf3 -f g -c $SRV -P "$1" $_cp -t "$SECS" > "$IPERF" 2>&1 &
 	IPID=$!
 }
+gen_sample() {	# client-pid server-pid out: three times in the run, did a thread of the
+		# iperf3 client / server last run on a hardware thread of W's core?
+		# Writes "cli srv" as fractions of the samples (WAKE.md S12.2).
+	_core=",$(smt_siblings "$WCPU"),"; _cs=0; _ss=0
+	for _i in 1 2 3; do
+		sleep $(( SECS / 4 ))
+		_c=$(ps -H -o cpu= -p "$1" 2>/dev/null | awk -v c="$_core" '{ if (index(c, "," $1 ",")) h = 1 } END { print h + 0 }')
+		_s=$(ps -H -o cpu= -p "$2" 2>/dev/null | awk -v c="$_core" '{ if (index(c, "," $1 ",")) h = 1 } END { print h + 0 }')
+		_cs=$((_cs + _c)); _ss=$((_ss + _s))
+	done
+	awk -v c="$_cs" -v s="$_ss" 'BEGIN { printf("%.2f %.2f\n", c / 3, s / 3) }' > "$3"
+}
 iperf_rate() {	# after wait: the rate, and the error line if the run failed
 	r=$(rate_of "$IPERF")
 	[ "$r" = 0 ] && log "WARNING: $STAGE $TEST: iperf3 reported no rate: $(grep -v '^$' "$IPERF" | tail -1)"
@@ -492,12 +504,16 @@ kwq_all() {	# -> "wakeups passes ticks" summed over every NET worker, and the pa
 }
 
 t_tput1() {
-	c0=$(cp_times "$WCPU"); k0=$(kwq_passes); q0=$(kwq_counters "$WCPU"); cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; wait $IPID; c1=$(cp_times "$WCPU"); k1=$(kwq_passes); q1=$(kwq_counters "$WCPU")
+	c0=$(cp_times "$WCPU"); k0=$(kwq_passes); q0=$(kwq_counters "$WCPU"); cport_next; iperf_bg 1 "$CPORT" "$OTHERS"
+	gen_sample "$IPID" "$SPID" "$OUT/gen.$STAGE.$REP" & _gp=$!
+	wait $IPID; c1=$(cp_times "$WCPU"); k1=$(kwq_passes); q1=$(kwq_counters "$WCPU")
+	wait $_gp; read -r gc gs < "$OUT/gen.$STAGE.$REP" || { gc=-1; gs=-1; }
 	r=$(iperf_rate); sh=$(cp_shares "$c0" "$c1")
 	[ "$KIND" = kwq ] && verify_w kwq "$k0" "$k1"
 	kwq_rows tput1 "$q0" "$q1" "$SECS"
 	row tput1 gbit "$r"; for kv in $sh; do row tput1 "w_${kv%%=*}" "${kv#*=}"; done
-	log "$STAGE rep $REP tput1 gbit=$r W=$WCPU $sh"
+	row tput1 cli_wcore "$gc"; row tput1 srv_wcore "$gs"
+	log "$STAGE rep $REP tput1 gbit=$r W=$WCPU $sh cli_wcore=$gc srv_wcore=$gs"
 }
 t_tput16() {
 	iperf_bg 16 "" ""; wait $IPID; r=$(iperf_rate)
