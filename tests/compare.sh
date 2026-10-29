@@ -120,6 +120,15 @@
 # whole run; lab's single flow was bimodal across every stage and driver
 # (WAKE.md S12.2), and this is the knob that tests that cause.  On a machine
 # without SMT both settings give the same mask.
+# CLOCKS=yes (amd64 with cpuctl(4) loaded) adds every CPU's clock to tput1:
+# APERF, MPERF and the TSC read with cpucontrol(8) just before and after the
+# run give each CPU's C0 share (MPERF over TSC) and its effective clock
+# while in C0 (APERF over MPERF at the TSC's rate), so a run that did not
+# boost shows.  Rows mhz_all (over every CPU, weighted by C0 time), mhz_w,
+# mhz_busy over the CPUs at least half in C0, busy_n of them, busy_smt (busy
+# CPUs whose core has another busy CPU), and temp0 and temp1, the package
+# temperature (amdtemp's Tctl, else coretemp's CPU 0) before and after;
+# OUT/clk.<stage>.<rep> keeps the per-CPU "cpu c0 mhz core" lines.
 #
 # Tests added for SPEC-p4e.md (off by default):
 #   sparse    SPARSE_N request-reply UDP flows at SPARSE_RATE requests/s
@@ -257,6 +266,43 @@ cp_shares() {	# "before" "after" -> "sys=x user=y idle=z" as shares of the inter
 	    NR == 2 { t = 0; for (i = 1; i <= 5; i++) { d[i] = $i - a[i]; t += d[i] }
 	        if (t <= 0) t = 1; printf("sys=%.3f user=%.3f idle=%.3f intr=%.3f", (d[3] + d[4]) / t, (d[1] + d[2]) / t, d[5] / t, d[4] / t) }'
 }
+core_map() {	# -> "cpu core" for every CPU, core = the first CPU of its SMT group (the CPU itself without SMT)
+	sysctl -n kern.sched.topology_spec 2>/dev/null | awk -v cpus="$CLK_CPUS" '
+	    /<cpu count=/ { s = $0; sub(/.*">/, "", s); sub(/<\/cpu>.*/, "", s); gsub(/ /, "", s); last = s; next }
+	    /SMT group/ { n = split(last, c, ","); for (i = 1; i <= n; i++) core[c[i]] = c[1] }
+	    END { n = split(cpus, c, " "); for (i = 1; i <= n; i++) print c[i], (c[i] in core ? core[c[i]] : c[i]) }'
+}
+msr64() {	# msr cpu -> the MSR's value in decimal, 0 if unreadable
+	# shellcheck disable=SC2046
+	set -- $(cpucontrol -m "$1" "/dev/cpuctl$2" 2>/dev/null)
+	if [ $# -eq 4 ]; then echo $(( ($3 << 32) | $4 )); else echo 0; fi
+}
+clk_snap() {	# -> "cpu tsc mperf aperf" for every CPU (CLOCKS=yes)
+	for _c in $CLK_CPUS; do echo "$_c $(msr64 0x10 "$_c") $(msr64 0xe7 "$_c") $(msr64 0xe8 "$_c")"; done
+}
+pkg_temp() {	# -> the package temperature in degrees C, or -
+	_t=$(sysctl -n dev.amdtemp.0.core0.sensor0 2>/dev/null || sysctl -n dev.cpu.0.temperature 2>/dev/null)
+	echo "${_t%C}" | grep . || echo -
+}
+clk_sums() {	# before-file after-file -> "mhz_all mhz_w mhz_busy busy_n busy_smt"; writes OUT/clk.<stage>.<rep>
+	awk -v tsc="$TSC_MHZ" -v w="$WCPU" -v out="$OUT/clk.$STAGE.$REP" '
+	    FILENAME == ARGV[1] { core[$1] = $2; next }
+	    FILENAME == ARGV[2] { t[$1] = $2; m[$1] = $3; a[$1] = $4; next }
+	    { dt = $2 - t[$1]; dm = $3 - m[$1]; da = $4 - a[$1]; if (dt <= 0 || dm <= 0) next
+	      c0[$1] = dm / dt; mhz[$1] = tsc * da / dm; DM += dm; DA += da
+	      if (c0[$1] >= 0.5) { bm += dm; ba += da; nb++; nc[core[$1]]++ } }
+	    END { for (c in c0) { printf("%s %.3f %.0f %s\n", c, c0[c], mhz[c], core[c]) > out
+	            if (c0[c] >= 0.5 && nc[core[c]] > 1) smt++ }
+	      printf("%.0f %.0f %.0f %d %d\n", DM ? tsc * DA / DM : 0, mhz[w] + 0, bm ? tsc * ba / bm : 0, nb, smt) }' \
+	    "$OUT/coremap" "$1" "$2"
+}
+if [ "${CLOCKS:-no}" = yes ]; then
+	[ "$ARCH" = amd64 ] && [ -c /dev/cpuctl0 ] || fail "CLOCKS=yes needs amd64 and cpuctl(4)"
+	# CPUS also holds the domain policy's mask, cpuset -g's second line
+	CLK_CPUS=$(echo "$CPUS" | tr ' ' '\n' | sort -nu | paste -sd' ' -)
+	TSC_MHZ=$(sysctl -n machdep.tsc_freq | awk '{ printf("%.3f", $1 / 1e6) }')
+	core_map > "$OUT/coremap"
+fi
 rate_of() {
 	awk '/receiver/ { for (i = 1; i <= NF; i++) if ($i == "Gbits/sec") { r = $(i - 1); if ($0 ~ /^\[SUM\]/) s = r } }
 	    END { print (s != "" ? s : (r != "" ? r : 0)) }' "$1"
@@ -557,16 +603,26 @@ kwq_all() {	# -> "wakeups passes ticks" summed over every NET worker, and the pa
 }
 
 t_tput1() {
+	[ "${CLOCKS:-no}" = yes ] && { _t0=$(pkg_temp); clk_snap > "$OUT/clk0"; }
 	c0=$(cp_times "$WCPU"); k0=$(kwq_passes); q0=$(kwq_counters "$WCPU"); cport_next; iperf_bg 1 "$CPORT" "$OTHERS"
 	gen_sample "$IPID" "$SPID" "$OUT/gen.$STAGE.$REP" & _gp=$!
 	wait $IPID; c1=$(cp_times "$WCPU"); k1=$(kwq_passes); q1=$(kwq_counters "$WCPU")
+	_clk=""
+	if [ "${CLOCKS:-no}" = yes ]; then
+		clk_snap > "$OUT/clk1"; _t1=$(pkg_temp)
+		# shellcheck disable=SC2046
+		set -- $(clk_sums "$OUT/clk0" "$OUT/clk1")
+		row tput1 mhz_all "$1"; row tput1 mhz_w "$2"; row tput1 mhz_busy "$3"; row tput1 busy_n "$4"; row tput1 busy_smt "$5"
+		row tput1 temp0 "$_t0"; row tput1 temp1 "$_t1"
+		_clk=" mhz_all=$1 mhz_w=$2 mhz_busy=$3 busy_n=$4 busy_smt=$5 temp=$_t0..$_t1 busy: $(awk '$2 >= 0.5 { printf("%s%s@%s/%.2f", n++ ? "," : "", $1, $3, $2) }' "$OUT/clk.$STAGE.$REP")"
+	fi
 	wait $_gp; read -r gc gs < "$OUT/gen.$STAGE.$REP" || { gc=-1; gs=-1; }
 	r=$(iperf_rate); sh=$(cp_shares "$c0" "$c1")
 	[ "$KIND" = kwq ] && verify_w kwq "$k0" "$k1"
 	kwq_rows tput1 "$q0" "$q1" "$SECS"
 	row tput1 gbit "$r"; for kv in $sh; do row tput1 "w_${kv%%=*}" "${kv#*=}"; done
 	row tput1 cli_wcore "$gc"; row tput1 srv_wcore "$gs"
-	log "$STAGE rep $REP tput1 gbit=$r W=$WCPU $sh cli_wcore=$gc srv_wcore=$gs gen_cpus: $(cat "$OUT/gen.$STAGE.$REP.cpus" 2>/dev/null)"
+	log "$STAGE rep $REP tput1 gbit=$r W=$WCPU $sh cli_wcore=$gc srv_wcore=$gs gen_cpus: $(cat "$OUT/gen.$STAGE.$REP.cpus" 2>/dev/null)$_clk"
 }
 t_tput16() {
 	iperf_bg 16 "" ""; wait $IPID; r=$(iperf_rate)
