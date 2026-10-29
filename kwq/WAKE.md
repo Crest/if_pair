@@ -2519,3 +2519,47 @@ parks about as often with the exemption as without it (a07 128 flows:
 HW 886, O1 844 a second).  The resolutions matter where 12.6 measured
 them, a receiver or requester sharing an otherwise not saturated CPU
 with its worker, and nowhere else in these rows.
+
+### 12.8 Options 2 and 4 together (branch kwq-p4g-urg24)
+
+crest kept option 2 (2026-10-29) and asked for 2 and 4 combined:
+branch kwq-p4g-urg24 is this branch's 20c44ff with urg2's and urg4's
+commits and one more, b5903c3: a `tick_urgent_us` at or above
+`tick_us` is the tick's own, because the sleep's timeout comes first,
+so it arms nothing and the item is not counted as deferred.  The guest
+passes kwq's ATF suite (25/25) and if_pair's run_all.sh (34/34).
+Battery B (the tick) five repetitions and battery A (the wait) three, on
+a07 and lab, medians (samples/p4g_urg24_2026-10-29.txt); C* is the
+combined build with `urgent_bytes` 256, `n` marks `tick_urgent_us` 0,
+T20U is the head with `tick_us` 20 and `urgent_bytes` without option 2.
+
+| | H | C50n | C50 (tu 10) | T20U | C20n | C20 (tu 4) | C20b (tu 10) |
+|---|---|---|---|---|---|---|---|
+| a07 UDP beside bulk p99 us | 38 | 62 | 64 | 50 | 49 | 49 | 49 |
+| lab UDP beside bulk p99 us | 30 | 49 | 50 | 33 | 33 | 28 | 33 |
+| a07 16-burst, last reply p50 us | 27 | 26 | 33 | 27 | 26 | 25 | 34 |
+| lab 16-burst, last reply p50 us | 15 | 15 | 23 | 14 | 15 | 17 | 23 |
+| a07 64-burst / 2 ms, last reply p99 us | 379 | 387 | 197 | 385 | 377 | 358 | 198 |
+| its wakes per burst | 13.8 | 13.8 | 10.3 | 12.2 | 19.1 | 12.1 | 10.5 |
+| a07 64-burst / 50 ms, last reply p99 us | 291 | 260 | 198 | 250 | 254 | 219 | 209 |
+| lab 64-burst / 50 ms, last reply p99 us | 264 | 221 | 54 | 59 | 54 | 58 | 52 |
+| isolated request p50 us, a07 / lab | 36 / 9 | 35 / 8 | 35 / 8 | 35 / 8 | 35 / 8 | 35 / 8 | 36 / 8 |
+| single flow Gbit/s, a07 / lab | 35.1 / 138 | 36.6 / 137 | 36.7 / 135 | 34.7 / 137 | 38.0 / 138 | 37.8 / 138 | 35.3 / 139 |
+
+Three things follow.  Option 2 costs the tick nothing: C20n and T20U
+differ only by it and agree on every row.  The flow beside bulk is L's
+alone: 20 us takes it from 62 to 49 us on a07 and from 49 to 33 on
+lab, and no `tick_urgent_us` moves it.  And the urgent bound is sized by
+the requests' spacing, not by L: 10 us halves a07's 64-request tail at
+L 50 and at L 20 alike (197 and 198 against 387 and 377), while 4 us,
+L/5 at 20, coalesces too little to show on that row (358); its price is
+the same 7 to 8 us on the last reply of the 16-request burst at both L,
+and nothing on the isolated request or the single flow.  S12.6's "L/5
+beat L/2" was the 10 us bound, not the fraction.
+
+Battery A confirms the wait is untouched: the pinned receiver keeps it
+(a07 24.6 / 24.7 / 25.0 / 24.6 Gbit/s at HW / O2 / CW / CWT, lab 75.6 /
+74.7 / 75.8 / 75.3, about 4700 and 4200 parks a second everywhere) and
+the request from the worker's CPU keeps option 2's figures (a07 p50 136
+at HW against 43 / 44 / 43, lab 124 against 49 / 48 / 46), with every
+knob on at once (CWT) no different from option 2 alone.

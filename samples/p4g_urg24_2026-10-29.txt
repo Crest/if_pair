@@ -1,0 +1,94 @@
+Options 2 + 4 combined (branch kwq-p4g-urg24: kwq-p4g 20c44ff + urg2 + urg4
++ b5903c3, the clamp), 2026-10-29.  compare.sh, batteries B (REPS 5) and A
+(REPS 3) on a07 and lab, medians.  C* = the combined build with
+urgent_bytes 256: C50n / C50 = tick_us 50 with tick_urgent_us 0 / 10;
+C20n / C20 / C20b = tick_us 20 with tick_urgent_us 0 / 4 / 10.  H = the
+kwq head without knobs, T20U = H + tick_us 20 + urgent_bytes 256 (no
+option 2).  A: HW = H + wake_delay_us 100, O2 = HW + urgent_bytes 256 on
+urg2, CW = the same on the combined build, CWT = CW + tick_us 20 +
+tick_urgent_us 4.  Guest: kwq ATF 25/25, if_pair run_all.sh 34/34.
+
+=== a07, battery B (the tick)
+test                metric              H      C50n   C50    T20U   C20n   C20    C20b
+udp_load            kwq_wakes_urgent_s  0      456    0      341    313    0      0
+udp_load            kwq_turg_wakes_s    0      0      383    0      0      334    183
+udp_load            rtt_p99             38     62     64     50     49     49     49
+udp_load            rtt_sd              7.3    9.9    10.1   8      7.7    7.7    7.4
+udp_load            gbit                36.6   35.6   36     33.9   37.6   35.3   37.3
+udp_burst_1_2000    last_p50            36     35     35     35     35     35     36
+udp_burst_1_2000    last_p99            40     39     40     39     39     39     40
+udp_burst_1_2000    rtt_p99             40     39     40     39     39     39     40
+udp_burst_1_2000    wakeups_per_burst   1      1      1      1      1      1      1
+udp_burst_16_200    last_p50            27     26     33     27     26     25     34
+udp_burst_16_200    last_p99            33     33     40     34     33     34     40
+udp_burst_16_200    rtt_p99             31     31     39     32     31     32     39
+udp_burst_16_200    wakeups_per_burst   1.91   1.76   1.85   1.75   1.74   1.6    1.84
+udp_burst_64_2000   last_p50            257    237    177    234    177    192    176
+udp_burst_64_2000   last_p99            379    387    197    385    377    358    198
+udp_burst_64_2000   rtt_p99             345    347    216    342    339    323    220
+udp_burst_64_2000   wakeups_per_burst   13.75  13.75  10.27  12.21  19.07  12.05  10.45
+udp_burst_64_50000  last_p50            165    170    174    166    155    181    175
+udp_burst_64_50000  last_p99            291    260    198    250    254    219    209
+udp_burst_64_50000  rtt_p99             268    287    219    268    273    229    224
+udp_burst_64_50000  wakeups_per_burst   15.53  15.4   8.06   13.54  13.59  10.69  8.07
+tput1               kwq_wakes_urgent_s  0      0      0      0      0      0      0
+tput1               kwq_turg_wakes_s    0      0      0      0      0      0      0
+tput1               gbit                35.1   36.6   36.7   34.7   38     37.8   35.3
+tput1               w_idle              0.195  0.305  0.278  0.244  0.176  0.204  0.214
+
+=== a07, battery A (the wait)
+test       metric           HW    O2    CW    CWT
+coloc      gbit             24.6  24.7  25    24.6
+coloc      kwq_wakes_low_s  4728  4694  4717  4701
+coloc_udp  kwq_wakes_low_s  4773  5050  5090  5020
+coloc_udp  rt_rtt_p50       136   43    44    43
+coloc_udp  rt_rtt_p99       174   83    86    84
+coloc_udp  rt_rtt_sd        36.4  15.5  15.8  15.5
+coloc_udp  ts_rtt_p50       138   55    55    56
+coloc_udp  ts_rtt_p99       183   101   98    101
+coloc_udp  gbit             24.2  23.9  24.1  24.1
+coloc_gif  kwq_wakes_low_s  2     0     0     0
+coloc_gif  gbit             4     4     4     4
+
+=== lab, battery B (the tick)
+test                metric              H      C50n   C50    T20U   C20n   C20    C20b
+udp_load            kwq_wakes_urgent_s  0      14     0      15     21     0      0
+udp_load            kwq_turg_wakes_s    0      0      53     0      0      25     8
+udp_load            rtt_p99             30     49     50     33     33     28     33
+udp_load            rtt_sd              4.5    8.6    9.5    5      5.3    4.1    6.2
+udp_load            gbit                138    139    130    138    137    134    140
+udp_burst_1_2000    last_p50            9      8      8      8      8      8      8
+udp_burst_1_2000    last_p99            10     9      10     9      10     9      9
+udp_burst_1_2000    rtt_p99             10     9      10     9      10     9      9
+udp_burst_1_2000    wakeups_per_burst   1      1      1      1      1      1      1
+udp_burst_16_200    last_p50            15     15     23     14     15     17     23
+udp_burst_16_200    last_p99            24     41     26     26     27     20     26
+udp_burst_16_200    rtt_p99             22     29     26     18     24     19     25
+udp_burst_16_200    wakeups_per_burst   1.93   1.97   2.54   2.2    1.75   1.83   1.62
+udp_burst_64_2000   last_p50            26     36     39     54     40     37     38
+udp_burst_64_2000   last_p99            52     48     46     58     48     46     46
+udp_burst_64_2000   rtt_p99             68     50     47     67     50     48     47
+udp_burst_64_2000   wakeups_per_burst   16.24  8.32   3.08   7.72   6.48   3.99   4.46
+udp_burst_64_50000  last_p50            37     32     38     33     39     36     42
+udp_burst_64_50000  last_p99            264    221    54     59     54     58     52
+udp_burst_64_50000  rtt_p99             227    198    49     69     56     56     50
+udp_burst_64_50000  wakeups_per_burst   10.71  10.61  2.89   8      9.06   5.42   4.47
+tput1               kwq_wakes_urgent_s  0      0      0      0      0      0      0
+tput1               kwq_turg_wakes_s    0      0      0      0      0      0      0
+tput1               gbit                138    137    135    137    138    138    139
+tput1               w_idle              0.005  0.033  0.029  0.031  0.012  0.007  0.01
+
+=== lab, battery A (the wait)
+test       metric           HW    O2    CW    CWT
+coloc      gbit             75.6  74.7  75.8  75.3
+coloc      kwq_wakes_low_s  4222  4198  3916  4213
+coloc_udp  kwq_wakes_low_s  4240  4683  4449  4815
+coloc_udp  rt_rtt_p50       124   49    48    46
+coloc_udp  rt_rtt_p99       147   63    69    62
+coloc_udp  rt_rtt_sd        48.7  10.5  12    11.1
+coloc_udp  ts_rtt_p50       132   51    51    49
+coloc_udp  ts_rtt_p99       151   95    111   99
+coloc_udp  gbit             74.1  75.2  74.8  74
+coloc_gif  kwq_wakes_low_s  2     0     0     0
+coloc_gif  gbit             4     4     4     4
+
