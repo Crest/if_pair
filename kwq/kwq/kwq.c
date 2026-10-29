@@ -311,7 +311,7 @@ kwq_knobs_register(void)
 		{ "budget_check_every", "kwq_budget_left() reads the clock at least every this many calls; 1 = every call", 1, 64 },
 		{ "wake_delay_us", "the idle-class wait for same-CPU producers (KWQ.md S16): an enqueue from the worker's own CPU makes the worker runnable in the idle class at cap_prio and this is the deadline by which it is promoted to the class priority; an enqueue from another CPU rings the plain doorbell; 0 = off", 0, 1000000 },
 		{ "tick_us", "the tick regime's latency bound L (KWQ.md S16): after three consecutive sleeps shorter than L the worker sleeps with L as its timeout and producers place their lists without waking it, until a tick serves one element or none; 0 = off, the doorbell regime", 0, 100000 },
-		{ "tick_urgent_us", "inside the tick regime, an urgent item (kwq_enqueue_urgent()) that finds the worker asleep wakes it this much later instead of at once, so that urgent items within this bound share one wake; 0 = at once", 0, 100000 },
+		{ "tick_urgent_us", "inside the tick regime, an urgent item (kwq_enqueue_urgent()) that finds the worker asleep wakes it this much later instead of at once, so that urgent items within this bound share one wake; at or above tick_us the tick serves them; 0 = at once", 0, 100000 },
 	};
 	u_int *vars[KWQ_NKNOBS];
 	int cls, i;

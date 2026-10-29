@@ -2029,7 +2029,10 @@ regimes are worth having as opt-ins and two are not:
   their own: the first one that finds the worker asleep arms a wake that
   much later and the ones after it ride on it, so a dense run of small
   requests keeps the regime's saving at a bounded cost to each (WAKE.md
-  S12.5: with the plain exemption a 64-request burst cost 18 wakes).
+  S12.5: with the plain exemption a 64-request burst cost 18 wakes).  A
+  bound at or above `L` is the tick's own, since the sleep's timeout
+  comes first, and arms nothing; measured, `L/5` beat `L/2` (WAKE.md
+  S12.6).
 - *Urgency is a wake hint, not an order (2026-10-29).*  An urgent item
   is appended in arrival order like any other; the flag decides only
   whether and when the worker wakes.  Three ways of letting urgent

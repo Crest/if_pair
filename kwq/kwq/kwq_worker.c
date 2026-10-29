@@ -250,8 +250,10 @@ kwq_wake_park(struct kwq_worker *kw, struct kwq_cpu *kc)
 /*
  * The urgent items' bound inside the tick regime (tick_urgent_us): the
  * first urgent item that finds the worker asleep arms a wake that much
- * later, the ones after it until then ride on it.  The arm is called
- * with kw_mtx held; the wake takes it.
+ * later, the ones after it until then ride on it.  A bound of L or more
+ * is the tick's own, because the sleep's timeout comes first: nothing is
+ * armed and the item rides on the tick like a plain one, uncounted.  The
+ * arm is called with kw_mtx held; the wake takes it.
  */
 static void
 kwq_tick_urgent_fire(void *arg)
@@ -274,6 +276,8 @@ kwq_tick_urgent_arm(struct kwq_worker *kw)
 	sbintime_t delay;
 
 	mtx_assert(&kw->kw_mtx, MA_OWNED);
+	if (kwq_tick_urgent_us[kw->kw_class] >= kwq_tick_us[kw->kw_class])
+		return;
 	kw->kw_turg_deferred++;
 	if (kw->kw_turg_armed)
 		return;
