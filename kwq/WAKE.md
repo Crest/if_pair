@@ -2061,6 +2061,34 @@ medians 134 and 140 with P now *ahead*; each stage's own spread (9 to
 batteries.  tput16 (75.2 against 75.8), udp_load's rate and latency and
 coloc agree: nothing separates W0 from P.
 
+Nor is lab's slow mode its boost or its power saving (2026-10-29,
+`compare.sh CLOCKS=yes`, samples/p4g_clk_lab_2026-10-29.txt).  lab runs
+without powerd, with C-states limited to C1 (no core sleeps deeper than
+a halt) and Core Performance Boost on above P0's 3800 MHz.  Sixty single
+flows, H and the taskqueue driver interleaved, thirty each, with every
+CPU's APERF, MPERF and TSC read before and after the run: ten slow
+repetitions (103 to 127 Gbit/s, six H and four taskqueue) and fifty fast
+(128 to 144).
+
+| lab, tput1 | slow (10) | fast (50) |
+|---|---|---|
+| clock of the busy CPUs, median MHz | 4677 | 4679 |
+| clock of W, median MHz | 4677 | 4677.5 |
+| CPUs other than W: C0 CPU-seconds per second, median | 1.98 | 2.03 |
+| over how many CPUs (C0 at least 10 %), median | 5 | 6 |
+| package temperature before / after, median C | 42.0 / 74.1 | 42.0 / 74.1 |
+| W idle, median | 0.080 | 0.015 |
+
+The rate's correlation with the busy CPUs' clock is -0.07, with the
+slowest generator CPU's 0.01 and with the starting temperature -0.08,
+against -0.82 with W's idle share, the known signature.  No run put two
+busy CPUs on one core.  So in the slow mode the two iperf3 threads are
+as busy as in the fast one, at the same clock, and move 10 % less data:
+the mode costs cycles per byte in the load generators, not clock.  The
+next suspects are what changes the cost per byte (the segment sizes the
+sender hands down, the window, cache behaviour), which per-run TCP
+statistics or hwpmc's IPC and cache-miss counts per CPU would show.
+
 ### 12.3 `cap_prio` 224 against 223
 
 `kern.kwq.<class>.cap_prio` is the priority the worker waits at between
