@@ -37,8 +37,13 @@ if [ "$PAIR" = pair ] && sysctl -n kern.kwq.net.idle_spin_us >/dev/null 2>&1; th
 fi
 TMPD=$(mktemp -d /tmp/${TEST}.XXXXXX); cleanup_push "rm -rf $TMPD"
 # A function that ends in a tail call has no fbt return probe; then the
-# enqueue totals are skipped.
-dtrace -l -n "fbt::$ENQRET:return" >/dev/null 2>&1 || ENQRET=""
+# enqueue totals are skipped.  kwq_enqueue() has been one since
+# kwq_enqueue_urgent() (both call kwq_enqueue_one()), so the shared body
+# is timed where it has one.  dtrace -l exits 0 on no match: grep its list.
+if [ "$PAIR" = pair ] && dtrace -l -n "fbt::kwq_enqueue_one:return" 2>/dev/null | grep -q kwq_enqueue_one; then
+	ENQ=kwq_enqueue_one; ENQRET=kwq_enqueue_one
+fi
+dtrace -l -n "fbt::$ENQRET:return" 2>/dev/null | grep -q "$ENQRET" || ENQRET=""
 
 cat > "$TMPD/wp.d" <<DEOF
 #pragma D option quiet

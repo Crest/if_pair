@@ -60,6 +60,12 @@ END
 	printf("--doorbell-to-first-pass ns distribution\n"); printa(@latq);
 }
 DEOF
+# kwq_enqueue() is a tail call into kwq_enqueue_one() since
+# kwq_enqueue_urgent() and has no fbt return probe: time the shared body
+# where it has one (dtrace -l exits 0 on no match: grep its list).
+if dtrace -l -n fbt:kwq:kwq_enqueue_one:return 2>/dev/null | grep -q kwq_enqueue_one; then
+	sed -i '' 's/fbt:kwq:kwq_enqueue:/fbt:kwq:kwq_enqueue_one:/' "$TMPD/db.d"
+fi
 
 run() {	# label, then the traffic command runs for SECS
 	label=$1; shift
