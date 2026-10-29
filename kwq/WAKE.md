@@ -2055,10 +2055,10 @@ S6.3).  S11 left it open with two arguments: the guest's residue of
 mid-pass preemptions and punished overruns, which 223 was said to
 remove because a timeshare thread cannot preempt priority 223, against
 ULE's idle-CPU placement shortcut, which only 224 gets.  Stages P,
-PW100 and PW50 at each setting on a07 and the guest, the P4d tests
+PW100 and PW50 at each setting on all three machines, the P4d tests
 under the burst competitor (two repetitions) and the latency tests
-under the default one (a07 three, guest two).  **Recommendation: keep
-224.**  Half the argument for 223 holds, the other half is refuted, and
+under the default one (a07 three, lab and guest two).
+**Recommendation: keep 224.**  Half the argument for 223 holds, the other half is refuted, and
 the argument against it cannot be measured on the machines available.
 
 *What 223 does.*  It removes the preemption residue exactly, on the one
@@ -2090,8 +2090,28 @@ worker CPU, is **0.000 in all twelve runs at both settings**: with 128
 CPUs an unpinned timer never needs the worker's CPU, so there is no
 shortcut in use to lose.  The guest's `wake_idle_cpu` counter is 0 in
 every stage of both batteries *including at 224*, so it never took the
-shortcut either.  A machine with few CPUs and a non-debug kernel would
-be needed, and there is none in the set.
+shortcut either.  lab, the machine with the fewest CPUs among the
+hardware ones, was the hope, and it cannot see it either: `magnet`'s
+share is 0.000 in all twelve of its runs too, and `wake_idle_cpu` 0 in
+every stage.  Sixteen CPUs are already enough that an unpinned
+bystander never needs the worker's.  A machine with four or fewer CPUs
+and a non-debug kernel would be needed, and there is none in the set.
+
+*lab has nothing for 223 to remove.*  Its `preempt` row reads 0
+preemptions a second at every stage and both settings (the voluntary
+absences 1300 to 1470 a second unchanged), `twoq` 0 overruns with
+`share1` 0.494 to 0.509, so the residue 223 removes is the guest's
+alone.  One lab repetition shows what 223 can cost the wait: at
+PW100c223 rep 1 the parked worker ran early in 44 % of the episodes
+(6637 parks a second, 3704 ended by the deadline, episodes 60.6 us
+against 105), the batch fell from 32.6 to 13.1 items and the
+receiver's involuntary switches doubled (19 574 against 6236).  The
+other repetition was PW100's (104.3 us, 30.7 items).  At 223 the
+parked worker is a timeshare thread, so whether the receiver's
+time-sharing turns it loose before the deadline depends on the
+receiver's own priority; at 224 it runs only when the CPU is idle.  One
+repetition of two is not a measurement; it is a direction, and it
+points the same way as the rest.
 
 *Nothing else moves.*  On a07 at 223: `udp_idle` p50/p99 13/32 us and
 `udp_load` 21-23/37-39 us identical at every stage, the sparse rows
@@ -2102,12 +2122,16 @@ repetitions overlapping completely (291/227/211 at 224 against
 deadline.  On the guest: the worker's pass structure is the same to
 three digits (passes 21 k/s, items per pass 4.2, `switched` 6.9 k/s),
 the spinner's share 0.527 and the worker CPU's shares unchanged,
-throughput within 1 %.  `prio_violations` is 0 in every row of every
-stage on both machines.
+throughput within 1 %.  On lab: `udp_idle` 7 to 8 / 8 to 9 us, the
+pinned timer 512 to 517 us at p99, `coloc` 58.2 against 60.5 Gbit/s
+without the deadline and 75.5 against 76.3 with it, `tput1` and
+`magnet`'s throughput inside their spreads.  `prio_violations` is 0 in
+every row of every stage on all three machines.
 
 So 223 buys the removal of a preemption residue that only a debug guest
 has, does not fix that guest's overruns, and its one known cost is
-untestable here.  224 stays the default; the knob and both arguments
+untestable here, while lab hints at a second cost, a wait that the
+receiver's time-sharing can end early.  224 stays the default; the knob and both arguments
 stay documented for the machine that can settle it.
 
 ### 12.4 The idle-class wait's deadline, 50 us against 100 us
@@ -2119,10 +2143,11 @@ us gives back about half the gain and buys nothing measurable.
 
 The deadline, not the producer, is what ends the episodes: on a07
 `wake_promotions_deadline` over `wakes_low` is 4678/4694 = 99.7 % at
-100 us and 7825/7840 = 99.8 % at 50 us, on the guest 98.8 % and 99.2 %.
-The measured episode length tracks the knob exactly (a07 106.7 and 53.7
-us, guest 143 and 86).  So on a co-located bulk receiver the knob is
-simply the batch size, and halving it halves the batch:
+100 us and 7825/7840 = 99.8 % at 50 us, on the guest 98.8 % and 99.2 %,
+on lab 98.4 % and 99.1 %.  The measured episode length tracks the knob
+exactly (a07 106.7 and 53.7 us, guest 143 and 86, lab 105.3 and 53.3).
+So on a co-located bulk receiver the knob is simply the batch size, and
+halving it halves the batch:
 
 | coloc | a07 P | a07 PW50 | a07 PW100 | guest P | guest PW50 | guest PW100 |
 |---|---|---|---|---|---|---|
@@ -2132,7 +2157,12 @@ simply the batch size, and halving it halves the batch:
 | receiver involuntary switches /s | 50 094 | 9389 | 5601 | 20 789 | 5451 | 3975 |
 
 50 us keeps 35 % of a07's 46 % gain and 44 % of its batching; on the
-guest it keeps about half of each.  Against that, no latency row
+guest it keeps about half of each.  lab, whose receiver gains least
+from the wait, loses least by halving it: 60.5, 71.6 and 76.3 Gbit/s
+at P, PW50 and PW100 (one P repetition lost to an iperf3 port clash),
+4.06, 20.6 and 32.6 items per pass, the receiver's involuntary
+switches 174 k, 11.2 k and 6.2 k a second, so 50 us keeps 70 % of the
+gain and 58 % of the batching there.  Against that, no latency row
 prefers it anywhere: a07's `udp_idle` (13/32 us), `udp_load` (22/38),
 the sparse rows and the pinned `timer` are identical at 50, 100 and
 off; the guest's `udp_load` p99 is 340 us with no deadline, 288 at 50
@@ -2140,7 +2170,9 @@ us and **262 at 100 us**, i.e. the longer deadline is the better one
 there too, and its `udp_idle` p50 rises 4 to 9 % with any deadline
 inside a 336 to 406 us spread.  a07's `magnet` bystander lateness max
 is 205 to 275 us at 100 us against 303 to 471 at 50, again the opposite
-of the intuition.  The one row that would favour a short deadline, an
+of the intuition, and lab's is 165 us at 100 against 165 and 215 at
+50.  lab's `udp_idle`, `udp_load` and pinned timer are identical at 50,
+100 and off.  The one row that would favour a short deadline, an
 item whose producer never sleeps paying the full wait, is bounded by
 the knob by construction and shows up as the episode length above;
 nothing in these batteries pays it visibly.
@@ -2210,3 +2242,132 @@ fast repetitions H sleeps about 700 times a second, HT50 about 320
 regime's wake saving is real where the wake is dear and frequent, a07's
 single flow at 35 k wakes a second, and that is where the exemption's
 price has to be read.
+
+a07 round 2 ran the same question where the wake is dear: H, HT20,
+HT50, HT50U (the exemption at 50 us), HT50Q100 (the NET quantum halved
+to 100 us at 50 us, for the pinned timer) and HTW (50 us with the
+idle-class wait, 12.1's fix on hardware), three repetitions on one
+boot.  Medians:
+
+| a07 | H | HT20 | HT50 | HT50U | HT50Q100 | HTW |
+|---|---|---|---|---|---|---|
+| UDP beside the bulk flow, p50 / p99 us | 23 / 39 | 31 / 50 | 39 / 79 | 35 / 64 | 37 / 78 | 39 / 79 |
+| 16-per-200-us burst: last reply p50 / p99 us | 29 / 34 | 43 / 49 | 77 / 83 | 28 / 34 | 78 / 83 | 80 / 83 |
+| its bursts per second | 16 200 | 15 600 | 14 200 | 16 200 | 14 100 | 13 800 |
+| 64-per-2-ms burst: last reply p50 / p99 us | 285 / 394 | 181 / 202 | 216 / 269 | 200 / 389 | 217 / 268 | 216 / 265 |
+| its wakes per burst, all workers | 9.0 | 4.0 | 4.0 | 18.2 | 4.0 | 4.0 |
+| 64-per-50-ms burst: first reply p99 us | 280 | 202 | 200 | 303 | 193 | 198 |
+| isolated request (1 per 2 ms) p50 / p99 us | 35 / 40 | 36 / 40 | 35 / 39 | 36 / 40 | 35 / 39 | 36 / 39 |
+| single flow: worker wakes / ticks per second | 33 900 / 0 | 37 / 8044 | 1 / 4993 | 19 / 4746 | 208 / 5069 | 2 / 5327 |
+| single flow: Gbit/s, worker idle share | 35.4, 0.157 | 37.5, 0.256 | 36.1, 0.273 | 36.8, 0.277 | 37.4, 0.317 | 36.7, 0.311 |
+| pinned receiver: Gbit/s, items per pass | 16.9, 4.06 | 17.7, 4.06 | 20.0, 4.67 | 16.7, 4.06 | 20.3, 4.74 | 25.1, 13.2 |
+| pinned timer lateness p99 us | 211 | 387 | 343 | 317 | 340 | 319 |
+
+*The smaller bound on a07.*  20 us is not free here as it is on lab:
+the UDP flow beside the bulk flow pays 8 us at p50 and 11 at p99, and
+the request burst's last reply 14 us, against 16, 40 and 48 at 50 us,
+so the price falls with `L` as S16 says, faster than in proportion.
+What differs between the machines is how often the regime sleeps.  In
+the UDP row lab's worker, saturated by the bulk flow, ticks 253 times
+a second at 20 us; a07's, idle a quarter of the time, ticks 8559 times,
+so a co-scheduled item finds a07's worker in a timed sleep thirty times
+as often.  lab's free 20 us is a property of a saturated worker, not
+of the bound.
+
+*What the regime buys on a07.*  The single flow's 33 900 wakes a second
+fall to tens and the worker's idle share rises 10 to 12 points at an
+unchanged rate (35.4 to 37.5 Gbit/s, inside the spread), as S11
+measured.  New in this battery is the first latency row the regime
+improves: a burst of 64 back-to-back requests is a dense producer for
+its duration, and serving it in timed passes instead of a wake per
+gap takes its last reply from 394 to 202 us at p99 at 20 us (269 at
+50), its first reply after a long pause from 280 to 200, with 4 wakes
+per burst instead of 9 and 18 to 23 passes instead of 44.  lab shows
+the direction at 20 us and not at 50, inside a baseline spread of 44
+to 238 us; a07's rows are tight.  The isolated request is untouched at
+every stage (B5a).
+
+*The exemption on a07.*  For the request burst it does what it does on
+lab: the last reply is back to 28 / 34 us and the rate to 16 200 bursts
+a second.  For the UDP flow beside the bulk flow it recovers less:
+p99 79 -> 64 against H's 39, p50 39 -> 35 against 23.  The wake is no
+longer what that flow waits for.  An urgent request ends the timed
+sleep, but it is appended behind the bulk segments the regime let
+accumulate (7.5 items a pass in this row at HT50U against H's 3.0) and
+served in arrival order behind them, both ways round, as S16 says an
+urgent item must be.  The residue grows with `L` on both
+machines (lab: none at 20 us, 10 us at p99 at 50); removing it would
+take the reordering S16 declines.  For the 64-request bursts the
+exemption takes the regime's gain away completely: every request is
+small, so every one rings, and the burst costs 18 wakes, twice H's, for
+H's tail (389 against 394 us).  Where the small packets are the dense
+traffic, the exemption costs the most.
+
+*Its price on the single flow is nil, and the lab half's prediction
+was wrong.*  HT50U wakes the single flow's worker 19 times a second
+against HT50's 1 and H's 33 900, at the same idle share.  The bulk
+flow's pure ACKs are small but do not ring, because both directions of
+a connection hash to one worker and the ACK is produced by
+`tcp_input()` inside that worker's pass, while it is awake; a doorbell
+that finds its worker awake wakes nothing, urgent or not.  Only a small
+packet produced outside the pass while the worker sleeps rings, most
+likely the receiver's window updates (the counters do not say which
+segments rang).  The co-located receiver is the case where that is
+common: the receiving thread runs on the worker's CPU exactly while the
+worker sleeps, so at HT50U its small segments ring 15 700 times a
+second and the receiver is back at H's 16.7 Gbit/s and 4.06 items per
+pass, the regime's 20.0 and 4.67 gone.  The same rule makes an
+urgent ring end the idle-class wait (S16: an urgent ring takes neither
+regime); what that costs is the next paragraph.
+
+*The exemption against the idle-class wait.*  a07 round 3, stages H, HW
+(`wake_delay_us` 100), HWU (the same with `urgent_bytes` 256) and HU
+(`urgent_bytes` alone), `coloc` with `udp_load` and `tput1` as
+controls, three repetitions:
+
+| a07 pinned receiver | H | HW | HWU | HU |
+|---|---|---|---|---|
+| Gbit/s per repetition | 16.9 / 16.3 / 16.0 | 24.9 / 24.7 / 25.2 | 19.8 / 16.5 / 17.1 | 15.8 / 18.1 / 15.6 |
+| parks per second | 0 | 4714 | 0 | 0 |
+| items per pass | 4.06 | 13.05 | 4.05 | 4.06 |
+| worker `switched` per second | 15 670 | 979 | 16 450 | 15 177 |
+
+The exemption takes the wait's whole gain: not one episode in nine
+runs, the receiver preempted once per four items as at H.  The rule is
+working as specified (an urgent ring takes neither regime, and the
+nudge ends a running wait), and the classifier is what is wrong for
+this case: the receiving thread's own small segments, sent from the
+worker's CPU between passes, carry no latency anyone asked for, and a
+size threshold cannot tell them from a request.  The controls have no
+same-CPU producer and read the same at all four stages (UDP p50/p99
+22-23 / 37-40 us, single flow 33.7 to 36.9 Gbit/s inside its spread).
+Three resolutions, not yet decided: document the two knobs as
+exclusive for a pinned receiver; narrow if_pair's class so that a TCP
+segment without payload carrying only ACK is never urgent (the single
+flow's ACKs never rang anyway, being produced inside the pass); or let
+an urgent ring from the worker's own CPU park, which would make a
+third thread's urgent item wait up to the deadline behind a busy
+receiver, the latency the flag exists to avoid.
+
+*The quantum.*  HT50Q100 equals HT50 in every row: the timer 340
+against 343 us, the UDP flow 37 / 78 against 39 / 79, the bursts to
+the microsecond.  Halving the class quantum does not touch what the
+regime costs the timer, as the 2026-10-19 sweep found for the latency
+tail in general (PLAN.txt P4b: the quantum is not the lever).  What
+the regime does cost the timer: H's three repetitions read 127, 211 and
+287 us at p99, the tick stages 311 to 427 in every repetition except
+one each of HT50U (110) and HTW (170), and the shorter bound is the
+worse one (387 at 20 us).  At the same time the timer's turnaround,
+from its due time to the end of its 100 us of work, improves (p99 653
+-> 591 us at 50, 564 with the exemption): the regime serves the bulk
+flow in fewer, longer passes, which the timer meets more often on
+waking and which interrupt its work less often.  B7 is not violated at
+any stage: its bound is one tick plus one pass, about 1.2 ms at `hz`
+1000, and the worst single lateness of the battery is 536 us.  S11's
+211 -> 361 is a cost of the regime inside B7, not a breach of it, and
+the quantum is not its remedy.
+
+*The precedence on a07.*  HTW's pinned receiver reads 25.1 Gbit/s at
+13.2 items per pass with 4724 parks and 14 ticks a second, PW's figures
+from 12.4; every row without a same-CPU producer equals HT50.  12.1's
+fix holds on the machine where the old order happened to work too.

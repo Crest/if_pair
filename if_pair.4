@@ -295,6 +295,11 @@ which packets do not pay.
 Each exempt packet costs a wake, so a setting high enough to cover the
 bulk traffic undoes the regimes entirely; with both regimes off the
 variable changes nothing.
+A receiver pinned to its worker's CPU sends its own small segments from
+that CPU, and each of them ends the idle-class wait, so with
+.Va kern.kwq.net.wake_delay_us
+set such a receiver loses the wait's gain entirely; do not combine the
+two for it.
 .Pp
 How much CPU time a pair's delivery may take before yielding to other
 queues, timers and user processes is governed by the network class of

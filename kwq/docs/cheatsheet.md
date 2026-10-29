@@ -317,8 +317,8 @@ measurement, so a merged module has neither knob yet):
 
 | knob | what it does to your queue |
 |---|---|
-| `kern.kwq.<class>.tick_us` | the worker sleeps with a timeout of `tick_us` while its producer is dense, producers append without ringing the doorbell (`doorbells_skipped`), and what accumulated is served when the tick fires: an item that arrives while the regime is on waits at most `tick_us` plus the pass in progress.  Off (0) by default, 20 to 50 us where it is worth having |
-| `kern.kwq.<class>.wake_delay_us` | an enqueue from the worker's own CPU no longer preempts the producer: the worker becomes runnable in the idle class at `cap_prio` and runs when the producer sleeps or at this deadline, whichever is first.  An item from the worker's CPU waits at most the deadline; an enqueue from another CPU rings the doorbell as before |
+| `kern.kwq.<class>.tick_us` | the worker sleeps with a timeout of `tick_us` while its producer is dense, producers append without ringing the doorbell (`doorbells_skipped`), and what accumulated is served when the tick fires: an item that arrives while the regime is on waits at most `tick_us` plus the pass in progress.  Off (0) by default; 20 us where it is worth having, a dense producer on a worker that is busy but not saturated |
+| `kern.kwq.<class>.wake_delay_us` | an enqueue from the worker's own CPU no longer preempts the producer: the worker becomes runnable in the idle class at `cap_prio` and runs when the producer sleeps or at this deadline, whichever is first.  An item from the worker's CPU waits at most the deadline; an enqueue from another CPU rings the doorbell as before.  Off (0) by default; 100 us where it is worth having, a receiver or producer pinned to its worker's CPU |
 
 Neither knob touches B5a, by construction.  With both set, a producer
 on the worker's own CPU takes the wait and a producer elsewhere takes
@@ -330,7 +330,9 @@ item can opt out: `kwq_enqueue_urgent()` rings the doorbell past both
 regimes, which is what if_pair's `net.link.pair.urgent_bytes` does for
 packets under a size threshold.  It costs the wake the regimes save, so
 it is for a small latency-bearing minority of the items, not for all of
-them.
+them, and it ends the idle-class wait too: a producer on the worker's
+own CPU that marks its own small items urgent never parks (WAKE.md
+S12.5).
 
 ## 6. Teardown
 

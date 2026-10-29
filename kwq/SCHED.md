@@ -719,11 +719,23 @@ competitor whose own priority has decayed to 223 alternates with it,
 the shortcut does not fire, and a running worker is preempted only by
 priorities at or below `preempt_thresh` (40) like any kernel thread;
 the calendar turn ULE gives the worker at each competitor slice end is
-handed straight back by the budget cut.  Which of the two places waking
-threads better is to be measured, not argued (P4d).  The decision covers
-two mechanisms: the idle-class wait of KWQ.md S16 parks the worker at
-the same priority between a same-CPU producer's enqueue and its sleep,
-and meets the same shortcut; a07 has measured neither.  For experiments
+handed straight back by the budget cut.  The decision covers two
+mechanisms: the idle-class wait of KWQ.md S16 parks the worker at the
+same priority between a same-CPU producer's enqueue and its sleep, and
+meets the same shortcut.  Measured on all three machines in kwq-p4g
+(WAKE.md S12.3), 224 stays.  223 removes the guest's residue of
+mid-pass preemptions exactly (11 to 14 a second at 224, 0 at 223) but
+not its punished overruns, which are that debug kernel's budget
+overshoot at `hz` 100 and stay at 16 to 39 a run with the shares fair
+throughout; lab and a07 have neither to remove.  The shortcut, the one
+argument for 224, is invisible on every machine measured: a bystander
+never lands on the worker's CPU at either setting (lab's 16 CPUs and
+a07's 128 always offer another), and the guest's `wake_idle_cpu` is 0
+even at 224.  A machine with four or fewer CPUs and a non-debug kernel
+would settle it.  Against 223 one lab run showed the wait ended early
+by the receiver's time-sharing (episodes 61 us instead of 105, the
+batch 13 items instead of 33), which 224 cannot do because an
+idle-class thread runs only on an idle CPU.  For experiments
 the knob accepts every priority strictly below the class priority up to
 `PRI_MAX_IDLE` (255), validated in the sysctl handler and, for the
 tunable, at load next to `kwq_priority_check()`; a value in the

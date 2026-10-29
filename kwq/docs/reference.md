@@ -223,7 +223,12 @@ case: if every item is urgent the class may as well have both knobs at
 packets shorter than that many bytes ring urgently, which is the knob
 for a pair carrying bulk segments and small requests, replies or pure
 ACKs through one worker.  A class whose items are all alike does not
-need it.
+need it.  An urgent ring from the worker's own CPU ends the idle-class
+wait as well, so a client whose same-CPU producer marks its own small
+items urgent loses the wait: a receiver pinned to its worker's CPU with
+`urgent_bytes` 256 parked not once and fell back to the doorbell's
+throughput (WAKE.md S12.5).  Until that is resolved, do not combine
+`urgent_bytes` with `wake_delay_us` for a pinned receiver.
 
 ### kwq_enqueue_list
 
@@ -640,10 +645,20 @@ the interval-stabbing bound where the arrival rate times `tick_us` is
 hardware test machine, 186 to 210 ns on the 128-core Ampere, against
 200 to 1100 ns with the wake); the worker pays one timer interrupt per
 tick; every
-co-scheduled small flow on that worker pays `tick_us`.  *When to use*:
-a dense cross-CPU producer on a worker that is busy but not saturated,
-where the wake is dear, at 20 to 50 us; never where a latency-sensitive
-flow shares the worker, and never as a default.
+co-scheduled small flow on that worker pays a part of `tick_us`, more
+the more often the worker sleeps in the regime.  *When to use*: a
+dense cross-CPU producer on a worker that is busy but not saturated,
+where the wake is dear, at 20 us; never as a default.  Measured on the
+128-core Ampere (WAKE.md S12.5): 20 us frees 10 points of the worker's
+CPU on a single flow at an unchanged rate and halves the tail of a
+burst of 64 small requests, and costs a request-reply flow on the same
+worker 8 us at p50 and 11 at p99 (50 us: 16 and 40); on a worker the
+bulk flow saturates it sleeps a few hundred times a second either way,
+so there is little to gain and 20 us costs nothing measurable.  For a
+latency-sensitive flow sharing the worker, see `kwq_enqueue_urgent()`
+and its limits.  Do not judge the knob on a single saturated flow's
+throughput: that row is bimodal per run on both hardware machines with
+or without it (WAKE.md S12.2).
 
 **`wake_delay_us`, the idle-class wait for same-CPU producers.**
 Default 0, off.  An enqueue from the worker's own CPU does not preempt
@@ -659,9 +674,13 @@ itself for any item whose producer does not sleep.  *When to use*: a
 receiver or producer pinned to its worker's CPU, where the doorbell
 otherwise preempts the producer once per item; a same-CPU burst is then
 served once, when its producer is done (+18 to +69 % measured), with
-the idle latency and the fairness columns unchanged.  `cap_prio`'s
-default is one decision for both this wait and the share limit's wait
-between passes (SCHED.md S6.3).
+the idle latency and the fairness columns unchanged.  *Value*: 100 us.
+On a co-located bulk receiver the deadline, not the producer, ends 98
+to 99.8 % of the episodes, so the knob is the batch size; 50 us gave
+back 30 to 65 % of the gain on the three test machines and improved no
+latency row (WAKE.md S12.4).  `cap_prio`'s default, 224, is one
+decision for both this wait and the share limit's wait between passes
+(SCHED.md S6.3, WAKE.md S12.3).
 
 **Both knobs at once.**  A same-CPU producer can satisfy both regimes,
 and the doorbell decides the wait first: the worker becomes runnable

@@ -208,7 +208,7 @@ static uint32_t pair_hash_seed;
  * packet takes the class's regime, which is what the measurements of
  * kwq/WAKE.md S11 and S12 report.  It costs a wake per small packet, so
  * it undoes the saving exactly where the small packets are the traffic;
- * WAKE.md S12.3 measures that trade.
+ * WAKE.md S12.5 measures that trade.
  */
 static u_int pair_urgent_bytes = 0;
 
