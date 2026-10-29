@@ -248,6 +248,42 @@ kwq_wake_park(struct kwq_worker *kw, struct kwq_cpu *kc)
 }
 
 /*
+ * The urgent items' bound inside the tick regime (tick_urgent_us): the
+ * first urgent item that finds the worker asleep arms a wake that much
+ * later, the ones after it until then ride on it.  The arm is called
+ * with kw_mtx held; the wake takes it.
+ */
+static void
+kwq_tick_urgent_fire(void *arg)
+{
+	struct kwq_worker *kw = arg;
+
+	mtx_lock_spin(&kw->kw_mtx);
+	kw->kw_turg_armed = false;
+	if (kw->kw_sleeping) {
+		kw->kw_sleeping = false;
+		kw->kw_turg_wakes++;
+		wakeup_one(kw->kw_chan);
+	}
+	mtx_unlock_spin(&kw->kw_mtx);
+}
+
+static void
+kwq_tick_urgent_arm(struct kwq_worker *kw)
+{
+	sbintime_t delay;
+
+	mtx_assert(&kw->kw_mtx, MA_OWNED);
+	kw->kw_turg_deferred++;
+	if (kw->kw_turg_armed)
+		return;
+	delay = (sbintime_t)kwq_tick_urgent_us[kw->kw_class] * SBT_1US;
+	kw->kw_turg_armed = true;
+	callout_reset_sbt_on(&kw->kw_turg_co, delay, delay >> 3,
+	    kwq_tick_urgent_fire, kw, kw->kw_cpu, C_DIRECT_EXEC);
+}
+
+/*
  * Ring the doorbell for kc: place it with the core (new list or, by the
  * grace rule, the ring) and wake the worker if it sleeps.  Called with kc
  * locked; kc_mtx (sleep or spin) -> kw_mtx (spin) is the lock order.
@@ -267,10 +303,11 @@ kwq_wake_park(struct kwq_worker *kw, struct kwq_cpu *kc)
  * sleep-wake and nothing else (SCHED.md B5a).
  */
 void
-kwq_doorbell(struct kwq_cpu *kc, bool urgent)
+kwq_doorbell(struct kwq_cpu *kc, int ring)
 {
 	struct kwq_worker *kw;
 	int state;
+	bool urgent = ring != KWQ_RING_PLAIN;
 
 	kw = kwq_workers[kc->kc_q->kwq_class][kc->kc_cpu];
 	mtx_lock_spin(&kw->kw_mtx);
@@ -310,6 +347,17 @@ kwq_doorbell(struct kwq_cpu *kc, bool urgent)
 		 */
 		kc->kc_doorbells_skipped++;
 		state = KWQ_DB_TICKED;
+	} else if (kw->kw_tick && ring == KWQ_RING_ITEM &&
+	    kwq_tick_urgent_us[kw->kw_class] != 0) {
+		/*
+		 * An urgent item in the tick regime with tick_urgent_us
+		 * set: the list is placed, and the worker wakes at the
+		 * urgent bound instead of the tick, so that the urgent items
+		 * within it share one wake.
+		 */
+		kwq_tick_urgent_arm(kw);
+		kc->kc_doorbells_skipped++;
+		state = KWQ_DB_TICKED;
 	} else {
 		kw->kw_sleeping = false;
 		kc->kc_doorbells++;
@@ -335,7 +383,7 @@ kwq_doorbell(struct kwq_cpu *kc, bool urgent)
  * enqueue probe.
  */
 bool
-kwq_urgent_nudge(struct kwq_cpu *kc)
+kwq_urgent_nudge(struct kwq_cpu *kc, int ring)
 {
 	struct kwq_worker *kw;
 	bool woke = false;
@@ -345,6 +393,9 @@ kwq_urgent_nudge(struct kwq_cpu *kc)
 	if (__predict_false(kw->kw_lowpri)) {
 		kwq_wake_promote(kw, KWQ_WAKE_URGENT);
 		woke = true;
+	} else if (kw->kw_sleeping && kw->kw_tick && ring == KWQ_RING_ITEM &&
+	    kwq_tick_urgent_us[kw->kw_class] != 0) {
+		kwq_tick_urgent_arm(kw);	/* as kwq_doorbell() */
 	} else if (kw->kw_sleeping) {
 		kw->kw_sleeping = false;
 		kc->kc_doorbells++;
@@ -861,6 +912,10 @@ kwq_worker_main(void *arg)
 			 */
 			if (__predict_false(kw->kw_lowpri))
 				kwq_wake_promote(kw, KWQ_WAKE_SELF);
+			if (__predict_false(kw->kw_turg_armed)) {
+				callout_stop(&kw->kw_turg_co);
+				kw->kw_turg_armed = false;
+			}
 			kw->kw_tick_round = (rv == EWOULDBLOCK);
 			if (kw->kw_tick_round && kw->kw_tick_items > 1)
 				kw->kw_tick_coalesced = true;	/* the last tick paid */
@@ -994,6 +1049,8 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	KW_U64(kw_wake_prom_urgent, "wake_promotions_urgent", "of those, promoted by a notifier, a drain, a cancel, an enqueue from another CPU or the share limit's deadline");
 	KW_U64(kw_wakes_urgent, "wakes_urgent", "wakes of a sleeping worker by an urgent item added to a list already placed with the core (kwq_enqueue_urgent(), a notifier): the wake neither regime would have given it");
 	KW_U64(kw_wake_low_ns, "wake_low_ns", "wall time spent waiting in the idle class");
+	KW_U64(kw_turg_deferred, "tick_urgent_deferred", "urgent items that found the worker asleep in the tick regime and waited tick_urgent_us instead of waking it");
+	KW_U64(kw_turg_wakes, "tick_urgent_wakes", "wakes by the tick_urgent_us bound (one per window of deferred urgent items)");
 	KW_U64(kw_prio_violations, "prio_violations", "passes that began below the class priority or outside its class (0; counted under KWQ_SOFT_INVARIANTS, asserted otherwise)");
 	KW_U64(kw_busy_ns, "busy_ns", "worker CPU time inside handlers");
 	KW_U64(kw_idle_ns, "idle_ns", "wall time asleep with nothing queued");
@@ -1030,6 +1087,7 @@ kwq_workers_start(struct sysctl_oid_list **cpu_oids)
 			mtx_init(&kw->kw_mtx, "kwq worker", NULL, MTX_SPIN);
 			callout_init(&kw->kw_cap_co, 1);
 			callout_init(&kw->kw_wake_co, 1);
+			callout_init(&kw->kw_turg_co, 1);
 			ks_worker_init(kw, &kwq_knobs[cls], 0);
 			kw->kw_class = cls;
 			kw->kw_cpu = cpu;
@@ -1095,6 +1153,7 @@ kwq_workers_stop(void)
 			mtx_unlock_spin(&kw->kw_mtx);
 			callout_drain(&kw->kw_cap_co);
 			callout_drain(&kw->kw_wake_co);
+			callout_drain(&kw->kw_turg_co);
 			mtx_destroy(&kw->kw_mtx);
 			free(kw, M_KWQ);
 			kwq_workers[cls][cpu] = NULL;

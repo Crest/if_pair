@@ -214,6 +214,13 @@ struct kwq_worker {
 	 */
 	struct callout		kw_wake_co;	/* the wake_delay_us deadline */
 	bool			kw_wake_armed;	/* kw_wake_co is pending */
+	/*
+	 * The urgent items' bound inside the tick regime (tick_urgent_us):
+	 * armed by the first urgent item that finds the worker asleep in the
+	 * regime, stopped when the worker wakes for any reason.
+	 */
+	struct callout		kw_turg_co;
+	bool			kw_turg_armed;	/* kw_turg_co is pending */
 	sbintime_t		kw_wake_since;	/* when the idle-class wait began */
 
 	bool			kw_tick;	/* in the regime (under kw_mtx) */
@@ -246,7 +253,8 @@ struct kwq_worker {
 				kw_ticks, kw_ticks_empty, kw_ticks_single, kw_tick_enters,
 				kw_tick_exits, kw_tick_ns, kw_tick_barren, kw_prio_violations,
 				kw_wakes_low, kw_wake_self, kw_wake_prom_deadline,
-				kw_wake_prom_urgent, kw_wake_low_ns, kw_wakes_urgent;
+				kw_wake_prom_urgent, kw_wake_low_ns, kw_wakes_urgent,
+				kw_turg_deferred, kw_turg_wakes;
 } __aligned(KWQ_LINE);
 
 extern struct kwq_worker **kwq_workers[KWQ_NCLASS];	/* [class][cpu] */
@@ -257,6 +265,7 @@ extern int kwq_yield_prio[KWQ_NCLASS];
 extern int kwq_cap_prio[KWQ_NCLASS];
 extern u_int kwq_tick_us[KWQ_NCLASS];	/* the tick regime's bound L; 0 = off (KWQ.md S16) */
 extern u_int kwq_wake_delay_us[KWQ_NCLASS];	/* the idle-class wait's deadline; 0 = off */
+extern u_int kwq_tick_urgent_us[KWQ_NCLASS];	/* urgent items' bound in the tick regime; 0 = at once */
 
 /*
  * How many consecutive sleeps shorter than L enter the tick regime
@@ -312,15 +321,26 @@ kwq_sbt2ns(sbintime_t sbt)
 	return ((uint64_t)sbttons(sbt));
 }
 
+/*
+ * How an enqueue rings the doorbell (KWQ.md S16).  A plain ring takes
+ * the opt-in regimes; a signal (a notifier, a drain, a cancel) and a
+ * client's urgent item (kwq_enqueue_urgent()) take neither, except that
+ * inside the tick regime an urgent item waits tick_urgent_us when that
+ * is set, so that urgent items close together share one wake.
+ */
+#define	KWQ_RING_PLAIN	0
+#define	KWQ_RING_SIGNAL	1
+#define	KWQ_RING_ITEM	2
+
 /* kwq_worker.c */
 int	kwq_workers_start(struct sysctl_oid_list **cpu_oids);
 void	kwq_workers_stop(void);
-void	kwq_doorbell(struct kwq_cpu *kc, bool urgent);	/* kc locked, state IDLE;
-					   `urgent' (a notifier, a drain, a cancel)
-					   is never held back by a regime */
-bool	kwq_urgent_nudge(struct kwq_cpu *kc);	/* kc locked, state WAKING: wake a
-					   sleeping worker for an urgent item
-					   added to an already placed list */
+void	kwq_doorbell(struct kwq_cpu *kc, int ring);	/* kc locked, state IDLE;
+					   `ring' one of KWQ_RING_* */
+bool	kwq_urgent_nudge(struct kwq_cpu *kc, int ring);	/* kc locked, state
+					   WAKING: wake a sleeping worker for an
+					   urgent item added to an already placed
+					   list */
 bool	kwq_higher_waiting(enum kwq_class cls);	/* hand-back flags, this CPU */
 uint64_t kwq_cputime_ns(struct kwq_worker *kw);
 uint64_t kwq_cputime_ns_tick(struct kwq_worker *kw, uint64_t *tick);

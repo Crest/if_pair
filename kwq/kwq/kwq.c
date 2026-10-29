@@ -222,6 +222,7 @@ u_int kwq_tick_us[KWQ_NCLASS] = { 0, 0, 0 };
  * enqueue, WAKE.md).  0 = off, today's behaviour.
  */
 u_int kwq_wake_delay_us[KWQ_NCLASS] = { 0, 0, 0 };
+u_int kwq_tick_urgent_us[KWQ_NCLASS] = { 0, 0, 0 };
 static u_int kwq_budget_check_every[KWQ_NCLASS] = { 8, 8, 8 };
 static struct sysctl_ctx_list kwq_knob_sysctl;
 
@@ -296,7 +297,7 @@ kwq_sysctl_cap_prio(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
-#define	KWQ_NKNOBS	7
+#define	KWQ_NKNOBS	8
 static struct kwq_knob kwq_knob_desc[KWQ_NCLASS][KWQ_NKNOBS];
 
 static void
@@ -310,6 +311,7 @@ kwq_knobs_register(void)
 		{ "budget_check_every", "kwq_budget_left() reads the clock at least every this many calls; 1 = every call", 1, 64 },
 		{ "wake_delay_us", "the idle-class wait for same-CPU producers (KWQ.md S16): an enqueue from the worker's own CPU makes the worker runnable in the idle class at cap_prio and this is the deadline by which it is promoted to the class priority; an enqueue from another CPU rings the plain doorbell; 0 = off", 0, 1000000 },
 		{ "tick_us", "the tick regime's latency bound L (KWQ.md S16): after three consecutive sleeps shorter than L the worker sleeps with L as its timeout and producers place their lists without waking it, until a tick serves one element or none; 0 = off, the doorbell regime", 0, 100000 },
+		{ "tick_urgent_us", "inside the tick regime, an urgent item (kwq_enqueue_urgent()) that finds the worker asleep wakes it this much later instead of at once, so that urgent items within this bound share one wake; 0 = at once", 0, 100000 },
 	};
 	u_int *vars[KWQ_NKNOBS];
 	int cls, i;
@@ -320,6 +322,7 @@ kwq_knobs_register(void)
 		vars[2] = &kwq_cap_period_us[cls];
 		vars[3] = &kwq_penalty_rounds[cls]; vars[4] = &kwq_budget_check_every[cls];
 		vars[5] = &kwq_wake_delay_us[cls]; vars[6] = &kwq_tick_us[cls];
+		vars[7] = &kwq_tick_urgent_us[cls];
 		for (i = 0; i < KWQ_NKNOBS; i++) {
 			struct kwq_knob *kn = &kwq_knob_desc[cls][i];
 
@@ -468,13 +471,13 @@ kwq_target_cpu(struct kwq *q, int cpu)
  * wakeup can never be lost (../NOTES.md, the if_pair invariant).
  */
 static inline bool
-kwq_kc_added(struct kwq_cpu *kc, u_int added, bool urgent)
+kwq_kc_added(struct kwq_cpu *kc, u_int added, int ring)
 {
 	if (kc->kc_depth == added)
 		kc->kc_empty_since = sbinuptime();
 	if (kc->kc_state == KWQ_CPU_IDLE) {
 		kc->kc_state = KWQ_CPU_WAKING;
-		kwq_doorbell(kc, urgent);
+		kwq_doorbell(kc, ring);
 		return (true);
 	}
 	/*
@@ -482,8 +485,9 @@ kwq_kc_added(struct kwq_cpu *kc, u_int added, bool urgent)
 	 * added behind another one is owed a wake all the same, which is the
 	 * whole point of the exemption (../KWQ.md S16).
 	 */
-	if (__predict_false(urgent) && kc->kc_state == KWQ_CPU_WAKING)
-		return (kwq_urgent_nudge(kc));
+	if (__predict_false(ring != KWQ_RING_PLAIN) &&
+	    kc->kc_state == KWQ_CPU_WAKING)
+		return (kwq_urgent_nudge(kc, ring));
 	return (false);
 }
 
@@ -527,7 +531,7 @@ kwq_enqueue_one(struct kwq *q, int cpu, struct kwq_item *it, bool urgent)
 	}
 	kwq_list_append(kc, it, false);
 	depth = ++kc->kc_depth;
-	woke = kwq_kc_added(kc, 1, urgent);
+	woke = kwq_kc_added(kc, 1, urgent ? KWQ_RING_ITEM : KWQ_RING_PLAIN);
 	kwq_kc_unlock(kc);
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);
 	return (0);
@@ -580,7 +584,7 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 	kwq_list_concat(kc, head, tail);
 	kc->kc_depth += n;
 	depth = kc->kc_depth;
-	woke = kwq_kc_added(kc, n, false);
+	woke = kwq_kc_added(kc, n, KWQ_RING_PLAIN);
 	kwq_kc_unlock(kc);
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);	/* once per call */
 	return (0);
@@ -704,7 +708,7 @@ kwq_notify(struct kwq *q, struct kwq_notifier *nf)
 	kwq_list_append(kc, &nf->kn_item, true);
 	kc->kc_depth++;
 	kc->kc_nnotify++;
-	kwq_kc_added(kc, 1, true);	/* a signal: no regime holds it back */
+	kwq_kc_added(kc, 1, KWQ_RING_SIGNAL);	/* no regime holds it back */
 	kwq_kc_unlock(kc);
 	return (true);
 }
@@ -788,7 +792,7 @@ kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf)
 	    kc->kc_state == KWQ_CPU_RUNNING) {
 		if (kc->kc_state == KWQ_CPU_IDLE) {
 			kc->kc_state = KWQ_CPU_WAKING;
-			kwq_doorbell(kc, true);	/* a cancel waits for no regime */
+			kwq_doorbell(kc, KWQ_RING_SIGNAL);	/* a cancel waits for no regime */
 		}
 		kwq_kc_wait(kc, "kwqncl");
 	}
@@ -1095,7 +1099,7 @@ kwq_drain(struct kwq *q)
 				if (STAILQ_EMPTY(&kc->kc_list))
 					break;
 				kc->kc_state = KWQ_CPU_WAKING;
-				kwq_doorbell(kc, true);	/* a drain waits for no regime */
+				kwq_doorbell(kc, KWQ_RING_SIGNAL);	/* a drain waits for no regime */
 			}
 			kwq_kc_wait(kc, "kwqdrn");
 		}
