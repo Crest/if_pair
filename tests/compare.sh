@@ -112,6 +112,14 @@
 # stressor on W: a direct callout every 100 us doing 20 us of work in
 # interrupt context, the one preemptor the priority invariant permits
 # (kwq/tests/SPEC-p4e.md 2.2); tq stages fall back to timer with a warning.
+# SMT_SIBLINGS=exclude keeps the pinned load generators (the iperf3 client
+# and server, the UDP and echo victims) off every hardware thread of W's
+# core, read from kern.sched.topology_spec, instead of off W alone (the
+# default, "share", which earlier batteries ran with).  On an SMT machine a
+# generator that lands on W's sibling shares a core with the worker for the
+# whole run; lab's single flow was bimodal across every stage and driver
+# (WAKE.md S12.2), and this is the knob that tests that cause.  On a machine
+# without SMT both settings give the same mask.
 #
 # Tests added for SPEC-p4e.md (off by default):
 #   sparse    SPARSE_N request-reply UDP flows at SPARSE_RATE requests/s
@@ -185,6 +193,16 @@ row() {	# test metric value
 	printf '%s\t%s\t%s\t%s\t%s\n' "$STAGE" "$REP" "$1" "$2" "$3" >> "$OUT_TSV"
 }
 others_than() { echo "$CPUS" | tr ' ' '\n' | grep -vx "$1" | paste -sd, -; }
+smt_siblings() {	# W -> the CPUs on W's core, W included (comma-separated); W alone without SMT
+	sysctl -n kern.sched.topology_spec 2>/dev/null | awk -v w="$1" '
+	    /<cpu count=/ { s = $0; sub(/.*">/, "", s); sub(/<\/cpu>.*/, "", s); gsub(/ /, "", s); last = s; next }
+	    /SMT group/ { n = split(last, c, ","); for (i = 1; i <= n; i++) if (c[i] == w) { print last; found = 1; exit } }
+	    END { if (!found) print w }'
+}
+others_than_core() {	# W -> every CPU but the hardware threads of W's core
+	_ex=$(smt_siblings "$1" | tr ',' '\n')
+	echo "$CPUS" | tr ' ' '\n' | grep -vxF "$_ex" | paste -sd, -
+}
 cp_times() {	# W -> "user nice sys intr idle" of that CPU
 	sysctl -n kern.cp_times | awk -v w="$1" '{ b = 5 * w; print $(b + 1), $(b + 2), $(b + 3), $(b + 4), $(b + 5) }'
 }
@@ -754,7 +772,12 @@ t_udp_burst_load() {
 }
 
 battery() {
-	OTHERS=$(others_than "$WCPU")
+	case "${SMT_SIBLINGS:-share}" in
+	exclude) OTHERS=$(others_than_core "$WCPU") ;;
+	share) OTHERS=$(others_than "$WCPU") ;;
+	*) fail "SMT_SIBLINGS must be share or exclude, not $SMT_SIBLINGS" ;;
+	esac
+	log "$STAGE: load generators pinned to CPUs $OTHERS (SMT_SIBLINGS=${SMT_SIBLINGS:-share}, W's core $(smt_siblings "$WCPU"))"
 	cpuset -l "$OTHERS" -p "$SPID"		# the iperf3 server, off W
 	cpuset -l "$OTHERS" -p "$EPID"
 	for t in $TESTS; do

@@ -1966,7 +1966,7 @@ wakeup also arrived.  So with both knobs set `ticks` counts parked
 wakes too and `wakeups` under-counts them by the same number;
 `wakes_low` is the trustworthy one.  OBSERVABILITY.md says so.
 
-### 12.2 lab's single flow: the tick regime is bimodal, not an interaction
+### 12.2 lab's single flow: the test is bimodal, not the tick and not an interaction
 
 lab round 1 ran the seven stages interleaved, four repetitions on one
 boot.  The single flow:
@@ -1983,29 +1983,47 @@ boot.  The single flow:
 
 PTW does not reproduce S11's 14 %: it is the calmest tick stage on this
 boot.  PT50 is the sick one, with two repetitions of four at 106 and
-121 Gbit/s.  The mechanism is the same in both batteries and it belongs
-to `tick_us` alone, which rules the two-knob interaction out: every
-low repetition in either battery has a runaway tick rate and an idle
-worker to match.  Eighteen tick-stage repetitions across S11 and S12,
-sorted by `ticks` per second:
+121 Gbit/s, which rules the two-knob interaction out.  The first draft
+of this section went on to blame `tick_us` alone, because every low
+tick-stage repetition has a runaway tick rate and an idle worker.  The
+repetitions of every stage in all three batteries say otherwise: the
+slow mode is the test's, and it appears with no knob set, with no
+pass-level limit, and with no kwq at all.
 
-| `ticks` /s | 350..889 (fourteen reps) | 2987..5898 (four reps) |
-|---|---|---|
-| Gbit/s | 124 to 140, median 137.5 | 102, 106, 120, 121 |
-| worker `w_idle` | 0.002 to 0.07 | 0.19 to 0.31 |
+| lab, tput1, slow repetitions | Gbit/s | worker `w_idle` | wakes or ticks /s |
+|---|---|---|---|
+| taskqueue driver T (S11, no kwq) | 123, 103 | 0.12, 0.32 | - |
+| kwq head W0 (round 1) | 132 | 0.05 | 10 532 wakes |
+| P, knobs off (S11, round 1) | 132, 131 | 0.05, 0.05 | 7979, 7710 wakes |
+| PW, G, H, HU (no same-CPU producer, so the doorbell only) | 128, 130, 133, 132, 127, 124 | 0.05 to 0.09 | 7044 to 16 758 wakes |
+| tick stages PT50, PTW, GTW, HT20, HT50U | 102 to 124 | 0.09 to 0.34 | 2780 to 5898 ticks |
+| fast repetitions, every stage | 135 to 148 | 0.002 to 0.03 | 1 to 1500 |
 
-Below about a thousand ticks a second the flow is whole; above about
-three thousand it loses 12 to 25 % and the worker is idle a fifth to a
-third of the time.  Nothing in the stage decides which: the worker is
-saturated either way, and whether its queue empties often enough to
-re-arm the timed sleep thousands of times a second is settled inside
-the first second of the run and then persists, because the regime
-latches (12.1) and every re-arm costs the flow up to `L` before the
-next pass.  It is a bistable interaction between the regime's timeout
-and TCP's window, and `L` = 50 us is large enough on this hardware for
-the low attractor to exist.  S11 read one battery's assignment of the
-dice as a property of PTW; it is a property of `tick_us` at 50 us on a
-saturated bulk flow, and the knob should not be set for one.
+Every stage family has slow repetitions, at roughly one in four to one
+in three of all runs, and the slow mode always carries the same
+signature: the worker CPU goes idle and its wake or tick rate rises
+ten- to twenty-fold, so the worker is waiting for packets and the
+bottleneck has moved elsewhere.  The tick stages sit at the deep end
+(102 to 124 Gbit/s) but the taskqueue driver reaches 103 as well, so
+even the depth is not the tick's to own.  The mode is settled at the
+start of a run and persists for it.
+
+The likely cause is placement, and it is testable.  lab is a Ryzen with
+SMT, its hardware threads paired (0,1), (2,3) and so on, and the worker
+CPU W is 1.  `compare.sh` pins the iperf3 client and server to
+`others_than "$WCPU"`, every CPU but 1, which leaves CPU 0, W's own
+core sibling, in the mask.  When ULE places a sender or receiver thread
+there at the start of a run, it shares a core with the worker for the
+whole run.  That would explain why every driver shows the mode, why the
+mode is sticky per run, and why only lab shows it: a07's Ampere cores
+have no SMT, and neither its single flow nor the guest's is bimodal.
+The prediction: excluding W's sibling from the generators' mask
+removes the slow mode.  Until that is run (12.5's note), lab's
+single-flow medians of three or four repetitions cannot separate two
+stages, S11's 14 % and the "7 %" of 12.5's exemption-alone stage are
+both this mode, and the recommendation against `tick_us` on a saturated
+bulk flow rests on the regime's slow repetitions being among the
+deepest, not on the regime causing them.
 
 The same battery settles S11.1's other loose end: the 3 % between the
 kwq head and the pass-level limit on lab's single flow is not real.
