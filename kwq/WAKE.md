@@ -2031,7 +2031,22 @@ its wake rate up) and its depth, deeper than a07's.  The prediction:
 excluding W's sibling from the generators' mask removes lab's deeper
 slow repetitions, and whatever remains is the placement effect a07
 shows too.  `SMT_SIBLINGS=exclude` and the generator-placement rows of
-`tput1` test it (lab round 4).  Until then, single-flow medians of three
+`tput1` test it (lab round 4).
+
+The prediction is refuted.  Round 4 ran W0, T, P and PT50 in four
+blocks of four repetitions, alternating the generators' mask between
+every CPU but W (share) and every CPU but W's core (exclude), with
+each generator thread's CPU sampled three times per run.  Slow
+repetitions (under 128 Gbit/s) appear in both modes, 4 of 32 with the
+sibling allowed and 3 of 32 with it excluded, in W0, T and P as well as
+PT50, and in the slow runs the samples put a generator thread on CPU 0
+twice in 21, once each in two of them and never in the other five.
+The deepest of all, PT50 at 85.8 Gbit/s with the worker idle 48 % of
+the run, had its generators on CPUs 2, 3, 5, 11 to 15 and never on W's
+core.  The samples also show that ULE moves the iperf3 threads between
+CPUs within a run, so the mode is not a placement fixed at the start
+either.  What remains is the same per-run bimodality a07 shows without
+SMT, cause unknown, and the rule stands: single-flow medians of three
 or four repetitions cannot separate two stages on either machine,
 S11's 14 % and the "7 %" of 12.5's exemption-alone stage are both this
 mode, and the recommendation against `tick_us` on a saturated bulk
