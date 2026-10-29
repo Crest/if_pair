@@ -26,8 +26,12 @@
  *   victim udp HOST PORT SECS [SPORT [GAP_US]]
  *       Request-reply over UDP from source port SPORT (0 = any), one
  *       64-byte datagram at a time, GAP_US apart (default 500): the
- *       round-trip time's median, 99th percentile and maximum, and the
- *       requests unanswered within 200 ms.  A fixed SPORT keeps the flow on
+ *       round-trip time's median, 99th and 99.9th percentile and maximum,
+ *       and the requests unanswered within 200 ms (counted at 200 ms in
+ *       the percentiles); and its jitter over the answered ones: the
+ *       standard deviation (rtt_sd) and the mean absolute difference of
+ *       consecutive round trips (rtt_ipdv, RFC 5481's IPDV for a
+ *       round trip), in us.  A fixed SPORT keeps the flow on
  *       one worker CPU across runs and drivers (the pair hashes the
  *       4-tuple), so the harness can put it on the CPU under test.
  *   victim ports SEED NCPU CPU SRC DST TCPPORT UDPPORT [COUNT]
@@ -88,6 +92,7 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -506,8 +511,9 @@ do_udp(const char *host, int port, int secs, int sport, long gap_us)
 	struct timespec t0, t1, end, gap = { 0, gap_us * 1000L };
 	struct pollfd pfd;
 	char buf[64];
-	long *rtt, lost = 0;
-	size_t n = 0, cap;
+	long *rtt, lost = 0, prev = -1;
+	double sum = 0, sumsq = 0, dsum = 0, mean, sd;
+	size_t n = 0, cap, na = 0, nd = 0;
 	int s;
 
 	cap = (size_t)secs * 1000000L / (gap_us > 0 ? gap_us : 1) + 1000;
@@ -540,11 +546,23 @@ do_udp(const char *host, int port, int secs, int sport, long gap_us)
 		if (send(s, buf, sizeof(buf), 0) != (ssize_t)sizeof(buf))
 			return (1);
 		if (poll(&pfd, 1, 200) == 1 && recv(s, buf, sizeof(buf), 0) > 0) {
+			long r;
+
 			clock_gettime(CLOCK_MONOTONIC, &t1);
+			r = ts_sub_us(&t1, &t0);
 			if (n < cap)
-				rtt[n] = ts_sub_us(&t1, &t0);
+				rtt[n] = r;
+			sum += r;
+			sumsq += (double)r * r;
+			na++;
+			if (prev >= 0) {
+				dsum += r > prev ? r - prev : prev - r;
+				nd++;
+			}
+			prev = r;
 		} else {
 			lost++;
+			prev = -1;
 			if (n < cap)
 				rtt[n] = 200000;
 		}
@@ -555,9 +573,14 @@ do_udp(const char *host, int port, int secs, int sport, long gap_us)
 	if (n > cap)
 		n = cap;
 	qsort(rtt, n, sizeof(*rtt), cmp);
-	printf("udp n=%zu rtt_p50=%ld rtt_p99=%ld rtt_max=%ld lost=%ld\n", n,
-	    n ? rtt[n / 2] : 0, n ? rtt[n * 99 / 100] : 0, n ? rtt[n - 1] : 0,
-	    lost);
+	mean = na ? sum / na : 0;
+	sd = na > 1 ? sumsq / na - mean * mean : 0;
+	sd = sd > 0 ? sqrt(sd) : 0;
+	printf("udp n=%zu rtt_p50=%ld rtt_p99=%ld rtt_p999=%ld rtt_max=%ld "
+	    "rtt_sd=%.1f rtt_ipdv=%.1f lost=%ld\n", n,
+	    n ? rtt[n / 2] : 0, n ? rtt[n * 99 / 100] : 0,
+	    n ? rtt[n * 999 / 1000] : 0, n ? rtt[n - 1] : 0, sd,
+	    nd ? dsum / nd : 0, lost);
 	return (0);
 }
 

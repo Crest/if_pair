@@ -54,7 +54,7 @@ LEAD=3					# discovery seconds (1 s of counting inside)
 WIN=$((SECS - LEAD - 2))		# the victim's window inside the run
 [ "$WIN" -ge 3 ] || fail "BENCH_SECS must be at least 8"
 
-must "build victim" cc -O2 -o "$OUT/victim" "$(dirname "$0")/victim.c"
+must "build victim" cc -O2 -o "$OUT/victim" "$(dirname "$0")/victim.c" -lm
 VICTIM=$OUT/victim
 has_oid() { sysctl -n "$1" >/dev/null 2>&1; }
 

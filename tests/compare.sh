@@ -168,6 +168,22 @@
 #              involuntary switches, the kwq_* rows of that CPU, and cpu_ok
 #              (1 if that CPU's worker ran the most passes, the check that
 #              the computed CPU is the tunnel's).
+#   flows      for each N in FLOWS (default "1 ncpu 2xncpu"): N TCP flows,
+#              unpinned, for FLOWS_SECS (default 12) through as many
+#              iperf3 client/server pairs as N needs at 128 streams each
+#              (iperf3's limit), with JSON reports; from the 2nd second two
+#              UDP request-reply probes (victim udp, one request per 500
+#              us, flow on W): 4 s pinned to W at rtprio 10 (rt_*, a
+#              same-CPU urgent producer), then 4 s off W at the default
+#              priority (ts_*).  Rows under test name flowsN: gbit (the
+#              receivers' sum), gbit_min / gbit_max / gbit_cv (per flow, cv
+#              in %), gbit_icv (the sum's second-to-second cv in %, the
+#              first second left out), the probes' n, rtt_p50 / p99 / p999
+#              / max, rtt_sd and rtt_ipdv (jitter) and lost, the machine's
+#              sys / idle shares, and kwq's machine-wide wakeups, parks
+#              (wakes_low), ticks, urgent wakes and switches per second and
+#              items per pass.  FLOWS_PROBES=no skips the probes (the
+#              sweep that finds the throughput peak).
 # The kwq_* rows gained ticks, empty and single-element ticks, doorbells
 # skipped by the tick, overruns and overruns_switched of both pair queues,
 # prio_violations and the low-priority wakes alone (0 on builds without the
@@ -206,11 +222,12 @@ fi
 SRV=10.98.4.1; CLI=10.98.4.2; UDPPORT=47000; TCPPORT=5201
 SRV2=10.98.6.1; CLI2=10.98.6.2; TCPPORT2=5202; UDPPORT2=47001; ECHOPORT=47100
 GSRV=10.98.8.1; GCLI=10.98.8.2; TCPPORT3=5203; GIF_RATE=${GIF_RATE:-4G}
+FLOWS=${FLOWS:-"1 $NCPU $((NCPU * 2))"}; FLOWS_SECS=${FLOWS_SECS:-12}; FLOWS_PROBES=${FLOWS_PROBES:-yes}; FPORT=5301
 command -v dtrace >/dev/null 2>&1 && HAVE_DTRACE=yes || HAVE_DTRACE=no
 WCPU=${WCPU:-1}
 CPUS=$(cpuset -g -p $$ | sed -n 's/.*mask: //p' | tr -d ',')
 
-must "build victim" cc -O2 -o "$OUT/victim" "$(dirname "$0")/victim.c"
+must "build victim" cc -O2 -o "$OUT/victim" "$(dirname "$0")/victim.c" -lm
 VICTIM=$OUT/victim
 
 for m in kwq if_pair if_pair_tq; do
@@ -697,6 +714,65 @@ t_coloc_gif() {
 	for kv in $sh; do row coloc_gif "w_${kv%%=*}" "${kv#*=}"; done
 	log "$STAGE rep $REP coloc_gif gbit=$r cpu=$GW cpu_ok=$ok items/pass=$ipp $sh"
 }
+kwq_mach() {	# -> wakeups passes ticks wakes_low wakes_urgent tick_urgent_wakes switched
+		# summed over every NET worker, then the pair's items over every CPU
+	_s=$(sysctl kern.kwq.net.cpu 2>/dev/null | awk -F'[.:]' '{ v[$6] += $NF } END { print v["wakeups"] + 0, v["passes"] + 0, v["ticks"] + 0, v["wakes_low"] + 0, v["wakes_urgent"] + 0, v["tick_urgent_wakes"] + 0, v["switched"] + 0 }')
+	_i=$(sysctl kern.kwq.net.queue 2>/dev/null | awk -F'[.:]' -v a="$PAIRA" -v b="$PAIRB" '($5 == a || $5 == b) && $8 == "items" { s += $NF } END { print s + 0 }')
+	echo "$_s $_i"
+}
+t_flows() {
+	for _n in $FLOWS; do flows_run "$_n"; done
+}
+flows_run() {	# N
+	_n=$1; _t=flows$_n; _k=$(( (_n + 127) / 128 )); _sp=""; _i=0
+	while [ $_i -lt $_k ]; do
+		jexec "$JS" iperf3 -s -p $((FPORT + _i)) >/dev/null 2>&1 &
+		_sp="$_sp $!"; _i=$((_i + 1))
+	done
+	sleep 0.5
+	rm -f "$OUT/flows.$STAGE.$REP.$_n".*
+	c0=$(cp_sys_all); m0=$(kwq_mach); _rem=$_n; _i=0; _cp=""
+	while [ $_rem -gt 0 ]; do
+		_p=$_rem; [ $_p -gt 128 ] && _p=128
+		jexec "$JC" iperf3 -J -c $SRV -p $((FPORT + _i)) -P $_p -t "$FLOWS_SECS" > "$OUT/flows.$STAGE.$REP.$_n.$_i" 2>&1 &
+		_cp="$_cp $!"; _rem=$((_rem - _p)); _i=$((_i + 1))
+	done
+	if [ "$FLOWS_PROBES" = yes ]; then
+		sleep 2
+		u1=$(cpuset -l "$WCPU" rtprio 10 jexec "$JC" "$VICTIM" udp $SRV $UDPPORT 4 "$UPORT" 500)
+		u2=$(cpuset -l "$OTHERS" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT 4 "$UPORT" 500)
+	fi
+	wait $_cp
+	c1=$(cp_sys_all); m1=$(kwq_mach)
+	kill $_sp 2>/dev/null; wait $_sp 2>/dev/null
+	# Per flow: the receiver's rate in each report's end section (the
+	# top-level "end" object; an interval's "end" is a number).  Per
+	# second: each interval's "sum", added across the reports.
+	st=$(awk 'FNR == 1 { e = 0; s = 0; f = 0; k = 0 }
+	    /"end":[ \t]*\{/ { e = 1 }
+	    !e && /"sum":/ { s = 1 }
+	    !e && s && /"bits_per_second"/ { gsub(/[,"]/, ""); iv[k++] += $2 / 1e9; if (k > nk) nk = k; s = 0 }
+	    e && /"receiver":/ { f = 1 }
+	    e && f && /"bits_per_second"/ { gsub(/[,"]/, ""); v[n++] = $2 / 1e9; f = 0 }
+	    END { if (n == 0) { print "gbit=0 gbit_min=0 gbit_max=0 gbit_cv=0 gbit_icv=0 flows_seen=0"; exit }
+	        mn = v[0]; mx = v[0]; s = 0; for (i = 0; i < n; i++) { s += v[i]; if (v[i] < mn) mn = v[i]; if (v[i] > mx) mx = v[i] }
+	        m = s / n; ss = 0; for (i = 0; i < n; i++) ss += (v[i] - m) ^ 2
+	        im = 0; ic = 0; for (i = 1; i < nk; i++) { im += iv[i]; ic++ } im = ic ? im / ic : 0
+	        iss = 0; for (i = 1; i < nk; i++) iss += (iv[i] - im) ^ 2
+	        printf("gbit=%.2f gbit_min=%.2f gbit_max=%.2f gbit_cv=%.1f gbit_icv=%.1f flows_seen=%d", s, mn, mx, m > 0 ? sqrt(ss / n) / m * 100 : 0, im > 0 && ic > 1 ? sqrt(iss / ic) / im * 100 : 0, n) }' "$OUT/flows.$STAGE.$REP.$_n".*)
+	[ "${st%% *}" = gbit=0 ] && log "WARNING: $STAGE $_t: no rates: $(grep -h '"error"' "$OUT/flows.$STAGE.$REP.$_n".* | head -1)"
+	for kv in $st; do row "$_t" "${kv%%=*}" "${kv#*=}"; done
+	for kv in $u1; do case $kv in n=*|rtt_*|lost=*) row "$_t" "rt_${kv%%=*}" "${kv#*=}";; esac; done
+	for kv in $u2; do case $kv in n=*|rtt_*|lost=*) row "$_t" "ts_${kv%%=*}" "${kv#*=}";; esac; done
+	sh=$(printf '%s\n%s\n' "$c0" "$c1" | awk 'NR == 1 { for (i = 1; i <= 5; i++) a[i] = $i } NR == 2 { t = 0; for (i = 1; i <= 5; i++) { d[i] = $i - a[i]; t += d[i] } if (t <= 0) t = 1; printf("m_sys=%.3f m_user=%.3f m_idle=%.3f", (d[3] + d[4]) / t, (d[1] + d[2]) / t, d[5] / t) }')
+	for kv in $sh; do row "$_t" "${kv%%=*}" "${kv#*=}"; done
+	if [ "$KIND" = kwq ]; then
+		kq=$(printf '%s\n%s\n' "$m0" "$m1" | awk -v dt="$FLOWS_SECS" 'NR == 1 { for (i = 1; i <= 8; i++) a[i] = $i } NR == 2 { for (i = 1; i <= 8; i++) d[i] = $i - a[i]; printf("kwq_wakeups_s=%d kwq_parks_s=%d kwq_ticks_s=%d kwq_wakes_urgent_s=%d kwq_turg_wakes_s=%d kwq_switched_s=%d kwq_items_per_pass=%.2f", d[1] / dt, d[4] / dt, d[3] / dt, d[5] / dt, d[6] / dt, d[7] / dt, d[2] > 0 ? d[8] / d[2] : 0) }')
+		for kv in $kq; do row "$_t" "${kv%%=*}" "${kv#*=}"; done
+	fi
+	log "$STAGE rep $REP $_t $st $sh ${kq:-} rt: ${u1:-} ts: ${u2:-}"
+	u1=""; u2=""; kq=""
+}
 t_rwlock() {
 	[ "$KIND" = kwq ] || return 0
 	cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; sleep 1
@@ -891,7 +967,7 @@ battery() {
 	for t in $TESTS; do
 		TEST=$t	# also the iperf3 report's name; lib.sh's TEST only prefixed the log
 		case $t in
-		tput1|tput16|udp_idle|udp_load|spin|timer|exec|machine|preempt|coloc|coloc_udp|coloc_gif|rwlock|xcpu|twoq|churn|magnet|fair|sparse|udp_burst|udp_burst_load) t_$t ;;
+		tput1|tput16|udp_idle|udp_load|spin|timer|exec|machine|preempt|coloc|coloc_udp|coloc_gif|flows|rwlock|xcpu|twoq|churn|magnet|fair|sparse|udp_burst|udp_burst_load) t_$t ;;
 		*) fail "unknown test $t" ;;
 		esac
 	done
