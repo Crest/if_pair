@@ -930,7 +930,8 @@ epair in five of five trials, bugs/vnet-kldunload-deadlock.  if_pair's
 real bug and is reported.
 
 Non-goals for the first version: queue hierarchies or target queues,
-priority inheritance, synchronous execution APIs, per-item priorities,
+priority inheritance, synchronous execution APIs, per-item priorities
+(for NET argued again in S16, "Urgency is a wake hint, not an order"),
 automatic quantum tuning, a lock-free backend.  Each was either the
 source of a documented mistake elsewhere (../DISPATCH.md S6, ../POOLS.md L4,
 L8) or is addable without changing a contract above.
@@ -2024,6 +2025,35 @@ regimes are worth having as opt-ins and two are not:
   `net.link.pair.urgent_bytes` (0 = off, a packet shorter than that
   rings urgently).  It costs a wake per exempt item, so it pays only
   where the small packets are a minority of the traffic.
+- *Urgency is a wake hint, not an order (2026-10-29).*  An urgent item
+  is appended in arrival order like any other; the flag decides only
+  whether and when the worker wakes.  Three ways of letting urgent
+  items overtake were considered and declined for NET: serving them
+  ahead of queued items at a configurable ratio, splitting each (queue,
+  CPU) list into an urgent and a non-urgent band, and scanning ahead a
+  bounded depth for an urgent entry.  Each is safe only if urgency is
+  constant per flow, because a skip of three same-flow positions is a
+  spurious fast retransmit, and a size threshold is not: a bulk
+  connection carries small segments too.  Beyond that: two classes
+  sharing a queue is the inversion shape behind S8's non-goal on
+  per-item priorities (../DISPATCH.md S6, read from libdispatch); the
+  two-list form is what notifiers had until 2026-10-08, removed after
+  the item list starved behind them (SCHED.md, case 4 of the limits
+  table); a pass is swapped out whole and never interrupted, so any of
+  the three reorders at most one pass worth of arrivals, about 3 items
+  on a07's single flow and 10 on lab's (WAKE.md S11); and an item is
+  singly linked through the client's own link (`m_nextpkt` for an
+  mbuf), so overtaking needs the predecessor and costs a scan against a
+  consumer cost of 11 to 39 ns per item on lab and 84 to 146 on a07.  A notifier is a level the handler reads when it reaches
+  it, so moving it earlier carries nothing fresher.  What to do
+  instead: two classes served at a ratio are two queues and a weight,
+  which gives the ratio in CPU time and a first-pass bound independent
+  of the other queue's depth (SCHED.md B4); and a client that wants its
+  urgent items first within one batch can do that in its handler,
+  which receives the whole list, provided it handles its own remainder
+  instead of calling `kwq_requeue()`, whose prepend assumes the
+  remainder is a suffix.  A measured win there is what would justify
+  revisiting this.
 
 ## 17. Memory layout: cache lines, sleep channels, NUMA
 
