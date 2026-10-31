@@ -9,7 +9,12 @@
 #
 #   LABEL kwq KWQ_KO IFPAIR_KO [sysctl=value ...] [kenv:name=value ...] [jail:sysctl=value ...]
 #   LABEL tq  -      IFPAIR_TQ_KO [jail:sysctl=value ...]
+#   LABEL epair - -  [jail:sysctl=value ...]
 #
+# an epair stage runs the base system's epair(4) as the reference (tput1 and
+# the other tests that need no worker CPU; fixed ports), keeps it loaded for
+# the whole battery and unloads it at the end only once no vnet jail is
+# dying, since epair has no fix for the base kernel's unload deadlock;
 # a kwq stage loads KWQ_KO then IFPAIR_KO (both from the same commit), sets
 # the sysctls, and restores them after; a kenv: entry is set in the kernel
 # environment before the load, for loader tunables such as
@@ -129,6 +134,27 @@
 # CPUs whose core has another busy CPU), and temp0 and temp1, the package
 # temperature (amdtemp's Tctl, else coretemp's CPU 0) before and after;
 # OUT/clk.<stage>.<rep> keeps the per-CPU "cpu c0 mhz core" lines.
+# GEN_CLI_CPUS and GEN_SRV_CPUS replace the generators' mask for tput1's
+# iperf3 client and for the iperf3 server (cpuset -l lists), to hold the
+# single flow in one placement (WAKE.md S12.2: its rate states follow where
+# ULE puts the two threads).
+# PIN_CLI, PIN_SRV, PIN_VIC and PIN_ECHO (cpuset -l lists) pin the load
+# generators by role in every test instead of the shared mask: the bulk
+# iperf3 clients, the iperf3 server, the probe and request clients (victim
+# udp, udpburst, tcpconn), the echo servers (udpecho, udpecho2, tcpecho).
+# With WCPU they let each busy thread own a core (WAKE.md S12.2: lab's
+# single flow followed where ULE put its threads).
+# IPERF_INTERVAL (1) is iperf3's report interval in seconds (-i), e.g. 0.1
+# to follow the single flow's rate between its states (WAKE.md S12.2).
+# IPERF_ARGS adds options to the bulk iperf3 clients (tput1, tput16,
+# udp_load, ...), e.g. -Z to send with sendfile(2) instead of copying in.
+# EPAIR_KEEP=yes leaves if_epair loaded after an epair battery instead of
+# unloading it once no vnet is dying.
+# TPUT1_HOOK=script runs "script pre|start|stop OUT/hook.<stage>.<rep>
+# CLIENT_PID SERVER_PID SECS JC JS W REP" around tput1's flow: pre before
+# the client starts (CLIENT_PID 0), start just after, stop after it exits.
+# start must return at once and stop must leave nothing running (a live
+# dtrace vetoes the module unloads); perbyte_hook.sh is one (WAKE.md S12.2).
 #
 # Tests added for SPEC-p4e.md (off by default):
 #   sparse    SPARSE_N request-reply UDP flows at SPARSE_RATE requests/s
@@ -193,6 +219,30 @@
 #              (wakes_low), ticks, urgent wakes and switches per second and
 #              items per pass.  FLOWS_PROBES=no skips the probes (the
 #              sweep that finds the throughput peak).
+#   bsink      for each LAG in BSINK_LAGS (default "0 524288 2097152"): one
+#              bulk TCP flow on W from victim blast (BSINK_WRITE bytes per
+#              write, default 131072; on the client CPU) to victim bsink (on
+#              the server CPU), which reads BSINK_READ (131072) bytes at a
+#              time only once LAG + BSINK_READ bytes are queued: is the
+#              sender's slow state the receiver reading lines still in the
+#              sender's L2 (WAKE.md S12.2)?  Rows under bsinkLAG: gbit, p5
+#              and p50 of the 100 ms rates.  BSINK_PMC="pmcstat options"
+#              adds system-mode counting at 100 ms per LAG.
+#   triples    for each N in TRIPLES_N (default "1 2"): N single-stream TCP
+#              connections at once, connection k pinned to the k-th
+#              (W,sender,receiver) CPU triple of TRIPLES (default "0,2,4
+#              6,8,10 1,3,5 7,9,11 12,13,14": two core-exclusive triples,
+#              then the SMT siblings), with its own iperf3 server port
+#              (TRIPLES_PORT0 + k, default 5300) on the receiver CPU and a
+#              client port that hashes to its W (kwq stages; the reverse
+#              direction follows through the inherited flowid), for SECS
+#              at IPERF_INTERVAL (traces iperf.STAGE.REP.triplesN.k).  Rows
+#              under triplesN: gbit (the sum), gbit_kK per connection,
+#              gbit_min, gbit_max, busy_cpuC for every triple CPU, and
+#              wmiss (connections whose W was not among the N busiest
+#              workers).  TRIPLES_CTR=US also runs ctrsample (cp_times,
+#              the jumbo-page and mbuf zones) and TRIPLES_PMC="pmcstat
+#              options" system-mode counting at 100 ms over each N.
 # The kwq_* rows gained ticks, empty and single-element ticks, doorbells
 # skipped by the tick, overruns and overruns_switched of both pair queues,
 # prio_violations and the low-priority wakes alone (0 on builds without the
@@ -317,7 +367,7 @@ iperf_bg() {	# conns cport pin -> starts the client, sets IPID and IPERF (its re
 	_cp=""; [ -n "$2" ] && _cp="--cport $2"
 	IPERF=$OUT/iperf.$STAGE.$REP.$TEST
 	# shellcheck disable=SC2086
-	$_pin jexec "$JC" iperf3 -f g -c $SRV -P "$1" $_cp -t "$SECS" > "$IPERF" 2>&1 &
+	$_pin jexec "$JC" iperf3 -f g -i "${IPERF_INTERVAL:-1}" -c $SRV -P "$1" $_cp -t "$SECS" ${IPERF_ARGS:-} > "$IPERF" 2>&1 &
 	IPID=$!
 }
 gen_sample() {	# client-pid server-pid out: three times in the run, did a thread of the
@@ -365,6 +415,13 @@ stage_up() {	# KIND KWQ_KO IFPAIR_KO knobs...
 			KNOBS="$KNOBS $_o=$_orig"
 			must "set $kv" sysctl -q "$kv"
 		done
+	elif [ "$KIND" = epair ]; then
+		# Stock epair(4), the base system's reference.  It is loaded once
+		# and unloaded only after the battery, once no vnet is dying: it has
+		# no fix for the base kernel's unload deadlock (if_pair's 3be931a).
+		kldstat -q -m if_epair || must "load if_epair" kldload if_epair
+		EPAIR_USED=yes
+		PAIR=epair; MOD=if_epair
 	else
 		must "load $IFPAIR_KO" kldload "$IFPAIR_KO"
 		PAIR=pairtq; MOD=if_pair_tq
@@ -376,7 +433,11 @@ stage_up() {	# KIND KWQ_KO IFPAIR_KO knobs...
 	must "move $PAIRA" ifconfig "$PAIRA" vnet "$JS"
 	must "move $PAIRB" ifconfig "$PAIRB" vnet "$JC"
 	must "mtu" sh -c "jexec $JS ifconfig $PAIRA mtu $MTU && jexec $JC ifconfig $PAIRB mtu $MTU"
-	must "addresses" sh -c "jexec $JS ifconfig $PAIRA inet $SRV/32 $CLI up && jexec $JC ifconfig $PAIRB inet $CLI/32 $SRV up"
+	if [ "$KIND" = epair ]; then	# Ethernet, not point-to-point: one subnet
+		must "addresses" sh -c "jexec $JS ifconfig $PAIRA inet $SRV/24 up && jexec $JC ifconfig $PAIRB inet $CLI/24 up"
+	else
+		must "addresses" sh -c "jexec $JS ifconfig $PAIRA inet $SRV/32 $CLI up && jexec $JC ifconfig $PAIRB inet $CLI/32 $SRV up"
+	fi
 	for kv in $JKNOBS; do must "jail knob $kv" sh -c "jexec $JS sysctl -q $kv && jexec $JC sysctl -q $kv"; done
 	must_retry 5 "smoke ping" jexec "$JC" ping -q -o -c 2 -t 2 $SRV
 	jexec "$JS" "$VICTIM" udpecho $UDPPORT >/dev/null 2>&1 &
@@ -413,13 +474,19 @@ stage_down() {
 	ifconfig "$PAIRA" destroy 2>/dev/null
 	for kv in $KNOBS; do sysctl -q "$kv" >/dev/null; done
 	if kldstat -q -m kwq_test; then intr_stress_stop; sleep 0.3; kldunload kwq_test || fail "stage $STAGE: kldunload kwq_test failed"; fi
-	kldunload "$MOD" || fail "stage $STAGE: kldunload $MOD failed (pgrep dtrace?)"
+	[ "$KIND" = epair ] || kldunload "$MOD" || fail "stage $STAGE: kldunload $MOD failed (pgrep dtrace?)"
 	[ "$KIND" = kwq ] && { kldunload kwq || fail "stage $STAGE: kldunload kwq failed"; }
 	for kv in $KENVS; do kenv -u "${kv%%=*}" >/dev/null 2>&1; done
 	CLEANUP=$(printf '%s\n' "$CLEANUP" | grep -v "jail -f /dev/null -r ifp_\|ifconfig .* destroy\|kldunload")
 }
 
 ports() {	# the ports that put both flows on WCPU under this load's seed
+	if [ "$KIND" = epair ]; then	# no worker to aim at: fixed ports, fresh per run
+		CPORTS=$(jot 16 40101 | paste -sd' ' -); CPORTS2=$(jot 16 40201 | paste -sd' ' -)
+		CPORTS3=$CPORTS2; UPORT=40001; UPORT2=40002; UPORT2B=40003; SEED=-
+		log "$STAGE: epair, iperf3 client ports $CPORTS"
+		return
+	fi
 	seed=$("$VICTIM" seed "$MOD.ko" 2>/dev/null)
 	if [ -n "$seed" ]; then
 		# sixteen TCP ports: one per run that uses the single flow, so no
@@ -604,9 +671,13 @@ kwq_all() {	# -> "wakeups passes ticks" summed over every NET worker, and the pa
 
 t_tput1() {
 	[ "${CLOCKS:-no}" = yes ] && { _t0=$(pkg_temp); clk_snap > "$OUT/clk0"; }
-	c0=$(cp_times "$WCPU"); k0=$(kwq_passes); q0=$(kwq_counters "$WCPU"); cport_next; iperf_bg 1 "$CPORT" "$OTHERS"
+	_hk="$OUT/hook.$STAGE.$REP"
+	[ -n "${TPUT1_HOOK:-}" ] && sh "$TPUT1_HOOK" pre "$_hk" 0 "$SPID" "$SECS" "$JC" "$JS" "$WCPU" "$REP"
+	c0=$(cp_times "$WCPU"); k0=$(kwq_passes); q0=$(kwq_counters "$WCPU"); cport_next; iperf_bg 1 "$CPORT" "$P_CLI"
+	[ -n "${TPUT1_HOOK:-}" ] && sh "$TPUT1_HOOK" start "$_hk" "$IPID" "$SPID" "$SECS" "$JC" "$JS" "$WCPU" "$REP"
 	gen_sample "$IPID" "$SPID" "$OUT/gen.$STAGE.$REP" & _gp=$!
 	wait $IPID; c1=$(cp_times "$WCPU"); k1=$(kwq_passes); q1=$(kwq_counters "$WCPU")
+	[ -n "${TPUT1_HOOK:-}" ] && sh "$TPUT1_HOOK" stop "$_hk" "$IPID" "$SPID" "$SECS" "$JC" "$JS" "$WCPU" "$REP"
 	_clk=""
 	if [ "${CLOCKS:-no}" = yes ]; then
 		clk_snap > "$OUT/clk1"; _t1=$(pkg_temp)
@@ -624,26 +695,122 @@ t_tput1() {
 	row tput1 cli_wcore "$gc"; row tput1 srv_wcore "$gs"
 	log "$STAGE rep $REP tput1 gbit=$r W=$WCPU $sh cli_wcore=$gc srv_wcore=$gs gen_cpus: $(cat "$OUT/gen.$STAGE.$REP.cpus" 2>/dev/null)$_clk"
 }
+t_bsink() {
+	for _lag in ${BSINK_LAGS:-"0 524288 2097152"}; do
+		set -- $CPORTS2; _cp=$1; shift; CPORTS2="$* $_cp"
+		cpuset -l "$P_SRV" jexec "$JS" "$VICTIM" bsink $TCPPORT2 "$SECS" "$_lag" "${BSINK_READ:-131072}" \
+		    > "$OUT/bsink.$STAGE.$REP.$_lag" 2>&1 & _bs=$!
+		sleep 0.5
+		_pmcp=""
+		if [ -n "${BSINK_PMC:-}" ]; then
+			# shellcheck disable=SC2086
+			pmcstat -C -w 0.1 $BSINK_PMC > "$OUT/pmc.$STAGE.$REP.bsink$_lag" 2>&1 & _pmcp=$!
+		fi
+		cpuset -l "$P_CLI" jexec "$JC" "$VICTIM" blast $SRV $TCPPORT2 "$((SECS + 1))" "${BSINK_WRITE:-131072}" "$_cp" \
+		    > "$OUT/blast.$STAGE.$REP.$_lag" 2>&1
+		wait $_bs
+		[ -n "$_pmcp" ] && { kill -INT "$_pmcp" 2>/dev/null; wait "$_pmcp"; }
+		_r=$(cat "$OUT/bsink.$STAGE.$REP.$_lag")
+		for _kv in $_r; do case $_kv in gbit=*|p5=*|p50=*) row "bsink$_lag" "${_kv%%=*}" "${_kv#*=}" ;; esac; done
+		log "$STAGE rep $REP bsink$_lag $_r cport=$_cp blast: $(cat "$OUT/blast.$STAGE.$REP.$_lag")"
+	done
+}
 t_tput16() {
 	iperf_bg 16 "" ""; wait $IPID; r=$(iperf_rate)
 	row tput16 gbit "$r"; log "$STAGE rep $REP tput16 gbit=$r"
 }
+t_triples() {
+	[ "$KIND" = kwq ] && [ -n "${SEED:-}" ] && [ "$SEED" != - ] || { log "$STAGE: triples needs a kwq stage with a known hash seed; skipped"; return 0; }
+	_trip=${TRIPLES:-"0,2,4 6,8,10 1,3,5 7,9,11 12,13,14"}
+	_p0=${TRIPLES_PORT0:-5300}
+	_max=0; for _n in ${TRIPLES_N:-"1 2"}; do [ "$_n" -gt "$_max" ] && _max=$_n; done
+	# one server per triple, pinned to its receiver CPU; client ports
+	# (16 per triple, used in turn) that hash to its W, none shared with
+	# another triple (all clients bind the one client address)
+	_spids=""; _k=0; _used=" "
+	for _t in $_trip; do
+		_k=$((_k + 1)); [ $_k -gt "$_max" ] && break
+		_r=${_t##*,}
+		cpuset -l "$_r" jexec "$JS" iperf3 -s -p $((_p0 + _k)) >/dev/null 2>&1 &
+		_spids="$_spids $!"
+		set -- $("$VICTIM" ports "$SEED" "$NCPU" "${_t%%,*}" $CLI $SRV $((_p0 + _k)) $UDPPORT 128) || fail "triples: no ports for CPU ${_t%%,*}"
+		_l=""
+		for _p in $(echo "${1#cports=}" | tr ',' ' '); do
+			case $_used in *" $_p "*) continue ;; esac
+			_l="$_l $_p"; _used="$_used$_p "
+			[ "$(echo $_l | wc -w)" -ge 16 ] && break
+		done
+		eval "_tcp$_k=\"$_l\""
+	done
+	sleep 1
+	for _n in ${TRIPLES_N:-"1 2"}; do
+		_cpus=$(echo $_trip | tr ' ' '\n' | head -n "$_n" | tr '\n' ',' | sed 's/,$//')
+		_ctrp=""; _pmcp=""
+		if [ -n "${TRIPLES_CTR:-}" ]; then
+			"$(dirname "$0")/ctrsample" "$TRIPLES_CTR" "$((SECS + 1))" kern.cp_times \
+			    vm.uma.mbuf_jumbo_page.stats.current vm.uma.mbuf_jumbo_page.domain.0.nitems vm.uma.mbuf_jumbo_page.keg.domain.0.pages \
+			    vm.uma.mbuf.stats.current vm.uma.mbuf_jumbo_page.bucket_size > "$OUT/ctr.$STAGE.$REP.triples$_n" 2>&1 & _ctrp=$!
+		fi
+		if [ -n "${TRIPLES_PMC:-}" ]; then
+			# shellcheck disable=SC2086
+			pmcstat -C -w 0.1 -c "$_cpus" $TRIPLES_PMC > "$OUT/pmc.$STAGE.$REP.triples$_n" 2>&1 & _pmcp=$!
+		fi
+		_c0=$(sysctl -n kern.cp_times); _k0=$(kwq_passes)
+		_ipids=""; _k=0
+		for _t in $_trip; do
+			_k=$((_k + 1)); [ $_k -gt "$_n" ] && break
+			_s=${_t#*,}; _s=${_s%%,*}
+			eval "set -- \$_tcp$_k"; _cp=$1; shift; eval "_tcp$_k=\"$* $_cp\""
+			cpuset -l "$_s" jexec "$JC" iperf3 -f g -i "${IPERF_INTERVAL:-1}" -c $SRV -p $((_p0 + _k)) -P 1 --cport "$_cp" -t "$SECS" \
+			    > "$OUT/iperf.$STAGE.$REP.triples$_n.$_k" 2>&1 &
+			_ipids="$_ipids $!"
+		done
+		# shellcheck disable=SC2086
+		wait $_ipids
+		_c1=$(sysctl -n kern.cp_times); _k1=$(kwq_passes)
+		[ -n "$_ctrp" ] && wait "$_ctrp"
+		[ -n "$_pmcp" ] && { kill -INT "$_pmcp" 2>/dev/null; wait "$_pmcp"; }
+		_sum=0; _min=""; _max2=0; _ws=""; _k=0; _line=""
+		for _t in $_trip; do
+			_k=$((_k + 1)); [ $_k -gt "$_n" ] && break
+			_r=$(rate_of "$OUT/iperf.$STAGE.$REP.triples$_n.$_k")
+			[ "$_r" = 0 ] && log "WARNING: $STAGE triples$_n: connection $_k reported no rate: $(grep -v '^$' "$OUT/iperf.$STAGE.$REP.triples$_n.$_k" | tail -1)"
+			row "triples$_n" "gbit_k$_k" "$_r"; _line="$_line k$_k($_t)=$_r"
+			_sum=$(echo "$_sum + $_r" | bc); _ws="$_ws ${_t%%,*}"
+			[ -z "$_min" ] && _min=$_r
+			[ "$(echo "$_r < $_min" | bc)" = 1 ] && _min=$_r
+			[ "$(echo "$_r > $_max2" | bc)" = 1 ] && _max2=$_r
+		done
+		# the N workers whose passes grew most should be exactly the triples' Ws
+		_top=$(printf '%s\n%s\n' "$_k0" "$_k1" | awk '{ if ($1 in a) d[$1] = $2 - a[$1]; else a[$1] = $2 } END { for (c in d) print d[c], c }' | sort -rn | head -n "$_n" | awk '{ print $2 }' | sort -n | paste -sd' ' -)
+		_miss=0; for _w in $_ws; do echo " $_top " | grep -q " $_w " || _miss=$((_miss + 1)); done
+		_busy=$(printf '%s\n%s\n' "$_c0" "$_c1" | awk -v cpus="$_cpus" 'NR == 1 { for (i = 1; i <= NF; i++) a[i] = $i }
+		    NR == 2 { n = split(cpus, c, ","); for (j = 1; j <= n; j++) { b = 5 * c[j]; t = 0; for (i = 1; i <= 5; i++) t += $(b + i) - a[b + i]
+		        printf("%s%s=%.3f", j > 1 ? " " : "", c[j], t > 0 ? 1 - ($(b + 5) - a[b + 5]) / t : 0) } }')
+		for _kv in $_busy; do row "triples$_n" "busy_cpu${_kv%%=*}" "${_kv#*=}"; done
+		row "triples$_n" gbit "$_sum"; row "triples$_n" gbit_min "$_min"; row "triples$_n" gbit_max "$_max2"; row "triples$_n" wmiss "$_miss"
+		[ "$_miss" -gt 0 ] && log "WARNING: $STAGE triples$_n: busiest workers $_top, wanted$_ws"
+		log "$STAGE rep $REP triples$_n gbit=$_sum min=$_min max=$_max2 wmiss=$_miss$_line busy: $_busy"
+	done
+	# shellcheck disable=SC2086
+	kill $_spids 2>/dev/null; wait $_spids 2>/dev/null
+}
 t_udp_idle() {
-	u=$(cpuset -l "$OTHERS" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT $UDPSECS "$UPORT" 500)
+	u=$(cpuset -l "$P_VIC" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT $UDPSECS "$UPORT" 500)
 	for kv in $u; do case $kv in rtt_*|lost=*) row udp_idle "${kv%%=*}" "${kv#*=}";; esac; done
 	log "$STAGE rep $REP udp_idle $u"
 }
 t_udp_load() {
-	cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; sleep 2
+	cport_next; iperf_bg 1 "$CPORT" "$P_CLI"; sleep 2
 	q0=$(kwq_counters "$WCPU")
-	u=$(cpuset -l "$OTHERS" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT $UDPSECS "$UPORT" 500)
+	u=$(cpuset -l "$P_VIC" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT $UDPSECS "$UPORT" 500)
 	q1=$(kwq_counters "$WCPU"); wait $IPID; r=$(iperf_rate)
 	kwq_rows udp_load "$q0" "$q1" "$UDPSECS"
 	for kv in $u; do case $kv in rtt_*|lost=*) row udp_load "${kv%%=*}" "${kv#*=}";; esac; done
 	row udp_load gbit "$r"; log "$STAGE rep $REP udp_load $u gbit=$r"
 }
 t_spin() {
-	cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; sleep 2
+	cport_next; iperf_bg 1 "$CPORT" "$P_CLI"; sleep 2
 	c0=$(cp_times "$WCPU"); v=$(cpuset -l "$WCPU" "$VICTIM" spin $((SECS - 3))); c1=$(cp_times "$WCPU")
 	wait $IPID; r=$(iperf_rate); sh=$(cp_shares "$c0" "$c1")
 	sv=$(echo "$v" | sed -n 's/.*share=\([0-9.]*\).*/\1/p')
@@ -651,13 +818,13 @@ t_spin() {
 	log "$STAGE rep $REP spin share=$sv gbit=$r $sh"
 }
 t_timer() {
-	cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; sleep 2
+	cport_next; iperf_bg 1 "$CPORT" "$P_CLI"; sleep 2
 	v=$(cpuset -l "$WCPU" "$VICTIM" timer $((SECS - 3)) 100); wait $IPID; r=$(iperf_rate)
 	for kv in $v; do case $kv in late_p99=*|late_max=*|turn_p99=*) row timer "${kv%%=*}" "${kv#*=}";; esac; done
 	row timer gbit "$r"; log "$STAGE rep $REP timer $v gbit=$r"
 }
 t_exec() {
-	cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; sleep 2
+	cport_next; iperf_bg 1 "$CPORT" "$P_CLI"; sleep 2
 	v=$(cpuset -l "$WCPU" "$VICTIM" exec $(((SECS - 3) * 40)) 20); wait $IPID
 	for kv in $v; do case $kv in exec_avg=*|exec_p99=*) row exec "${kv%%=*}" "${kv#*=}";; esac; done
 	log "$STAGE rep $REP exec $v"
@@ -675,7 +842,7 @@ t_machine() {
 WSECS=$((SECS - 3))
 t_preempt() {
 	[ "$KIND" = kwq ] || return 0
-	cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; sleep 1
+	cport_next; iperf_bg 1 "$CPORT" "$P_CLI"; sleep 1
 	competitor_bg "$WSECS"
 	dtrace_bg "$WSECS" "$OUT/preempt.$STAGE.$REP" "
 	sched:::preempt /curthread->td_name == \"kwq_net/$WCPU\"/ { self->pre = 1; }
@@ -700,7 +867,7 @@ t_coloc() {
 	k0=$(kwq_passes); q0=$(kwq_counters "$WCPU"); i0=$(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$WCPU.items"); j0=$(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$WCPU.items")
 	a0=$(q_items "$PAIRA" "$PAIRB" "$WCPU"); n0=$(nivcsw "$_s2")
 	IPERF=$OUT/iperf.$STAGE.$REP.coloc
-	cpuset -l "$OTHERS" jexec "$JC" iperf3 -f g -c $SRV -p $TCPPORT2 -P 1 --cport "$_cp" -t "$SECS" > "$IPERF" 2>&1
+	cpuset -l "$P_CLI" jexec "$JC" iperf3 -f g -c $SRV -p $TCPPORT2 -P 1 --cport "$_cp" -t "$SECS" > "$IPERF" 2>&1
 	k1=$(kwq_passes); q1=$(kwq_counters "$WCPU"); i1=$(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$WCPU.items"); j1=$(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$WCPU.items")
 	a1=$(q_items "$PAIRA" "$PAIRB" "$WCPU"); n1=$(nivcsw "$_s2")
 	kill $_s2 2>/dev/null; wait $_s2 2>/dev/null
@@ -720,10 +887,10 @@ t_coloc_udp() {
 	# meet the idle-class wait and the receiver's own small segments there
 	cpuset -l "$WCPU" jexec "$JS" iperf3 -s -p $TCPPORT2 >/dev/null 2>&1 &
 	_s2=$!; sleep 0.3
-	cpuset -l "$OTHERS" -p "$UPID"	# the echo server off W for the run
+	cpuset -l "$P_ECHO" -p "$UPID"	# the echo server off W for the run
 	set -- $CPORTS2; _cp=$1; shift; CPORTS2="$* $_cp"
 	IPERF=$OUT/iperf.$STAGE.$REP.coloc_udp
-	cpuset -l "$OTHERS" jexec "$JC" iperf3 -f g -c $SRV -p $TCPPORT2 -P 1 --cport "$_cp" -t "$SECS" > "$IPERF" 2>&1 &
+	cpuset -l "$P_CLI" jexec "$JC" iperf3 -f g -c $SRV -p $TCPPORT2 -P 1 --cport "$_cp" -t "$SECS" > "$IPERF" 2>&1 &
 	_ip=$!; sleep 1
 	k0=$(kwq_passes); q0=$(kwq_counters "$WCPU"); i0=$(q_items "$PAIRA" "$PAIRB" "$WCPU"); n0=$(nivcsw "$_s2"); t0=$(date +%s)
 	u1=$(cpuset -l "$WCPU" rtprio 10 jexec "$JC" "$VICTIM" udp $SRV $UDPPORT 3 "$UPORT" 500)
@@ -732,7 +899,7 @@ t_coloc_udp() {
 	[ "$dt" -gt 0 ] || dt=1
 	wait $_ip; r=$(iperf_rate)
 	kill $_s2 2>/dev/null; wait $_s2 2>/dev/null
-	cpuset -l "$(echo $CPUS | tr ' ' ',')" -p "$UPID"
+	cpuset -l "${PIN_ECHO:-$(echo $CPUS | tr ' ' ',')}" -p "$UPID"
 	kwq_rows coloc_udp "$q0" "$q1" "$dt"
 	for kv in $u1; do case $kv in n=*|rtt_*|lost=*) row coloc_udp "rt_${kv%%=*}" "${kv#*=}";; esac; done
 	for kv in $u2; do case $kv in n=*|rtt_*|lost=*) row coloc_udp "ts_${kv%%=*}" "${kv#*=}";; esac; done
@@ -796,7 +963,7 @@ flows_run() {	# N
 	if [ "$FLOWS_PROBES" = yes ]; then
 		sleep 2
 		u1=$(cpuset -l "$WCPU" rtprio 10 jexec "$JC" "$VICTIM" udp $SRV $UDPPORT 4 "$UPORT" 500)
-		u2=$(cpuset -l "$OTHERS" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT 4 "$UPORT" 500)
+		u2=$(cpuset -l "$P_VIC" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT 4 "$UPORT" 500)
 	fi
 	wait $_cp
 	c1=$(cp_sys_all); m1=$(kwq_mach)
@@ -831,14 +998,14 @@ flows_run() {	# N
 }
 t_rwlock() {
 	[ "$KIND" = kwq ] || return 0
-	cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; sleep 1
+	cport_next; iperf_bg 1 "$CPORT" "$P_CLI"; sleep 1
 	competitor_bg "$WSECS"
-	cpuset -l "$OTHERS" jexec "$JS" "$VICTIM" udpecho2 $UDPPORT2 $((WSECS + 2)) 2 > "$OUT/udpecho2" 2>&1 &
+	cpuset -l "$P_ECHO" jexec "$JS" "$VICTIM" udpecho2 $UDPPORT2 $((WSECS + 2)) 2 > "$OUT/udpecho2" 2>&1 &
 	_e2=$!; sleep 0.3
 	dtrace_bg "$WSECS" "$OUT/rwlock.$STAGE.$REP" "
 	lockstat:::rw-block /stringof(((struct lock_object *)arg0)->lo_name) == \"udpinp\"/ { @n = count(); @t = sum(arg1); @m = max(arg1); }
 	END { printa(\"n %@d\n\", @n); printa(\"t %@d\n\", @t); printa(\"m %@d\n\", @m); }"
-	u=$(cpuset -l "$OTHERS" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT2 $WSECS "$UPORT2" 500)
+	u=$(cpuset -l "$P_VIC" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT2 $WSECS "$UPORT2" 500)
 	dtrace_wait; wait $KPID; wait $_e2; wait $IPID; r=$(iperf_rate)
 	w=$(cat "$OUT/udpecho2"); f=$OUT/rwlock.$STAGE.$REP
 	for kv in $w; do case $kv in wl_*) row rwlock "${kv%%=*}" "${kv#*=}";; esac; done
@@ -856,16 +1023,16 @@ t_xcpu() {
 	# sends its ACKs through the same CPU.)
 	[ "$KIND" = kwq ] || return 0
 	competitor_bg "$WSECS"
-	cpuset -l "$OTHERS" jexec "$JS" "$VICTIM" udpecho2 $UDPPORT2 $((WSECS + 2)) 100000 > /dev/null 2>&1 &
+	cpuset -l "$P_ECHO" jexec "$JS" "$VICTIM" udpecho2 $UDPPORT2 $((WSECS + 2)) 100000 > /dev/null 2>&1 &
 	_e2=$!; sleep 0.3
 	q0=$(kwq_counters "$W2"); k0=$(kwq_passes)
 	dtrace_bg "$WSECS" "$OUT/xcpu.$STAGE.$REP" "
 	lockstat:::adaptive-block /cpu == $W2/ { @n = count(); @t = sum(arg1); @m = max(arg1); @by[stringof(((struct lock_object *)arg0)->lo_name)] = count(); }
 	lockstat:::rw-block /cpu == $W2/ { @rn = count(); @rt = sum(arg1); @rm = max(arg1); }
 	END { printa(\"n %@d\\n\", @n); printa(\"t %@d\\n\", @t); printa(\"m %@d\\n\", @m); printa(\"rn %@d\\n\", @rn); printa(\"rt %@d\\n\", @rt); printa(\"rm %@d\\n\", @rm); printa(\"by_%s %@d\\n\", @by); }"
-	cpuset -l "$OTHERS" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT2 $WSECS "$UPORT2" 500 > "$OUT/udp_w" 2>&1 &
+	cpuset -l "$P_VIC" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT2 $WSECS "$UPORT2" 500 > "$OUT/udp_w" 2>&1 &
 	_uw=$!
-	u2=$(cpuset -l "$OTHERS" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT2 $WSECS "$UPORT2B" 500)
+	u2=$(cpuset -l "$P_VIC" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT2 $WSECS "$UPORT2B" 500)
 	wait $_uw; dtrace_wait; wait $KPID; wait $_e2
 	q1=$(kwq_counters "$W2"); k1=$(kwq_passes)
 	f=$OUT/xcpu.$STAGE.$REP; uw=$(cat "$OUT/udp_w")
@@ -891,9 +1058,9 @@ t_twoq() {
 	set -- $CPORTS3; _cp3=$1; CPORTS3="$2 $1"
 	cport_next
 	a0=$(q_items "$PAIRA" "$PAIRB" "$WCPU"); b0=$(q_items "$PAIR2A" "$PAIR2B" "$WCPU")
-	iperf_bg 1 "$CPORT" "$OTHERS"
+	iperf_bg 1 "$CPORT" "$P_CLI"
 	IPERF2=$OUT/iperf2.$STAGE.$REP.twoq
-	cpuset -l "$OTHERS" jexec "$JC" iperf3 -f g -c $SRV2 -p $TCPPORT2 -B $CLI2 -P 1 --cport "$_cp3" -t "$SECS" > "$IPERF2" 2>&1 &
+	cpuset -l "$P_CLI" jexec "$JC" iperf3 -f g -c $SRV2 -p $TCPPORT2 -B $CLI2 -P 1 --cport "$_cp3" -t "$SECS" > "$IPERF2" 2>&1 &
 	_i2=$!; sleep 1
 	competitor_bg "$WSECS"; wait $KPID; wait $IPID; wait $_i2
 	a1=$(q_items "$PAIRA" "$PAIRB" "$WCPU"); b1=$(q_items "$PAIR2A" "$PAIR2B" "$WCPU")
@@ -904,13 +1071,13 @@ t_twoq() {
 	log "$STAGE rep $REP twoq $d gbit1=$r1 gbit2=$r2"
 }
 t_churn() {
-	cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; sleep 1
+	cport_next; iperf_bg 1 "$CPORT" "$P_CLI"; sleep 1
 	competitor_bg "$WSECS"
 	[ "$KIND" = kwq ] && dtrace_bg "$WSECS" "$OUT/churn.$STAGE.$REP" "
 	fbt::epoch_wait_preempt:entry { self->e = timestamp; } fbt::epoch_wait_preempt:return /self->e/ { this->d = (timestamp - self->e) / 1000; @en = count(); @em = max(this->d); @es = sum(this->d); self->e = 0; }
 	fbt::smr_poll:entry /arg2 != 0/ { self->s = timestamp; } fbt::smr_poll:return /self->s/ { this->d = (timestamp - self->s) / 1000; @sn = count(); @sm = max(this->d); @ss = sum(this->d); self->s = 0; }
 	END { printa(\"en %@d\n\", @en); printa(\"em %@d\n\", @em); printa(\"es %@d\n\", @es); printa(\"sn %@d\n\", @sn); printa(\"sm %@d\n\", @sm); printa(\"ss %@d\n\", @ss); }"
-	cpuset -l "$OTHERS" jexec "$JC" "$VICTIM" tcpconn $SRV $ECHOPORT $((WSECS - 1)) 2 > "$OUT/tcpconn" 2>&1 &
+	cpuset -l "$P_VIC" jexec "$JC" "$VICTIM" tcpconn $SRV $ECHOPORT $((WSECS - 1)) 2 > "$OUT/tcpconn" 2>&1 &
 	_c=$!
 	# address churn on the server side of the pair, timed
 	amax=0; n=0
@@ -933,7 +1100,7 @@ t_churn() {
 	log "$STAGE rep $REP churn $c alias_max_ms=$amax epochwait_n=$(dval "$f" en) epochwait_max_us=$(dval "$f" em) smr_n=$(dval "$f" sn) smr_max_us=$(dval "$f" sm) gbit=$r"
 }
 t_magnet() {
-	cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; sleep 1
+	cport_next; iperf_bg 1 "$CPORT" "$P_CLI"; sleep 1
 	competitor_bg "$WSECS"
 	"$VICTIM" timer "$WSECS" 100 > "$OUT/bystander" 2>&1 &
 	_b=$!
@@ -971,7 +1138,7 @@ t_sparse() {
 			c0=$(cp_sys_all); w0=$(kwq_all); i0=$(vmstat_total); t0=$(tmr_snap); tmr_bg "$UDPSECS" "$OUT/tmr.$STAGE.$REP.$t"
 			rm -f "$OUT/sparse.$STAGE.$REP.$t"; _pids=""
 			for p in $sp; do
-				cpuset -l "$OTHERS" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT $UDPSECS "$p" "$gap" >> "$OUT/sparse.$STAGE.$REP.$t" 2>&1 &
+				cpuset -l "$P_VIC" jexec "$JC" "$VICTIM" udp $SRV $UDPPORT $UDPSECS "$p" "$gap" >> "$OUT/sparse.$STAGE.$REP.$t" 2>&1 &
 				_pids="$_pids $!"
 			done
 			# shellcheck disable=SC2086
@@ -995,7 +1162,7 @@ udp_burst_run() {	# TESTNAME: one udpburst per B:G of UDP_BURSTS, counters per b
 	for bg in $UDP_BURSTS; do
 		B=${bg%%:*}; G=${bg#*:}; t=${1}_${B}_${G}
 		q0=$(kwq_counters "$WCPU")
-		u=$(cpuset -l "$OTHERS" jexec "$JC" "$VICTIM" udpburst $SRV $UDPPORT $UDPSECS "$UPORT" "$B" "$G")
+		u=$(cpuset -l "$P_VIC" jexec "$JC" "$VICTIM" udpburst $SRV $UDPPORT $UDPSECS "$UPORT" "$B" "$G")
 		q1=$(kwq_counters "$WCPU")
 		nb=$(echo "$u" | sed -n 's/.*bursts=\([0-9]*\).*/\1/p'); [ -n "$nb" ] && [ "$nb" -gt 0 ] || nb=1
 		for kv in $u; do case $kv in first_*|last_*|rtt_p99=*|lost=*|bursts=*) row "$t" "${kv%%=*}" "${kv#*=}";; esac; done
@@ -1006,7 +1173,7 @@ udp_burst_run() {	# TESTNAME: one udpburst per B:G of UDP_BURSTS, counters per b
 }
 t_udp_burst() { udp_burst_run udp_burst; }
 t_udp_burst_load() {
-	cport_next; iperf_bg 1 "$CPORT" "$OTHERS"; sleep 2
+	cport_next; iperf_bg 1 "$CPORT" "$P_CLI"; sleep 2
 	udp_burst_run udp_burst_load
 	wait $IPID; r=$(iperf_rate); row udp_burst_load gbit "$r"
 }
@@ -1018,12 +1185,20 @@ battery() {
 	*) fail "SMT_SIBLINGS must be share or exclude, not $SMT_SIBLINGS" ;;
 	esac
 	log "$STAGE: load generators pinned to CPUs $OTHERS (SMT_SIBLINGS=${SMT_SIBLINGS:-share}, W's core $(smt_siblings "$WCPU"))"
-	cpuset -l "$OTHERS" -p "$SPID"		# the iperf3 server, off W
-	cpuset -l "$OTHERS" -p "$EPID"
+	# Role masks (PIN_*, default the generators' mask as before): the bulk
+	# iperf3 client, the iperf3 server, the probe and request clients, the
+	# echo servers.  The coloc tests' receiver and probe stay on W.
+	P_CLI=${PIN_CLI:-${GEN_CLI_CPUS:-$OTHERS}}; P_SRV=${PIN_SRV:-${GEN_SRV_CPUS:-$OTHERS}}
+	P_VIC=${PIN_VIC:-$OTHERS}; P_ECHO=${PIN_ECHO:-$OTHERS}
+	[ -n "${PIN_CLI:-}${PIN_SRV:-}${PIN_VIC:-}${PIN_ECHO:-}" ] &&
+	    log "$STAGE: roles pinned: client $P_CLI, server $P_SRV, probes $P_VIC, echo servers $P_ECHO, W $WCPU"
+	cpuset -l "$P_SRV" -p "$SPID"	# the iperf3 server, off W
+	cpuset -l "$P_ECHO" -p "$EPID"
+	[ -n "${PIN_ECHO:-}" ] && cpuset -l "$P_ECHO" -p "$UPID"
 	for t in $TESTS; do
 		TEST=$t	# also the iperf3 report's name; lib.sh's TEST only prefixed the log
 		case $t in
-		tput1|tput16|udp_idle|udp_load|spin|timer|exec|machine|preempt|coloc|coloc_udp|coloc_gif|flows|rwlock|xcpu|twoq|churn|magnet|fair|sparse|udp_burst|udp_burst_load) t_$t ;;
+		tput1|tput16|triples|bsink|udp_idle|udp_load|spin|timer|exec|machine|preempt|coloc|coloc_udp|coloc_gif|flows|rwlock|xcpu|twoq|churn|magnet|fair|sparse|udp_burst|udp_burst_load) t_$t ;;
 		*) fail "unknown test $t" ;;
 		esac
 	done
@@ -1042,4 +1217,17 @@ while [ "$REP" -le "$REPS" ]; do
 	done < "$STAGEFILE"
 	REP=$((REP + 1))
 done
+if [ "${EPAIR_USED:-no}" = yes ] && [ "${EPAIR_KEEP:-no}" = yes ]; then
+	log "if_epair left loaded (EPAIR_KEEP=yes)"
+elif [ "${EPAIR_USED:-no}" = yes ]; then
+	# Unload epair only once every vnet is gone and its teardown is over
+	# (the base kernel's deadlock, bugs/vnet-kldunload-deadlock); if one
+	# stays dying, leave the module loaded and say so.
+	n=0; while [ -n "$(jls -d jid)" ] && [ $n -lt 300 ]; do sleep 1; n=$((n + 1)); done
+	if [ -z "$(jls -d jid)" ]; then
+		sleep 5; kldunload if_epair || log "WARNING: kldunload if_epair failed"
+	else
+		log "WARNING: vnet jails still dying after 300 s; if_epair left loaded"
+	fi
+fi
 pass

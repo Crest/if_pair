@@ -80,9 +80,22 @@
  *       DST:UDPPORT spread evenly over the NCPU worker CPUs (round robin
  *       by hash), printed space-separated: the many-connections test
  *       (SPEC-p4e.md 3.1) gives each flow one of them.
+ *   victim bsink PORT SECS LAG READ
+ *       A bulk TCP receiver (WAKE.md S12.2): accepts one connection and
+ *       reads READ bytes at a time, but only once LAG + READ bytes are
+ *       queued (kqueue EVFILT_READ with NOTE_LOWAT), so every byte it
+ *       copies out was sent at least LAG bytes before the newest one; LAG
+ *       0 reads whatever is there.  Its receive buffer is LAG + 8 MB.
+ *       Prints gbit over SECS from the first byte, and the 100 ms rates'
+ *       p5 and p50 after the first second.
+ *   victim blast HOST PORT SECS WRITE [CPORT]
+ *       A bulk TCP sender from source port CPORT (0 = any): write(2)s
+ *       WRITE bytes at a time from one buffer for SECS.
  */
 #include <sys/param.h>
+#include <sys/event.h>
 #include <sys/linker.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -441,6 +454,120 @@ do_tcpecho(int port)
 }
 
 static int
+cmp_dbl(const void *a, const void *b)
+{
+	double x = *(const double *)a, y = *(const double *)b;
+
+	return (x < y ? -1 : x > y);
+}
+
+static int
+do_bsink(int port, int secs, long lag, long rsize)
+{
+	struct sockaddr_in sin;
+	struct kevent kev;
+	struct timespec t0, t, tmo = { 0, 100000000L };
+	double *bins, el;
+	long long total = 0;
+	size_t nb, i, used = 0;
+	ssize_t r;
+	char *buf;
+	int s, c, kq, one = 1, rb;
+
+	nb = (size_t)secs * 10 + 20;
+	bins = calloc(nb, sizeof(*bins));
+	buf = malloc((size_t)rsize);
+	s = socket(AF_INET, SOCK_STREAM, 0);
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons((uint16_t)port);
+	rb = (int)(lag + (8L << 20));
+	if (bins == NULL || buf == NULL || s < 0 ||
+	    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0 ||
+	    setsockopt(s, SOL_SOCKET, SO_RCVBUF, &rb, sizeof(rb)) != 0 ||
+	    bind(s, (struct sockaddr *)&sin, sizeof(sin)) != 0 || listen(s, 1) != 0)
+		return (1);
+	if ((c = accept(s, NULL, NULL)) < 0 || (kq = kqueue()) < 0)
+		return (1);
+	EV_SET(&kev, c, EVFILT_READ, EV_ADD, NOTE_LOWAT, lag + rsize, NULL);
+	if (kevent(kq, &kev, 1, NULL, 0, NULL) != 0)
+		return (1);
+	t0.tv_sec = 0;
+	for (;;) {
+		if (kevent(kq, NULL, 0, &kev, 1, &tmo) < 0)
+			return (1);
+		if ((r = read(c, buf, (size_t)rsize)) <= 0) {
+			if (r == 0)
+				break;
+			if (errno == EAGAIN || errno == EINTR)
+				continue;
+			return (1);
+		}
+		clock_gettime(CLOCK_MONOTONIC, &t);
+		if (t0.tv_sec == 0)
+			t0 = t;
+		el = (t.tv_sec - t0.tv_sec) + (t.tv_nsec - t0.tv_nsec) / 1e9;
+		if (el >= secs)
+			break;
+		total += r;
+		i = (size_t)(el * 10);
+		if (i < nb) {
+			bins[i] += (double)r;
+			used = i + 1;
+		}
+	}
+	/* 100 ms rates after the first second, without the partial last bin */
+	if (used > 11) {
+		for (i = 10; i + 1 < used; i++)
+			bins[i - 10] = bins[i] * 8 * 10 / 1e9;
+		used -= 11;
+		qsort(bins, used, sizeof(*bins), cmp_dbl);
+	} else
+		used = 0;
+	printf("gbit=%.1f p5=%.1f p50=%.1f n=%zu\n", total * 8 / 1e9 / secs,
+	    used ? bins[used / 20] : 0, used ? bins[used / 2] : 0, used);
+	close(c);
+	return (0);
+}
+
+static int
+do_blast(const char *host, int port, int secs, long wsize, int cport)
+{
+	struct sockaddr_in sin, me;
+	struct timespec t0, t;
+	char *buf;
+	size_t i;
+	int s;
+
+	buf = malloc((size_t)wsize);
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons((uint16_t)port);
+	s = socket(AF_INET, SOCK_STREAM, 0);
+	if (buf == NULL || s < 0 || inet_pton(AF_INET, host, &sin.sin_addr) != 1)
+		return (1);
+	for (i = 0; i < (size_t)wsize; i++)
+		buf[i] = (char)(i * 2654435761u >> 24);
+	if (cport > 0) {
+		memset(&me, 0, sizeof(me));
+		me.sin_family = AF_INET;
+		me.sin_port = htons((uint16_t)cport);
+		if (bind(s, (struct sockaddr *)&me, sizeof(me)) != 0)
+			return (1);
+	}
+	if (connect(s, (struct sockaddr *)&sin, sizeof(sin)) != 0)
+		return (1);
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	do {
+		if (write(s, buf, (size_t)wsize) < 0 && errno != EINTR)
+			return (1);
+		clock_gettime(CLOCK_MONOTONIC, &t);
+	} while ((t.tv_sec - t0.tv_sec) + (t.tv_nsec - t0.tv_nsec) / 1e9 < secs);
+	close(s);
+	return (0);
+}
+
+static int
 do_tcpconn(const char *host, int port, int secs, long gap_ms)
 {
 	struct sockaddr_in sin;
@@ -738,6 +865,11 @@ main(int argc, char **argv)
 		return (do_udpecho2(atoi(argv[2]), atoi(argv[3]), atol(argv[4])));
 	if (argc >= 3 && strcmp(argv[1], "tcpecho") == 0)
 		return (do_tcpecho(atoi(argv[2])));
+	if (argc >= 6 && strcmp(argv[1], "bsink") == 0)
+		return (do_bsink(atoi(argv[2]), atoi(argv[3]), atol(argv[4]), atol(argv[5])));
+	if (argc >= 6 && strcmp(argv[1], "blast") == 0)
+		return (do_blast(argv[2], atoi(argv[3]), atoi(argv[4]), atol(argv[5]),
+		    argc > 6 ? atoi(argv[6]) : 0));
 	if (argc >= 5 && strcmp(argv[1], "tcpconn") == 0)
 		return (do_tcpconn(argv[2], atoi(argv[3]), atoi(argv[4]),
 		    argc > 5 ? atol(argv[5]) : 2));
