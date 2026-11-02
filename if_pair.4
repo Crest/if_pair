@@ -295,11 +295,13 @@ which packets do not pay.
 Each exempt packet costs a wake, so a setting high enough to cover the
 bulk traffic undoes the regimes entirely; with both regimes off the
 variable changes nothing.
-A receiver pinned to its worker's CPU sends its own small segments from
-that CPU, and each of them ends the idle-class wait, so with
-.Va kern.kwq.net.wake_delay_us
-set such a receiver loses the wait's gain entirely; do not combine the
-two for it.
+A TCP segment without data that only acknowledges (a pure ACK or window
+update) is never urgent: a receiver pinned to its worker's CPU sends
+those from that CPU, and as urgent packets they would end every wait of
+.Va kern.kwq.net.wake_delay_us .
+The pair reads only the TCP header right behind the IP header, so the
+acknowledgements of TCP inside a tunnel or of a protocol over UDP are
+urgent by size like any other small packet.
 .Pp
 How much CPU time a pair's delivery may take before yielding to other
 queues, timers and user processes is governed by the network class of
