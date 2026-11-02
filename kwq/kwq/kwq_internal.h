@@ -170,6 +170,7 @@ struct kwq_worker {
 	uint64_t		kw_served_us;	/* microseconds of pass service delivered
 						   since the worker started; advances only
 						   inside passes (SCHED.md S4.6) */
+	uint64_t		kw_served_rem;	/* ns of it short of the next microsecond */
 	void			*kw_chan;	/* wait channel (kwq_worker.c) */
 
 	/* Block 1..: private to the worker (ks_* run under kw_mtx anyway). */

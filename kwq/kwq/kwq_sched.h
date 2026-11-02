@@ -21,7 +21,8 @@
  *                      kc_boosts, kc_grace
  *   struct kwq_worker: kw_new, kw_active (TAILQ_HEAD of kwq_cpu),
  *                      kw_nactive, kw_nnew (u_int list lengths),
- *                      kw_round, kw_served_us (uint64_t), kw_phase,
+ *                      kw_round, kw_served_us, kw_served_rem (uint64_t),
+ *                      kw_phase,
  *                      kw_ring_left, kw_tail_left, kw_want_new, kw_cur,
  *                      kw_served, kw_pass_start, kw_pass_budget,
  *                      kw_cap_start, kw_cap_used (wall ns), kw_cap_over,

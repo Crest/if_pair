@@ -20,6 +20,7 @@ ks_worker_init(struct kwq_worker *kw, const struct kwq_sched_knobs *k,
 	kw->kw_nnew = 0;
 	kw->kw_round = 0;
 	kw->kw_served_us = 0;
+	kw->kw_served_rem = 0;
 	kw->kw_phase = KWQ_PH_IDLE;
 	kw->kw_ring_left = 0;
 	kw->kw_tail_left = -1;
@@ -345,7 +346,13 @@ ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 	kw->kw_passes++;
 	kw->kw_busy_ns += (uint64_t)dt;
 	kw->kw_cap_used += (uint64_t)dt;
-	kw->kw_served_us += (uint64_t)dt / 1000;	/* service delivered, S4.6 */
+	/*
+	 * Service delivered, S4.6, in whole microseconds with the rest
+	 * carried: a NET pass of one small item is shorter than one.
+	 */
+	kw->kw_served_rem += (uint64_t)dt;
+	kw->kw_served_us += kw->kw_served_rem / 1000;
+	kw->kw_served_rem %= 1000;
 	/*
 	 * An overrun is a pass that exceeded its budget by more than one
 	 * quantum: a cooperative handler that stops after the item which

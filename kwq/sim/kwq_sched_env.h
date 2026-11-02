@@ -41,6 +41,7 @@ struct kwq_worker {
 	u_int			kw_nnew;
 	uint64_t		kw_round;
 	uint64_t		kw_served_us;
+	uint64_t		kw_served_rem;
 	u_int			kw_phase;
 	int			kw_ring_left;
 	int			kw_tail_left;
