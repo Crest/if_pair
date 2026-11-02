@@ -124,6 +124,9 @@ what the scheduler divides.
    the list was idle, the same lock hold rings the doorbell and wakes
    the worker; if it was already queued or being served, the enqueue is
    an append and nothing is woken.  One wakeup per burst, not per item.
+   The opt-in regimes of section 4, off by default, defer or soften that
+   wake; while one holds the worker back, an urgent item
+   (`kwq_enqueue_urgent()`) still gets a wake behind a queued list.
 3. The worker wakes, refills the queue's deficit by `quantum x weight`,
    swaps the list out, and calls the handler with everything that
    accumulated.
@@ -191,22 +194,33 @@ hardware test machines, within a microsecond of a direct wakeup
 pass in progress plus one quantum-bounded pass of that queue (B5b), and
 against a user thread competing for the CPU it is at most one
 `cap_period` plus one pass, the share limit's hand-over and a deliberate
-fairness cost (B5c).  Two class knobs, both off by default and neither
+fairness cost (B5c).  Three class knobs, all off by default and none
 part of the API, buy CPU time with latency on top of those rows (KWQ.md
 S16): `tick_us`, under which a worker whose producer is dense sleeps
 with a timeout and producers append without ringing the doorbell, so an
 item arriving while the regime is on waits at most `tick_us` plus the
-pass in progress; and `wake_delay_us`, under which an enqueue from the
+pass in progress; `wake_delay_us`, under which an enqueue from the
 worker's own CPU no longer preempts the producer but makes the worker
 runnable in the idle class, to run when the producer sleeps or at that
-deadline, whichever comes first.  Neither delays the first wake of a
-backlog, by construction, so B5a holds whatever an operator has set.  A
-client should assume those three rows and nothing better.
+deadline, whichever comes first; and `tick_urgent_us`, a bound of the
+urgent items' own inside the tick regime.  An item enqueued with
+`kwq_enqueue_urgent()`, meant for a small latency-bearing item among big
+ones, takes neither regime: it rings at once and ends an idle-class
+wait, except that inside the tick regime `tick_urgent_us` lets it wait
+at most that bound, so that urgent items within it share one wake.
+With both regimes off, the default, nothing delays the first wake of a
+backlog (B5a); with one on, an item waits at most that regime's bound,
+`tick_us` plus the pass in progress, or `wake_delay_us` for an item
+from the worker's own CPU (SCHED.md B5a, B5b).  A client should assume
+those three rows and nothing better.
 
 ## 5. What kwq is not
 
 - **Not a timer.**  Nothing is scheduled for later; a queue runs when
-  work is enqueued into it.
+  work is enqueued into it.  The opt-in regimes of section 4, off by
+  default, may run it up to their bound later, by a timed sleep, a
+  deadline callout or the urgent items' bound, but a client cannot ask
+  for a time.
 - **Not a thread pool for blocking work.**  That is the BLOCKING class,
   which is specified but not implemented; code that may sleep keeps its
   own pool for now and says so.

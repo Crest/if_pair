@@ -445,8 +445,8 @@ The bounds a client may design against, from SCHED.md S7:
 
 | row | case | bound | measured |
 |---|---|---|---|
-| B5a | an item that finds its worker asleep | one sleep-wake and nothing else: the doorbell, the switch-in, one pass.  Nothing in kwq may delay the first wake of a backlog | 8 to 14 us through a pair on the two hardware test machines, within 1 us of a direct wakeup |
-| B5b | an item beside a busy queue on the same CPU | the pass in progress (B1) plus one quantum-bounded pass of the other queue; the tick regime adds its bound `tick_us` to this row and nothing to B5a | p99 25 to 38 us for a request-reply flow beside a bulk flow |
+| B5a | an item that finds its worker asleep | one sleep-wake and nothing else: the doorbell, the switch-in, one pass.  With `tick_us` and `wake_delay_us` at 0, the defaults, nothing in kwq may delay the first wake of a backlog; with one set, an item waits at most its bound (KWQ.md S16) | 8 to 14 us through a pair on the two hardware test machines, within 1 us of a direct wakeup |
+| B5b | an item beside a busy queue on the same CPU | the pass in progress (B1) plus one quantum-bounded pass of the other queue; with `tick_us` and `wake_delay_us` at 0; the tick regime adds up to `tick_us` to this row, the idle-class wait up to `wake_delay_us` for an item from the worker's own CPU | p99 25 to 38 us for a request-reply flow beside a bulk flow |
 | B5c | a user thread competing for the worker's CPU | at most one `cap_period` plus one pass, the share limit's hand-over, not a ULE slice: a deliberate fairness cost | p99 120 to 720 us, against 62 us for the taskqueue driver that never yields |
 
 B6, anti-gaming, is stated in the same service unit as the grace rule:

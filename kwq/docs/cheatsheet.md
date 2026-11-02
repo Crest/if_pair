@@ -302,8 +302,9 @@ there is nothing better to assume:
 - **B5a, an isolated item.**  An item that finds its worker asleep pays
   one sleep-wake and nothing else, the doorbell, the switch-in, one
   pass: 8 to 14 us through a pair on the two hardware test machines,
-  within a microsecond of a direct wakeup.  Nothing in kwq may delay
-  the first wake of a backlog.
+  within a microsecond of a direct wakeup.  With the two knobs below
+  off, the default, nothing in kwq may delay the first wake of a
+  backlog.
 - **B5b, an item beside a busy queue on the same CPU.**  The pass in
   progress plus one quantum-bounded pass of the other queue; p99 25 to
   38 us measured for a request-reply flow beside a bulk flow.
@@ -321,7 +322,9 @@ and a third bounds your urgent items inside the first:
 | `kern.kwq.<class>.tick_urgent_us` | inside the tick regime, an item you enqueue with `kwq_enqueue_urgent()` that finds the worker asleep wakes it this much later instead of at once, so the urgent items within the bound share one wake; a bound at or above `tick_us` arms nothing.  Off (0, at once) by default; sized by the spacing of your urgent items, not by `tick_us` (KWQ.md S16).  Notifiers, drains and cancels are not affected |
 | `kern.kwq.<class>.wake_delay_us` | an enqueue from the worker's own CPU no longer preempts the producer: the worker becomes runnable in the idle class at `cap_prio` and runs when the producer sleeps or at this deadline, whichever is first.  An item from the worker's CPU waits at most the deadline; an enqueue from another CPU rings the doorbell as before.  Off (0) by default; 100 us where it is worth having, a receiver or producer pinned to its worker's CPU |
 
-Neither knob touches B5a, by construction.  With both set, a producer
+Neither knob delays an isolated item, which never enters the tick
+regime and whose producer sleeps at once; a backlog's first wake waits
+at most the knob's bound (SCHED.md B5a).  With both set, a producer
 on the worker's own CPU takes the wait and a producer elsewhere takes
 the tick's skip; the wait wins because it serves the list when that
 producer sleeps, sooner than the next tick.  If your client's latency

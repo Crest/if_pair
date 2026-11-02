@@ -41,8 +41,8 @@ static struct sx kwq_sx;
 SX_SYSINIT(kwq_sx, &kwq_sx, "kwq queues");
 
 /*
- * sysctl tree (../KWQ.md S10.7): kern.kwq.{version,ncpu,nqueues};
- * kern.kwq.<class>.{knobs,priority,limit}; kern.kwq.<class>.cpu.<N>.* per
+ * sysctl tree (../KWQ.md S10.7): kern.kwq.{version,ncpu,nqueues,clock,
+ * clock_fast}; kern.kwq.<class>.{knobs,priority,limit}; kern.kwq.<class>.cpu.<N>.* per
  * worker; kern.kwq.<class>.queue.<name>.* and .cpu.<N>.* per queue.  User
  * chosen names live only under "queue", one level of their own.
  */
