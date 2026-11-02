@@ -9,7 +9,8 @@
 # Every case needs root and at least 4 CPUs (skipped otherwise), loads
 # the two modules if they are not loaded and unloads in cleanup what it
 # loaded.  The scenarios and their knobs: ../kwq_test/kwq_test.c; the
-# properties asserted: ../SCHED.md S10 and ../KWQ.md S10.8.  The "sleep"
+# properties asserted: ../SCHED.md S10, ../KWQ.md S10.8, and for the
+# regimes and the priority invariant ../KWQ.md S16 and SPEC-p4e.md.  The "sleep"
 # scenario (a handler that sleeps must panic an INVARIANTS kernel) is
 # deliberately not here: it takes the machine down.
 

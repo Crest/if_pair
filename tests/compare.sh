@@ -596,8 +596,8 @@ q2() {	# field cpu -> the field summed over both pair queues on that CPU (0 wher
 #   24 overruns (both queues)                  25 overruns_switched (both queues)
 #   26 prio_violations
 #   27 wakes_urgent       28 tick_urgent_deferred  29 tick_urgent_wakes
-#      (the urgent exemption's nudges, and the kwq-p4g-urg4 branch's urgent
-#      bound inside the tick regime: WAKE.md S12.5)
+#      (the urgent exemption's nudges, and tick_urgent_us, the urgent
+#      items' bound inside the tick regime: WAKE.md S12.5, S12.8)
 #
 # Fields 8, 9, 12, 14, 15 and 16 exist only on the wake-moderation campaign's
 # branches and read 0 here; 20..26 are the tick regime's (SPEC-p4e.md S1) and

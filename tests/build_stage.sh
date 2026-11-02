@@ -5,7 +5,8 @@
 #   build_stage.sh COMMIT OUTDIR            build here
 #   build_stage.sh -r HOST COMMIT OUTDIR    build on HOST (OUTDIR is there)
 #
-# The commit's kwq/kwq, if_pair.c, Makefile, if_pair.4 and extras/if_pair_tq
+# The commit's kwq/kwq, if_pair.c, Makefile, if_pair.4, and kwq/kwq_test
+# and extras/if_pair_tq where the commit has them,
 # are exported with git-archive into a scratch directory and built with
 # make; MAKEARGS (e.g. "SYSDIR=/usr/src/sys KERNBUILDDIR=/usr/obj/..." or
 # "KERNBUILDDIR=/usr/obj/usr/src/amd64.amd64/sys/GENERIC") is passed to
@@ -20,7 +21,8 @@ if [ "$1" = -r ]; then HOST=$2; shift 2; fi
 COMMIT=$1; OUTDIR=$2
 [ -n "$COMMIT" ] && [ -n "$OUTDIR" ] || { echo "usage: build_stage.sh [-r HOST] COMMIT OUTDIR" >&2; exit 2; }
 cd "$(dirname "$0")/.."
-PATHS="kwq/kwq kwq/kwq_test if_pair.c Makefile if_pair.4"
+PATHS="kwq/kwq if_pair.c Makefile if_pair.4"
+git cat-file -e "$COMMIT:kwq/kwq_test/kwq_test.c" 2>/dev/null && PATHS="$PATHS kwq/kwq_test"
 git cat-file -e "$COMMIT:extras/if_pair_tq/if_pair_tq.c" 2>/dev/null && PATHS="$PATHS extras/if_pair_tq"
 # shellcheck disable=SC2086
 BUILD='set -e; cd "$1"; mkdir -p src; tar -xf - -C src

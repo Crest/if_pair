@@ -18,6 +18,9 @@
 # probe ends before the client does; stop waits for them, so no consumer
 # outlives the run (a live dtrace vetoes compare.sh's module unloads).
 PH=$1; DIR=$2; CPID=$3; SPID=$4; SECS=$5; JC=$6; JS=$7; WCPU=$8; REP=$9
+# W in the D scripts: under compare.sh OOB=yes W is "any", known only
+# after the run, and -1 matches no CPU (their "w" columns stay empty).
+WD=$WCPU; [ "$WCPU" = any ] && WD=-1
 # Zen 3 has six counters, three per process: cycles, instructions and, by
 # REP / 3 mod 2, fills from L3 or another core's L2 or fills from DRAM.
 case $(( (REP / 3) % 2 )) in
@@ -55,20 +58,20 @@ profile() {	# the DTrace probe of REP mod 3 = 0
 	cat > "$DIR/pb.d" <<EOF
 self int lc;
 self uint64_t off;
-profile-1999 /arg0 && (pid == $CPID || pid == $SPID || cpu == $WCPU)/
+profile-1999 /arg0 && (pid == $CPID || pid == $SPID || cpu == $WD)/
 { @k[pid == $CPID ? "cli" : pid == $SPID ? "srv" : "w", func(arg0)] = count(); }
-profile-1999 /arg1 && (pid == $CPID || pid == $SPID || cpu == $WCPU)/
+profile-1999 /arg1 && (pid == $CPID || pid == $SPID || cpu == $WD)/
 { @u[pid == $CPID ? "cli" : pid == $SPID ? "srv" : "w"] = count(); }
 profile-1999 /arg0 && (pid == $CPID || pid == $SPID)/
 { @st[pid == $CPID ? "cli" : "srv", stack(6)] = count(); }
 tcp:::send /args[4]->tcp_dport == $PORT/
 { @len["data segment ip_plength"] = quantize(args[2]->ip_plength);
   @win["cwnd"] = quantize(args[3]->tcps_cwnd); @win["swnd (peer's window)"] = quantize(args[3]->tcps_swnd);
-  @who["data sent by", pid == $CPID ? "cli" : cpu == $WCPU ? "w" : "other"] = count(); }
+  @who["data sent by", pid == $CPID ? "cli" : cpu == $WD ? "w" : "other"] = count(); }
 tcp:::send /args[4]->tcp_sport == $PORT/
 { @len["ack ip_plength"] = quantize(args[2]->ip_plength);
   @win["rwnd (advertised)"] = quantize(args[3]->tcps_rwnd);
-  @who["ack sent by", pid == $SPID ? "srv" : cpu == $WCPU ? "w" : "other"] = count(); }
+  @who["ack sent by", pid == $SPID ? "srv" : cpu == $WD ? "w" : "other"] = count(); }
 sched:::on-cpu /(pid == $CPID || pid == $SPID) && self->lc && self->lc != cpu + 1/
 { @sw["migrations", pid == $CPID ? "cli" : "srv", tid] = count(); }
 sched:::on-cpu /(pid == $CPID || pid == $SPID) && self->off/
@@ -92,7 +95,7 @@ sched:::off-cpu /pid == $CPID || pid == $SPID/
       (curthread->td_lockname != 0 ? stringof(curthread->td_lockname) : "-")] = count();
   @os[pid == $CPID ? "cli" : "srv", stack(8)] = count(); }
 sched:::wakeup /args[1]->p_pid == $CPID || args[1]->p_pid == $SPID/
-{ @wk[args[1]->p_pid == $CPID ? "cli" : "srv", cpu == $WCPU ? "W cpu" : pid == $CPID ? "cli" : pid == $SPID ? "srv" : execname] = count();
+{ @wk[args[1]->p_pid == $CPID ? "cli" : "srv", cpu == $WD ? "W cpu" : pid == $CPID ? "cli" : pid == $SPID ? "srv" : execname] = count();
   @ws[args[1]->p_pid == $CPID ? "cli" : "srv", stack(8)] = count(); }
 tick-$((SECS - 3))s
 { trunc(@os, 12); trunc(@ws, 12);
@@ -238,8 +241,9 @@ start)
 		pmcstat -c "$_c" -n "${PB_SYSSAMP_N:-1000000}" -S "${PB_SYSSAMP_EV:-ls_not_halted_cyc}" -O "$DIR/samp_cpu$_c.log" > "$DIR/samp_cpu$_c.err" 2>&1 &
 		echo $! > "$DIR/samp_cpu$_c.pid"
 	done
-	# PB_SAMPLE_W="pmcstat options" samples W's CPU in system mode
-	if [ -n "${PB_SAMPLE_W:-}" ]; then
+	# PB_SAMPLE_W="pmcstat options" samples W's CPU in system mode (not
+	# under OOB=yes, where W is known only after the run)
+	if [ -n "${PB_SAMPLE_W:-}" ] && [ "$WCPU" != any ]; then
 		# shellcheck disable=SC2086
 		pmcstat -c "$WCPU" $PB_SAMPLE_W -O "$DIR/samp_w.log" > "$DIR/samp_w.err" 2>&1 &
 		echo $! > "$DIR/samp_w.pid"

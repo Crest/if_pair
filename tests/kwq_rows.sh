@@ -8,7 +8,7 @@
 #
 # STAGEFILE: one stage per line, "LABEL MODDIR [L=us] [knob ...]"; MODDIR
 # holds kwq.ko (or kwq/kwq.ko), the knobs are kern.kwq.-relative sysctls
-# set after the load (e.g. net.latency_us=20), L= is the stage's latency
+# set after the load (e.g. net.tick_us=20), L= is the stage's latency
 # bound for the report's predictions and is not a knob.  TESTMOD is the
 # one kwq_test.ko used with every stage (required: a stage's own test
 # module may lack knobs the rows need).  Runs kwq/tests/run_p1b.sh
