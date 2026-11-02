@@ -110,7 +110,34 @@ more.  "kwq:" marks terms this project defines.
   lost and is rung once per burst rather than once per item.  Uses the
   kernel *wakeup* primitive (`wakeup_one(9)`).  A *requeue* never rings
   it (the worker is already running that queue).  Aliases: *poke*
-  (libdispatch), *kick*.  Inherited from if_pair (../NOTES.md).
+  (libdispatch), *kick*.  Inherited from if_pair (../NOTES.md).  The
+  opt-in *tick regime* skips it and the *idle-class wait* softens it;
+  an *urgent* ring takes neither.
+- **tick regime** (kwq) - an opt-in state of one worker,
+  `kern.kwq.<class>.tick_us` (`L`, 0 = off): entered at a doorbell wake
+  after three consecutive sleeps shorter than `L`, the worker sleeps
+  with a timeout of `L` while producers append and skip the doorbell
+  (`doorbells_skipped`), so an item waits at most `L` plus the pass in
+  progress; left after a tick whose round served one element or none.
+  Its timed wakes are counted in the per-worker `ticks`, not to be
+  confused with `hz` *ticks*.  KWQ.md S16, WAKE.md S10-S12.
+- **idle-class wait** (kwq) - the opt-in doorbell for a producer on the
+  worker's own CPU, `kern.kwq.<class>.wake_delay_us` (0 = off): instead
+  of preempting the producer the worker is made runnable at `cap_prio`
+  and runs when the producer sleeps or at that deadline, raised by a
+  callout (`wakes_low`; WAKE.md calls an episode a park, which is not
+  the DRR *park*).  Takes precedence over the tick regime for such a
+  producer.  KWQ.md S16, WAKE.md S11.2, S12.1, S12.4.
+- **urgent** (kwq) - a ring that takes neither opt-in regime: a
+  notifier, a drain, a cancel, or an item enqueued with
+  `kwq_enqueue_urgent()` (if_pair: a packet shorter than
+  `net.link.pair.urgent_bytes`, a pure TCP ACK excepted).  The *urgent
+  nudge* wakes a worker a regime holds back for an urgent item behind a
+  list already placed.  Inside the tick regime
+  `kern.kwq.<class>.tick_urgent_us` (0 = at once) bounds a client's
+  urgent items instead, so those within it share one wake.  A wake hint,
+  never an order: the item keeps its place in the list.  KWQ.md S16,
+  WAKE.md S12.5-12.8.
 - **notifier** (kwq) - `struct kwq_notifier`: a preallocated, client-owned
   item with a pending state kept by kwq and a CPU fixed at init (so one
   (queue, CPU) lock protects the state).  `kwq_notify()` queues it if
@@ -226,9 +253,24 @@ more.  "kwq:" marks terms this project defines.
   500).  From Mogul
   & Ramakrishnan's "limit on CPU usage" feedback (../POOLS.md); SCHED.md
   S6.3.
-- **tick** - one `hz` clock interrupt; `ticks` counts them.  kwq's *tick
-  guard* forces a yield when a tick has elapsed since the last one, the
-  safety net for over-long passes (inherited from if_pair's governor).
+- **hand-over** (kwq) - the share limit's switch at a pass end once the
+  allowance is spent and something else is runnable: the worker lowers
+  itself to `cap_prio` and waits on the run queue until ULE picks it or
+  the period's deadline callout raises it back (`cap_yields`,
+  `cap_restores`).  Not a *yield* (it waits at `cap_prio`, not
+  `yield_prio`) and not a *hand-back* (it sets no `kwq_waiting` flag).
+  SCHED.md S6.3.
+- **budget cut** (kwq) - the share limit inside a pass: while the
+  allowance is spent and `sched_runnable()` is true, `kwq_budget_left()`
+  returns 0, so a cooperative handler ends its pass at the next item
+  (`cap_cuts`).  Cut rounds deliver less than a quantum per queue, which
+  is why the *grace period* counts service.  SCHED.md S6.3, S4.6.
+- **tick** - one `hz` clock interrupt; the kernel's global `ticks`
+  counts them.  kwq's *tick guard* forces a yield when a tick has
+  elapsed since the last one, the safety net for over-long passes
+  (inherited from if_pair's governor).  Not the *tick regime*'s tick, a
+  timed wake of one worker, which the per-worker counter `ticks`
+  (`kern.kwq.<class>.cpu.<N>.ticks`) counts.
 - **time slice** - ULE's allotment for a *timeshare* thread before
   `sched_slice` forces a switch: `stathz/10`, about 94 ms, divided by the
   CPU's load down to about 16 ms.  Not a kwq term;
@@ -264,10 +306,12 @@ more.  "kwq:" marks terms this project defines.
   CPU) list, handed whole to one *pass*.  Not the count budget: if_pair's
   `net.link.pair.batch` sysctl (a packet count) is superseded by the
   *quantum*.
-- **pass** (kwq) - one swap-out of a (queue, CPU) list and the handler
-  calls on it (one per notifier, one for the item list) by one worker;
-  charged to the queue in the worker's own CPU time (`td_runtime` plus
-  the time since its last switch-in, SCHED.md S1a.4).  Alias: *slice*
+- **pass** (kwq) - one swap-out of a (queue, CPU) list and one handler
+  call on it, notifiers among the items (until 2026-10-08 one call per
+  notifier and one for the item list), by one worker; charged to the
+  queue in wall time on the bound CPU for NET and in the worker's own
+  CPU time (`td_runtime` plus the time since its last switch-in) for
+  BULK (SCHED.md S1a.4, amended 2026-10-20).  Alias: *slice*
   (earlier project text; avoided because ULE's *time slice* is unrelated),
   *drain* (illumos squeue).  Probes: `kwq:::pass-start`, `kwq:::pass-end`.
 - **round** (kwq) - one traversal by a worker of its ring, with *new
@@ -286,18 +330,17 @@ more.  "kwq:" marks terms this project defines.
   variant (SCHED.md S4) adds the *new list*, the *grace period*, the
   *carry cap* and the *penalty cap*, and its resource is CPU time, not
   bytes.
-- **overrun** (kwq) - a pass that consumed more than the queue's
-  remaining quantum; counted per (queue, CPU) as `overruns`, probe
-  `kwq:::overrun`.  Alias: *expiry* (earlier project text).  A persistent
-  overrunner should requeue its remainder when `kwq_budget_left()`
-  reaches 0.
 - **boost** (kwq) - the fresh quantum x weight of deficit a queue receives
   when it enters the *new list*.  Alias: *sparse boost* (CAKE).  SCHED.md
   S2, S4.
-- **grace period** (kwq) - the rounds after a queue leaves the ring during
-  which a re-arrival returns it to the ring without a *boost*; kwq's
-  version of fq_codel's move-to-old and CAKE's *decaying* set.  SCHED.md
-  S4.6.
+- **grace period** (kwq) - one ring's worth of service after a queue
+  leaves the ring, `GRACE_SERVICE` = quantum x max(`kw_nactive`, 1),
+  during which a re-arrival returns it to the ring without a *boost*;
+  counted on the worker's service counter `kw_served_us`, which advances
+  only inside passes, so the worker's sleep counts for nothing.  kwq's
+  version of fq_codel's move-to-old and CAKE's *decaying* set.  A round
+  count (`GRACE_ROUNDS` 1) until 2026-10-28, when the *budget cut* made
+  rounds shorter than the service they stood for.  SCHED.md S4.6.
 - **carry cap** (kwq) - the deficit may not exceed two quanta after a
   refill, so unused service carries over for at most one round.  SCHED.md
   S4.2.
@@ -318,8 +361,11 @@ more.  "kwq:" marks terms this project defines.
   costs at most 32 rounds of *park* and a repeat offender is held to
   `pass / (32 Qw)` of a cooperative queue's share.  SCHED.md S4.3, S13.
 - **overrun** (kwq) - a pass that exceeded its *budget* by more than one
-  quantum x weight; counted per (queue, CPU).  A cooperative handler's
-  one-item overshoot is not one.  SCHED.md S4.3.
+  quantum x weight; counted per (queue, CPU) as `overruns`, probe
+  `kwq:::overrun`.  A cooperative handler's one-item overshoot is not
+  one; a persistent overrunner should requeue its remainder when
+  `kwq_budget_left()` reaches 0.  Alias: *expiry* (earlier project
+  text).  SCHED.md S4.3.
 - **progress rule** (kwq) - a handler processes at least one item per
   call before honouring a zero *budget*, so a tiny or pre-consumed budget
   cannot leave a list untouched forever.  SCHED.md S5.
@@ -427,5 +473,6 @@ more.  "kwq:" marks terms this project defines.
 (for drain).  When one of these appears in a citation of an external
 document it is kept verbatim and the kwq term follows in parentheses.
 
-Last revised 2026-09-29 (debt) together with KWQ.md S18 (revision log) and
-SCHED.md.
+Last revised 2026-11-02 (grace in service, one overrun, the tick
+regime, the idle-class wait, urgent, hand-over, budget cut) against
+KWQ.md S16 and SCHED.md S4.6, S6.3.

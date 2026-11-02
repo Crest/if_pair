@@ -28,8 +28,10 @@ if_pair module in the parent directory:
                            scheduler (P1b); BLOCKING monitor (P7)
     kwq_sched.h, kwq_sched.c  the scheduler proper, SCHED.md S4/S6 as
                            pure functions shared with the simulator (P1a)
-    kwq_sdt.c              SDT provider + probe definitions (P2, not yet)
-    kwq_ddb.c              show kwq (P2, not yet)
+    kwq_clock.h, kwq_clock.c  kwq_ticks(), the scheduler's cheap clock
+                           read (2026-10-20)
+    kwq_sdt.c              SDT provider + probe definitions (P2)
+    kwq_ddb.c              show kwq (P2)
     kwq.d                  D translator, installed to /usr/lib/dtrace (P2)
     Makefile               bsd.kmod.mk, KMOD=kwq, EXPORT_SYMS = the KPI
   kwq/SCHED.md             worker scheduler specification (normative for P1)
@@ -843,7 +845,10 @@ Phases
     switch-in instruction and cap_prio 223 removes it; a07 pending (its
     if_pair was loaded and in use).  Next: a07, merge, then decide the
     cap_prio default on the preemption-versus-placement trade; the
-    NIC-fed flow on lab stays unmeasured.
+    NIC-fed flow on lab stays unmeasured.  [Since done: a07 measured
+    2026-10-28 (WAKE.md S11.1), cap_prio 224 stays (S12.3),
+    merged on kwq-next 2026-11-02 (P4e below); the NIC-fed flow is still
+    unmeasured.]
     REBASED 2026-10-28: kwq-p4d-passlevel onto kwq; its ATF run found
     the `gaming` case failing four of six times with 3 to 8 boosts
     where it allows two in three seconds, and none in six runs without
@@ -851,8 +856,12 @@ Phases
     therefore no longer stands for one quantum of service per
     competitor, which is what the grace rule counted; the rule is
     respecified in service, GRACE_SERVICE one ring's worth (SCHED.md
-    S4.6, S8, S12, S17), and the documents follow.  a07 remains
-    unmeasured.
+    S4.6, S7 B6, S8, S12), and the documents follow.  a07 remains
+    unmeasured.  [Corrected the same day: the cut as the cause is argued
+    from invariance, not reproduced; in a quiet session both rules
+    passed gaming 12 of 12, and the extra boosts came from the test's
+    burst producer stalling behind its sibling (SCHED.md S4.6, WAKE.md
+    S11.5).  a07 measured 2026-10-28, WAKE.md S11.1.]
     Mechanisms that were looked at, with what the kernel does about
     each:
     - a preempted handler holds a sleep mutex of the stack (tcpinp,
@@ -1035,10 +1044,92 @@ Phases
     predicts, and the stricter entry does not spare a request-reply
     burst (its requests are spaced by the round trip: a dense producer),
     so L sizes that cost; PTW costs lab's single flow 14 %, not
-    understood; prio_violations 0 everywhere; the grace rule in service
-    passes gaming 12/12.  Compliance lab 35/3, a07 34/4, the failures
-    the entry claim.  Open: the PTW interaction, cap_prio, the NIC-fed
-    flow, the idle-wait deadline sweep.
+    understood [not reproduced: lab's single flow is bimodal at every
+    stage, WAKE.md S12.2; the doorbell precedence it pointed at was a
+    real bug, fixed by 959a3dd, S12.1]; prio_violations 0 everywhere;
+    the grace rule in service passes gaming 12/12, and so does the round
+    rule in the same quiet session (S11.5).  Compliance lab 35/3, a07
+    34/4, the failures the entry claim.  Open: the PTW interaction,
+    cap_prio, the NIC-fed flow, the idle-wait deadline sweep [all but
+    the NIC-fed flow settled 2026-10-29, below].
+    MITIGATED 2026-10-29 (branch kwq-p4g from kwq-p4f 3ed618c; WAKE.md
+    S12, samples/p4g_*): 959a3dd gives the idle-class wait precedence
+    over the tick regime for a producer on the worker's own CPU (the
+    regime stands around the park, cross-CPU producers keep the skip):
+    with both knobs lab's co-located receiver had lost the wait to the
+    tick and a07's had not, so the machine picked the winner (S12.1).
+    The same commit adds kwq_enqueue_urgent(), which rings past both
+    regimes, and if_pair's net.link.pair.urgent_bytes (0 = off), which
+    uses it for packets shorter than the threshold; 80bf240, the urgent
+    nudge, wakes a worker a regime holds back for an urgent item behind
+    a list already placed, the common case of a small packet behind a
+    bulk segment (counter wakes_urgent).  Measured: lab's single flow is
+    bimodal at every stage and with the taskqueue driver, one run in
+    three or four slow, not W's SMT sibling, not boost or power saving,
+    and a07's is too, so S11's 14 % and P's 3 % were that mode and
+    medians of three or four runs separate no stages on that row
+    (S12.2); cap_prio 224 stays: 223 removes only the debug guest's
+    preemption residue, not its overruns, and 224's placement shortcut
+    is invisible on every machine measured (S12.3); the idle-class
+    wait's deadline stays 100 us, 50 gives back about half the gain and
+    buys nothing measurable (S12.4); the tick regime's price on
+    co-scheduled small items is L's, at 20 us nothing on lab and 8/11 us
+    p50/p99 on a07 for the UDP flow beside the bulk flow, at 50 us past
+    B5b on lab, and the quantum is not its lever (S12.5).  urgent_bytes
+    gives the 16-request burst and the sparse flows their latency back
+    under the tick, takes the regime's gain from dense small requests (a
+    64-request burst 18 wakes against 4) and ended every idle-class wait
+    of a receiver pinned to its worker's CPU, whose own small segments
+    rang (S12.5); four resolutions measured on kwq-p4g-urg1..4 (S12.6),
+    which matter only where a receiver or requester shares an otherwise
+    unsaturated CPU with its worker (the flow-count battery, S12.7).
+    URG24 2026-10-29 (crest kept option 2 and asked for 2 and 4
+    together; branch kwq-p4g-urg24, WAKE.md S12.8): 55f5c05, if_pair
+    never marks a pure TCP ACK urgent, a segment without data whose only
+    flag of SYN, FIN, RST, URG and ACK is ACK (pair_pure_ack(); TCP in a
+    tunnel and protocols over UDP stay with the size rule); 4b81481,
+    kern.kwq.<class>.tick_urgent_us (0 = off), a bound of the urgent
+    items' own inside the tick regime: the first that finds the worker
+    asleep arms a wake that much later and those within it ride on it,
+    signals keep ringing at once (counters tick_urgent_deferred,
+    tick_urgent_wakes); b5903c3, a bound at or above tick_us is the
+    tick's own and arms nothing; 780b913, KWQ.md S16 sizes the bound by
+    the requests' spacing, not by L (10 us halved a07's 64-request tail
+    at L 50 and 20 alike, 4 us at 20 coalesced too little to show).
+    Option 2 costs the tick nothing, the flow beside bulk is L's alone,
+    and the wait is untouched with every knob on.  Guest: kwq ATF 25/25,
+    if_pair run_all.sh 34/34.
+    MERGED 2026-11-02 on kwq-next, which is to replace kwq: kwq-p4g
+    (with kwq-p4f and P4d's pass-level limit under it), the test tooling
+    of 2026-10-29 to 11-02 and kwq-p4g-urg24.  The tooling:
+    compare.sh OOB=yes (tput1 and tput16 unpinned, as a user's two jails
+    run them, the flow's worker found afterwards) and DYING_WAIT (how
+    long a teardown waits for dying jails), perbyte_hook.sh (what one
+    single flow costs per byte; per its commit, 538664f, it traced lab's
+    slow mode to the sender's copyin fetching recycled send pages from
+    DRAM, 2026-10-31) and qdepth_hook.sh (one flow's queue depth and the
+    item limit sweep), ctrsample.c and thrsample.c (samplers that hook
+    nothing), kwq_rows.sh with the urgent counters.
+    REVIEWED 2026-11-02 against the specification, fixed: a tick
+    episode counts as coalesced only by the round a tick woke (it was
+    marked by the round before the sleep, at an episode's first tick the
+    doorbell's that entered the regime, so an episode whose entering
+    round served two items or more counted as coalesced and its hold-off
+    was reset where it should have doubled);
+    kw_served_us carries its sub-microsecond remainder (every pass lost
+    its fraction, and a worker serving only one-item NET passes, shorter
+    than a microsecond, held the grace rule's clock nearly still, so
+    returning queues read as warm and lost their boost);
+    kwq_enqueue_urgent() and kwq_name_valid() are exported (if_pair
+    linked only through debug.link_elf_leak_locals); KWQ_NO_SDT stubs
+    every SDT_PROBEn and builds again; the urgent nudge reports a worker
+    in the idle class as awake, and kwq:::cap's restore at pass begin
+    gets the pass's clock; comments and two sysctl descriptions follow
+    the merged code.  The service counter changes default behaviour
+    where passes are short, the tick fix the regime's hold-off; the
+    batteries of WAKE.md S11-S12 ran the old rules.
+    Open: the NIC-fed flow, unmeasured on any machine, and with it
+    whether notifiers, drains and cancels stay urgent (WAKE.md S12.6).
 
 [DECIDED 2026-10-09] Fork resolved: continue with kwq; netisr is to be
     reimplemented on top of kwq (KWQ.md S8 migration step 2, PLAN P8's

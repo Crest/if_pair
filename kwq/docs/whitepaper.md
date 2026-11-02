@@ -416,12 +416,12 @@ for) rejoins the ring rather than the new list.  A queue that goes idle from
 the new list, the genuinely light one the mechanism exists for, is
 eligible again immediately.
 
-**Rounds, not time, are the clock.**  The round counter advances only
-while the worker has work.  This is not an approximation of a timer: the
-harm a boost can do is measured in the service other queues lose, and
-they are only served during rounds.  While the worker sleeps nobody is
-being served, so a boost given or withheld then has nothing to take
-from.
+**Service, not time, is the clock.**  The worker's service counter,
+`kw_served_us`, advances only inside passes.  This is not an
+approximation of a timer: the harm a boost can do is measured in the
+service other queues lose, and they are only served during passes.
+While the worker sleeps nobody is being served, so a boost given or
+withheld then has nothing to take from.
 
 ### 5.5 The debt rule
 

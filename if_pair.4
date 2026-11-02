@@ -1,5 +1,5 @@
 .\" SPDX-License-Identifier: BSD-2-Clause
-.Dd September 23, 2026
+.Dd November 2, 2026
 .Dt IF_PAIR 4
 .Os
 .Sh NAME
@@ -287,14 +287,22 @@ the network class,
 .Va kern.kwq.net.tick_us
 and
 .Va kern.kwq.net.wake_delay_us .
+Inside the tick regime, with
+.Va kern.kwq.net.tick_urgent_us
+set below
+.Va kern.kwq.net.tick_us ,
+an urgent packet that finds the worker asleep waits at most that many
+microseconds instead, and the urgent packets within that bound share
+one wake.
 It is the exemption for a pair that carries bulk segments and small
-latency-bearing packets \(em requests, replies, pure ACKs \(em through
+latency-bearing packets \(em requests and replies \(em through
 one worker: those regimes buy their wakes from the bulk traffic and
 charge their bound to everything else on the worker, and this says
 which packets do not pay.
-Each exempt packet costs a wake, so a setting high enough to cover the
-bulk traffic undoes the regimes entirely; with both regimes off the
-variable changes nothing.
+Each exempt packet costs a wake, or a share of one within
+.Va kern.kwq.net.tick_urgent_us ,
+so a setting high enough to cover the bulk traffic undoes the regimes
+entirely; with both regimes off the variable changes nothing.
 A TCP segment without data that only acknowledges (a pure ACK or window
 update) is never urgent: a receiver pinned to its worker's CPU sends
 those from that CPU, and as urgent packets they would end every wait of
@@ -308,7 +316,7 @@ queues, timers and user processes is governed by the network class of
 .Xr kwq 9 ,
 under
 .Va kern.kwq.net ,
-in particular the per-pass quantum
+in particular the per-round quantum
 .Va kern.kwq.net.quantum_us .
 Each side's queue appears under
 .Va kern.kwq.net.queue
