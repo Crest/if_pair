@@ -708,8 +708,8 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	}
 	kw->kw_pass_rt = curthread->td_runtime;
 	cpu_now = kwq_cputime_ns_tick(kw, &t0);
-	cap = ks_pass_begin(kw, kc, cpu_now,
-	    net ? cpu_now : ks_ticks2ns(t0, kw->kw_ns_scale));
+	wall = net ? cpu_now : ks_ticks2ns(t0, kw->kw_ns_scale);
+	cap = ks_pass_begin(kw, kc, cpu_now, wall);
 	kwq_kc_unlock(kc);
 	/*
 	 * S6.3 and the promise of ../KWQ.md S3: a pass runs at the class
@@ -734,10 +734,9 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	kwq_class_prio_restore(kw);
 	if (__predict_false(kw->kw_knobs->cap_permille < 1000)) {
 		if (cap == KS_CAP_RESTORE)
-			kwq_cap_act(kw, cap, 0);
+			kwq_cap_act(kw, cap, wall);
 		SDT_PROBE6(kwq, , , cap, kw->kw_class, kw->kw_cpu, KWQ_CAP_PASS,
-		    (net ? cpu_now : ks_ticks2ns(t0, kw->kw_ns_scale)) - kw->kw_cap_start,
-		    kw->kw_cap_used, kw->kw_pass_budget);
+		    wall - kw->kw_cap_start, kw->kw_cap_used, kw->kw_pass_budget);
 	}
 	SDT_PROBE4(kwq, , , pass__start, q, kc->kc_cpu, n, age);
 	requeued0 = kc->kc_requeued;
