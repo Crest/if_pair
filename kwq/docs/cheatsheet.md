@@ -264,8 +264,9 @@ This is promised to the handler, and the promise is checked (KWQ.md S3,
 "Priority, promised"): the priority holds from the call to the return,
 the worker demotes, yields or hands the CPU over only between handlers,
 and a handler must not depend on priority propagation to anything it
-blocks.  A module built with `KWQ_HARD_INVARIANTS` panics on a pass
-that begins below the class priority; the default build counts it in
+blocks.  A module built with `KWQ_HARD_INVARIANTS` asserts that no
+pass begins below the class priority, a panic on an INVARIANTS kernel;
+the default build counts it in
 `kern.kwq.<class>.cpu.<N>.prio_violations`, which reads zero on a
 conforming build, so a non-zero value is kwq's bug or a knob outside
 the specification, never the client's.
@@ -311,13 +312,13 @@ there is nothing better to assume:
   slice: a deliberate fairness cost, p99 120 to 720 us measured.
 
 Two class knobs an operator may turn on trade latency for CPU on top of
-B5b, both off by default and neither visible in the KPI (KWQ.md S16;
-specified 2026-10-28 and implemented on branch `kwq-p4f` for
-measurement, so a merged module has neither knob yet):
+B5b, both off by default and neither visible in the KPI (KWQ.md S16),
+and a third bounds your urgent items inside the first:
 
 | knob | what it does to your queue |
 |---|---|
-| `kern.kwq.<class>.tick_us` | the worker sleeps with a timeout of `tick_us` while its producer is dense, producers append without ringing the doorbell (`doorbells_skipped`), and what accumulated is served when the tick fires: an item that arrives while the regime is on waits at most `tick_us` plus the pass in progress.  Off (0) by default; 20 us where it is worth having, a dense producer on a worker that is busy but not saturated |
+| `kern.kwq.<class>.tick_us` | the worker sleeps with a timeout of `tick_us` while its producer is dense, producers place their lists without waking it (`doorbells_skipped`), and what accumulated is served when the tick fires: an item that arrives while the regime is on waits at most `tick_us` plus the pass in progress.  Off (0) by default; 20 us where it is worth having, a dense producer on a worker that is busy but not saturated |
+| `kern.kwq.<class>.tick_urgent_us` | inside the tick regime, an item you enqueue with `kwq_enqueue_urgent()` that finds the worker asleep wakes it this much later instead of at once, so the urgent items within the bound share one wake; a bound at or above `tick_us` arms nothing.  Off (0, at once) by default; sized by the spacing of your urgent items, not by `tick_us` (KWQ.md S16).  Notifiers, drains and cancels are not affected |
 | `kern.kwq.<class>.wake_delay_us` | an enqueue from the worker's own CPU no longer preempts the producer: the worker becomes runnable in the idle class at `cap_prio` and runs when the producer sleeps or at this deadline, whichever is first.  An item from the worker's CPU waits at most the deadline; an enqueue from another CPU rings the doorbell as before.  Off (0) by default; 100 us where it is worth having, a receiver or producer pinned to its worker's CPU |
 
 Neither knob touches B5a, by construction.  With both set, a producer
@@ -327,12 +328,14 @@ producer sleeps, sooner than the next tick.  If your client's latency
 budget cannot absorb `tick_us`, say so in its documentation: the knob
 is the operator's, per class, and your queue shares the class.  One
 item can opt out: `kwq_enqueue_urgent()` rings the doorbell past both
-regimes, which is what if_pair's `net.link.pair.urgent_bytes` does for
-packets under a size threshold.  It costs the wake the regimes save, so
-it is for a small latency-bearing minority of the items, not for all of
-them, and it ends the idle-class wait too: a producer on the worker's
-own CPU that marks its own small items urgent never parks (WAKE.md
-S12.5).
+regimes, at once or, inside the tick regime with `tick_urgent_us` set,
+at most that much later, which is what if_pair's
+`net.link.pair.urgent_bytes` does for packets under a size threshold,
+pure TCP ACKs and window updates excepted.  It costs the wake the
+regimes save, so it is for a small latency-bearing minority of the
+items, not for all of them, and it ends the idle-class wait too: a
+producer on the worker's own CPU that marks its own small items urgent
+never parks (WAKE.md S12.5).
 
 ## 6. Teardown
 
@@ -590,6 +593,11 @@ sysctl kern.kwq.net.wake_delay_us kern.kwq.net.cpu.3.wakes_low \
        kern.kwq.net.cpu.3.wake_promotions_deadline \
        kern.kwq.net.cpu.3.wake_promotions_urgent
 
+# your urgent items: woken at once, or held to tick_urgent_us?
+sysctl kern.kwq.net.tick_urgent_us kern.kwq.net.cpu.3.wakes_urgent \
+       kern.kwq.net.cpu.3.tick_urgent_deferred \
+       kern.kwq.net.cpu.3.tick_urgent_wakes
+
 # did any pass begin below the class priority?  it must read 0
 sysctl kern.kwq.net.cpu.3.prio_violations
 
@@ -601,13 +609,18 @@ sysctl kern.kwq.net.queue.myq.cpu.3.overruns \
 `ticks` are the timeouts that fired, `ticks_empty` those that found
 nothing, `ticks_single` those that served one element (the regime's
 exit condition), `tick_enters` and `tick_exits` the episodes, `tick_ns`
-the wall time spent in the regime and `tick_barren` the episodes that
-coalesced nothing and therefore doubled the entry hold-off.
-`wakes_low` counts the waits placed in the idle class and
+the wall time spent in the regime and `tick_barren` the episodes in
+which no tick coalesced anything and which therefore doubled the entry
+hold-off.  `wakes_low` counts the waits placed in the idle class and
 `wake_low_ns` their total length, so the quotient is the mean wait;
 `wake_self` are the waits the worker ended by getting the CPU on its
 own, `wake_promotions_deadline` those the deadline ended and
-`wake_promotions_urgent` those an urgent caller cut short.
+`wake_promotions_urgent` those an urgent ring, an enqueue from another
+CPU or the share limit's deadline cut short.  `wakes_urgent` are the
+wakes an urgent item or notifier gave a sleeping worker behind a list
+already placed, `tick_urgent_deferred` the urgent items held back by
+`tick_urgent_us` and `tick_urgent_wakes` the wakes that bound gave
+them, one per window.
 `overruns - overruns_switched` is your handler's own excess; the rest
 is time the worker spent off the CPU inside your pass.
 
