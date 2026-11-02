@@ -30,7 +30,7 @@ what this specification takes.
 | DRR (Shreedhar & Varghese, SIGCOMM 1995 / ToN 1996) | bytes; quantum >= max packet for O(1) | deficit counter per queue, +quantum per round, serve while deficit >= packet, deficit reset to 0 when the queue empties | one round: N x quantum | none needed (packets are the unit) | the deficit counter, the per-round refill, the reset on empty, the term "round" |
 | dummynet WRR, `sys/netpfil/ipfw/dn_sched_rr.c` (FreeBSD 15) | bytes | `credit += quantum` when the head packet does not fit, `credit -= len` when served; `quantum = q_bytes x weight` | one round | none | `quantum x weight` as the per-queue refill |
 | fq_codel, Linux `net/sched/sch_fq_codel.c` (master, 2026) | bytes; `quantum = clamp(psched_mtu, 256, 64K)` | DRR over flows | new flows served first for one quantum | a **new** flow that empties is moved to the tail of `old_flows` if `old_flows` is non-empty, else deleted; deficit `<= 0` -> `+= quantum` and move to `old_flows` tail | the two lists (new, old); the empty-new-flow rule as the seed of S4's grace rule |
-| CAKE DRR++, Linux `net/sched/sch_cake.c` (master, 2026) | bytes, `quantum` scaled per host (`quantum_div[host_load]`) | DRR with sparse (new), bulk (old) and **decaying** sets | sparse flows first, with a full quantum "sparse boost" | a bulk flow that empties becomes *decaying* and keeps its set membership; a packet arriving while decaying returns it to bulk **without** the boost (`CAKE_SET_SPARSE_WAIT`); only a flow that has fully decayed is deleted and can be sparse again | the decaying idea, as S4's *grace period*: a queue that leaves the ring is not eligible for the boost until it has been idle for a full round |
+| CAKE DRR++, Linux `net/sched/sch_cake.c` (master, 2026) | bytes, `quantum` scaled per host (`quantum_div[host_load]`) | DRR with sparse (new), bulk (old) and **decaying** sets | sparse flows first, with a full quantum "sparse boost" | a bulk flow that empties becomes *decaying* and keeps its set membership; a packet arriving while decaying returns it to bulk **without** the boost (`CAKE_SET_SPARSE_WAIT`); only a flow that has fully decayed is deleted and can be sparse again | the decaying idea, as S4's *grace period*: a queue that leaves the ring is not eligible for the boost until the others have received one ring's worth of service since it left |
 | Linux NAPI, `net/core/dev.c`, `Documentation/admin-guide/sysctl/net.rst` | packets **and** time: `dev_weight` 64 per poll, `netdev_budget` 300 and `netdev_budget_usecs` 2000 per softirq cycle, "whichever comes first"; leftovers go to `ksoftirqd` | round robin over NAPI instances | one softirq cycle <= 2 ms | none | the time bound as the primary limit (item counts stretch with item size: if_pair's batch=64 at 64 KB overran a tick); **not** taken: the ksoftirqd fallback (KWQ.md S5 "no punting") |
 | illumos squeues, `uts/common/inet/squeue.c` | time: `squeue_drain_ms = 20` for non-worker drains; the worker thread drains without limit | none across squeues (one per CPU) | 20 ms for interrupt-context drains | none | confirmation that a time budget is the accepted unit for protocol-processing drains; 20 ms is far above what NET wants |
 | FreeBSD netisr, `sys/net/netisr.c` | none: `netisr_process_workstream_proto()` swaps the whole per-protocol list and runs it to completion | none | none (queue limit only, `net.isr.maxqlimit`) | none | the list swap (kwq's pass); the gap it leaves is why kwq exists |
@@ -43,7 +43,7 @@ what this specification takes.
 | BFQ (Valente & Checconi 2010; Linux `block/bfq-iosched.c`) | sectors: a *budget* per queue, adapted to what the queue used | WF2Q+ over budgets | one budget | budget shrinks for queues that do not use it | the vocabulary "budget" for the amount a pass may consume; adaptive budgets are S11 (rejected for now) |
 | Xen credit scheduler (Xen 3.x `xen/common/sched_credit.c`) | CPU time: credits debited per 10 ms tick, 30 ms accounting period, weights and caps per domain | credits = a deficit counter for CPUs | a waking vCPU gets `BOOST` priority ahead of `UNDER` vCPUs | BOOST was abused by vCPUs that woke often; credit2 replaced it with a rate-limit and a "ratelimit_us" minimum run | confirmation that a "new arrival goes first" rule for CPU work needs the same anti-gaming as for packets (S4.6), and that a per-consumer **cap** is a legitimate non-work-conserving policy (S6.3) |
 | Linux CFS bandwidth controller (`kernel/sched/fair.c`, `cpu.cfs_quota_us`/`cpu.cfs_period_us`, 2011) | CPU time: a quota per period per group; a group that exhausts it is *throttled* until the period ends | proportional share by weight, plus the cap | n/a | the quota is refilled per period, unused quota does not accumulate beyond the period ("burst" was added later, bounded) | the shape of S6.3's cap (busy fraction over a window, then sleep) and the carry cap in S4.2: unused service carries at most one refill |
-| Linux CFS sleeper fairness -> EEVDF (`kernel/sched/fair.c`, 2007 -> 2023) | CPU time: a waking task was placed at `min_vruntime - sched_latency/2` (a boost) | vruntime | the boost gave wakers low latency | the boost was gamed by tasks sleeping briefly; EEVDF keeps *lag* across sleeps and decays it, so a brief sleep no longer resets a negative balance | S4.6's grace rule is the same repair applied to queues: an idle period shorter than a round does not erase the queue's ring membership |
+| Linux CFS sleeper fairness -> EEVDF (`kernel/sched/fair.c`, 2007 -> 2023) | CPU time: a waking task was placed at `min_vruntime - sched_latency/2` (a boost) | vruntime | the boost gave wakers low latency | the boost was gamed by tasks sleeping briefly; EEVDF keeps *lag* across sleeps and decays it, so a brief sleep no longer resets a negative balance | S4.6's grace rule is the same repair applied to queues: an idle period during which the others received less than one ring's worth of service does not erase the queue's ring membership |
 
 Two facts from this survey shape the rest: every deployed round-robin
 scheduler that serves *flows* found it necessary to add a "new" list
@@ -180,8 +180,8 @@ Per worker (`struct kwq_worker`, one per (class, CPU)):
 | `kw_active` | producers (grace rule, S4.1) and the worker, under `kw_mtx` | the ring, in round-robin order |
 | `kw_nactive` | producers and the worker, under `kw_mtx` | ring length, fixes the number of ring entries a round visits |
 | `kw_nnew` | producers and the worker, under `kw_mtx` | new-list length, fixes the number of entries the bounded tail serves (S4.2); kept by the doorbell and the take, so the tail needs no walk of the list (2026-09-29: the walk it replaced ran under the spin lock over one cold line per entry) |
-| `kw_served_us` | the worker, plain store; read by producers under `kw_mtx` (one possibly stale read per doorbell) | microseconds of pass service delivered since the worker started; advances only inside passes, so it stands still while the worker sleeps (S4.6) |
-| `kw_round` | the worker, plain store; read by producers under `kw_mtx` (one possibly stale read per doorbell, harmless: at worst one boost given or withheld) | round counter, for the grace rule; `uint64_t` (S13) |
+| `kw_served_us`, `kw_served_rem` | the worker at pass end, under `kw_mtx` like `kw_nactive`; read by producers under `kw_mtx`, so the doorbell reads both current | microseconds of pass service delivered since the worker started, the nanoseconds short of the next microsecond carried in `kw_served_rem`, so that a pass adds exactly its duration, also below 1 us; advances only inside passes, so it stands still while the worker sleeps (S4.6) |
+| `kw_round` | the worker | round counter (the `round` sysctl, DDB); `uint64_t` (S13); the grace rule's clock until 2026-10-28 (S4.6) |
 | `kwq_waiting[class]` (per CPU, outside the worker struct) | each class's worker, plain volatile store; read by lower classes on the same CPU | hand-back flags (S6.4) |
 | `kw_cur`, `kw_pass_start`, `kw_pass_budget` | the worker | the pass in progress, for `kwq_budget_left()` and `kwq_requeue()`; `kw_cur` and `kc_state = RUNNING` are set the moment `ks_next()` hands a queue over (I2 holds between the pop and the pass) |
 | `kw_served` | the worker | passes served in the current round; the hand-back (S6.4) applies only once it is non-zero |
@@ -217,10 +217,11 @@ Triggered by the first enqueue or notify into an IDLE list:
     wake the worker if it sleeps
 
 `GRACE_SERVICE` is one ring's worth of service, `Q x kw_nactive` at the
-doorbell: a queue is still "warm" until the other queues have received
-what one full round would have given them (S4.6).  (A producer reading
-`kw_served_us` and `kw_nactive`, worker-private counters, is a deliberate
-cross-CPU read once per burst; it is not on the per-item path.)
+doorbell, an empty ring counting as one: a queue is still "warm" until
+the other queues have received what one full round would have given
+them (S4.6).  (A producer reading `kw_served_us` and `kw_nactive`, the
+worker's counters, under `kw_mtx` is a deliberate cross-CPU read once
+per burst; it is not on the per-item path.)
 
 ### 4.2 Round (worker)
 
@@ -278,9 +279,10 @@ nanoseconds plus the end-of-round yield.
     each notifier as it fetches its successor; settle an unwalked head/tail
     dt = ns(cputime_self() - r0)        # CPU time the worker ran, S1a.4
     kc_cycles += cpu_ticks() - t0       # wall time, for latency diagnosis
-    kw_win_busy += dt; kw_busy_ns += dt
+    kw_cap_used += dt; kw_busy_ns += dt
     if dt > kw_pass_budget + Qw(kc): kc_overruns++  # more than one item over
-    kw_served_us += dt / 1000                     # service delivered, S4.6
+    kw_served_rem += dt                           # service delivered, S4.6,
+    kw_served_us += kw_served_rem / 1000; kw_served_rem %= 1000   # rest carried
     kc_deficit = max(kc_deficit - dt, -penalty_rounds x Qw(kc))   # S13
     lock kc
     if lists non-empty:
@@ -399,9 +401,10 @@ the expense of continuously backlogged queues; fq_codel's move-to-old
 and CAKE's decaying set exist for exactly this.  kwq's version: a queue
 that goes idle *from the ring* records how much service the worker had
 delivered by then (`kw_served_us`); a re-arrival before the worker has
-delivered `GRACE_SERVICE` more, one ring's worth, `Q x kw_nactive`, puts
-it back on the ring tail with its deficit as it was (reset to 0 at idle,
-so it waits for the next refill like any ring member); a re-arrival
+delivered `GRACE_SERVICE` more, one ring's worth, `Q x kw_nactive` (an
+empty ring counts as one), puts it back on the ring tail with its
+deficit as it was (reset to 0 at idle, so it waits for the next refill
+like any ring member); a re-arrival
 later goes to the new list with a boost.  A queue that goes idle *from
 the new list* (it never needed the ring) clears `kc_warm` and is
 eligible for the boost again immediately: that is the light queue the
@@ -684,7 +687,7 @@ items by the budget estimate's cadence (S4.4, `K` 8), for a cooperative
 handler, and the remainder of the current pass for a handler that
 ignores its budget.
 
-**Coming back.**  Three ways, all between passes.  ULE picks the
+**Coming back.**  Two ways, both between passes.  ULE picks the
 waiting worker when nothing better is runnable, which is the
 work-conserving case.  The deadline callout, running on the worker's CPU
 from the timer interrupt, raises it to the class priority while it waits
@@ -744,8 +747,9 @@ threads the limit is meant to serve and, if it is at or above another
 class's priority, lets a waiting worker of this class outrank that
 class's passes (S6.4), which is legal and pointless outside an
 experiment.  A change applies at the next hand-over; a worker already
-waiting keeps its old priority until the deadline or its next pass
-begin restores the class priority.
+waiting keeps its old priority until the deadline raises it or it gets
+the CPU, when the hand-over restores the class priority as its switch
+returns (pass begin is the second guard).
 
 **Under 4BSD.**  The specification holds with a coarser gate.  4BSD's
 `sched_runnable()` answers for the global run queue as well as the CPU's
@@ -813,6 +817,7 @@ hand-over bound instead of an immediate one.
                    if over and sched_runnable():
                        if first hand-over of the period: arm the deadline
                        sched_prio(cap_prio); mi_switch(SW_VOL); cap_yields++
+                       sched_prio(class priority) as the switch returns
                        (no kwq_waiting flag; counts as the tick guard's
                         voluntary switch; no round-end yield after it)
     the callout:   under kw_mtx and the thread lock: fired = true,
@@ -946,17 +951,26 @@ client's `c_max`; `Y` the time the yielded-to threads run at a yield
   weight-1 queues: `<= n(2Q + c) + Y`.
 - **B5a Latency, isolated item.**  An item that finds its worker asleep
   pays one sleep-wake and nothing else: the doorbell, the switch-in,
-  one pass.  Nothing in kwq may delay the first wake of a backlog.
+  one pass.  With `tick_us` and `wake_delay_us` at 0, the defaults,
+  nothing in kwq may delay the first wake of a backlog.  Each opt-in
+  regime of KWQ.md S16 trades wakes for a bound of its own: an item
+  that finds the worker asleep in the tick regime waits at most `L`
+  plus the pass in progress, one from the worker's own CPU under the
+  idle-class wait at most `wake_delay_us`; an urgent item takes
+  neither, except `tick_urgent_us` inside the tick regime.
   Measured through the pair, two hops per round trip: 8 us on lab,
   14 us on a07 (WAKE.md S7.5, S10.3), equal to a direct wakeup within
-  1 us; every wake-moderation mechanism is judged against this row
+  1 us, and the isolated request untouched by either regime (WAKE.md
+  S12.5); every wake-moderation mechanism is judged against this row
   first.
 - **B5b Latency, item beside a busy queue.**  The pass in progress
   (B1) plus one quantum-bounded pass of the other queue; measured p99
   25 us on lab, 38 us on a07 for a request-reply flow beside a bulk
-  flow.  An optional tick regime (KWQ.md S16) adds its bound `L` to
-  this row and nothing to B5a, which is why `L` is sized below this
-  row's p99.
+  flow.  Like B5a it holds with `tick_us` and `wake_delay_us` at 0.
+  The tick regime adds up to `L` to this row, the idle-class wait up
+  to `wake_delay_us` for an item from the worker's own CPU; KWQ.md S16
+  sizes `L` at 20 to 50 us, and 20 us keeps the request-reply row
+  within this one (WAKE.md S12.5).
 - **B5c Latency, user thread competing for the CPU.**  At most one
   `cap_period` plus one pass, the share limit's hand-over (S6.3), not a
   ULE slice; a deliberate fairness cost, p99 120 to 720 us measured
@@ -977,9 +991,10 @@ client's `c_max`; `Y` the time the yielded-to threads run at a yield
   indebted queue needs that many refills, S4.3).
 - **B9 Cost.**  Per enqueue: unchanged from P0 (one lock, one append,
   one state check).  Per item on the consumer side: the budget check,
-  about 20 ns.  Per doorbell: one more read (`kw_round`) and one list
-  append.  Per pass: about 200-300 ns of clock reads, arithmetic and
-  list moves.  Per round: one yield if anything else is runnable.
+  about 20 ns.  Per doorbell: two more reads (`kw_served_us`,
+  `kw_nactive`) and one list append.  Per pass: about 200-300 ns of
+  clock reads, arithmetic and list moves.  Per round: one yield if
+  anything else is runnable.
   Details and the measurement plan: S15.
 
 ## 8. Parameters
@@ -993,9 +1008,13 @@ client's `c_max`; `Y` the time the yielded-to threads run at a yield
 | `kern.kwq.<class>.cap_permille` | class, RWTUN | 500 | share of its CPU the worker may spend in passes per period while other threads are runnable, in 1/1000; the rest of the period it waits between passes as an idle-priority thread; 1000 = off, and the worker then obeys ULE's slice end as a process would (S6.3) |
 | `kern.kwq.<class>.cap_period_us` | class, RWTUN | 1000 | the period of the share limit; also the bound on how long the CPU is given away at a time |
 | `kern.kwq.<class>.cap_prio` | class, RWTUN | `PRI_MIN_IDLE` (224) | the priority the worker waits at between passes while over its allowance, never the priority of a pass; `PRI_MAX_TIMESHARE` (223) is the other useful value (no idle-affinity shortcut, preempted only by priorities <= `preempt_thresh`); any priority below the class priority up to `PRI_MAX_IDLE` (255) is accepted for experiments (S6.3) |
-| `GRACE_SERVICE` | derived | `Q x kw_nactive` at the doorbell | anti-gaming window in service delivered to the other queues (S4.6); replaced `GRACE_ROUNDS` 1 on 2026-10-28 when the budget cut broke the round count; the P1a sweep's finding that one and two rounds are indistinguishable carries over (S12) |
+| `GRACE_SERVICE` | derived | `Q x max(kw_nactive, 1)` at the doorbell: an empty ring counts as one | anti-gaming window in service delivered to the other queues (S4.6); replaced `GRACE_ROUNDS` 1 on 2026-10-28 when the budget cut broke the round count; the P1a sweep's finding that one and two rounds are indistinguishable carries over (S12) |
 | `kern.kwq.<class>.budget_check_every` | class, RWTUN | 8 | `K` of S4.4: `kwq_budget_left()` reads the clock at least every `K` calls; 1 = read on every call (exact B1, expensive with cheap items); validated to `[1, 64]` |
 | `kern.kwq.<class>.penalty_rounds` | class, RWTUN | 32 | debt clamp in quanta: how many rounds an overrunning queue can be parked at most (S4.3).  Validated to `[1, 1024]` by the sysctl handler: 0 would make overruns free, since the deficit could never go negative |
+| `kern.kwq.<class>.limit` | class, RWTUN | 4096 | default per-CPU item limit of a queue created with `limit` 0, read at create; a queue's own is `kern.kwq.<class>.queue.<name>.limit`, RW, `[1, INT_MAX]` (KWQ.md S10.7) |
+| `kern.kwq.<class>.tick_us` | class, RWTUN | 0 (off) | the tick regime's bound `L` (KWQ.md S16): after three consecutive sleeps shorter than `L` the worker sleeps with `L` as its timeout and producers place their lists without waking it, until a tick serves one element or none; adds up to `L` to B5a and B5b; validated to `[0, 100000]` |
+| `kern.kwq.<class>.wake_delay_us` | class, RWTUN | 0 (off) | the idle-class wait (KWQ.md S16): an enqueue from the worker's own CPU makes the sleeping worker runnable in the idle class at `cap_prio`, promoted when it gets the CPU or at this deadline; an enqueue from another CPU rings the plain doorbell; validated to `[0, 1000000]` |
+| `kern.kwq.<class>.tick_urgent_us` | class, RWTUN | 0 (at once) | inside the tick regime, how much later an urgent item (`kwq_enqueue_urgent()`) that finds the worker asleep wakes it, so that urgent items within the bound share one wake; at or above `tick_us` it arms nothing and the tick serves them; validated to `[0, 100000]` |
 
 Choosing `Q`: one to two orders of magnitude above the heaviest common
 item (a TSO chain through `ip_input` ~10 us -> 200 us is ~20 chains), at
@@ -1419,9 +1438,11 @@ run it.
 - **A ksoftirqd-style fallback thread for overrun work.**  Rejected in
   KWQ.md S5: it moves the problem to a lower-priority thread and makes
   tail latency depend on unrelated load.
-- **Time-based grace instead of round-based.**  The harm of a boost is
-  one `Qw` per round of the others' service, so rounds are the natural
-  unit; a time constant would need tuning per quantum.
+- **Time-based grace instead of service-based.**  The harm of a boost
+  is one `Qw` taken from the others' service, so service is the natural
+  unit (S4.6; rounds were, until the budget cut made them shorter than
+  the service they stood for); a time constant would need tuning per
+  quantum.
 
 ## 12. Open questions
 
@@ -1430,7 +1451,7 @@ run it.
   and a share of 0.80 of the flood's for pauses of 10, 50 and 200 us
   under either setting, and is boosted only when its pause exceeds a
   round (500 us and up), identically for 1 and 2.  `GRACE_ROUNDS` stays
-  1.  A time-based grace was rejected in S4.6 ("Rounds as the clock").
+  1.  A time-based grace was rejected in S4.6 ("Service as the clock").
   Superseded 2026-10-28: the window is `GRACE_SERVICE`, one ring's worth
   of service, because the share limit's budget cut made rounds shorter
   than the service they stand for (S4.6); the sweep's conclusion carries
@@ -1482,8 +1503,8 @@ true difference is far below half the type's range.
 | `kwq_budget_left()` | `uint64_t` ns | `budget - elapsed` | negative result; stale estimate (S4.4) | computed in `int64_t`, clamped at 0; the estimate is used only while it leaves more than `Qw/10` and for at most `K` calls, so its staleness is bounded by `K` items (B1) and a real read always ends the pass |
 | `Q`, `Qw`, `2Qw` | `uint64_t` ns from `quantum_us` (`u_int`) | `quantum_us` validated to `[10, 1000000]`, `w` to `[1, 8]` | `Q = 0` parks every queue forever; an unvalidated `UINT_MAX` us x 8 x 1000 = 3.4e16 would still fit, but is nonsense | the sysctl handler rejects values outside the range; weight 0 is read as 1 at create |
 | `kw_round` | `uint64_t` | ~1e6 rounds/s worst case: 2^64 lasts 5.8e5 years | a 32-bit counter would wrap in 71 minutes at that rate | 64-bit |
-| `kw_served_us` | `uint64_t` | one microsecond per microsecond of pass time: 2^64 lasts 5.8e5 years | the low 32 bits producers compare wrap every 71 minutes of service | 64-bit; the comparison is unsigned on the low 32 bits, as for `kc_idle_served` |
-| `kc_idle_served` | `u_int` (block 0 has 4 bytes left, S17) | the low 32 bits of `kw_served_us` | wraps every 71 minutes of pass service | only the unsigned difference to `kw_round` is used; validity is the `kc_warm` flag, not a sentinel; a wrapped difference can only make a queue idle for exactly a multiple of 2^32 rounds read as warm, which costs it one boost |
+| `kw_served_us`, `kw_served_rem` | `uint64_t` | one microsecond per microsecond of pass time, the rest of each pass below a microsecond carried in `kw_served_rem` (< 1000 ns): 2^64 lasts 5.8e5 years | the low 32 bits producers compare wrap every 71 minutes of service; truncating each pass to whole microseconds would drop up to 1 us a pass, all of a NET pass of one small item | 64-bit; the comparison is unsigned on the low 32 bits, as for `kc_idle_served`; the rest is carried, so the counter loses nothing |
+| `kc_idle_served` | `u_int` (to fit block 0, S17) | the low 32 bits of `kw_served_us` | wraps every 71 minutes of pass service | only the unsigned difference to the low 32 bits of `kw_served_us` is used, and the window it is compared with is clamped to 2^31 - 1 us; validity is the `kc_warm` flag, not a sentinel; a wrapped difference can only make a queue idle for a multiple of 2^32 us of service, to within the window, read as warm, which costs it one boost |
 | `ticks`, `td_swvoltick` | `int` | wraps every 24.8 days at hz = 1000 | signed wrap | the tick guard uses `(u_int)ticks - (u_int)td_swvoltick >= 1`, the kernel's own idiom, correct across the wrap |
 | `kc_empty_since` | `sbintime_t` (`int64_t`, 32.32 fixed point) | uptime wraps after 68 years | cross-CPU stamp; wrap | `sbinuptime()` is one global monotonic clock, so a producer on CPU A stamping and the worker on CPU B reading do not compare two TSCs (the P0 code stamps with `cpu_ticks()`, unused so far; P1 switches it); differences only; 68 years is the kernel-wide limit and not kwq's to fix  **Conversion overflow** (2026-09-29): the first `kwq_sbt2ns()` multiplied the whole 32.32 value by 1e9 and wrapped after 2.1 s of uptime, so every absolute wall stamp it produced (cap window, `kwq:::round-end`) was garbage; found by the round-end probe reporting negative round lengths, fixed with `sbttons()`, which splits the multiply |
 | `kw_cap_used`, `kw_busy_ns`, `kw_idle_ns`, `kc_cycles`, all counters | `uint64_t` | at 1e9/s, 584 years | wrap | monotonic counters; readers difference them |

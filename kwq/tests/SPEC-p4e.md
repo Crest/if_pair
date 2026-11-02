@@ -7,6 +7,17 @@ decided.  Each specification states the hypothesis it tests and the
 value the lower bound predicts, so the pass criterion is "within x of
 the prediction", not "better than last time".
 
+Status 2026-11-02 (kwq-next, with P4f, P4g and urg24 merged): the text
+is kept as written before the merges; where the merged code differs, a
+dated note says so in place.  The `charge` knob of section 1, item 3,
+is not in the tree: NET charges wall time (SCHED.md S6.3), so 2.2's
+and 3.4's modes and section 5's `charge_modes` have no modes to sweep,
+and only their `wall` rows can run (kwq_test.sh says the same).  The idle-class wait
+merged as `wake_delay_us` with `cap_prio` as its priority, not as the
+branch knobs `wake_prio` and `wake_idle`.  The tick regime enters after
+three consecutive sleeps shorter than `L`, not at the first, and a
+barren episode bars re-entry for 2L to 1024L (KWQ.md S16).
+
 Conventions for every test below:
 
 - One boot per machine, stages interleaved per repetition, at least
@@ -35,9 +46,13 @@ the tests cannot be written against the counters that exist today.
    (ticks that served one element: the exit condition), `tick_enters`,
    `tick_exits`, `tick_ns` (wall time spent in tick mode).  Per queue
    per CPU: `doorbells` (rings performed) and `doorbells_skipped`
-   (appends made while the tick was armed).  Identity:
-   `wakeups == doorbells performed by producers + ticks` within the
-   window.
+   (list placements that rang nothing while the tick was armed: one per
+   list placed, not one per append).  Identity: `wakeups` ~= the sum of
+   `doorbells` over the worker's queues plus `tick_urgent_wakes` within
+   the window; a tick is a timeout, not a wakeup, and a park that
+   outlasts the timeout counts as a tick (KWQ.md S16).  (Corrected
+   2026-11-02: the first text read `wakeups == doorbells performed by
+   producers + ticks` and counted skipped appends.)
 2. `overruns_switched` beside `overruns` per queue per CPU: an overrun
    in a pass during which the worker left the CPU (`switched` is
    already detected per pass).  `overruns - overruns_switched` is the
@@ -46,13 +61,16 @@ the tests cannot be written against the counters that exist today.
    time, BULK's method), `split` (deficit in CPU time, round and share
    limit in wall time), `hybrid` (wall unless the pass was switched
    out, then CPU time).  RWTUN, read at pass begin so a stage may set
-   it after load.
+   it after load.  (Not merged: NET stays charged wall time, SCHED.md
+   S6.3; status note above.)
 4. Under INVARIANTS, at every pass start: `KASSERT(td_priority <=
    kw_pri && td_pri_class == kw_pri_class)` (the priority may be lent
    higher, never lower; the class restored after an idle-class wait),
    and a counter `prio_violations` that counts instead of panicking
    when the module is built with `KWQ_SOFT_INVARIANTS`, so the ATF case
-   can read it.
+   can read it.  (As merged: the counter counts on every build and
+   kernel; the default build is soft, `make KWQ_HARD_INVARIANTS=1`
+   asserts on an INVARIANTS kernel.)
 5. `kern.kwq_test.*` gains the knobs of section 2.  `prod_prio` and a
    producer on the consumer's CPU (`pcpu == cpu`) move from
    kwq-wake-prio into the main tree's kwq_test.
@@ -105,6 +123,19 @@ Predictions and pass criteria, per (B, G) with L set:
 - Worker idle share within 2 points of W0's when G >= 2 ms (nothing
   may stay armed across a silence).
 
+Note 2026-11-02, the merged entry rule: with G >= L each burst starts
+outside the regime and enters only at the doorbell wake that ends the
+third consecutive sleep shorter than L, so a burst whose items wake the
+worker one by one pays the gap's wake and three more before its first
+tick (four, not one), its ticks count from that entry, and a barren
+episode's hold-off may keep the next bursts out; a burst that arrives
+as one backlog wakes once and never enters (KWQ.md S16, WAKE.md S11).
+With G < L the regime can hold across the gaps (it leaves at a tick
+that serves one element or none), and while it does `wakeups` stays
+near 0 and `ticks` near 1/L, since a tick is not a wakeup; and
+`doorbells_skipped` counts list placements, at most one per queue per
+timed sleep, so it tracks the ticks, not items minus wakes.
+
 ### 2.2 `intr_load`: interrupt context on the worker CPU
 
 Hypothesis: the priority invariant leaves exactly one preemptor, the
@@ -136,7 +167,8 @@ in proportion to the stressor's duty cycle (this is the measurement
 of the punishment, reported as parks per second of stress).  Under
 `fairness`, the two queues' cycle ratio stays within 10 % of the
 weight ratio in every mode except `wall`, where the deviation is
-reported.
+reported.  (2026-11-02: no `charge` knob was merged; only the `wall`
+criteria apply, status note above.)
 
 ### 2.3 `ifpair` extension: sparse senders
 
@@ -234,7 +266,9 @@ debts under stress within 10 % of the unstressed stage for `cpu`,
 other consumers' latency) within 10 % of W0 for `wall`, `split` and
 `hybrid`, reported for `cpu` (the hypothesis is that `cpu` lets a
 blocked queue hold its quantum at the others' expense, and `split`
-does not).
+does not).  (2026-11-02: no `charge` knob was merged, so the tests run
+once, in `wall`; SCHED.md S6.3 names `split` as the candidate if
+`switched` ever shows interrupt threads or lock blocks in numbers.)
 
 ### 3.5 `machine`: interrupts per CPU
 
@@ -274,10 +308,14 @@ tables for burst, sparse and conformance beside today's.
 
 ## 5. ATF cases (kwq/tests/kwq_test.sh)
 
-- `prio_invariant`: ifpair with every moderation knob on (`wake_prio`,
-  `wake_idle`, the tick bound, `cap_permille` 500) and `intr_load`
-  active, 10 s; asserts `prio_violations` 0 on every worker and no
-  WITNESS output.  Skipped on a kernel without INVARIANTS.
+- `prio_invariant`: ifpair with every moderation knob on (the
+  idle-class wait's `wake_delay_us` with `cap_prio` 224, the tick
+  bound, `cap_permille` 500) and `intr_load` active, 10 s; asserts
+  `prio_violations` 0 on every worker and no WITNESS output.  Runs on
+  every kernel: the counter counts without INVARIANTS too.  (Corrected
+  2026-11-02: the first text named the unmerged branch knobs
+  `wake_prio` and `wake_idle` and skipped the case without
+  INVARIANTS.)
 - `tick_hysteresis`: `burst` with (1, 2 ms): asserts `tick_enters` 0;
   then (16, 200 us): asserts `tick_enters` >= 1 and `ticks_empty` <=
   bursts; then a 500 ms silence: asserts `ticks` stopped advancing
@@ -287,7 +325,8 @@ tables for burst, sparse and conformance beside today's.
   a stressor thread, once per pass, 2 s per mode: asserts the queue's
   clean overruns are 0 in every mode, `overruns_switched` > 0 in
   `wall` and `split`'s round accounting, `parks` 0 in `cpu` and
-  `hybrid`.
+  `hybrid`.  (2026-11-02: not implemented; no `charge` knob was
+  merged, status note above.)
 - `no_arm_when_idle`: after `burst` ends, a 2 s silence: asserts the
   worker CPU's timer interrupt count (vmstat -i delta) is within hz of
   what the silence would produce on an idle CPU on that machine

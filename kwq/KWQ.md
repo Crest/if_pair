@@ -124,11 +124,14 @@ defined in GLOSSARY.md.
     #define KWQ_ITEM_INIT(it)  /* link = NULL: required before re-enqueue */
     /* KWQ_MBUF_ITEM(m) / KWQ_ITEM_MBUF(it): mbuf <-> item via m_stailqpkt */
 
+    bool        kwq_name_valid(const char *name);     /* 1..31 of [A-Za-z0-9_-] */
     struct kwq *kwq_create(const char *name, enum kwq_class cls,
                            uint32_t flags, const struct kwq_params *p,
                            kwq_handler_t *fn, void *ctx);
     void        kwq_activate(struct kwq *q);          /* make enqueue-able */
     int         kwq_enqueue(struct kwq *q, int cpu, struct kwq_item *it);
+    int         kwq_enqueue_urgent(struct kwq *q, int cpu, struct kwq_item *it);
+                /* as kwq_enqueue(), rung past the opt-in regimes of S16 (S3) */
     int         kwq_enqueue_list(struct kwq *q, int cpu,
                                  struct kwq_item *head,
                                  struct kwq_item *tail, int n);
@@ -441,6 +444,21 @@ they computed; the service treats it as an ordering key and nothing more.
 **kwq_enqueue_list(q, cpu, head, tail, n)**: as above for a pre-linked
 list; all-or-nothing against the bound.
 
+**kwq_enqueue_urgent(q, cpu, item)**: as `kwq_enqueue()` (same
+preconditions, codes, ordering and contexts), for an item whose latency
+the producer will not trade for the opt-in regimes of S16: it rings the
+doorbell at once, past the tick regime and the idle-class wait, as a
+notifier does, except that inside the tick regime with `tick_urgent_us`
+set it waits at most that bound (at or above `L`, the tick's own), so
+that urgent items close together share one wake.  An urgent item added
+to a list already placed with the worker, which rings no doorbell,
+wakes a worker the regimes left asleep (the urgent nudge, counted in
+`wakes_urgent`) or ends its idle-class wait.  Urgency decides only
+whether and when the worker wakes, never the item's place in the list
+(S16).  The wake is the cost: for a small latency-bearing item among
+big ones (if_pair's `net.link.pair.urgent_bytes`), never the common
+case.
+
 **kwq_notify(q, nf)**: the primitive for signals ("TX completions
 are in the ring", "the link changed", "my request list is non-empty").
 A notifier is a preallocated, client-owned item with a pending state
@@ -602,6 +620,7 @@ infallible so that no client needs an error path there.
 | `kwq_create()` | only on caller error | `M_WAITOK` allocations cannot fail; returns `NULL` for an invalid class, flags, weight or limit (asserted under INVARIANTS), for a name that is too long or already registered, and for `KWQ_BLOCKING` before P7 (a console message, not an assertion: the class is legitimately absent) |
 | `kwq_activate()` | no | `void`; activating twice or after drain is a bug, asserted |
 | `kwq_enqueue()` | yes, by design | `ENOBUFS`: the (queue, CPU) list for the chosen CPU already holds `limit` items (the limit is per CPU, not per queue, so one hot CPU rejects while others are empty - a steering symptom); `ENXIO`: `kwq_drain()` has begun, or the queue was created `KWQ_F_INACTIVE` and not yet activated (not asserted: kwq_test relies on it); `EINVAL`: `KWQ_CPU_ANY` on a NET queue.  Never for contention, a busy worker, memory pressure or interrupt context.  The item is untouched and remains the caller's; the caller drops and counts, or applies backpressure upstream |
+| `kwq_enqueue_urgent()` | yes, by design | as `kwq_enqueue()`; urgency changes the wake, never the admission |
 | `kwq_enqueue_list()` | yes, all-or-nothing | same codes; either every item is queued or none is |
 | `kwq_notify()` | **no** | returns `true` if the notifier was idle and is now queued, `false` if it was already pending (`coalesced`) or the queue is draining (`rejected`, `kwq:::reject` with `ENXIO`); exempt from the limit; a notifier pending when the drain begins is run or discarded by the drain like any item and is idle when `kwq_drain()` returns |
 | `kwq_notify_cancel()` | no | `void`; may sleep; detach only |
@@ -625,8 +644,8 @@ misuse rather than returning a code a caller would ignore.
 | caller context | allowed | not allowed |
 |---|---|---|
 | thread (syscall, kernel thread, sleepable) | everything | - |
-| interrupt thread (ithread), SWI, callout, netisr, another kwq handler | `kwq_enqueue`, `kwq_enqueue_list`, `kwq_notify`, `kwq_scatter`; inside a handler also `kwq_budget_left`, `kwq_requeue` | `kwq_create`, `kwq_drain`, `kwq_destroy` (they sleep); `kwq_activate` (configuration-time only, asserted) |
-| interrupt filter (primary interrupt context) | `kwq_enqueue`, `kwq_enqueue_list`, `kwq_notify`, `kwq_scatter` **on a `KWQ_F_SPIN` queue only** | the same calls on a sleep-mutex queue (WITNESS panics: blockable lock in filter context); everything else |
+| interrupt thread (ithread), SWI, callout, netisr, another kwq handler | `kwq_enqueue`, `kwq_enqueue_urgent`, `kwq_enqueue_list`, `kwq_notify`, `kwq_scatter`; inside a handler also `kwq_budget_left`, `kwq_requeue` | `kwq_create`, `kwq_drain`, `kwq_destroy` (they sleep); `kwq_activate` (configuration-time only, asserted) |
+| interrupt filter (primary interrupt context) | `kwq_enqueue`, `kwq_enqueue_urgent`, `kwq_enqueue_list`, `kwq_notify`, `kwq_scatter` **on a `KWQ_F_SPIN` queue only** | the same calls on a sleep-mutex queue (WITNESS panics: blockable lock in filter context); everything else |
 | inside `critical_enter()` or holding a spin mutex | as for a filter: `KWQ_F_SPIN` queues only | sleep-mutex queues |
 | NMI, `SCHEDULER_STOPPED()`, KDB | nothing | everything (the mutexes degrade to no-ops after panic, so `kwq_drain` at shutdown needs no special case, but no new work may be submitted) |
 
@@ -644,8 +663,8 @@ re-entrant from it; the class decides the rest.
 
 | operation | NET / BULK handler | BLOCKING handler | notes |
 |---|---|---|---|
-| `kwq_enqueue`, `kwq_enqueue_list` to another queue | yes | yes | any class, any CPU; ordinary reject rules |
-| `kwq_enqueue`, `kwq_enqueue_list` to the SAME queue | yes | yes | lands in the chosen CPU's list as NEW work (behind items already there); use for genuinely new items, not for leftovers |
+| `kwq_enqueue`, `kwq_enqueue_urgent`, `kwq_enqueue_list` to another queue | yes | yes | any class, any CPU; ordinary reject rules |
+| `kwq_enqueue`, `kwq_enqueue_urgent`, `kwq_enqueue_list` to the SAME queue | yes | yes | lands in the chosen CPU's list as NEW work (behind items already there); use for genuinely new items, not for leftovers |
 | `kwq_notify` to any queue, including this one and for the notifier being handled | yes | yes | re-arms the signal; the usual way a notifier handler says "my list is still non-empty" (S14) |
 | `kwq_requeue` (leftovers of this pass) | yes | yes | prepends to the current CPU's list of this queue; FIFO preserved; only for items received in this pass |
 | `kwq_budget_left` | yes | yes (informational) | 0 means: requeue and return |
@@ -666,10 +685,12 @@ re-entrant from it; the class decides the rest.
 priority from the call to its return (SCHED.md S6.3), may assume it,
 and must not depend on priority propagation to anyone it blocks; the
 worker demotes, yields or hands the CPU over only between handlers.  A
-build with `KWQ_HARD_INVARIANTS` panics on a pass that begins below the
-class priority; the default build counts it in `prio_violations`, which
-reads zero on a conforming build (it read the share limit's demoted
-passes on the tree before the pass-level limit, WAKE.md S10.5).
+build with `KWQ_HARD_INVARIANTS` on a kernel with INVARIANTS panics on a
+pass that begins below the class priority or outside its scheduling
+class (the check is a `KASSERT`); every build counts it in
+`prio_violations`, on every kernel, and the counter reads zero on a
+conforming build (it read the share limit's demoted passes on the tree
+before the pass-level limit, WAKE.md S10.5).
 
 ## 4. Integration with existing kernel services
 
@@ -1076,20 +1097,25 @@ scripts name fields, not struct offsets.  kwq follows it exactly.
 in-tree providers do, so probes read `kwq:::name`.  Probes are defined
 with `SDT_PROBE_DEFINEn_XLATE` (the mechanism `ip`/`tcp` use) so that
 `args[0]` is a translated `kwqinfo_t`, never a raw `struct kwq *`.
+`kwq_sdt.c` defines the 23 probes below; `steal` and the three
+worker-pool probes fire once P6 and P7 exist.
 
 | probe | when | args (after translation) | cost class |
 |---|---|---|---|
 | `kwq:::create`, `activate`, `drain-start`, `drain-end`, `destroy` | lifecycle | `kwqinfo_t *` | negligible |
-| `kwq:::enqueue` | every accepted `kwq_enqueue()`; once per `kwq_enqueue_list()` call (depth_after then covers the whole list) | `kwqinfo_t *`, `int cpu`, `int depth_after`, `int woke` (1 if this enqueue rang the doorbell) | per item: hot, see 10.3 |
+| `kwq:::enqueue` | every accepted `kwq_enqueue()` and `kwq_enqueue_urgent()`; once per `kwq_enqueue_list()` call (depth_after then covers the whole list) | `kwqinfo_t *`, `int cpu`, `int depth_after`, `int woke` (1 if this enqueue rang the doorbell, or an urgent item's nudge woke the worker) | per item: hot, see 10.3 |
 | `kwq:::reject` | `kwq_enqueue` returned ENOBUFS/ENXIO | `kwqinfo_t *`, `int cpu`, `int errno` | per event |
-| `kwq:::pass-start` | worker swapped a list and is about to run the handler | `kwqinfo_t *`, `int cpu`, `int n` (items in the list call; notifiers are delivered in separate handler calls and counted in `items`), `uint64_t oldest_age_ns` (doorbell-to-this-pass latency on the first pass after a doorbell, 0 on later passes of the same backlog) | per pass |
+| `kwq:::pass-start` | worker swapped a list and is about to run the handler | `kwqinfo_t *`, `int cpu`, `int n` (elements in the list, notifiers included, as in `items`), `uint64_t oldest_age_ns` (doorbell-to-this-pass latency on the first pass after a doorbell, 0 on later passes of the same backlog) | per pass |
 | `kwq:::pass-end` | handler returned | `kwqinfo_t *`, `int cpu`, `int n`, `uint64_t ns`, `int remaining_requeued` | per pass |
 | `kwq:::overrun` | a pass overran its quantum | `kwqinfo_t *`, `int cpu`, `uint64_t over_ns` | per event |
 | `kwq:::park` | queue parked with negative deficit | `kwqinfo_t *`, `int cpu`, `int64_t deficit_ns` | per event |
 | `kwq:::round-end` | worker finished a DRR round | `int class`, `int cpu`, `int nqueues`, `uint64_t round_ns` | per round |
-| `kwq:::yield` | the demote-yield taken | `int class`, `int cpu`, `int reason` (0 round, 1 tick, 2 share limit) | per round |
+| `kwq:::yield` | the demote-yield taken | `int class`, `int cpu`, `int reason` (0 round, 1 tick, 2 share limit, 3 slice: ULE ended the slice with the limit off) | per round |
 | `kwq:::cap` | the share limit (SCHED.md S6.3): a pass begins under the limit (0), the allowance is spent and the CPU given away (1), given away again (2), the period ended while over (3), the deadline callout ran (4) | `int class`, `int cpu`, `int event`, `uint64_t ns_into_period`, `uint64_t ns_used`, `int64_t pass_budget_ns` (event 0) | per pass while limited |
 | `kwq:::idle` | worker found nothing and went to sleep | `int class`, `int cpu`, `uint64_t busy_ns` | per burst |
+| `kwq:::doorbell` | a list was placed with the worker, or an urgent item's nudge woke it (S16) | `int class`, `int cpu`, `int state` (the worker when rung: 0 awake, 2 asleep and woken, 4 asleep and made runnable in the idle class, 6 asleep with the tick armed: placed, not woken; 1 polling is defined and never fires) | per burst |
+| `kwq:::tick` | the tick regime's own timeout woke the worker (S16) | `int class`, `int cpu`, `uint64_t n` (elements served between the previous wake and this sleep: the previous tick's round, or at an episode's first tick the round that entered the regime) | per tick |
+| `kwq:::wake` | a worker waiting in the idle class was promoted to the class priority (S16) | `int class`, `int cpu`, `int reason` (2 the `wake_delay_us` deadline; 4 urgent: a notifier, a drain, a cancel, an urgent item, an enqueue from another CPU, the share limit's deadline or the unload; 5 self: the worker got the CPU by itself), `uint64_t ns` since the wait began | per wait |
 | `kwq:::steal` | BULK batch moved between CPUs | `kwqinfo_t *`, `int from`, `int to`, `int n` | per event |
 | `kwq:::worker-block`, `worker-spawn`, `worker-exit` | BLOCKING pool management | `int cpu`, `int nworkers`, `int nrunnable` | per event |
 | `kwq:::budget-hit` | a handler asked `kwq_budget_left()` and received 0 | `kwqinfo_t *`, `int cpu` | per event |
@@ -1187,10 +1213,10 @@ DTrace is for investigation; steady-state health needs no probe enabled.
 Every (queue, CPU) exports per-CPU 64-bit counter fields (plain fields,
 S17 Rule 2) under
 `kern.kwq.<class>.queue.<name>.cpu.<N>.` (items, rejected, passes, cycles,
-overruns, parks, requeued, steals_in, coalesced, depth/maxdepth,
-maxlat_ns) plus
+overruns, parks, requeued, coalesced, depth/maxdepth,
+maxlat_ns; steals_in from P6) plus
 class-level `kern.kwq.<class>.cpu.<N>.` (rounds, yields, tick_yields,
-cap_demotions, cap_yields, cap_restores, cap_ns, cap_runon, idle_ns, busy_ns, steals_out); the full list with types and
+cap_demotions, cap_yields, cap_restores, cap_ns, cap_runon, idle_ns, busy_ns; steals_out from P6); the full list with types and
 defaults is S10.7.  `sysctl kern.kwq` is the first thing to look at, and
 `dtrace` the second.  `show kwq` in DDB prints every queue's
 per-CPU depth, state (IDLE/WAKING/RUNNING/PARKED) and the last handler
@@ -1223,7 +1249,7 @@ Who is dropping, and who feeds the queue that drops:
 Is the yield doing its job (rounds that hit the tick guard instead of
 finishing naturally):
 
-    dtrace -n 'kwq:::yield { @[arg1, arg2 == 1 ? "tick" : "round"] = count(); }'
+    dtrace -n 'kwq:::yield { @[arg1, arg2 == 1 ? "tick" : arg2 == 2 ? "cap" : arg2 == 3 ? "slice" : "round"] = count(); }'
 
 CPU time by class versus everything else on a CPU:
 
@@ -1243,7 +1269,7 @@ All nodes live under `kern.kwq`.  The tree has one level for each kind
 of thing, so user-chosen names never share a level with anything kwq
 defines:
 
-    kern.kwq.{version,ncpu,nqueues}
+    kern.kwq.{version,ncpu,nqueues,clock,clock_fast}
     kern.kwq.<class>.<knob>                 quantum_us, limit, ... (below)
     kern.kwq.<class>.cpu.<N>.*              the class's worker on CPU N
     kern.kwq.<class>.queue.<name>.*         one queue
@@ -1283,20 +1309,25 @@ Service-wide
 | `kern.kwq.version` | int | RD | 1 | KPI version, matches `MODULE_VERSION(kwq)` |
 | `kern.kwq.ncpu` | int | RD | `mp_ncpus` | CPUs with workers |
 | `kern.kwq.nqueues` | int | RD | - | queues currently created (active or not) |
+| `kern.kwq.clock` | string | RD | - | the scheduler's tick source and its rate: `tsc`, `cntvct`, `timebase`, or the kernel's `cpu_ticks` (SCHED.md S15.2) |
+| `kern.kwq.clock_fast` | int | RDTUN | 1 | read the architecture's counter directly where it is fixed-rate; 0 keeps the kernel's `cpu_ticks()`.  A loader tunable: the choice is made when the module loads |
 
 Per class: `kern.kwq.<class>.`
 
 | node | type | access | default | meaning |
 |---|---|---|---|---|
 | `yield_prio` | int | RW | `PUSER` (56) | priority the worker yields at after each round; `PRI_MAX_TIMESHARE` (223) lets every user thread run a full slice per round |
-| `quantum_us` | int | RWTUN | net 200, bulk 1000, blocking 5000 | CPU time a queue of weight 1 may consume per round (BLOCKING too: the quantum shares a worker between queues, which ULE's slice does not) |
-| `penalty_rounds` | uint | RW | 32 | debt clamp in quanta: the most rounds an overrunning queue is parked (P1; SCHED.md S4.3) |
-| `budget_check_every` | uint | RW | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; 1 = every call (SCHED.md S4.4) (P2) |
+| `quantum_us` | uint | RWTUN | net 200, bulk 1000, blocking 5000 | CPU time a queue of weight 1 may consume per round (BLOCKING too: the quantum shares a worker between queues, which ULE's slice does not) |
+| `penalty_rounds` | uint | RWTUN | 32 | debt clamp in quanta: the most rounds an overrunning queue is parked (P1; SCHED.md S4.3) |
+| `budget_check_every` | uint | RWTUN | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; 1 = every call (SCHED.md S4.4) (P2) |
 | `limit` | uint | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards |
 | `cap_permille` | uint | RWTUN | 500 | share limit: the share of its CPU the worker may spend in passes per `cap_period_us` while other threads are runnable, the rest waiting between passes as an idle-priority thread, in 1/1000; 1000 = off, and the worker then obeys ULE's slice end as a process would (S11 Missing 1; SCHED.md S6.3) |
 | `cap_period_us` | uint | RWTUN | 1000 | the share limit's period |
 | `cap_prio` | int | RWTUN | `PRI_MIN_IDLE` (224) | the priority the worker waits at between passes while over its allowance, never the priority of a pass; `PRI_MAX_TIMESHARE` (223) is the other useful value; class priority + 1 .. `PRI_MAX_IDLE` (255) accepted for experiments (SCHED.md S6.3) |
 | `priority` | int | RDTUN | `PI_NET` / `PI_SOFT` / `PUSER` | scheduler priority of the class's workers, a loader tunable; net and bulk in [`PRI_MIN_ITHD`, `PRI_MAX_KERN`] (4BSD recomputes a kernel thread's priority in the timeshare range), blocking up to `PRI_MAX_TIMESHARE`, and net <= bulk <= blocking, else all three default |
+| `tick_us` | uint | RWTUN | 0 (off) | the tick regime's bound `L` (S16): after three consecutive sleeps shorter than `L` the worker sleeps with `L` as its timeout and producers place their lists without waking it, until a tick serves one element or none; 0..100000 (P4f) |
+| `wake_delay_us` | uint | RWTUN | 0 (off) | the idle-class wait (S16): an enqueue from the worker's own CPU makes the sleeping worker runnable in the idle class at `cap_prio`, and this is the deadline by which it is promoted to the class priority; an enqueue from another CPU rings the plain doorbell; 0..1000000 (P4f) |
+| `tick_urgent_us` | uint | RWTUN | 0 (at once) | inside the tick regime, an urgent item (`kwq_enqueue_urgent()`) that finds the worker asleep wakes it this much later instead of at once, so that urgent items within the bound share one wake; at or above `tick_us` it arms nothing and the tick serves them; 0..100000 (P4g) |
 | `nworkers` | int | RD | ncpu (blocking: current) | worker threads in the class (P7) |
 | `max_workers` | int | RW | blocking only, 4 x ncpu | ceiling for worker replacement (P7) |
 | `idle_timeout_s` | int | RW | blocking only, 30 | reap an idle replacement worker after this long (P7) |
@@ -1307,16 +1338,34 @@ Per worker: `kern.kwq.<class>.cpu.<N>.`
 |---|---|---|---|---|
 | `cpu.<N>.rounds` | counter | RD | | DRR rounds completed by this CPU's worker (P1) |
 | `cpu.<N>.passes` | counter | RD | | handler invocations by this worker (P1) |
-| `cpu.<N>.wakeups` | counter | RD | | times the worker was woken from idle (P1) |
+| `cpu.<N>.wakeups` | counter | RD | | times the worker was woken from idle; a tick, the regime's own timeout, is not one (`ticks`) (P1) |
 | `cpu.<N>.yields` | counter | RD | | end-of-round yields taken (P1) |
 | `cpu.<N>.tick_yields` | counter | RD | | yields forced by the tick guard (a pass outlived a tick) (P1) |
 | `cpu.<N>.cap_demotions` | counter | RD | | periods in which the share limit was reached with other threads runnable (P4c) |
 | `cpu.<N>.cap_yields` | counter | RD | | times the worker gave the CPU away under the share limit (P4c) |
+| `cpu.<N>.cap_cuts` | counter | RD | | budget calls answered 0 by the share limit, cutting a pass short at the next item (P4d) |
 | `cpu.<N>.cap_restores` | counter | RD | | period deadlines that raised a waiting worker back to its class priority (P4c) |
 | `cpu.<N>.cap_ns` | counter | RD | | wall time given away under the share limit (P4c) |
 | `cpu.<N>.cap_runon` | counter | RD | | passes ended over the allowance with nothing else runnable (P4c) |
 | `cpu.<N>.slice_yields` | counter | RD | | yields at ULE's own priority because ULE ended the worker's slice; limit off only (P4d, 2026-10-22) |
 | `cpu.<N>.handbacks` | counter | RD | | rounds ended early because a higher class waited (P1) |
+| `cpu.<N>.switched` | counter | RD | | passes during which the worker left the CPU (preempted or blocked); NET charges them wall time (SCHED.md S1a.4; also per queue) |
+| `cpu.<N>.prio_violations` | counter | RD | | passes that began below the class priority or outside its class: 0 on a conforming build, counted on every build, a panic with `KWQ_HARD_INVARIANTS` on an INVARIANTS kernel (S3) (P4f) |
+| `cpu.<N>.ticks` | counter | RD | | wakes by the tick regime's own timeout, an idle-class wait that outlasted it included (S16) (P4f) |
+| `cpu.<N>.ticks_empty` | counter | RD | | ticks that found nothing (the regime ends) (P4f) |
+| `cpu.<N>.ticks_single` | counter | RD | | ticks whose round served one element (the regime ends) (P4f) |
+| `cpu.<N>.tick_enters` | counter | RD | | entries into the tick regime (three consecutive sleeps shorter than `tick_us`) (P4f) |
+| `cpu.<N>.tick_exits` | counter | RD | | times the regime ended (P4f) |
+| `cpu.<N>.tick_ns` | counter | RD | | wall time spent in the tick regime (P4f) |
+| `cpu.<N>.tick_barren` | counter | RD | | episodes in which no tick coalesced anything; each doubles the entry hold-off, 2 x `tick_us` up to 1024 x (P4f) |
+| `cpu.<N>.wakes_low` | counter | RD | | wakes in the idle class for a producer on the worker's own CPU (S16) (P4f) |
+| `cpu.<N>.wake_self` | counter | RD | | of those, the worker got the CPU and promoted itself (P4f) |
+| `cpu.<N>.wake_promotions_deadline` | counter | RD | | of those, promoted by the `wake_delay_us` deadline (P4f) |
+| `cpu.<N>.wake_promotions_urgent` | counter | RD | | of those, promoted by a notifier, a drain, a cancel, an urgent item, an enqueue from another CPU, the share limit's deadline or the unload (P4f) |
+| `cpu.<N>.wake_low_ns` | counter | RD | | wall time spent waiting in the idle class (P4f) |
+| `cpu.<N>.wakes_urgent` | counter | RD | | wakes of a sleeping worker by an urgent item (`kwq_enqueue_urgent()`, a notifier) added to a list already placed: the urgent nudge, the wake neither regime would have given it (S16) (P4g) |
+| `cpu.<N>.tick_urgent_deferred` | counter | RD | | urgent items that found the worker asleep in the tick regime and waited `tick_urgent_us` instead of waking it (P4g) |
+| `cpu.<N>.tick_urgent_wakes` | counter | RD | | wakes by the `tick_urgent_us` bound, one per window of deferred urgent items (P4g) |
 | `cpu.<N>.budget_calls` | counter | RD | | `kwq_budget_left()` calls by handlers on this worker (P2) |
 | `cpu.<N>.budget_reads` | counter | RD | | of those, the ones that read the clock (SCHED.md S4.4) (P2) |
 | `cpu.<N>.round` | uint64 | RD | | current round number (P1) |
@@ -1331,32 +1380,39 @@ Per queue: `kern.kwq.<class>.queue.<name>.`
 | node | type | access | meaning |
 |---|---|---|---|
 | `weight` | uint | RD | as created (1..8) |
-| `limit` | uint | RD | per-CPU item limit in effect (`INT_MAX` for `KWQ_LIMIT_NONE`) |
+| `limit` | uint | RW | per-CPU item limit in effect (`INT_MAX` for `KWQ_LIMIT_NONE`); writable, 1..`INT_MAX`, so a queue's depth can be tuned or swept without recreating it (a plain store: an enqueue racing the write is admitted or refused under the old bound) |
 | `flags` | uint | RD | `KWQ_F_*` as created |
 | `state` | string | RD | `inactive`, `active`, `draining`, `drained` |
 | `cpu.<N>.depth` | uint | RD (sampled) | items currently queued on this CPU |
 | `cpu.<N>.state` | uint | RD (sampled) | 0 idle, 1 waking, 2 running, 3 parked |
 | `cpu.<N>.maxdepth` | uint64 | RD, reset via `reset` | high-water mark of `depth` at pass start; the health signal for `KWQ_LIMIT_NONE` queues |
-| `cpu.<N>.items` | counter | RD | items accepted |
+| `cpu.<N>.items` | counter | RD | elements handed to the handler, notifiers included |
+| `cpu.<N>.signals` | counter | RD | notifiers consumed by the handler (a subset of `items`) |
 | `cpu.<N>.rejected` | counter | RD | enqueues refused with `ENOBUFS`, and enqueues or notifies after drain began (`ENXIO`) |
 | `cpu.<N>.coalesced` | counter | RD | `kwq_notify()` calls that found the notifier already pending (signal coalescing ratio) |
 | `cpu.<N>.passes` | counter | RD | handler invocations |
 | `cpu.<N>.cycles` | counter | RD | `cpu_ticks()` consumed by passes; divide by `kern.kwq.<class>.cpu.<N>.busy_ns` for the queue's share of its worker |
 | `cpu.<N>.overruns` | counter | RD | passes that exceeded their budget by more than one quantum x weight (P1; SCHED.md S4.3) |
+| `cpu.<N>.overruns_switched` | counter | RD | of those, passes during which the worker left the CPU (preempted or blocked): the system's excess, not the handler's (P4f; SCHED.md S6.3) |
+| `cpu.<N>.switched` | counter | RD | passes during which the worker left the CPU; NET charges them wall time (SCHED.md S1a.4) |
+| `cpu.<N>.doorbells` | counter | RD | wakeups performed for this list: plain doorbells, idle-class waits begun and urgent nudges (P4f) |
+| `cpu.<N>.doorbells_skipped` | counter | RD | list placements that rang nothing in the tick regime, an urgent item's placement deferred by `tick_urgent_us` included (S16) (P4f) |
 | `cpu.<N>.parks` | counter | RD | times the queue was skipped for a negative deficit (P1) |
 | `cpu.<N>.boosts` | counter | RD | passes served from the new list (P1) |
 | `cpu.<N>.grace` | counter | RD | doorbells sent to the ring instead of the new list by the grace rule (P1) |
 | `cpu.<N>.debts` | counter | RD | doorbells sent to the ring because the queue went idle owing time (SCHED.md S4.3) |
 | `cpu.<N>.glitches` | counter | RD | passes whose CPU-time delta was negative or over 1 s: a ticker fault, charged one quantum (SCHED.md S13) |
 | `cpu.<N>.requeued` | counter | RD | items handed back with `kwq_requeue()` |
-| `cpu.<N>.steals_in` | counter | RD | bulk only: batches this CPU's worker took from others for this queue |
+| `cpu.<N>.steals_in` | counter | RD | bulk only: batches this CPU's worker took from others for this queue (P6) |
 | `cpu.<N>.maxlat_ns` | uint64 | RD, reset via `reset` | longest doorbell-to-first-pass latency since last reset: the age of the burst stamp at the first pass after each doorbell (P1; sampling fixed P2) |
 | `reset` | int | WR | write 1 to zero `maxlat_ns` and `maxdepth` on every CPU of the queue (P2; one node per queue, not per CPU) |
 
-Only `kern.kwq.<class>.limit` and `quantum_us` are loader tunables
-(RWTUN), for the preloaded case; everything else is runtime only.  The test module's knobs
-live under `kern.kwq_test` and are described in PLAN.txt (P3); they are
-not part of the kwq KPI.
+Every class knob except `yield_prio` is a loader tunable (RWTUN,
+`cap_prio` and the three regime knobs included), as are the class
+`priority` and `kern.kwq.clock_fast`, which are read at load only
+(RDTUN); the per-queue `limit` and `reset` are runtime only.  The test
+module's knobs live under `kern.kwq_test` and are described in
+PLAN.txt (P3); they are not part of the kwq KPI.
 
 ### 10.8 Status of the documentation
 
@@ -1900,7 +1956,10 @@ by `kwq_cpu_for_hash(flowid)` and a batch would have to be split by it
 anyway; and a second copy of the state machine kwq already runs.  The
 doorbell makes the buffer unnecessary: the first enqueue into an idle
 list wakes the worker (IDLE->WAKING) and every enqueue after that, until
-the worker has swapped the list out, is a lock-append with no wakeup.
+the worker has swapped the list out, is a lock-append with no wakeup
+(the opt-in regimes below may leave the worker asleep behind a placed
+list, and there an urgent item appended to it wakes the worker all the
+same: the urgent nudge).
 Under load the batch a pass receives is exactly what arrived during the
 previous pass - Mogul's and LRP's "batch what has accumulated", the
 NAPI/`softnet` shape Linux's veth uses (`__netif_rx()` per packet,
@@ -1974,8 +2033,10 @@ regimes are worth having as opt-ins and two are not:
   with the wake), and the timeout runs one round over what accumulated.
   It leaves on a tick that serves one element or none, back to the
   untimed sleep, so a silence costs one timer interrupt and nothing
-  stays armed; an episode that coalesced nothing doubles an entry
-  hold-off from `2L` to `1024L`, one that did resets it.  Contract: an
+  stays armed; an episode that coalesced nothing (no tick whose round
+  served more than one element; the doorbell-woken round that entered
+  the regime does not count) doubles an entry hold-off from `2L` to
+  `1024L`, one that did resets it.  Contract: an
   item that arrives while the regime is on waits at most `L` plus the
   pass in progress; sleeps per second within 20 % of the bound where
   `lambda L` is 2 to 10, equal to the doorbell's below 1, drain-limited
@@ -1984,24 +2045,25 @@ regimes are worth having as opt-ins and two are not:
   +16 to +46 %, a 1 M items/s producer +17 to +32 %); nothing on a
   saturated worker; and the price is `L` on every co-scheduled small
   flow, which is why it is off by default and sized at 20 to 50 us.
-- *The idle-class wait for same-CPU producers.*  An enqueue from the
-  worker's own CPU does not preempt the producer: the worker is made
-  runnable in the idle class at `cap_prio` (SCHED.md S6.3) and runs when
-  the producer sleeps or at a deadline, whichever is first, raised by
-  the deadline callout; an enqueue from another CPU rings the doorbell
-  as before, because the measured cost of waiting on a cross-CPU wake
-  fell on the sparse sender (a07 +77 % enqueue).  A same-CPU burst is
-  then served once, when its producer is done, instead of one
-  preemption per item: the receiver pinned to its worker's CPU gained
-  38 % on lab, 69 % on a07, 18 % on the guest with the single flow,
-  idle latency and the fairness columns unchanged.  Contract: an item
-  from the worker's CPU waits at most the deadline.  Measured
+- *The idle-class wait for same-CPU producers*,
+  `kern.kwq.<class>.wake_delay_us` (the deadline, 0 = off).  An enqueue
+  from the worker's own CPU does not preempt the producer: the worker is
+  made runnable in the idle class at `cap_prio` (SCHED.md S6.3) and runs
+  when the producer sleeps or at the deadline, whichever is first,
+  raised by the deadline callout; an enqueue from another CPU rings the
+  doorbell as before, because the measured cost of waiting on a
+  cross-CPU wake fell on the sparse sender (a07 +77 % enqueue).  A
+  same-CPU burst is then served once, when its producer is done, instead
+  of one preemption per item: the receiver pinned to its worker's CPU
+  gained 38 % on lab, 69 % on a07, 18 % on the guest with the single
+  flow, idle latency and the fairness columns unchanged.  Contract: an
+  item from the worker's CPU waits at most the deadline.  Measured
   2026-10-28 with the same-CPU restriction (WAKE.md S11): the pinned
   receiver +33 % lab, +46 % a07; the same-CPU producer's cost row 1147
   -> 36 ns per item on lab, 1512 -> 56 on a07, every episode ended by
   the worker's own turn (25 / 41 us); the cross-CPU sparse sender and
-  the pingpong round trip equal to the baseline within noise, which
-  the unrestricted wait had failed (a07 +77 % enqueue).
+  the pingpong round trip equal to the baseline within noise, which the
+  unrestricted wait had failed (a07 +77 % enqueue).
 - *Not specified, by measurement.*  A count threshold (wake after `N`
   items) hurt in two cases and helped in none, and with a near-zero
   handler drops fan-in into the three-items-per-pass attractor
@@ -2018,18 +2080,33 @@ regimes are worth having as opt-ins and two are not:
   winner: with both knobs set lab's co-located receiver lost the wait
   entirely (4300 parks a second became one, the tick serving 9200 lists
   a second instead) while a07's kept it (4600 parks, 22 ticks).
+  In the regime the park cuts the timed sleep short and the regime
+  stands: the park's wake is not a tick and its round is not judged
+  for the exit, unless the worker gets the CPU only after the sleep's
+  timeout, in which case the sleep returns as a timeout
+  (`sleepq_check_timeout()`) and the wake is counted in `ticks`, not
+  `wakeups`, and judged as a tick (WAKE.md S12.1; `wakes_low` counts
+  every park).
   Cross-CPU producers keep the tick's skip at either setting.  An
   `urgent` ring (`kwq_enqueue_urgent()`, a notifier, a drain, a cancel)
   takes neither regime: it is the exemption for a small latency-bearing
   item among big ones, which if_pair offers as
   `net.link.pair.urgent_bytes` (0 = off, a packet shorter than that
-  rings urgently).  It costs a wake per exempt item, so it pays only
-  where the small packets are a minority of the traffic.  Inside the
-  tick regime `tick_urgent_us` (0 = off) gives urgent items a bound of
-  their own: the first one that finds the worker asleep arms a wake that
-  much later and the ones after it ride on it, so a dense run of small
-  requests keeps the regime's saving at a bounded cost to each (WAKE.md
-  S12.5: with the plain exemption a 64-request burst cost 18 wakes).  A
+  rings urgently unless it is a pure TCP ACK or window update,
+  `pair_pure_ack()`: a receiver on the worker's CPU sends those between
+  passes, and as urgent items they ended every idle-class wait, WAKE.md
+  S12.5, S12.6).  It costs a wake per exempt item, so it pays only
+  where the small packets are a minority of the traffic.  An urgent
+  item added to a list already placed, which rings no doorbell, still
+  wakes a worker the tick regime left asleep (the urgent nudge,
+  `wakes_urgent`) or ends its idle-class wait.  Inside the tick regime
+  `tick_urgent_us` (0 = off) gives a client's urgent items
+  (`kwq_enqueue_urgent()` only; notifiers, drains and cancels ring at
+  once) a bound of their own: the first one that finds the worker
+  asleep arms a wake that much later and the ones after it ride on it,
+  so a dense run of small requests keeps the regime's saving at a
+  bounded cost to each (WAKE.md S12.5: with the plain exemption a
+  64-request burst cost 18 wakes).  A
   bound at or above `L` is the tick's own, since the sleep's timeout
   comes first, and arms nothing.  The bound is sized by the requests'
   spacing, not by `L`: 10 us halved a07's 64-request tail at `L` 50 and
@@ -2103,10 +2180,10 @@ bounces, and arm64's line is 128 anyway.  Within the block, the fields
 every enqueue touches fill the first 64 bytes exactly (a `struct mtx` is
 32 bytes, the list head 16, depth, state, notifier count and flags 4
 each), so on amd64 a steady-state enqueue moves one 64-byte line; the
-burst-start and rare fields (notifier list, empty-since stamp, the
-worker's active-list link, reject and coalesce counters, drain waiters)
-fill the second 64 bytes.  This is the layout `kwq/kwq_internal.h`
-implements, with `CTASSERT`s on both boundaries:
+burst-start and rare fields (empty-since stamp, the worker's
+active-list link, the grace rule's stamp, reject, coalesce and doorbell
+counters, drain waiters) fill the second 64 bytes.  This is the layout
+`kwq/kwq_internal.h` implements, with `CTASSERT`s on both boundaries:
 
     struct kwq_cpu {
         /* block 0, first 64 bytes: every enqueue and every pass */
@@ -2114,14 +2191,17 @@ implements, with `CTASSERT`s on both boundaries:
         STAILQ_HEAD(, kwq_item) kc_list;     /* items and notifiers, arrival order
                                                 (notifier links tagged, 2026-10-08) */
         u_int           kc_depth, kc_state, kc_nnotify, kc_flags;
-        /* block 0, second 64 bytes: burst start, rare paths; 16 bytes free
-           since the separate notifier list went (2026-10-08) */
+        /* block 0, second 64 bytes: burst start, rare paths; the 16 bytes
+           the separate notifier list left (2026-10-08) hold the doorbell
+           counters since P4f */
         u_short         kc_waiters; u_char kc_onlist, kc_warm;   /* P1 */
-        u_int           kc_idle_round;   /* P1, 32-bit: only the difference
-                                            to kw_round matters (SCHED.md S13) */
-        sbintime_t      kc_empty_since;  /* P0 code still stamps cpu_ticks */
+        u_int           kc_idle_served;  /* 32-bit: only the difference to the
+                                            low 32 bits of kw_served_us
+                                            matters (SCHED.md S4.6, S13) */
+        sbintime_t      kc_empty_since;  /* sbinuptime() at the burst start */
         TAILQ_ENTRY(kwq_cpu) kc_active;
-        uint64_t        kc_rejected, kc_coalesced;
+        uint64_t        kc_rejected, kc_coalesced,
+                        kc_doorbells, kc_doorbells_skipped;
         /* block 1..: consumer-private, written only by the owning CPU */
         struct kwq     *kc_q __aligned(KWQ_LINE);
         int             kc_cpu;
@@ -2606,3 +2686,13 @@ decision deferred until real clients show what fan-in they produce.
   deadline, adaptive count, non-preempting wake).  S16's position
   stands until the comparison is measured; nothing in the API changes
   yet.
+- 2026-11-02: consistency pass for kwq-next (P4d, P4f, P4g merged):
+  `kwq_enqueue_urgent()` and `kwq_name_valid()` in S2 and S3 (both
+  exported); the doorbell, tick and wake probes in S10.1; S10.7
+  completed from the code (`clock`, `clock_fast`, the three regime
+  knobs, the writable per-queue `limit`, the tick, wake, urgent,
+  doorbell and priority counters; RWTUN where the code has it; steals
+  marked P6); S16 names `wake_delay_us`, the urgent nudge, the
+  pure-ACK exception of `urgent_bytes`, the reach of `tick_urgent_us`
+  and a park that outlasts the tick's timeout; S17's block 0 as
+  kwq_internal.h has it.
