@@ -637,11 +637,13 @@ kwq_cap_act(struct kwq_worker *kw, enum ks_cap cap, uint64_t wall)
  * One pass over one (queue, CPU): swap the lists out, run the handler with
  * no service lock held, charge the pass, re-check emptiness.
  *
- * Notifiers are released one at a time: under the lock, read the next
- * pointer, drop the pending state, unlock, call.  From that moment a
- * re-notify may legally relink the notifier into the live list, which is
- * why its link must not be part of a list the handler is walking.
- * Cancelled notifiers are unlinked and skipped.  Items travel as one list.
+ * Items and notifiers travel as one list, in arrival order, and the
+ * handler is called once with all of it (../KWQ.md S3; notifiers came
+ * first, one call each, until 2026-10-08).  A notifier's own link is
+ * tagged: the handler's KWQ_ITEM_NEXT() fetches the successor and then
+ * flips the notifier from pending to idle, after which a re-notify may
+ * relink it into the live list.  A head or tail notifier the handler
+ * left unconsumed is settled after the call.
  */
 static void
 kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
