@@ -876,14 +876,18 @@ kwq_worker_main(void *arg)
 			kwq_class_prio_restore(kw);
 			/*
 			 * The tick regime (../KWQ.md S16): leave it after a
-			 * tick whose round served one element or none.
-			 * kw_tick_round is set only when the last wake was
-			 * the timeout, so the round that entered the regime,
-			 * which a doorbell woke, is not judged by it.  A
-			 * tick_us of 0 (the knob turned off meanwhile) ends
-			 * it too.
+			 * tick whose round served one element or none, and
+			 * mark the episode coalesced after one that served
+			 * more.  kw_tick_round is set only when the last wake
+			 * was the timeout, so the round that entered the
+			 * regime, which a doorbell woke, is judged neither
+			 * way.  A tick_us of 0 (the knob turned off
+			 * meanwhile) ends it too.
 			 */
 			tick = (sbintime_t)kwq_tick_us[kw->kw_class] * SBT_1US;
+			if (__predict_false(kw->kw_tick) && kw->kw_tick_round &&
+			    kw->kw_tick_items > 1)
+				kw->kw_tick_coalesced = true;	/* this tick paid */
 			if (__predict_false(kw->kw_tick) && (tick == 0 ||
 			    (kw->kw_tick_round && kw->kw_tick_items <= 1)))
 				kwq_tick_exit(kw, tick, sbinuptime());
@@ -921,8 +925,6 @@ kwq_worker_main(void *arg)
 				kw->kw_turg_armed = false;
 			}
 			kw->kw_tick_round = (rv == EWOULDBLOCK);
-			if (kw->kw_tick_round && kw->kw_tick_items > 1)
-				kw->kw_tick_coalesced = true;	/* the last tick paid */
 			if (rv == EWOULDBLOCK) {
 				/* The tick: nobody woke us, we wake ourselves. */
 				kw->kw_sleeping = false;
