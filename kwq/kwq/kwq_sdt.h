@@ -16,7 +16,9 @@
  * KWQ_NO_SDT (make KWQ_NO_SDT=1): compile every probe site to nothing,
  * for measuring what the disabled probes cost (KWQ.md S10.3).  The
  * provider and probe definitions in kwq_sdt.c stay, so dtrace -l still
- * lists them; they simply never fire.
+ * lists them; they simply never fire.  The arguments stay behind in an
+ * unevaluated sizeof, so a variable only a probe reads (the doorbell's
+ * state) is still used and costs nothing.
  */
 #ifdef KWQ_NO_SDT
 #undef SDT_PROBE1
@@ -24,11 +26,23 @@
 #undef SDT_PROBE3
 #undef SDT_PROBE4
 #undef SDT_PROBE5
-#define	SDT_PROBE1(prov, mod, func, name, a0)			do { } while (0)
-#define	SDT_PROBE2(prov, mod, func, name, a0, a1)		do { } while (0)
-#define	SDT_PROBE3(prov, mod, func, name, a0, a1, a2)		do { } while (0)
-#define	SDT_PROBE4(prov, mod, func, name, a0, a1, a2, a3)	do { } while (0)
-#define	SDT_PROBE5(prov, mod, func, name, a0, a1, a2, a3, a4)	do { } while (0)
+#undef SDT_PROBE6
+#define	KWQ_SDT_NOARG(a)	(void)sizeof(a)
+#define	SDT_PROBE1(prov, mod, func, name, a0)				\
+	do { KWQ_SDT_NOARG(a0); } while (0)
+#define	SDT_PROBE2(prov, mod, func, name, a0, a1)			\
+	do { KWQ_SDT_NOARG(a0); KWQ_SDT_NOARG(a1); } while (0)
+#define	SDT_PROBE3(prov, mod, func, name, a0, a1, a2)			\
+	do { KWQ_SDT_NOARG(a0); KWQ_SDT_NOARG(a1); KWQ_SDT_NOARG(a2); } while (0)
+#define	SDT_PROBE4(prov, mod, func, name, a0, a1, a2, a3)		\
+	do { KWQ_SDT_NOARG(a0); KWQ_SDT_NOARG(a1); KWQ_SDT_NOARG(a2);	\
+	    KWQ_SDT_NOARG(a3); } while (0)
+#define	SDT_PROBE5(prov, mod, func, name, a0, a1, a2, a3, a4)		\
+	do { KWQ_SDT_NOARG(a0); KWQ_SDT_NOARG(a1); KWQ_SDT_NOARG(a2);	\
+	    KWQ_SDT_NOARG(a3); KWQ_SDT_NOARG(a4); } while (0)
+#define	SDT_PROBE6(prov, mod, func, name, a0, a1, a2, a3, a4, a5)	\
+	do { KWQ_SDT_NOARG(a0); KWQ_SDT_NOARG(a1); KWQ_SDT_NOARG(a2);	\
+	    KWQ_SDT_NOARG(a3); KWQ_SDT_NOARG(a4); KWQ_SDT_NOARG(a5); } while (0)
 #endif
 
 SDT_PROVIDER_DECLARE(kwq);
