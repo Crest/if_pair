@@ -15,8 +15,8 @@
  *   kwqsim <scenario> [-s seed] [-t seconds] [-v]
  *   kwqsim suite                     run every scenario over its seeds
  *
- * Scenarios: fairness latency gaming overrun overrun_idle handback storm
- * nnew manyq budgetjump glitch wrap ratechange badhandler random
+ * Scenarios: fairness latency gaming overrun overrun_idle handback cut
+ * storm nnew manyq budgetjump glitch wrap ratechange badhandler random
  * grace_pause sweep_boost.
  */
 
@@ -1319,7 +1319,7 @@ sc_grace_pause(uint64_t secs)
 	uint64_t pauses[] = { 10, 50, 200, 500, 2000 };
 
 	printf("== grace_pause: burst-and-pause (32 x 20 us) against a flood; share and boosts\n");
-	printf("  (the window is Q x the ring length at the doorbell: Q .. 2Q here)\n");
+	printf("  (the window is Q x max(ring length at the doorbell, 1): Q here)\n");
 	printf("  pause_us quantum_us  share  boosts  grace_hits  flood_lat_max_us\n");
 	for (size_t i = 0; i < sizeof(pauses) / sizeof(pauses[0]); i++) {
 		struct simq *a, *b;

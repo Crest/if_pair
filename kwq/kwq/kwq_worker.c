@@ -145,7 +145,7 @@ kwq_cputime_ns_tick(struct kwq_worker *kw, uint64_t *tick)
  * preempts whatever runs on the worker's CPU at its next instruction, so
  * a producer on that CPU never gets to finish its burst (the guest's
  * receiver blocked 9.5 k times a second inside its socket-lock section,
- * ../NOTES.md 2026-10-09).  For a producer on the worker's own CPU the
+ * ../../NOTES.md 2026-10-09).  For a producer on the worker's own CPU the
  * worker is therefore made runnable in the idle scheduling class at the
  * class's cap_prio instead: ULE runs it when the producer sleeps or when
  * its CPU would otherwise idle, and the deadline below bounds the wait.
@@ -291,7 +291,10 @@ kwq_tick_urgent_arm(struct kwq_worker *kw)
  * Ring the doorbell for kc: place it with the core (new list or, by the
  * grace rule, the ring) and wake the worker if it sleeps.  Called with kc
  * locked; kc_mtx (sleep or spin) -> kw_mtx (spin) is the lock order.
- * `urgent' (a notifier, a drain, a cancel) is never held back.
+ * An urgent ring is never held back by either regime: a signal (a
+ * notifier, a drain, a cancel) wakes at once, and so does an urgent
+ * item (kwq_enqueue_urgent()) except in the tick regime with
+ * tick_urgent_us set, where it waits at most that bound.
  *
  * Precedence of the two opt-in regimes of ../KWQ.md S16, both decided
  * here: a producer on the worker's own CPU takes the idle-class path
@@ -303,8 +306,9 @@ kwq_tick_urgent_arm(struct kwq_worker *kw)
  * tick regime skips the doorbell, because its own timeout serves this
  * list within L; otherwise the plain doorbell wakes the worker at the
  * class priority, as it always has.  An urgent ring takes neither
- * regime, and neither does a producer on another CPU, which is owed one
- * sleep-wake and nothing else (SCHED.md B5a).
+ * regime.  A producer on another CPU never takes the idle-class wait,
+ * which would make it pay for a wake it did not cause (SCHED.md B5a),
+ * but the tick regime skips its doorbell as anyone's.
  */
 void
 kwq_doorbell(struct kwq_cpu *kc, int ring)
@@ -338,7 +342,9 @@ kwq_doorbell(struct kwq_cpu *kc, int ring)
 		 * the sleep this ends carried the bound as its timeout; the
 		 * park cuts it short and the regime itself stands (the wake
 		 * is not a tick, so kw_tick_round stays clear and the round
-		 * is not judged for the exit).
+		 * is not judged for the exit; a park that outlasts the
+		 * sleep's timeout returns as the timeout, and is counted and
+		 * judged as a tick).
 		 */
 		kwq_wake_park(kw, kc);
 		state = KWQ_DB_LOWPRI;
@@ -380,7 +386,9 @@ kwq_doorbell(struct kwq_cpu *kc, int ring)
  * that is not the first one still waits for the tick, which is the
  * common case for a small packet behind a bulk segment.  This wakes the
  * worker without touching the placement, which is what the tick would
- * have done, and ends the idle-class wait if one is running.  Called
+ * have done, and ends the idle-class wait if one is running; in the tick
+ * regime with tick_urgent_us set it arms that bound instead, as
+ * kwq_doorbell() does for the first item.  Called
  * with kc locked and kc_state KWQ_CPU_WAKING (placed and not yet
  * served): a running pass needs no wake, and a parked queue cannot be
  * served before its refill.  Returns true if it woke anything, for the
@@ -1055,7 +1063,7 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	KW_U64(kw_wakes_low, "wakes_low", "wakes in the idle class for a producer on the worker's own CPU (KWQ.md S16)");
 	KW_U64(kw_wake_self, "wake_self", "of those, the worker got the CPU and promoted itself");
 	KW_U64(kw_wake_prom_deadline, "wake_promotions_deadline", "of those, promoted by the wake_delay_us deadline");
-	KW_U64(kw_wake_prom_urgent, "wake_promotions_urgent", "of those, promoted by a notifier, a drain, a cancel, an enqueue from another CPU or the share limit's deadline");
+	KW_U64(kw_wake_prom_urgent, "wake_promotions_urgent", "of those, promoted by an urgent ring or nudge (a notifier, a drain, a cancel, kwq_enqueue_urgent()), an enqueue from another CPU, the share limit's deadline or the unload");
 	KW_U64(kw_wakes_urgent, "wakes_urgent", "wakes of a sleeping worker by an urgent item added to a list already placed with the core (kwq_enqueue_urgent(), a notifier): the wake neither regime would have given it");
 	KW_U64(kw_wake_low_ns, "wake_low_ns", "wall time spent waiting in the idle class");
 	KW_U64(kw_turg_deferred, "tick_urgent_deferred", "urgent items that found the worker asleep in the tick regime and waited tick_urgent_us instead of waking it");

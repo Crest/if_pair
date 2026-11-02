@@ -195,8 +195,9 @@ int kwq_cap_prio[KWQ_NCLASS] = { PRI_MIN_IDLE, PRI_MIN_IDLE, PRI_MIN_IDLE };
 static u_int kwq_quantum_us[KWQ_NCLASS] = { 200, 1000, 5000 };
 /*
  * The share limit (SCHED.md S6.3) is on by default at an equal share:
- * half of each millisecond at kernel priority while anything else is
- * runnable on the CPU, the other half as an idle-priority thread.  The
+ * half of each millisecond in passes at the class priority while anything
+ * else is runnable on the CPU, the other half waiting between passes at
+ * cap_prio (by default an idle priority).  The
  * knobs are expert overrides; 1000 turns it off.
  */
 static u_int kwq_cap_permille[KWQ_NCLASS] = { 500, 500, 500 };
@@ -468,7 +469,7 @@ kwq_target_cpu(struct kwq *q, int cpu)
  * Called with kc locked after something was added: stamp the start of a
  * burst and ring the doorbell if the worker is not already scheduled for
  * this (queue, CPU).  One lock hold covers publication and wakeup, so a
- * wakeup can never be lost (../NOTES.md, the if_pair invariant).
+ * wakeup can never be lost (../../NOTES.md, the if_pair invariant).
  */
 static inline bool
 kwq_kc_added(struct kwq_cpu *kc, u_int added, int ring)
@@ -498,7 +499,9 @@ kwq_kc_added(struct kwq_cpu *kc, u_int added, int ring)
  * One item.  `urgent' marks an item whose latency the producer will not
  * trade for the opt-in regimes of ../KWQ.md S16: it rings the doorbell
  * past the tick regime and past the idle-class wait, as a notifier, a
- * drain and a cancel do.  It is for a small, latency-bearing item among
+ * drain and a cancel do, except that in the tick regime tick_urgent_us,
+ * when set, delays its wake by at most that bound so that the urgent
+ * items within it share one.  It is for a small, latency-bearing item among
  * big ones (if_pair's net.link.pair.urgent_bytes), never for the common
  * case: an urgent item costs a wake, which is what the regimes save.
  */
@@ -934,7 +937,7 @@ kwq_sysctl_register(struct kwq *q)
 		KC_U64(kc_overruns, "overruns", "passes that exceeded their budget by more than one quantum x weight");
 		KC_U64(kc_overruns_switched, "overruns_switched", "of those, passes during which the worker left the CPU (preempted or blocked): the system's excess, not the handler's");
 		KC_U64(kc_doorbells, "doorbells", "wakeups performed for this list");
-		KC_U64(kc_doorbells_skipped, "doorbells_skipped", "lists placed while the worker's tick was armed: no wakeup (KWQ.md S16)");
+		KC_U64(kc_doorbells_skipped, "doorbells_skipped", "lists placed while the worker's tick was armed: no wakeup now, the tick or tick_urgent_us serves them (KWQ.md S16)");
 		KC_U64(kc_parks, "parks", "rounds skipped for a deficit <= 0");
 		KC_U64(kc_debts, "debts", "doorbells sent to the ring because the queue went idle owing time");
 		KC_U64(kc_glitches, "glitches", "passes whose CPU-time delta was negative or > 1 s (ticker fault; charged one quantum)");

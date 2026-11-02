@@ -90,7 +90,8 @@ struct kwq_cpu {
 	uint64_t		kc_coalesced;	/* kwq_notify() no-ops */
 	uint64_t		kc_doorbells;	/* wakeups performed for this list */
 	uint64_t		kc_doorbells_skipped;	/* lists placed while the worker's tick
-						   was armed: no wakeup (KWQ.md S16) */
+						   was armed: no wakeup now, the tick or
+						   tick_urgent_us serves them (KWQ.md S16) */
 
 	/* Block 1..: consumer-private, written only by the owning worker. */
 	struct kwq		*kc_q __aligned(KWQ_LINE);
@@ -152,9 +153,10 @@ struct kwq_worker {
 	/*
 	 * Block 0: shared with producers (doorbell) under kw_mtx, a spin mutex
 	 * so that KWQ_F_SPIN producers may ring it.  kw_served_us and
-	 * kw_nactive are plain stores by the worker, read by producers under
-	 * kw_mtx for the grace rule, one possibly stale read per doorbell
-	 * (SCHED.md S3, S4.6).
+	 * kw_nactive, which the grace rule reads at the doorbell, are written
+	 * under kw_mtx too (the worker at pass end and in its ring walk, a
+	 * producer's doorbell when it appends to the ring), so the producer
+	 * reads them consistently (SCHED.md S3, S4.6).
 	 */
 	struct mtx		kw_mtx;
 	TAILQ_HEAD(, kwq_cpu)	kw_new;		/* newly non-empty: boosted */
@@ -173,7 +175,11 @@ struct kwq_worker {
 	uint64_t		kw_served_rem;	/* ns of it short of the next microsecond */
 	void			*kw_chan;	/* wait channel (kwq_worker.c) */
 
-	/* Block 1..: private to the worker (ks_* run under kw_mtx anyway). */
+	/*
+	 * Block 1..: private to the worker (ks_* run under kw_mtx anyway),
+	 * except the regimes' state (kw_tick, kw_wake_*, kw_turg_* and their
+	 * counters), which producers read and write under kw_mtx.
+	 */
 	enum kwq_class		kw_class __aligned(KWQ_LINE);
 	int			kw_cpu;
 	int			kw_pri;
@@ -226,7 +232,7 @@ struct kwq_worker {
 
 	bool			kw_tick;	/* in the regime (under kw_mtx) */
 	bool			kw_tick_round;	/* the round in progress began with a tick */
-	bool			kw_tick_coalesced;	/* some tick of this episode served > 1 */
+	bool			kw_tick_coalesced;	/* a tick's round of this episode served > 1 */
 	u_int			kw_tick_short;	/* consecutive sleeps shorter than L */
 	sbintime_t		kw_tick_holdoff;	/* no entry before this time */
 	sbintime_t		kw_tick_backoff;	/* the current hold-off, 2L .. 1024L */

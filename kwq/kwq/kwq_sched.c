@@ -72,11 +72,13 @@ ks_ring_append(struct kwq_worker *kw, struct kwq_cpu *kc)
  * idle); anything else is boosted through the new list.  The window is
  * service, not rounds: the share limit's budget cut (S6.3) ends passes
  * early, so a cut round delivers a fraction of a quantum per competitor
- * and rounds come faster than service does; counting rounds then boosted
- * a burst-and-pause producer on every burst (SCHED.md S4.6, measured on
- * the guest's gaming case, 2026-10-28).  Only the low 32 bits of the
- * service counter are kept per queue (S13): the unsigned difference is
- * what matters.
+ * and rounds come faster than service does; counting rounds then lets a
+ * burst-and-pause producer's unchanged pause span more than one round
+ * and be boosted on a burst the rule meant to deny (SCHED.md S4.6, which
+ * specifies the unit on that argument: the guest's gaming case of
+ * 2026-10-28 did not reproduce it reliably).  Only the low 32 bits of
+ * the service counter are kept per queue (S13): the unsigned difference
+ * is what matters.
  */
 bool
 ks_doorbell(struct kwq_worker *kw, struct kwq_cpu *kc)
@@ -386,8 +388,8 @@ ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 /*
  * S6.1.  The yield is skipped when nothing else is runnable, and (S6.3)
  * when the round's last pass handed the CPU over under the share limit:
- * the worker is at the waiting priority then, and a yield at yield_prio
- * would put it ahead of the threads the hand-over was for.
+ * the hand-over was this round's voluntary switch, and a yield at
+ * yield_prio straight after it would switch again for nothing.
  */
 enum ks_yield
 ks_round_end(struct kwq_worker *kw, uint64_t wall_now __unused, bool runnable)

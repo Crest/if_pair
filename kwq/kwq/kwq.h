@@ -142,9 +142,11 @@ int		 kwq_enqueue(struct kwq *q, int cpu, struct kwq_item *it);
 /*
  * As kwq_enqueue(), for an item whose latency the producer will not trade
  * for the opt-in regimes of ../KWQ.md S16 (the tick regime, the
- * idle-class wait): it rings the doorbell at once, as a notifier does.
- * The wake is the cost; use it for a small latency-bearing item among
- * big ones, not for the common case.
+ * idle-class wait): it rings the doorbell at once, as a notifier does,
+ * except in the tick regime with kern.kwq.<class>.tick_urgent_us set,
+ * where it wakes the worker at most that much later, one wake for the
+ * urgent items within the bound.  The wake is the cost; use it for a
+ * small latency-bearing item among big ones, not for the common case.
  */
 int		 kwq_enqueue_urgent(struct kwq *q, int cpu, struct kwq_item *it);
 int		 kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,

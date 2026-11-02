@@ -153,7 +153,7 @@ SYSCTL_NODE(_kern, OID_AUTO, kwq_test, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "kwq test harness");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, scenario, CTLFLAG_RW, kt_scenario,
     sizeof(kt_scenario), "lifecycle fifo notify reject discard sleep | "
-    "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline pingpong pingpong_tq clocks | ifpair | "
+    "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline pingpong pingpong_tq clocks burst | ifpair | "
     "mixorder mixpattern mixbudget mixstarve mixrearm mixcancel mixrequeue mixdrain mixdrain_discard");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, items, CTLFLAG_RW, &kt_items, 0,
     "items per repetition (P0), pool size per flood (P1b)");
@@ -170,11 +170,11 @@ SYSCTL_INT(_kern_kwq_test, OID_AUTO, pcpu, CTLFLAG_RW, &kt_pcpu_knob, 0,
 /*
  * The flood, pingpong and taskqueue producers run at the priority they
  * inherit from kthread_add(), a kernel one (41 here), which is better than
- * kwq's yield_prio (56) and than any wake_prio: a same-CPU run with them
- * measures the round-end yield, never the wake's preemption.  prod_prio
- * puts them at a user-range priority instead (a network client's producer
- * is a user thread in sendmsg(2) at its own priority), so that the
- * non-preempting wake (WAKE.md S4.5) can be exercised on one CPU.
+ * kwq's yield_prio (56): a same-CPU run with them measures the round-end
+ * yield, never the wake's preemption.  prod_prio puts them at a
+ * user-range priority instead (a network client's producer is a user
+ * thread in sendmsg(2) at its own priority), so that the idle-class wait
+ * (wake_delay_us, ../KWQ.md S16) can be exercised on one CPU.
  */
 static int	kt_prod_prio = -1;
 SYSCTL_INT(_kern_kwq_test, OID_AUTO, prod_prio, CTLFLAG_RW, &kt_prod_prio, 0,
@@ -406,8 +406,8 @@ kt_other_cpu(int cpu)
 
 	/*
 	 * An explicit pcpu may equal the target CPU: the producer then shares
-	 * the worker's CPU, the case the non-preempting wake (WAKE.md S4.5)
-	 * exists for.  The default stays the next CPU.
+	 * the worker's CPU, the case the idle-class wait (wake_delay_us,
+	 * ../KWQ.md S16) exists for.  The default stays the next CPU.
 	 */
 	if (kt_pcpu_knob >= 0 && kt_pcpu_knob <= mp_maxid &&
 	    !CPU_ABSENT(kt_pcpu_knob))

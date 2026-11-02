@@ -72,7 +72,7 @@ SDT_PROBE_DECLARE(kwq, , , budget__hit);
 
 /* kwq:::doorbell worker states */
 #define	KWQ_DB_AWAKE	0
-#define	KWQ_DB_POLLING	1
+#define	KWQ_DB_POLLING	1	/* reserved: no worker polls in this tree */
 #define	KWQ_DB_ASLEEP	2
 #define	KWQ_DB_LOWPRI	4	/* asleep, made runnable in the idle class (KWQ.md S16) */
 #define	KWQ_DB_TICKED	6	/* asleep with the tick armed: placed, not woken (KWQ.md S16) */
@@ -84,8 +84,10 @@ SDT_PROBE_DECLARE(kwq, , , budget__hit);
  * reasons, which are not implemented (a count threshold is not a knob).
  */
 #define	KWQ_WAKE_DEADLINE	2	/* wake_delay_us passed */
-#define	KWQ_WAKE_URGENT		4	/* a notifier, a drain, a cancel, or an
-					   enqueue from another CPU */
+#define	KWQ_WAKE_URGENT		4	/* an urgent ring or nudge (a notifier, a
+					   drain, a cancel, kwq_enqueue_urgent()),
+					   an enqueue from another CPU, the share
+					   limit's deadline, or the unload */
 #define	KWQ_WAKE_SELF		5	/* the worker got the CPU by itself */
 
 /* kwq:::yield reasons */

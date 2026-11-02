@@ -41,7 +41,7 @@ SDT_PROBE_DEFINE3_XLATE(kwq, , , park, "struct kwq *", "kwqinfo_t *",
     "int", "int", "int64_t", "int64_t");
 /* class, cpu, ring entries, wall ns since the previous round end */
 SDT_PROBE_DEFINE4(kwq, , , round__end, "int", "int", "int", "uint64_t");
-/* class, cpu, reason (0 round, 1 tick, 2 share limit) */
+/* class, cpu, reason (KWQ_YIELD_*: 0 round, 1 tick, 2 share limit, 3 slice) */
 SDT_PROBE_DEFINE3(kwq, , , yield, "int", "int", "int");
 /*
  * The share limit (SCHED.md S6.3): class, cpu, event (KWQ_CAP_*), ns into
@@ -52,11 +52,16 @@ SDT_PROBE_DEFINE6(kwq, , , cap, "int", "int", "int", "uint64_t", "uint64_t",
 /* class, cpu, busy ns since the last wakeup */
 SDT_PROBE_DEFINE3(kwq, , , idle, "int", "int", "uint64_t");
 /*
- * class, cpu, the worker's state when rung (0 awake, 1 polling, 2 asleep,
- * 6 asleep with the tick armed)
+ * class, cpu, the worker's state when rung (KWQ_DB_*: 0 awake, 2 asleep,
+ * 4 made runnable in the idle class, 6 asleep with the tick armed; 1
+ * polling is reserved and never fires); also fired by the urgent nudge
  */
 SDT_PROBE_DEFINE3(kwq, , , doorbell, "int", "int", "int");
-/* a tick wake: class, cpu, elements the previous tick served (KWQ.md S16) */
+/*
+ * a tick wake: class, cpu, elements served since the previous sleep (the
+ * previous tick's round, or at an episode's first tick the round that
+ * entered the regime) (KWQ.md S16)
+ */
 SDT_PROBE_DEFINE3(kwq, , , tick, "int", "int", "uint64_t");
 /*
  * a worker waiting in the idle class is promoted: class, cpu, reason

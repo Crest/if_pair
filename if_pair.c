@@ -203,9 +203,11 @@ static uint32_t pair_hash_seed;
  * opt-in regimes of kwq/KWQ.md S16 - the tick regime's latency bound L
  * and the idle-class wait's deadline.  The case it exists for is a class
  * carrying both bulk segments and small latency-bearing packets
- * (requests, replies, pure ACKs) through one worker: the regimes buy
- * their wakes from the bulk flow and charge L to the small packets, and
- * this says which packets do not pay.  0 (the default) is off: every
+ * (requests, replies) through one worker: the regimes buy their wakes
+ * from the bulk flow and charge L to the small packets, and this says
+ * which packets do not pay (in the tick regime with
+ * kern.kwq.net.tick_urgent_us set they pay at most that bound, one
+ * wake for those within it).  0 (the default) is off: every
  * packet takes the class's regime, which is what the measurements of
  * kwq/WAKE.md S11 and S12 report.  It costs a wake per small packet, so
  * it undoes the saving exactly where the small packets are the traffic;
