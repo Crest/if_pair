@@ -390,12 +390,15 @@ bool
 kwq_urgent_nudge(struct kwq_cpu *kc, int ring)
 {
 	struct kwq_worker *kw;
+	int state = KWQ_DB_ASLEEP;
 	bool woke = false;
 
 	kw = kwq_workers[kc->kc_q->kwq_class][kc->kc_cpu];
 	mtx_lock_spin(&kw->kw_mtx);
 	if (__predict_false(kw->kw_lowpri)) {
+		/* Runnable in the idle class, not asleep: as kwq_doorbell(). */
 		kwq_wake_promote(kw, KWQ_WAKE_URGENT);
+		state = KWQ_DB_AWAKE;
 		woke = true;
 	} else if (kw->kw_sleeping && kw->kw_tick && ring == KWQ_RING_ITEM &&
 	    kwq_tick_urgent_us[kw->kw_class] != 0) {
@@ -409,7 +412,7 @@ kwq_urgent_nudge(struct kwq_cpu *kc, int ring)
 	}
 	if (woke)
 		SDT_PROBE3(kwq, , , doorbell, kc->kc_q->kwq_class, kc->kc_cpu,
-		    KWQ_DB_ASLEEP);
+		    state);
 	mtx_unlock_spin(&kw->kw_mtx);
 	return (woke);
 }
