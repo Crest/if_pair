@@ -170,9 +170,13 @@ start)
 	# follow by difference), the VM's free and wired pages, and the
 	# system's context switches, interrupts, soft interrupts and syscalls.
 	if [ -n "${PB_CTR:-}" ]; then
-		_w="kern.kwq.net.cpu.$WCPU"
-		_names="kern.cp_times $_w.wakeups $_w.passes $_w.ticks $_w.busy_ns $_w.idle_ns $_w.nnew $_w.nactive $_w.yields $_w.switched"
-		_names="$_names $(sysctl -N kern.kwq.net.queue 2>/dev/null | grep -E "\.cpu\.$WCPU\.(items|doorbells|doorbells_skipped)\$" | tr '\n' ' ')"
+		if [ "$WCPU" = any ]; then	# compare.sh OOB=yes: W is known only after the run, so every worker's passes and wakeups
+			_names="kern.cp_times $(sysctl -N kern.kwq.net.cpu 2>/dev/null | grep -E '\.(passes|wakeups)$' | tr '\n' ' ')"
+		else
+			_w="kern.kwq.net.cpu.$WCPU"
+			_names="kern.cp_times $_w.wakeups $_w.passes $_w.ticks $_w.busy_ns $_w.idle_ns $_w.nnew $_w.nactive $_w.yields $_w.switched"
+			_names="$_names $(sysctl -N kern.kwq.net.queue 2>/dev/null | grep -E "\.cpu\.$WCPU\.(items|doorbells|doorbells_skipped)\$" | tr '\n' ' ')"
+		fi
 		for _z in mbuf_jumbo_page mbuf; do
 			for _n in stats.allocs stats.frees stats.current domain.0.nitems domain.0.imin domain.0.imax \
 			    domain.0.wss keg.domain.0.pages keg.domain.0.free_items keg.domain.0.free_slabs; do

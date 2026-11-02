@@ -148,6 +148,17 @@
 # to follow the single flow's rate between its states (WAKE.md S12.2).
 # IPERF_ARGS adds options to the bulk iperf3 clients (tput1, tput16,
 # udp_load, ...), e.g. -Z to send with sendfile(2) instead of copying in.
+# OOB=yes runs tput1 and tput16 out of the box, as a user's two jails would
+# run them: nothing pinned (no cpuset on the iperf3 client, server or echo
+# servers; PIN_*, GEN_*_CPUS and SMT_SIBLINGS are refused), no client port
+# aimed at a worker (iperf3's own ephemeral port, so the flow lands on
+# whichever kwq worker its hash picks), and the worker found after each run
+# from the per-CPU pass counters (row w_cpu, "-" without kwq; the w_*
+# shares, the kwq_* rows and mhz_w are that worker's, from snapshots of
+# kern.cp_times and kern.kwq.net taken before and after the run, kept as
+# OUT/kwq0.<stage>.<rep> and OUT/kwq1.<stage>.<rep>).
+# TPUT1_HOOK gets "any" for W; gen_sample, cli_wcore and srv_wcore are
+# skipped.  Other tests are refused.
 # EPAIR_KEEP=yes leaves if_epair loaded after an epair battery instead of
 # unloading it once no vnet is dying.
 # TPUT1_HOOK=script runs "script pre|start|stop OUT/hook.<stage>.<rep>
@@ -308,8 +319,9 @@ others_than_core() {	# W -> every CPU but the hardware threads of W's core
 	_ex=$(smt_siblings "$1" | tr ',' '\n')
 	echo "$CPUS" | tr ' ' '\n' | grep -vxF "$_ex" | paste -sd, -
 }
-cp_times() {	# W -> "user nice sys intr idle" of that CPU
-	sysctl -n kern.cp_times | awk -v w="$1" '{ b = 5 * w; print $(b + 1), $(b + 2), $(b + 3), $(b + 4), $(b + 5) }'
+cp_times() {	# W [snapshot] -> "user nice sys intr idle" of that CPU, now or in a saved kern.cp_times
+	{ if [ -n "${2:-}" ]; then echo "$2"; else sysctl -n kern.cp_times; fi; } |
+	    awk -v w="$1" '{ b = 5 * w; print $(b + 1), $(b + 2), $(b + 3), $(b + 4), $(b + 5) }'
 }
 cp_shares() {	# "before" "after" -> "sys=x user=y idle=z" as shares of the interval
 	printf '%s\n%s\n' "$1" "$2" | awk 'NR == 1 { for (i = 1; i <= 5; i++) a[i] = $i }
@@ -481,6 +493,12 @@ stage_down() {
 }
 
 ports() {	# the ports that put both flows on WCPU under this load's seed
+	if [ "${OOB:-no}" = yes ]; then	# out of the box: no port aimed at a worker
+		CPORTS=""; SEED=-
+		[ "$KIND" = epair ] || SEED=$("$VICTIM" seed "$MOD.ko" 2>/dev/null) || SEED=-
+		log "$STAGE: out of the box, seed $SEED, iperf3's own client ports"
+		return
+	fi
 	if [ "$KIND" = epair ]; then	# no worker to aim at: fixed ports, fresh per run
 		CPORTS=$(jot 16 40101 | paste -sd' ' -); CPORTS2=$(jot 16 40201 | paste -sd' ' -)
 		CPORTS3=$CPORTS2; UPORT=40001; UPORT2=40002; UPORT2B=40003; SEED=-
@@ -532,7 +550,8 @@ discover() {	# find a worker CPU and the ports that hash to it by probing (kwq o
 	CPORTS=$CPORT
 	log "worker CPU $WCPU, iperf3 client port $CPORT, UDP source port $UPORT"
 }
-cport_next() {	# the next unused TCP client port of this stage (wraps)
+cport_next() {	# the next unused TCP client port of this stage (wraps); none out of the box
+	[ "${OOB:-no}" = yes ] && { CPORT=""; return; }
 	set -- $CPORTS; CPORT=$1; shift; CPORTS="$* $CPORT"
 }
 verify_w() {	# after a flow on CPORT: did W see it (kwq counters, or W's sys share)?
@@ -544,7 +563,14 @@ busiest_kwq_delta() {	# two snapshots of the per-CPU pass counters -> the CPU th
 	printf '%s\n%s\n' "$1" "$2" | awk '{ d[$1] = $2 - d[$1] } END { for (c in d) if (d[c] > m) { m = d[c]; w = c } if (m > 0) print w }'
 }
 kwq_passes() { sysctl kern.kwq.net.cpu 2>/dev/null | awk -F'[.:]' '$6 == "passes" { print $5, $NF }'; }
-oid0() { sysctl -n "$1" 2>/dev/null || echo 0; }	# a counter an older stage may lack
+kwq_snap() { sysctl kern.kwq.net > "$1" 2>/dev/null || : > "$1"; }	# FILE: every kwq counter now (OOB=yes)
+oid0() {	# a counter an older stage may lack; from the kwq_snap file OID_SNAP instead when set
+	if [ -n "${OID_SNAP:-}" ]; then
+		awk -F': ' -v k="$1" '$1 == k { print $2; f = 1; exit } END { if (!f) print 0 }' "$OID_SNAP"
+		return
+	fi
+	sysctl -n "$1" 2>/dev/null || echo 0
+}
 q2() {	# field cpu -> the field summed over both pair queues on that CPU (0 where absent)
 	echo $(( $(oid0 "kern.kwq.net.queue.$PAIRA.cpu.$2.$1") + $(oid0 "kern.kwq.net.queue.$PAIRB.cpu.$2.$1") ))
 }
@@ -670,14 +696,31 @@ kwq_all() {	# -> "wakeups passes ticks" summed over every NET worker, and the pa
 }
 
 t_tput1() {
+	# OOB=yes: W is the CPU the flow's hash picks, known only after the run
+	_oob=${OOB:-no}; _hw=$WCPU; [ "$_oob" = yes ] && _hw=any
 	[ "${CLOCKS:-no}" = yes ] && { _t0=$(pkg_temp); clk_snap > "$OUT/clk0"; }
 	_hk="$OUT/hook.$STAGE.$REP"
-	[ -n "${TPUT1_HOOK:-}" ] && sh "$TPUT1_HOOK" pre "$_hk" 0 "$SPID" "$SECS" "$JC" "$JS" "$WCPU" "$REP"
-	c0=$(cp_times "$WCPU"); k0=$(kwq_passes); q0=$(kwq_counters "$WCPU"); cport_next; iperf_bg 1 "$CPORT" "$P_CLI"
-	[ -n "${TPUT1_HOOK:-}" ] && sh "$TPUT1_HOOK" start "$_hk" "$IPID" "$SPID" "$SECS" "$JC" "$JS" "$WCPU" "$REP"
-	gen_sample "$IPID" "$SPID" "$OUT/gen.$STAGE.$REP" & _gp=$!
-	wait $IPID; c1=$(cp_times "$WCPU"); k1=$(kwq_passes); q1=$(kwq_counters "$WCPU")
-	[ -n "${TPUT1_HOOK:-}" ] && sh "$TPUT1_HOOK" stop "$_hk" "$IPID" "$SPID" "$SECS" "$JC" "$JS" "$WCPU" "$REP"
+	[ -n "${TPUT1_HOOK:-}" ] && sh "$TPUT1_HOOK" pre "$_hk" 0 "$SPID" "$SECS" "$JC" "$JS" "$_hw" "$REP"
+	if [ "$_oob" = yes ]; then
+		ct0=$(sysctl -n kern.cp_times); kwq_snap "$OUT/kwq0.$STAGE.$REP"
+	else
+		c0=$(cp_times "$WCPU"); q0=$(kwq_counters "$WCPU")
+	fi
+	k0=$(kwq_passes); cport_next; iperf_bg 1 "$CPORT" "$P_CLI"
+	[ -n "${TPUT1_HOOK:-}" ] && sh "$TPUT1_HOOK" start "$_hk" "$IPID" "$SPID" "$SECS" "$JC" "$JS" "$_hw" "$REP"
+	[ "$_oob" = yes ] || { gen_sample "$IPID" "$SPID" "$OUT/gen.$STAGE.$REP" & _gp=$!; }
+	wait $IPID; k1=$(kwq_passes)
+	if [ "$_oob" = yes ]; then
+		ct1=$(sysctl -n kern.cp_times); kwq_snap "$OUT/kwq1.$STAGE.$REP"
+		_wsave=$WCPU; WCPU=$(busiest_kwq_delta "$k0" "$k1"); [ -n "$WCPU" ] || WCPU=-
+		if [ "$WCPU" != - ]; then
+			c0=$(cp_times "$WCPU" "$ct0"); c1=$(cp_times "$WCPU" "$ct1")
+			q0=$(OID_SNAP=$OUT/kwq0.$STAGE.$REP; kwq_counters "$WCPU"); q1=$(OID_SNAP=$OUT/kwq1.$STAGE.$REP; kwq_counters "$WCPU")
+		fi
+	else
+		c1=$(cp_times "$WCPU"); q1=$(kwq_counters "$WCPU")
+	fi
+	[ -n "${TPUT1_HOOK:-}" ] && sh "$TPUT1_HOOK" stop "$_hk" "$IPID" "$SPID" "$SECS" "$JC" "$JS" "$_hw" "$REP"
 	_clk=""
 	if [ "${CLOCKS:-no}" = yes ]; then
 		clk_snap > "$OUT/clk1"; _t1=$(pkg_temp)
@@ -687,13 +730,22 @@ t_tput1() {
 		row tput1 temp0 "$_t0"; row tput1 temp1 "$_t1"
 		_clk=" mhz_all=$1 mhz_w=$2 mhz_busy=$3 busy_n=$4 busy_smt=$5 temp=$_t0..$_t1 busy: $(awk '$2 >= 0.5 { printf("%s%s@%s/%.2f", n++ ? "," : "", $1, $3, $2) }' "$OUT/clk.$STAGE.$REP")"
 	fi
-	wait $_gp; read -r gc gs < "$OUT/gen.$STAGE.$REP" || { gc=-1; gs=-1; }
-	r=$(iperf_rate); sh=$(cp_shares "$c0" "$c1")
-	[ "$KIND" = kwq ] && verify_w kwq "$k0" "$k1"
-	kwq_rows tput1 "$q0" "$q1" "$SECS"
+	if [ "$_oob" = yes ]; then
+		gc=-; gs=-
+	else
+		wait $_gp; read -r gc gs < "$OUT/gen.$STAGE.$REP" || { gc=-1; gs=-1; }
+	fi
+	r=$(iperf_rate); sh=""; [ "$WCPU" != - ] && sh=$(cp_shares "$c0" "$c1")
+	[ "$KIND" = kwq ] && [ "$_oob" != yes ] && verify_w kwq "$k0" "$k1"
+	[ "$WCPU" != - ] && kwq_rows tput1 "$q0" "$q1" "$SECS"
 	row tput1 gbit "$r"; for kv in $sh; do row tput1 "w_${kv%%=*}" "${kv#*=}"; done
-	row tput1 cli_wcore "$gc"; row tput1 srv_wcore "$gs"
+	if [ "$_oob" = yes ]; then
+		row tput1 w_cpu "$WCPU"
+	else
+		row tput1 cli_wcore "$gc"; row tput1 srv_wcore "$gs"
+	fi
 	log "$STAGE rep $REP tput1 gbit=$r W=$WCPU $sh cli_wcore=$gc srv_wcore=$gs gen_cpus: $(cat "$OUT/gen.$STAGE.$REP.cpus" 2>/dev/null)$_clk"
+	if [ "$_oob" = yes ]; then WCPU=$_wsave; fi
 }
 t_bsink() {
 	for _lag in ${BSINK_LAGS:-"0 524288 2097152"}; do
@@ -1179,22 +1231,32 @@ t_udp_burst_load() {
 }
 
 battery() {
-	case "${SMT_SIBLINGS:-share}" in
-	exclude) OTHERS=$(others_than_core "$WCPU") ;;
-	share) OTHERS=$(others_than "$WCPU") ;;
-	*) fail "SMT_SIBLINGS must be share or exclude, not $SMT_SIBLINGS" ;;
-	esac
-	log "$STAGE: load generators pinned to CPUs $OTHERS (SMT_SIBLINGS=${SMT_SIBLINGS:-share}, W's core $(smt_siblings "$WCPU"))"
-	# Role masks (PIN_*, default the generators' mask as before): the bulk
-	# iperf3 client, the iperf3 server, the probe and request clients, the
-	# echo servers.  The coloc tests' receiver and probe stay on W.
-	P_CLI=${PIN_CLI:-${GEN_CLI_CPUS:-$OTHERS}}; P_SRV=${PIN_SRV:-${GEN_SRV_CPUS:-$OTHERS}}
-	P_VIC=${PIN_VIC:-$OTHERS}; P_ECHO=${PIN_ECHO:-$OTHERS}
-	[ -n "${PIN_CLI:-}${PIN_SRV:-}${PIN_VIC:-}${PIN_ECHO:-}" ] &&
-	    log "$STAGE: roles pinned: client $P_CLI, server $P_SRV, probes $P_VIC, echo servers $P_ECHO, W $WCPU"
-	cpuset -l "$P_SRV" -p "$SPID"	# the iperf3 server, off W
-	cpuset -l "$P_ECHO" -p "$EPID"
-	[ -n "${PIN_ECHO:-}" ] && cpuset -l "$P_ECHO" -p "$UPID"
+	if [ "${OOB:-no}" = yes ]; then
+		for t in $TESTS; do
+			case $t in tput1|tput16) ;; *) fail "OOB=yes runs only tput1 and tput16, not $t" ;; esac
+		done
+		[ -n "${PIN_CLI:-}${PIN_SRV:-}${PIN_VIC:-}${PIN_ECHO:-}${GEN_CLI_CPUS:-}${GEN_SRV_CPUS:-}${SMT_SIBLINGS:-}" ] &&
+		    fail "OOB=yes pins nothing: unset PIN_*, GEN_*_CPUS and SMT_SIBLINGS"
+		P_CLI=""; P_SRV=""; P_VIC=""; P_ECHO=""
+		log "$STAGE: out of the box: nothing pinned, iperf3's own client ports, the worker found after each run"
+	else
+		case "${SMT_SIBLINGS:-share}" in
+		exclude) OTHERS=$(others_than_core "$WCPU") ;;
+		share) OTHERS=$(others_than "$WCPU") ;;
+		*) fail "SMT_SIBLINGS must be share or exclude, not $SMT_SIBLINGS" ;;
+		esac
+		log "$STAGE: load generators pinned to CPUs $OTHERS (SMT_SIBLINGS=${SMT_SIBLINGS:-share}, W's core $(smt_siblings "$WCPU"))"
+		# Role masks (PIN_*, default the generators' mask as before): the bulk
+		# iperf3 client, the iperf3 server, the probe and request clients, the
+		# echo servers.  The coloc tests' receiver and probe stay on W.
+		P_CLI=${PIN_CLI:-${GEN_CLI_CPUS:-$OTHERS}}; P_SRV=${PIN_SRV:-${GEN_SRV_CPUS:-$OTHERS}}
+		P_VIC=${PIN_VIC:-$OTHERS}; P_ECHO=${PIN_ECHO:-$OTHERS}
+		[ -n "${PIN_CLI:-}${PIN_SRV:-}${PIN_VIC:-}${PIN_ECHO:-}" ] &&
+		    log "$STAGE: roles pinned: client $P_CLI, server $P_SRV, probes $P_VIC, echo servers $P_ECHO, W $WCPU"
+		cpuset -l "$P_SRV" -p "$SPID"	# the iperf3 server, off W
+		cpuset -l "$P_ECHO" -p "$EPID"
+		[ -n "${PIN_ECHO:-}" ] && cpuset -l "$P_ECHO" -p "$UPID"
+	fi
 	for t in $TESTS; do
 		TEST=$t	# also the iperf3 report's name; lib.sh's TEST only prefixed the log
 		case $t in
