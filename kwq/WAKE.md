@@ -2563,3 +2563,35 @@ Battery A confirms the wait is untouched: the pinned receiver keeps it
 the request from the worker's CPU keeps option 2's figures (a07 p50 136
 at HW against 43 / 44 / 43, lab 124 against 49 / 48 / 46), with every
 knob on at once (CWT) no different from option 2 alone.
+
+### 12.9 The post-merge review's two behaviour changes on lab (2026-11-02)
+
+The review of kwq-next against the specification fixed two rules that
+change behaviour (PLAN.txt P4e, REVIEWED): a tick episode counts as
+coalesced only by a tick's own round, and the service counter carries
+each pass's sub-microsecond rest, so one-item NET passes advance the
+grace rule's clock and returning queues are boosted as S4.6 says.  A
+lab A/B, A = kwq-next 15442fc, B = b17381f, nothing pinned for the
+single flow (compare.sh OOB=yes, eight runs each) and the pinned rows
+three times, AT20 and BT20 with `tick_us` 20
+(samples/review_ab_lab_2026-11-02.tsv), medians, per-run values where
+the three disagree:
+
+| | A | B | AT20 | BT20 |
+|---|---|---|---|---|
+| single flow Gbit/s, OOB | 149.5 [128..154] | 150.5 [142..152] | | |
+| UDP beside bulk p50 / p99 us | 10 / 15 | 10 / 16 | 10 / 20 | 10 / 20 |
+| its worker's wakeups/s | 657 | 482 | 8 | 4 |
+| 16-burst, last reply p99 us | 14, 42, 15 | 42, 15, 42 | 38, 43, 44 | 39, 36, 42 |
+| 64-burst / 2 ms, last reply p99 us | 58, 75, 44 | 44, 44, 43 | 59 | 59 |
+| 64-burst / 50 ms, last reply p99 us | 83, 80, 59 | 43, 41, 44 | 65 | 62 |
+| sparse 16 / 64 flows p99 us | 10 / 11 | 9 / 11 | 9 / 11 | 9 / 11 |
+
+Nothing regresses beyond the spread.  The dense 64-request bursts are
+the case the service counter was wrong for, and B's tail is 41 to 44 us
+in every run where A's was 44 to 83; the 16-request burst is bimodal
+per run in both builds, as S12.2 found for the single flow.  The tick
+fix shows nothing at 20 us on these rows, as expected: it concerns
+episodes whose entering round served two or more and whose ticks then
+served at most one.  Three runs per row; a07 and the guest were not
+run (the guest's ATF suite and run_all.sh pass at the merged tip).

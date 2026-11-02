@@ -1127,7 +1127,9 @@ Phases
     gets the pass's clock; comments and two sysctl descriptions follow
     the merged code.  The service counter changes default behaviour
     where passes are short, the tick fix the regime's hold-off; the
-    batteries of WAKE.md S11-S12 ran the old rules.
+    batteries of WAKE.md S11-S12 ran the old rules; a lab A/B of both
+    (WAKE.md S12.9) found no regression and the dense 64-request
+    burst's tail 41-44 us against 44-83.
     Open: the NIC-fed flow, unmeasured on any machine, and with it
     whether notifiers, drains and cancels stay urgent (WAKE.md S12.6).
 
