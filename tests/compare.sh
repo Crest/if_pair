@@ -159,6 +159,10 @@
 # OUT/kwq0.<stage>.<rep> and OUT/kwq1.<stage>.<rep>).
 # TPUT1_HOOK gets "any" for W; gen_sample, cli_wcore and srv_wcore are
 # skipped.  Other tests are refused.
+# DYING_WAIT=<s> (default 20) is how long a run's teardown waits for its
+# two vnet jails to leave jls -d before it unloads the modules anyway (the
+# base kernel's kldunload deadlock, bugs/vnet-kldunload-deadlock; a client
+# jail with a TIME_WAIT socket stays dying for 2MSL, 60 s by default).
 # EPAIR_KEEP=yes leaves if_epair loaded after an epair battery instead of
 # unloading it once no vnet is dying.
 # TPUT1_HOOK=script runs "script pre|start|stop OUT/hook.<stage>.<rep>
@@ -479,7 +483,7 @@ stage_down() {
 	# seconds for the vnet teardown that follows their disappearance,
 	# which userland cannot observe.  Mitigation, not a fix.
 	n=0; while jls -d name 2>/dev/null | grep -qx -e "$JS" -e "$JC"; do
-		[ $n -ge 200 ] && { log "WARNING: $JS/$JC still dying after 20 s; unloading anyway"; break; }
+		[ $n -ge $((${DYING_WAIT:-20} * 10)) ] && { log "WARNING: $JS/$JC still dying after ${DYING_WAIT:-20} s; unloading anyway"; break; }
 		sleep 0.1; n=$((n+1))
 	done
 	sleep 2
