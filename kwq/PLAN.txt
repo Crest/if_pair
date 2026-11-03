@@ -778,7 +778,9 @@ Phases
        away is bounded by the period, not by ULE's 16-94 ms slice.  With
        nothing else runnable the worker runs on: work-conserving.
        Nothing carries between periods: unused allowance is lost, the
-       overshoot of a clamped pass is one item.  The period rolls over at
+       overshoot of a clamped pass is one item.  (Since P6, 2026-11-03,
+       time used beyond the allowance while contended carries, at most
+       one period: SCHED.md S6.3.)  The period rolls over at
        pass begin as well as at pass end, so the first pass after the
        deadline is clamped (the first build rolled it over at pass end
        only and ran that pass on the full quantum: 32 % busy at ratio
@@ -1285,7 +1287,7 @@ Phases
     - P6d done: kwq_crypto.ko and its ATF program (verify, onecpu_fair,
       weight); crypto_bench.sh.
     - P6e done: kwq-geli (copy, rename, port), README.
-    - P6f: kwq-geli ATF 11 cases; geli_bench.sh/geli_report.sh.
+    - P6f: kwq-geli ATF 14 cases; geli_bench.sh/geli_report.sh.
     - Machines: guest ATF 34/34 + 12/12 (GENERIC-DEBUG, KWQ_LIST_CHECK);
       lab 31/31 + 11/11 and geli_bench x5, then down since 20:34 UTC (an
       uncommitted kwq-geli build, BULK.md S5; waits for crest); a07 waits
@@ -1298,6 +1300,13 @@ Phases
       it (Jain >= 0.997) where GELI's thread model gives one of them all
       of it and the user nothing.  S14's priority argument does not hold
       against BULK with its share limit; the reserved-worker one stands.
+    - Review of the branch (BULK.md S5): five faults fixed, 50fbecd..
+      2cfbba3: steal reach one-way on rings wider than steal_scan (a07
+      would not have stolen), the carry charging uncontended time
+      (simulator case cap_onset), a key-cache double insert, a busy
+      retry of a bio short part way (now ENOMEM; fail point and ATF
+      case nomem), resume's unchecked session setup (fail point and ATF
+      case resume_fail).  Guest 34/34 + 14/14 after them.
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
     P7a Design and simulate first (the P1a pattern; nothing in the kernel

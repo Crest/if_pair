@@ -2811,3 +2811,9 @@ decision deferred until real clients show what fan-in they produce.
   steal rmlock).  The share limit clamps a period's first pass only
   while something else is runnable (SCHED.md S6.3).  New BULK counters
   and knobs in S10.7; `kwq:::steal` fires.
+- 2026-11-03 (P6, review): steal rings alternate up and down by
+  distance, so a woken helper reaches its victim within `steal_scan`
+  (SCHED.md S16); the share limit forgives time used beyond the
+  allowance while nothing else is runnable (S6.3); kwq.h's requeue rule
+  forbids handing back a notifier already walked past, not an item, as
+  S3 says.
