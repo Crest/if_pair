@@ -392,6 +392,40 @@ SPIN
 }
 resume_cleanup() { kwqeli_cleanup; }
 
+atf_test_case nomem cleanup
+nomem_head() {
+	atf_set descr "crypto requests that cannot be had (fail point kwqeli_getreq, 0.2 % of sectors) fail bios part way with ENOMEM, GEOM issues them again, and stock geli reads back exactly what kwq-geli wrote"
+	atf_set require.user root
+}
+nomem_body() {
+	kwqeli_setup
+	if ! kldstat -q -m g_eli; then
+		kldload geom_eli || atf_skip "cannot load geom_eli"
+		echo geom_eli >> loaded
+	fi
+	m=$(newmd 64m)
+	atf_check -o ignore geli init -B none -P -K key -s 4096 "$m"
+	atf_check $GK attach -p -k key "$m"
+	nomem0=$(sysctl -n kern.geom.nomem_count)
+	knob debug.fail_point.kwqeli_getreq '0.2%return'
+	dd if=data.in of=data.cmp bs=1m count=32 2>/dev/null
+	dd if=data.cmp of="/dev/$m.kweli" bs=1m 2>/dev/null || atf_fail "write"
+	w=$(( $(sysctl -n kern.geom.nomem_count) - nomem0 ))
+	dd if="/dev/$m.kweli" of=data.out bs=1m count=32 2>/dev/null || atf_fail "read"
+	r=$(( $(sysctl -n kern.geom.nomem_count) - nomem0 - w ))
+	sysctl -q debug.fail_point.kwqeli_getreq=off >/dev/null
+	echo "nomem_count +$w writing, +$r reading"
+	cmp -s data.cmp data.out || atf_fail "kwq-geli read back something else"
+	atf_check $GK detach "$m.kweli"
+	atf_check geli attach -p -k key "$m"
+	dd if="/dev/$m.eli" of=data.out bs=1m count=32 2>/dev/null
+	atf_check geli detach "$m.eli"
+	cmp -s data.cmp data.out || atf_fail "stock geli reads something else"
+	[ "$w" -gt 0 ] && [ "$r" -gt 0 ] || \
+	    atf_skip "no ENOMEM in one direction (write $w, read $r): asynchronous crypto?"
+}
+nomem_cleanup() { kwqeli_cleanup; }
+
 atf_test_case resume_fail cleanup
 resume_fail_head() {
 	atf_set descr "a resume whose second session cannot be made (fail point kwqeli_resume_session) fails and leaves the provider suspended, its parked bios waiting; the next resume sends them through"
@@ -433,5 +467,6 @@ atf_init_test_cases() {
 	atf_add_test_case ufs
 	atf_add_test_case detach_load
 	atf_add_test_case resume
+	atf_add_test_case nomem
 	atf_add_test_case resume_fail
 }

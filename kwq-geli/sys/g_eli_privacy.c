@@ -34,6 +34,7 @@
 #include <sys/lock.h>
 #include <sys/mutex.h>
 #include <sys/bio.h>
+#include <sys/fail.h>
 #include <sys/sysctl.h>
 #include <sys/kthread.h>
 #include <sys/proc.h>
@@ -255,13 +256,16 @@ g_eli_crypto_read(struct g_eli_softc *sc, struct bio *bp, boolean_t fromworker)
  * must be requeued by the caller, which then runs it again from where it
  * stopped.  That happens, for synchronous sessions (software and
  * accelerated software drivers, where every request completes inside its
- * dispatch), when a crypto request cannot be had without sleeping after
- * the first sector went out (before it, the bio fails with ENOMEM for
- * GEOM to retry, as GELI's buffer shortage does), and when the pass's
- * budget is spent, checked every G_ELI_BUDGET_SECTORS sectors so that a
- * long bio does not hold the worker past its quantum or the share limit.
- * The sector it goes on from is bio_inbed, the completions so far, exact
- * because they are synchronous.  Requests are taken one per sector as
+ * dispatch), when the pass's budget is spent, checked every
+ * G_ELI_BUDGET_SECTORS sectors so that a long bio does not hold the
+ * worker past its quantum or the share limit.  The sector it goes on from
+ * is bio_inbed, the completions so far, exact because they are
+ * synchronous.  A crypto request or key that cannot be had without
+ * sleeping fails the bio with ENOMEM wherever it happens, and GEOM issues
+ * it again after a pause, as for GELI's buffer shortage (g_io_deliver());
+ * the sectors done so far are done again.  (Requeueing it instead, as the
+ * first version did after the first sector, retried it at once and at
+ * PI_SOFT for as long as the shortage lasted; found in review.)  Requests are taken one per sector as
  * GELI takes them, M_NOWAIT where GELI said M_WAITOK, and each completes
  * inside its dispatch, so the next allocation reuses it cache-hot.  (The
  * first port took all of a bio's requests before the first dispatch: 256
@@ -274,6 +278,22 @@ g_eli_crypto_read(struct g_eli_softc *sc, struct bio *bp, boolean_t fromworker)
  * session takes all requests and keys first (g_eli_getreqs()) and never
  * stops part way, its completions running behind its dispatches.
  */
+static void
+g_eli_crypto_nomem(struct g_eli_softc *sc, struct bio *bp)
+{
+
+	G_ELI_LOGREQ(1, bp, "Crypto request failed (ENOMEM).");
+	/* A read's clone is gone already (g_eli_read_done()). */
+	if (bp->bio_cmd == BIO_WRITE && bp->bio_driver1 != NULL) {
+		g_destroy_bio(bp->bio_driver1);
+		bp->bio_driver1 = NULL;
+	}
+	g_eli_free_data(bp);
+	bp->bio_completed = 0;
+	g_io_deliver(bp, ENOMEM);
+	atomic_subtract_int(&sc->sc_inflight, 1);
+}
+
 bool
 g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 {
@@ -348,15 +368,7 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 	batch = atomic_load_int(&g_eli_batch) != 0;
 	if (!sync && g_eli_getreqs(sc, wr->w_sid, nsec, bp->bio_offset, secsize,
 	    (sc->sc_flags & G_ELI_FLAG_SINGLE_KEY) == 0, &pool) != 0) {
-		G_ELI_LOGREQ(1, bp, "Crypto request failed (ENOMEM).");
-		if (bp->bio_cmd == BIO_WRITE && bp->bio_driver1 != NULL) {
-			g_destroy_bio(bp->bio_driver1);
-			bp->bio_driver1 = NULL;
-		}
-		g_eli_free_data(bp);
-		bp->bio_completed = 0;
-		g_io_deliver(bp, ENOMEM);
-		atomic_subtract_int(&sc->sc_inflight, 1);
+		g_eli_crypto_nomem(sc, bp);
 		return (false);
 	}
 
@@ -374,6 +386,12 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 			break;
 		}
 		crp = crypto_getreq(wr->w_sid, M_NOWAIT);
+		/* kwq-geli: the shortage on demand, for the nomem case */
+		KFAIL_POINT_CODE_FLAGS(DEBUG_FP, kwqeli_getreq,
+		    FAIL_POINT_NONSLEEPABLE, if (crp != NULL) {
+			crypto_freereq(crp);
+			crp = NULL;
+		});
 		if (crp != NULL && (sc->sc_flags & G_ELI_FLAG_SINGLE_KEY) == 0) {
 			crp->crp_cipher_key = g_eli_key_hold(sc, dstoff,
 			    secsize, M_NOWAIT);
@@ -383,21 +401,15 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 			}
 		}
 		if (crp == NULL) {
-			if (i == 0) {
-				G_ELI_LOGREQ(1, bp, "Crypto request failed (ENOMEM).");
-				/* A read's clone is gone already (g_eli_read_done()). */
-				if (bp->bio_cmd == BIO_WRITE && bp->bio_driver1 != NULL) {
-					g_destroy_bio(bp->bio_driver1);
-					bp->bio_driver1 = NULL;
-				}
-				g_eli_free_data(bp);
-				bp->bio_completed = 0;
-				g_io_deliver(bp, ENOMEM);
-				atomic_subtract_int(&sc->sc_inflight, 1);
-				return (false);
-			}
-			partial = true;		/* the rest after a while */
-			break;
+			/*
+			 * Sync: the sectors before have completed, those of a
+			 * batch once it is dispatched, none of them the last,
+			 * so nothing is in flight once it returns.
+			 */
+			if (batch)
+				crypto_dispatch_batch(&crpq, 0);
+			g_eli_crypto_nomem(sc, bp);
+			return (false);
 		}
 fill:
 		if (data) {
@@ -437,6 +449,14 @@ fill:
 			error = crypto_dispatch(crp);
 			KASSERT(error == 0,
 			    ("crypto_dispatch() failed (error=%d)", error));
+			/*
+			 * The resume point and the ENOMEM path rely on this:
+			 * no synchronous driver in the tree returns ERESTART,
+			 * the one way crypto(9) defers a request.
+			 */
+			KASSERT(!sync || i + 1 == nsec || bp->bio_inbed == i + 1,
+			    ("%s: bio %p sector %u of %u not completed inline",
+			    __func__, bp, i, nsec));
 		}
 	}
 

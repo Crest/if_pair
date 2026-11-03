@@ -68,12 +68,15 @@ The port (all marked `kwq-geli:` in the source):
   `THREAD_NO_SLEEPING()`.  GELI took a crypto request per sector with
   `M_WAITOK` inside its dispatch loop, and a key with `M_WAITOK` on a
   key-cache miss.  The privacy path takes them one per sector with
-  `M_NOWAIT`: a shortage at the first sector fails the bio with
-  `ENOMEM` for GEOM to retry; a shortage later, or the pass's budget
-  running out (checked every 16 sectors), leaves the bio partly
-  dispatched, its next sector saved in `bio_pflags`, and the handler
-  requeues it in front of the rest to go on first.  A 1 MiB bio is then
-  no longer one uninterruptible item.  The integrity path takes all of
+  `M_NOWAIT`: a shortage at any sector fails the bio with `ENOMEM`,
+  and GEOM issues it again after a pause, the sectors done so far
+  done again.  The pass's budget running out (checked every 16
+  sectors) leaves the bio partly dispatched instead, and the handler
+  requeues it in front of the rest to go on from the sector after the
+  last completion (`bio_inbed`).  A 1 MiB bio is then no longer one
+  uninterruptible item.  (The first version requeued a bio after a
+  shortage too, and the worker retried it at once, at `PI_SOFT`, for
+  as long as the shortage lasted.)  The integrity path takes all of
   a bio's requests and keys first (`g_eli_getreqs()`), so a shortage
   fails it whole.  `kern.geom.eli.blocking_malloc` is gone.  (Taking
   all requests first in the privacy path too, as the first version of
