@@ -187,7 +187,7 @@ re-arming safe.
 |---|---|---|
 | work belongs to a flow, connection or interface queue | `kwq_cpu_for_hash(hash)` | same hash always lands on the same CPU, so order is kept; the same mapping TCP uses for per-CPU timers, so a connection's worker and its timers share a CPU |
 | work was produced by an interrupt on a known CPU and has no other affinity | that CPU's id | the data is already in that CPU's cache |
-| work is independent of all other work (parallel chunks) | `KWQ_CPU_ANY` (BULK queues only) | the caller's CPU if its list is empty, else the shallowest of at most four probed CPUs in the caller's NUMA domain |
+| work is independent of all other work (parallel chunks) | `KWQ_CPU_ANY` (BULK queues only) | the nearest CPU whose BULK worker sleeps with an empty list, so the item starts at once and the producer keeps running; else the caller's CPU if its list is empty, else the shallowest of four nearby (SCHED.md S16) |
 | the item has no usable hash (a packet too short to parse, an unknown family) but its peers do | a fixed CPU chosen once per queue at create time | what the real client does: one unhashable stream stays on one list instead of following whichever CPU its producer runs on |
 | nothing of the above and order does not matter | `curcpu` | cheapest, cache-warm |
 
@@ -524,6 +524,76 @@ cannot starve anyone.
 importance.  Putting bulk work in NET to make it faster is the
 tragedy-of-the-commons move that this design exists to prevent, and it
 is visible in `kern.kwq.net.queue.*` to anyone looking.
+
+### 11.1 Long CPU-bound items: BULK with stealing
+
+The shape of disk encryption, compression or a checksum offload: items
+of tens of microseconds to milliseconds, no order between them.
+
+```c
+q = kwq_create("kweli-ada0", KWQ_BULK, KWQ_F_STEALABLE, NULL, handler, sc);
+...
+error = kwq_enqueue(q, KWQ_CPU_ANY, &req->item);
+if (error == ENOBUFS)		/* the list's limit: retry later, never lose */
+	...
+```
+
+The handler runs each item to completion and checks the budget between
+items, handing the rest back with `kwq_requeue()`:
+
+```c
+for (it = head; it != NULL; it = next) {
+	next = KWQ_ITEM_NEXT(q, it);
+	run_one(it);
+	done++;
+	if (next != NULL && kwq_budget_left(q) == 0) {
+		kwq_requeue(q, next, NULL, n - done);
+		return;
+	}
+}
+```
+
+**Recommended:** `KWQ_CPU_ANY` and `KWQ_F_STEALABLE` together.  The pick
+spreads a producer's items over sleeping workers as it submits them;
+stealing moves what is left when one CPU falls behind, its worker
+taking one item per pass while a helper sleeps nearby and waking it
+for the rest.  kwq-geli's MAC-heavy provider fed on one CPU of the
+guest ran at 103 MB/s with stealing and 38 without.
+
+**Recommended:** an item may be longer than the share limit's period
+(1 ms): the limit charges it, carrying the excess into the next period
+(SCHED.md S6.3), so a user thread on the CPU still gets its share
+between items.  What it cannot do is preempt an item: a thread waiting
+for the CPU waits for the item in progress, so keep items to a few
+milliseconds where users share the machine.
+
+**Warning:** a stealable queue takes no notifiers (`kwq_notify()` is
+refused and asserted): a stolen notifier could run on two CPUs at once.
+Use a plain queue for signals.
+
+**Warning:** stealing is per-queue work moving between CPUs, so per-CPU
+FIFO holds only for what stays.  A client that needs order between two
+items puts them in one item.
+
+### 11.2 Fan-out with one completion: kwq_scatter
+
+```c
+struct req { struct kwq_group grp; struct chunk c[NCHUNK]; ... };
+
+for (i = 0; i < NCHUNK; i++)
+	r->c[i].item.kwi_link.stqe_next = i + 1 < NCHUNK ? &r->c[i + 1].item : NULL;
+error = kwq_scatter(q, &r->grp, &r->c[0].item, NCHUNK, req_done, r);
+/* handler: run the chunk, then */
+kwq_group_leave(&c->req->grp, 1);	/* the last leave calls req_done(r) */
+```
+
+**Recommended:** the group lives in the request it completes; it is free
+for reuse once `done` has run.  `done` runs in a BULK handler, so it may
+enqueue, deliver or free, but not sleep.
+
+**Warning:** `ENOBUFS` and `ENXIO` mean nothing was queued and `done`
+will not be called; the chunks are still the caller's.  Not from an
+interrupt filter or under a spin lock.
 
 ## 12. Diagnosis recipes
 

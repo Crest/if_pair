@@ -298,7 +298,8 @@ definition is available".
 | `doorbell` (no `args[0]`) | a (queue, CPU) went from idle to placed with the worker, or an urgent nudge woke the worker | `arg0` class, `arg1` cpu, `arg2` the worker's state when rung: 0 awake (a wait in the idle class it ends included), 2 asleep (a `wakeup_one()` follows), 4 asleep and made runnable in the idle class (`wake_delay_us`), 6 asleep in the tick regime: placed, not woken; 1 (polling) is defined and never fires |
 | `tick` (no `args[0]`) | a tick-regime sleep ended by its timeout (`tick_us` > 0, KWQ.md S16), as counted in `ticks` | `arg0` class, `arg1` cpu, `arg2` elements served since the worker's previous sleep (the previous tick's round, or at an episode's first tick the round that entered the regime) |
 | `wake` (no `args[0]`) | a worker waiting in the idle class was promoted to the class priority (`wake_delay_us` > 0) | `arg0` class, `arg1` cpu, `arg2` reason: 2 deadline, 4 urgent (an urgent ring or nudge, an enqueue from another CPU, the share limit's deadline, an unload), 5 self (the worker got the CPU), `arg3` ns since the wait began |
-| `steal`, `worker-block`, `worker-spawn`, `worker-exit` | defined for later phases, never fire yet | |
+| `steal` | a batch moved from one CPU's list of a stealable BULK queue to another's (P6, SCHED.md S16) | `arg1` from cpu, `arg2` to cpu, `arg3` items |
+| `worker-block`, `worker-spawn`, `worker-exit` | defined for P7, never fire yet | |
 
 One-liners, all verified against the test module:
 

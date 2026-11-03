@@ -698,10 +698,18 @@ clock read of its own.
   begins under the allowance runs to its clamped budget even if it
   crosses the allowance in flight, and the cut applies to passes that
   begin over it; the running pass is never added to `used` inside the
-  budget call.  Under the allowance the pass budget is clamped to what
-  is left of it, so the first pass of a period overshoots by one item,
-  not a quantum.  A cut shortens the round, which is why the grace rule
-  counts service and not rounds (S4.6).
+  budget call.  Under the allowance, while `sched_runnable()` is true at
+  pass begin, the pass budget is clamped to what is left of it, so the
+  first pass of a period overshoots by one item, not a quantum.  The
+  clamp applied whether or not anything was runnable until 2026-11-03:
+  uncontended it bought nothing, and with several queues on one worker
+  the same queues opened the periods round after round (a round of four
+  queues against a 1 ms period locks in), so they got the allowance per
+  round while the others got their deficit, shares of up to 1 : 2
+  between equal queues (kwq_crypto, four BULK queues on one guest CPU,
+  Jain 0.92; 0.999 with the clamp contended-only, uncontended and beside
+  a spinning user process).  A cut shortens the round, which is why the
+  grace rule counts service and not rounds (S4.6).
 
 The bound a waiting thread is promised is therefore one item, or `K`
 items by the budget estimate's cadence (S4.4, `K` 8), for a cooperative
@@ -1571,7 +1579,7 @@ case 4 added the progress rule (S5); the rest are documented limits.
 | 8 | a handler requeues the same head item forever (it cannot make progress) | one pass per round is spent on it; the rest of the queue starves behind it | `requeued` grows, `items` does not, `passes` grows | a client bug kwq cannot fix; the signature is unambiguous |
 | 9 | producers alternate burst and pause timed to the round | with the grace rule, no boost; without it one `Qw` per burst | `boosts` per queue vs its idle periods | S4.6 |
 | 10 | a heavy-weight queue arrives new | boost of `Qw` with `w = 8` jumps eight quanta ahead of the ring | light queues' `maxlat_ns` | S12 open question: cap the boost at `Q` if seen |
-| 11 | BULK stealing (P6) runs a batch of CPU A's queue on CPU B | whose deficit is charged is undefined | | P6 must define it (charge the victim's `kc_deficit` on A; the stealer's own share limit) |
+| 11 | BULK stealing runs a batch of CPU A's queue on CPU B | whose deficit is charged was undefined | B's `steals_in`/`stolen_in` for the queue, A's `steals_out`/`stolen_out` | the batch moves to B's list of the queue and is charged there, to that list's deficit and B's share limit (S16) |
 | 12 | a BLOCKING handler sleeps mid-pass | the worker holds its place in the round while asleep; other BLOCKING queues on the CPU wait for worker replacement | | P7; CPU-time charging (S1a.4) already excludes the sleep from the deficit |
 | 13 | an ithread preempts the worker mid-pass | wall-clock pass length grows; a BULK or BLOCKING deficit (CPU time) does not, a NET deficit is charged the wall time (S1a.4) | BULK, BLOCKING: `cycles` (wall) vs `busy_ns` (CPU) diverge; NET: `switched` | by design; B1-B5 are bounds in the charged time, wall-clock latency includes interrupt load |
 | 14 | `quantum_us` changed at runtime | deficits refilled and clamped with the new `Qw` from the next round | | fine; the clamps re-bound old values immediately |
@@ -1913,3 +1921,107 @@ FIFO only per source, so they are out on footprint and order; the
 lock-free list and the present mutex list remain the candidates, and the
 choice waits for a real client's measured fan-in (PLAN P4.0).
 
+
+## 16. BULK: stealing, scatter and KWQ_CPU_ANY (P6, 2026-11-03)
+
+Everything in S4-S6 is per (class, CPU): one worker, its ring, its
+deficits.  BULK work has no ordering to keep across CPUs, so the class
+may move it between them, in three ways, all outside the core: the
+core functions of `kwq_sched.c` are unchanged, and a batch that moves
+enters its new CPU's core through the doorbell like any arrival.
+
+**Stealing.**  A queue created `KWQ_F_STEALABLE` (BULK only) may have
+batches of its items taken by other CPUs' BULK workers.
+
+- *Who.*  A BULK worker whose own lists are empty tries once before it
+  sleeps (`kwq_steal()`, from the `KS_IDLE` branch of the worker loop),
+  and again after every wake.  The worker lock is dropped for the
+  attempt and `ks_next()` runs again afterwards, so a doorbell rung
+  meanwhile finds the worker awake and places its list without a wake.
+- *From where.*  The other CPUs in rings of growing distance in the
+  cache topology (`smp_topo()`, the tree ULE steals along): the CPUs of
+  the smallest group around this one that has any, then those its
+  parent adds, up to the root, each ring from the next CPU id up so
+  that neighbours do not all start at the same victim.  Levels that add
+  no CPU are skipped, so ring 1 is the SMT sibling on lab, the L3 on a
+  machine without SMT, and everything on a flat topology (a07, the
+  guest).  `kern.kwq.bulk.steal_scope` bounds the rings (0 none, 8 all,
+  the default) and `steal_scan` the CPUs probed per attempt (16).
+- *What.*  The older half of the victim's *live* list, at most
+  `steal_max` (64) items; a lone item only when the victim's worker is
+  inside a pass, asleep with the list placed (the tick regime) or
+  waiting in the idle class, not when it is between passes and about to
+  take it.  A pass's own batch belongs to its handler and is never
+  touched.  Stealable lists hold no notifiers: `kwq_notify()` refuses a
+  stealable queue, since a stolen notifier could run on two CPUs at once.
+- *Where it is charged.*  The batch MOVES to the stealer's own list of
+  the same queue (`steals_in`/`stolen_in` there, `steals_out`/
+  `stolen_out` on the victim's list) and runs there as ordinary passes:
+  the deficit, `busy_ns` and the share limit charged are the stealer's
+  CPU's, which ran the work.  The victim's deficit is consumer-private
+  to the victim's worker; charging it would need that worker's lock for
+  every pass of the batch (S14 case 11, which first proposed it).  FIFO
+  holds within each CPU's list, not across the move.
+- *The pass cap.*  Only the live list can be stolen from, and a pass
+  swaps a list out whole; a pass that took a backlog would hold it out
+  of every idle worker's reach until the handler requeued it, and the
+  next pass would swap it out again microseconds later.  A pass of a
+  stealable queue therefore takes at most `steal_batch` (16) items, and
+  while a BULK worker near its CPU sleeps it takes one and wakes that
+  worker for the rest, the work-stealing deque's rule: a few large
+  items (four writers' 1 MiB bios on kwq-geli) otherwise all fit one
+  pass.  Measured on the guest: without the cap the `steal` case of
+  kwq_test moved 9 % of its items, with it 75 %, the ideal for four
+  CPUs; with the one-item rule a MAC-heavy kwq-geli provider fed on one
+  CPU ran at 103 MB/s against 38 without stealing.
+- *The steal wake.*  An idle worker that sleeps does not look again
+  until something wakes it, so a producer that leaves a stealable list
+  `steal_wake` (2) deep, or at a doubling of that, wakes the nearest
+  sleeping BULK worker (`steal_wakes` on it): a handful of wakes per
+  burst however long it is, each helper taking half of what it finds.
+  The sleeping workers are found through an idle mask, a bit per CPU
+  set before the worker sleeps and cleared after it wakes, read without
+  locks; `kw_sleeping` under the worker lock decides.
+- *The drain.*  A steal holds the read side of `kwq_steal_rm` from its
+  check of `kwq_active` on the victim's list to its append on its own;
+  `kwq_drain()` of a BULK queue takes the write side after the
+  deactivation, which removes the queue from the steal list and waits
+  out every steal that passed the check, so no batch is between two
+  lists while the drain sweeps the CPUs one by one.  The `stealdrain`
+  cases run 100 activate/drain cycles under stealing without a lost or
+  doubled item.
+
+**kwq_scatter(q, g, list, n, done, arg).**  The `dispatch_apply` and
+`dispatch_group_notify` pair.  The targets are the caller's CPU and the
+sleeping BULK workers near it (the idle mask, within `steal_scope` and
+`steal_scan`), at most 64 and never more than there are items; the
+items are cut in order into one chunk per target, their sizes differing
+by one at most, and the caller's own chunk goes last, since its worker
+preempts the caller at that doorbell.  All or nothing: the room on every
+target is checked first, and the appends are then exempt from the
+limit, as a requeue is, so the bound holds as checked rather than to the
+item.  The read lock on `kwq_steal_rm` from the activity check to the
+last append keeps a drain from sweeping between two chunks.  The
+completion needs memory per call, which kwq does not allocate, so the
+client provides it: `struct kwq_group`, embedded in its request as a
+`kwq_notifier` is, armed by the call; the handler reports finished items
+with `kwq_group_leave(g, n)` and the leave that finishes the last one
+calls `done(arg)` once, in that handler's context, with a release fence
+before the count and an acquire fence before `done`.
+
+**KWQ_CPU_ANY.**  Unordered CPU-heavy work goes where it starts
+soonest: the nearest CPU in topology order whose BULK worker sleeps with
+the queue's list empty there, so the item starts at once and the caller
+keeps running (on its own CPU the worker would preempt it at the first
+item, and a producer of many items would be served serially); else the
+caller's own CPU if that list is empty; else the shallowest of the
+caller's list and the next four in topology order.  All reads are
+hints; a wrong guess is what stealing corrects.  The P0 pick probed four
+CPUs of the NUMA domain by id.
+
+Counters (per (queue, CPU), BULK): `steals_in`, `stolen_in`,
+`steals_out`, `stolen_out`, `scattered`; per BULK worker:
+`steal_tries`, `steals`, `stolen`, `steal_wakes`.  `kwq:::steal(q,
+from, to, n)` fires per batch.  Machine-wide `steals_in == steals_out`
+and `stolen_in == stolen_out` hold by construction and are asserted by
+the ATF `steal` case.

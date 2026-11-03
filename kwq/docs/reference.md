@@ -115,7 +115,7 @@ enum kwq_class { KWQ_NET = 0, KWQ_BULK = 1, KWQ_BLOCKING = 2 };
 | flag | value | meaning |
 |---|---|---|
 | `KWQ_F_INACTIVE` | 0x01 | create inactive; enqueues get `ENXIO` until `kwq_activate()` |
-| `KWQ_F_STEALABLE` | 0x02 | BULK only: idle workers may take batches (accepted, inert until P6); no `kwq_notify()` on such a queue |
+| `KWQ_F_STEALABLE` | 0x02 | BULK only: idle BULK workers of other CPUs may take batches of it (SCHED.md S16); no `kwq_notify()` on such a queue |
 | `KWQ_F_DISCARD` | 0x04 | `kwq_drain()` hands the backlog to the handler with `n < 0` instead of running it |
 | `KWQ_F_RESERVE` | 0x08 | BLOCKING only; asserted at create today |
 | `KWQ_F_VNET` | 0x10 | the worker sets the creator's vnet around the handler |
@@ -124,7 +124,7 @@ enum kwq_class { KWQ_NET = 0, KWQ_BULK = 1, KWQ_BLOCKING = 2 };
 
 | constant | value | meaning |
 |---|---|---|
-| `KWQ_CPU_ANY` | -1 | BULK only: kwq takes the caller's CPU if that list is empty, otherwise the shallowest of at most four other CPUs probed in the caller's NUMA domain.  Bounded on purpose: scanning a whole 128-CPU domain would read 128 cold cache lines per enqueue |
+| `KWQ_CPU_ANY` | -1 | BULK only: the nearest CPU in cache-topology order whose BULK worker sleeps with this queue's list empty, else the caller's CPU if its list is empty, else the shallowest of the caller's and the next four lists in topology order.  Bounded on purpose (`steal_scope`, `steal_scan`): scanning a whole 128-CPU machine would read 128 cold lines per enqueue |
 | `KWQ_NAMELEN` | 32 | buffer size; a name is 1 to 31 characters |
 | `KWQ_LIMIT_NONE` | `UINT_MAX` | unbounded; the effective bound is `INT_MAX` so a batch's `n` fits an `int` |
 
@@ -260,16 +260,34 @@ remapped through a table built at module load to a fixed present CPU, so
 one hash always yields one CPU even where CPU ids have holes.  Any
 context, no locks.
 
-### kwq_scatter
+### kwq_scatter, kwq_group_leave
 
 ```c
-int kwq_scatter(struct kwq *q, struct kwq_item *list, int n,
-    void (*done)(void *), void *arg);
+struct kwq_group {		/* client-owned; kwq keeps the fields */
+	volatile u_int	kg_left;
+	u_int		kg_n;
+	void		(*kg_done)(void *);
+	void		*kg_arg;
+};
+int kwq_scatter(struct kwq *q, struct kwq_group *g, struct kwq_item *list,
+    int n, void (*done)(void *), void *arg);
+void kwq_group_leave(struct kwq_group *g, int n);
 ```
 
-Fan a list of independent items across the CPUs of a BULK queue and call
-`done(arg)` once when all have been processed.  Returns `EOPNOTSUPP`
-today; specified for P6.
+Fan the `n` items of `list` (plain links, NULL-terminated, no
+notifiers) across the caller's CPU and the idle BULK workers near it,
+one chunk each in order, and arm `g`.  The handler calls
+`kwq_group_leave(g, k)` for every `k` items of the group it has
+finished (the client's item knows its group); the leave that finishes
+the last item calls `done(arg)` once, in that handler's context, after
+every item's work is visible.  All or nothing: `ENOBUFS` if a target
+list has no room (checked before the first append; the appends are then
+exempt from the limit, as a requeue is), `ENXIO` if the queue is
+draining or inactive, `EINVAL` for a non-BULK queue or a NULL argument;
+on any error nothing is queued and `done` is never called.  The group
+may be reused once `done` has run.  Not from an interrupt filter or with
+a spin mutex held: it takes the read side of an rmlock that fences the
+queue's drain (SCHED.md S16).
 
 ### kwq_notifier_init, kwq_notify, kwq_notify_cancel
 
@@ -483,7 +501,9 @@ own excess, the remainder is the system's.
 | `kwq_enqueue`, `kwq_enqueue_list` | `ENOBUFS` | the chosen CPU's list holds `limit` items.  Item still the caller's: drop and count, or apply upstream backpressure |
 | | `ENXIO` | `kwq_drain()` has begun, or the queue is still `KWQ_F_INACTIVE` |
 | | `EINVAL` | `KWQ_CPU_ANY` on a non-BULK queue |
-| `kwq_scatter` | `EOPNOTSUPP` | not implemented before P6 |
+| `kwq_scatter` | `EINVAL` | not a BULK queue, a NULL group, list or `done`, or `n <= 0` |
+| | `ENOBUFS` | a target list had no room; nothing queued |
+| | `ENXIO` | the queue is draining or inactive; nothing queued |
 | `kwq_notify` | never fails | `false` means coalesced or draining, not an error |
 | `kwq_requeue`, `kwq_budget_left`, `kwq_activate`, `kwq_drain`, `kwq_destroy` | never fail | misuse is asserted under INVARIANTS |
 | module unload | `EBUSY` | a queue still exists |
@@ -498,7 +518,7 @@ returns the item.
 |---|---|---|
 | thread, sleepable | everything | - |
 | ithread, SWI, callout, netisr, another kwq handler | `kwq_enqueue`, `kwq_enqueue_list`, `kwq_notify`, `kwq_scatter`; in a handler also `kwq_budget_left`, `kwq_requeue` | `kwq_create`, `kwq_drain`, `kwq_destroy`, `kwq_notify_cancel` (they sleep); `kwq_activate` |
-| interrupt filter, or holding a spin mutex, or inside `critical_enter()` | the same calls, **on a `KWQ_F_SPIN` queue only** | the same calls on a sleep-mutex queue (WITNESS panics); everything else |
+| interrupt filter, or holding a spin mutex, or inside `critical_enter()` | the same calls but `kwq_scatter`, **on a `KWQ_F_SPIN` queue only** | the same calls on a sleep-mutex queue (WITNESS panics); `kwq_scatter` (it takes an rmlock); everything else |
 | NMI, `SCHEDULER_STOPPED()`, KDB | nothing | everything.  After a panic the queue mutexes degrade to no-ops, so a `kwq_drain()` on the shutdown path needs no special case, but no new work may be submitted |
 
 Client locks may be held across `kwq_enqueue()`: the per-CPU list locks
@@ -515,7 +535,7 @@ are leaves.
 | sleep mutex, rwlock, rmlock | yes, briefly | |
 | spin mutex, `critical_enter`, `sched_pin` | yes, release before return | while held, only `KWQ_F_SPIN` queues may be enqueued to |
 | `M_NOWAIT` allocation | yes, handle `NULL` | |
-| `kwq_scatter` to a BULK queue | yes | the completion callback runs later, on some BULK worker |
+| `kwq_scatter` to a BULK queue | yes | `done` runs later, in the handler that leaves the group's last item |
 | the network epoch | NET: already inside, and nesting your own `NET_EPOCH_ENTER` is legal.  BULK: enter it yourself if you need it | kwq enters the epoch once per pass for NET only |
 | touching user memory | **never** | a worker is a kernel thread with no process address space; `copyin` is also sleeping |
 | sleeping in any form | **no**, asserted | `tsleep`, `cv_wait`, sx, lockmgr, `M_WAITOK`, `copyin` |
@@ -534,7 +554,7 @@ are leaves.
 | network epoch entered by kwq | yes | no | no |
 | `quantum_us` default | 200 | 1000 | 5000 |
 | `limit` default | 4096 | 4096 | 4096 |
-| stealing | never | `KWQ_F_STEALABLE` (P6) | n/a |
+| stealing | never | `KWQ_F_STEALABLE`: idle workers nearest first in cache topology, batch moved and charged where it runs (SCHED.md S16) | n/a |
 | status | available | available | **refused at create** |
 
 Between classes there is strict priority, enforced by the thread
@@ -611,6 +631,13 @@ module is preloaded.  Out-of-range values are refused with `EINVAL`.
 | `tick_urgent_us` | RWTUN | 0 .. 100000 | 0 (at once) | inside the tick regime, an urgent item (`kwq_enqueue_urgent()`) that finds the worker asleep wakes it this much later instead of at once, so that urgent items within the bound share one wake (`tick_urgent_deferred`, `tick_urgent_wakes`); a bound at or above `tick_us` is the tick's own and arms nothing; outside the regime, and for a notifier, a drain or a cancel, nothing changes (WAKE.md S12.5, S12.8) |
 | `wake_delay_us` | RWTUN | 0 .. 1000000 | 0 (off) | the idle-class wait's deadline (KWQ.md S16, opt-in): an enqueue from the worker's own CPU makes the worker runnable in the idle class at `cap_prio` instead of preempting the producer, and it runs when the producer sleeps or at this deadline, whichever is first.  0 is the preempting doorbell.  An enqueue from another CPU rings the doorbell at either setting |
 | `yield_prio` | RW | class priority .. 223 | 56 (`PUSER`) | priority of the end-of-round yield.  223 lets every user thread run a full slice, which is the setting for the case where an interactive process turns CPU-bound and its latency spikes with `yields` normal and no kwq counter explaining them.  The one knob that is not a loader tunable |
+| `steal` | RWTUN | 0, 1 | bulk: 1 | 1: a BULK worker with nothing of its own takes batches of stealable queues before it sleeps, and producers wake sleeping workers to do so; 0: no stealing, and a stealable pass takes its whole list again (SCHED.md S16) |
+| `steal_scope` | RWTUN | 0 .. 8 | bulk: 8 | rings of the cache topology that stealing, the steal wake, `kwq_scatter()` and `KWQ_CPU_ANY` look at, nearest first; 1 is the CPUs sharing the smallest group with this one (the SMT sibling on an SMT machine); 0 keeps every item on its CPU |
+| `steal_scan` | RWTUN | 1 .. 4096 | bulk: 16 | other CPUs probed at most per steal attempt, steal wake, scatter or pick |
+| `steal_max` | RWTUN | 1 .. 4096 | bulk: 64 | items one steal takes at most; otherwise half the victim's live list, the victim's lock held while the stealer walks them |
+| `steal_batch` | RWTUN | 1 .. 4096 | bulk: 16 | items a pass of a stealable queue takes at most; one while a BULK worker near it sleeps, which it then wakes for the rest |
+| `steal_wake` | RWTUN | 0 .. 4096 | bulk: 2 | an enqueue that leaves a stealable list this deep, or at a doubling of it, wakes the nearest sleeping BULK worker; 0: never |
+| `nstealable` | RD | - | - | bulk: stealable queues in existence |
 | `priority` | RDTUN | 0 .. 55 (net, bulk), 0 .. 223 (blocking), net <= bulk <= blocking | 1 (net), 2 (bulk), 56 (blocking) | the class's worker priority, settable only before the module loads (loader.conf or kenv(1)); a setting outside the range or out of order resets all three to the defaults with a console message.  Every knob exists for `blocking` too, although the class has no workers |
 
 Service-wide (`kern.kwq.`): `clock` (RD) names the scheduler's tick source
@@ -744,6 +771,10 @@ co-located receiver got (WAKE.md S12.1).
 | `nnew` | entries on the new list now (gauge) |
 | `budget_calls` | `kwq_budget_left()` calls on this worker |
 | `budget_reads` | of those, the ones that read the clock |
+| `steal_tries` | bulk: steal attempts with nothing of its own to do |
+| `steals` | bulk: of those, the ones that moved a batch to this CPU |
+| `stolen` | bulk: items in those batches |
+| `steal_wakes` | bulk: wakes sent to this worker so that it steals |
 
 ### Per-queue nodes, `kern.kwq.<class>.queue.<queue>.`
 
@@ -780,6 +811,9 @@ co-located receiver got (WAKE.md S12.1).
 | `debts` | doorbells sent to the ring because the queue went idle owing time |
 | `switched` | passes of this queue during which the worker left the CPU (preempted or blocked); NET charges them wall time |
 | `glitches` | passes whose CPU-time delta was negative or over 1 s |
+| `steals_in`, `stolen_in` | bulk: batches and items this CPU's worker took from other CPUs' lists of the queue |
+| `steals_out`, `stolen_out` | bulk: batches and items other CPUs' workers took from this list.  Summed over the CPUs, in equals out |
+| `scattered` | bulk: items `kwq_scatter()` put on this list |
 
 Counters are 64-bit and never reset except through `reset`.  A non-zero
 `glitches` means this machine's `cpu_ticks()` is not monotonic and every
@@ -814,7 +848,7 @@ default build produces.
 | `doorbell` | a (queue, CPU) placed with its worker, or an urgent nudge that woke the worker | untranslated: `arg0` class, `arg1` cpu, `arg2` worker state when rung: 0 awake (a wait in the idle class it ends included), 2 asleep and woken, 4 asleep and made runnable in the idle class (`KWQ_DB_LOWPRI`), 6 asleep with the tick armed: placed, not woken (`KWQ_DB_TICKED`); 1 (polling) is defined and never fires |
 | `tick` | a tick-regime sleep ended by its timeout (`tick_us` > 0, KWQ.md S16), as counted in `ticks` | untranslated: `arg0` class, `arg1` cpu, `arg2` elements served since the worker's previous sleep (the previous tick's round, or at an episode's first tick the round that entered the regime) |
 | `wake` | a worker waiting in the idle class promoted to the class priority (`wake_delay_us` > 0) | untranslated: `arg0` class, `arg1` cpu, `arg2` reason (`KWQ_WAKE_DEADLINE` 2, `KWQ_WAKE_URGENT` 4: an urgent ring or nudge, an enqueue from another CPU, the share limit's deadline, an unload; `KWQ_WAKE_SELF` 5: the worker got the CPU), `arg3` ns since the wait began |
-| `steal` | defined, never fires yet (P6) | `arg1` from cpu, `arg2` to cpu, `arg3` items |
+| `steal` | a batch moved between two CPUs' lists of a stealable queue | `arg1` from cpu, `arg2` to cpu, `arg3` items |
 | `worker-block`, `worker-spawn`, `worker-exit` | defined, never fire yet (P7) | untranslated: `arg0` cpu, `arg1` workers, `arg2` runnable |
 
 `round-end`, `yield`, `cap`, `idle`, `doorbell`, `tick` and `wake` are
@@ -887,11 +921,11 @@ or installed so the dependency resolves.
 | writable per-queue `limit` | implemented |
 | `kwq_cpu_for_hash()` remap for sparse CPU ids | implemented; the sparse path itself is **untested**, no such machine being available |
 | notifiers on the item list in arrival order, budgeted, requeueable (tagged link, 2026-10-08) | implemented, tested by the eight `mix` cases |
-| `KWQ_F_STEALABLE` | accepted, inert: no worker steals (P6) |
-| `kwq_scatter()` | `EOPNOTSUPP` (P6) |
+| `KWQ_F_STEALABLE`: stealing, the pass cap, the steal wake (P6, SCHED.md S16) | implemented on branch kwq-bulk; the `steal`, `steal_off`, `stealdrain` and `stealdrain_discard` cases |
+| `kwq_scatter()` with `struct kwq_group` (P6) | implemented on branch kwq-bulk; the `scatter` case |
 | `KWQ_BLOCKING` | refused at create with a log line; no workers of that class exist (P7) |
 | `KWQ_F_RESERVE`, `nreserve != 0` | asserted at create, not cleanly refused (P7) |
-| cache-domain refinement of `KWQ_CPU_ANY` | NUMA domain only (P6) |
+| cache-topology `KWQ_CPU_ANY`, an idle worker first (P6) | implemented on branch kwq-bulk |
 | grace rule in service, `GRACE_SERVICE` one ring's worth (replaces `GRACE_ROUNDS`) | implemented |
 | tick regime (`tick_us`), its counters and the `tick` probe | implemented, off by default |
 | idle-class wait for same-CPU producers (`wake_delay_us`), its counters and the `wake` probe; it takes precedence over the tick regime for a same-CPU producer | implemented, off by default |
@@ -902,5 +936,7 @@ or installed so the dependency resolves.
 | `kwq(9)` and `dtrace_kwq(4)` man pages | P8 |
 
 Clients: `if_pair(4)` runs on kwq and is measured against a frozen copy
-of its taskqueue predecessor (`../../extras/if_pair_tq`).  epair is P5,
-`if_wg` is the BULK proof in P6.
+of its taskqueue predecessor (`../../extras/if_pair_tq`).  epair is P5.
+The BULK proof (P6, branch kwq-bulk) is `../../kwq-geli`, GELI ported to
+BULK queues and measured against the stock module, with
+`kwq_crypto.ko`, a dummy BULK client benchmarking AES-XTS, beside it.

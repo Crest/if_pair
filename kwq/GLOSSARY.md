@@ -95,15 +95,23 @@ more.  "kwq:" marks terms this project defines.
   limit check, no doorbell).  Alias: none; earlier project text said
   "re-enqueue the remainder", which would have appended and reordered.
 - **scatter** (kwq) - `kwq_scatter()`: split a list of items across the
-  workers of the caller's cache domain (BULK only) and call a completion
-  function once when the last chunk finishes.  Aliases: *fan-out*,
-  *dispatch_apply + dispatch_group_notify* (libdispatch), *parallel
-  dispatch* (illumos taskq comment).
+  caller's CPU and the idle BULK workers near it (BULK only) and call a
+  completion function once, from the handler that finishes the last
+  item.  The completion state is a client-owned **group** (`struct
+  kwq_group`, like a notifier), which the handler counts down with
+  `kwq_group_leave()`.  Aliases: *fan-out*, *dispatch_apply +
+  dispatch_group_notify* (libdispatch), *parallel dispatch* (illumos
+  taskq comment).
 - **steal / stealable** - a BULK worker with nothing to do taking a whole
-  batch from another CPU's list of a queue created `KWQ_F_STEALABLE`.
+  batch from another CPU's list of a queue created `KWQ_F_STEALABLE`
+  and moving it to its own list of that queue, where it is charged.
   FreeBSD's ULE uses the same word for thread migration (`tdq_steal()`,
   `kern.sched.steal_thresh`).  Alias: *unbound workqueue* (Linux),
-  *work-conserving*.  NET queues are never stolen from.
+  *work-conserving*.  NET queues are never stolen from.  The **victim**
+  is the CPU stolen from, the **helper** a sleeping BULK worker a pass or
+  an enqueue wakes to steal (the steal wake); the **live list** is the
+  part of a (queue, CPU) list no pass holds, the only part that can be
+  stolen (SCHED.md S16).
 - **doorbell** (kwq) - the conditional wakeup of a CPU's worker performed
   by an enqueue that finds the (queue, CPU) state IDLE, moving it to
   WAKING under the same lock hold as the append, so a wakeup can never be
