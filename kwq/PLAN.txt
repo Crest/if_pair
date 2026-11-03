@@ -1266,6 +1266,28 @@ Phases
     kwq-geli round-trips data and cross-reads with stock GELI on all
     three machines; the responsiveness cost of BULK against stock GELI
     measured and S14 rewritten from the numbers.
+    Status 2026-11-03 (branch kwq-bulk, 3696ce3..):
+    - P6a/P6b done: SCHED.md S16, stealing, the steal wake, the pass cap
+      and the one-item rule while a helper sleeps (without them the
+      steal case moved 9 % of its items and kwq-geli's few large bios
+      none), kwq_scatter() with struct kwq_group, the topology
+      KWQ_CPU_ANY, the drain's rmlock fence.
+    - Two share-limit faults found by the new clients and fixed: the
+      clamp of a period's first pass applied uncontended (four equal
+      BULK queues on one CPU got shares up to 1 : 2, Jain 0.92), and a
+      pass longer than the period went uncharged (four kwq-geli
+      providers on one CPU left a spinning user process 5-7 % of it and
+      a 1 kHz timer a p99 lateness of 149 ms; with the carry 37 % and
+      1.3 ms).  Both change NET's behaviour under contention: the
+      simulator's cut case gives the competing thread the specified
+      half where it got a third.  Simulator case cap_long added.
+    - P6c done: steal, steal_off, scatter, stealdrain(_discard) cases.
+    - P6d done: kwq_crypto.ko and its ATF program (verify, onecpu_fair,
+      weight); crypto_bench.sh.
+    - P6e done: kwq-geli (copy, rename, port), README.
+    - P6f: kwq-geli ATF 11 cases; geli_bench.sh/geli_report.sh.
+    - Machines: guest ATF 31/31 + 11/11 (GENERIC-DEBUG); lab 31/31 +
+      11/11; a07 waits for crest's go-ahead (new kernel code).
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
     P7a Design and simulate first (the P1a pattern; nothing in the kernel
