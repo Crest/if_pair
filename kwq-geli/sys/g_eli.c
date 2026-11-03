@@ -626,10 +626,15 @@ g_eli_kwq_enqueue(struct g_eli_softc *sc, struct bio *bp)
 		cpu = curcpu;
 	else if (cpu < 0)
 		cpu = KWQ_CPU_ANY;
+	KASSERT((bp->bio_pflags & G_ELI_ON_KWQ) == 0,
+	    ("%s: bio %p enqueued twice", __func__, bp));
+	bp->bio_pflags |= G_ELI_ON_KWQ;
 	KWQ_ITEM_INIT(G_ELI_BIO_ITEM(bp));
 	error = kwq_enqueue(sc->sc_kwq, cpu, G_ELI_BIO_ITEM(bp));
-	if (__predict_false(error != 0))
+	if (__predict_false(error != 0)) {
+		bp->bio_pflags &= ~G_ELI_ON_KWQ;
 		g_eli_kwq_refuse(sc, bp, error == ENOBUFS ? ENOMEM : ENXIO);
+	}
 }
 
 /*
@@ -638,7 +643,7 @@ g_eli_kwq_enqueue(struct g_eli_softc *sc, struct bio *bp)
  * g_eli_kwq_resume() finds it again; a bio already counted in sc_inflight
  * is finished first, as GELI's workers finished it.
  */
-static void
+static bool
 g_eli_kwq_one(struct g_eli_softc *sc, struct g_eli_worker *wr, struct bio *bp)
 {
 
@@ -647,7 +652,7 @@ g_eli_kwq_one(struct g_eli_softc *sc, struct g_eli_worker *wr, struct bio *bp)
 		if (sc->sc_flags & G_ELI_FLAG_SUSPEND) {
 			bioq_insert_tail(&sc->sc_queue, bp);
 			mtx_unlock(&sc->sc_queue_mtx);
-			return;
+			return (false);
 		}
 		atomic_add_int(&sc->sc_inflight, 1);
 		mtx_unlock(&sc->sc_queue_mtx);
@@ -661,14 +666,15 @@ g_eli_kwq_one(struct g_eli_softc *sc, struct g_eli_worker *wr, struct bio *bp)
 			if (bp->bio_cmd == BIO_READ)
 				g_eli_crypto_read(sc, bp, 1);
 			else
-				g_eli_crypto_run(wr, bp);
+				return (g_eli_crypto_run(wr, bp));
 		}
 	} else {
 		if (sc->sc_flags & G_ELI_FLAG_AUTH)
 			g_eli_auth_run(wr, bp);
 		else
-			g_eli_crypto_run(wr, bp);
+			return (g_eli_crypto_run(wr, bp));
 	}
+	return (false);
 }
 
 /*
@@ -690,8 +696,24 @@ g_eli_kwq_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 	KASSERT(n > 0 && wr != NULL, ("%s: n %d wr %p", __func__, n, wr));
 	for (it = head; it != NULL; it = next) {
 		next = KWQ_ITEM_NEXT(q, it);
-		g_eli_kwq_one(sc, wr, G_ELI_ITEM_BIO(it));
 		done++;
+		KASSERT(G_ELI_ITEM_BIO(it)->bio_pflags & G_ELI_ON_KWQ,
+		    ("%s: bio %p handed over but not queued", __func__,
+		    G_ELI_ITEM_BIO(it)));
+		G_ELI_ITEM_BIO(it)->bio_pflags &= ~G_ELI_ON_KWQ;
+		if (g_eli_kwq_one(sc, wr, G_ELI_ITEM_BIO(it))) {
+			/*
+			 * Partly dispatched (out of budget, or no crypto
+			 * request without sleeping): the rest of the list goes
+			 * back, then this bio in front of it, to go on first.
+			 */
+			if (next != NULL)
+				kwq_requeue(q, next, NULL, n - done);
+			KWQ_ITEM_INIT(it);
+			G_ELI_ITEM_BIO(it)->bio_pflags |= G_ELI_ON_KWQ;
+			kwq_requeue(q, it, it, 1);
+			return;
+		}
 		if (next != NULL && kwq_budget_left(q) == 0) {
 			kwq_requeue(q, next, NULL, n - done);
 			return;

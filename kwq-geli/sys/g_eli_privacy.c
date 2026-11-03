@@ -250,18 +250,43 @@ g_eli_crypto_read(struct g_eli_softc *sc, struct bio *bp, boolean_t fromworker)
  * BIO_WRITE:
  *	g_eli_start -> G_ELI_CRYPTO_RUN -> g_eli_crypto_write_done -> g_io_request -> g_eli_write_done -> g_io_deliver
  */
-void
+/*
+ * kwq-geli: returns true when the bio is not yet fully dispatched and
+ * must be requeued by the caller, which then runs it again from where it
+ * stopped.  That happens, for synchronous sessions (software and
+ * accelerated software drivers, where every request completes inside its
+ * dispatch), when a crypto request cannot be had without sleeping after
+ * the first sector went out (before it, the bio fails with ENOMEM for
+ * GEOM to retry, as GELI's buffer shortage does), and when the pass's
+ * budget is spent, checked every G_ELI_BUDGET_SECTORS sectors so that a
+ * long bio does not hold the worker past its quantum or the share limit.
+ * The sector it goes on from is bio_inbed, the completions so far, exact
+ * because they are synchronous.  Requests are taken one per sector as
+ * GELI takes them, M_NOWAIT where GELI said M_WAITOK, and each completes
+ * inside its dispatch, so the next allocation reuses it cache-hot.  (The
+ * first port took all of a bio's requests before the first dispatch: 256
+ * zeroed requests per 1 MiB bio emptied UMA's per-CPU cache, and lab's
+ * reads ran 18 % below stock GELI with uma_zalloc and memset three and one
+ * and a half times as busy in a profile.  The second kept the resume
+ * point in the upper half of bio_pflags, which is 16 bits wide: resumed
+ * bios restarted at sector 0, the guest panicked on a read's completed
+ * count and lab hung on bios that never finished.)  An asynchronous
+ * session takes all requests and keys first (g_eli_getreqs()) and never
+ * stops part way, its completions running behind its dispatches.
+ */
+bool
 g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 {
 	struct g_eli_softc *sc;
-	struct cryptopq crpq, pool;
+	struct cryptopq crpq;
 	struct cryptop *crp;
 	vm_page_t *pages;
-	u_int i, nsec, secsize;
+	struct cryptopq pool;
+	u_int i, first, nsec, secsize;
 	off_t dstoff;
 	u_char *data = NULL;
 	int error __diagused, pages_offset;
-	bool batch;
+	bool batch, sync, partial = false;
 
 	G_ELI_LOGREQ(3, bp, "%s", __func__);
 
@@ -269,50 +294,61 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 	sc = wr->w_softc;
 	secsize = LIST_FIRST(&sc->sc_geom->provider)->sectorsize;
 	nsec = bp->bio_length / secsize;
+	sync = (crypto_ses2caps(wr->w_sid) & CRYPTOCAP_F_SYNC) != 0;
+	first = (bp->bio_pflags & G_ELI_STARTED) != 0 ? bp->bio_inbed : 0;
+	KASSERT(first < nsec, ("%s: bio %p resumed at %u of %u", __func__, bp,
+	    first, nsec));
 
-	bp->bio_inbed = 0;
-	bp->bio_children = nsec;
+	if (first == 0) {
+		bp->bio_pflags |= G_ELI_STARTED;
+		bp->bio_inbed = 0;
+		bp->bio_children = nsec;
 
-	/*
-	 * If we write the data we cannot destroy current bio_data content,
-	 * so we need to allocate more memory for encrypted data.
-	 */
-	if (bp->bio_cmd == BIO_WRITE) {
-		if (!g_eli_alloc_data(bp, bp->bio_length)) {
-			G_ELI_LOGREQ(0, bp, "Crypto request failed (ENOMEM).");
-			if (bp->bio_driver1 != NULL) {
-				g_destroy_bio(bp->bio_driver1);
-				bp->bio_driver1 = NULL;
-			}
-			bp->bio_error = ENOMEM;
-			g_io_deliver(bp, bp->bio_error);
-			if (sc != NULL)
-				atomic_subtract_int(&sc->sc_inflight, 1);
-			return;
-		}
-		data = bp->bio_driver2;
-		/* 
-		 * This copy could be eliminated by using crypto's output
-		 * buffer, instead of using a single overwriting buffer.
+		/*
+		 * If we write the data we cannot destroy current bio_data content,
+		 * so we need to allocate more memory for encrypted data.
 		 */
-		if ((bp->bio_flags & BIO_UNMAPPED) != 0)
-			g_eli_bio_copyin(bp, data);
-		else
-			bcopy(bp->bio_data, data, bp->bio_length);
+		if (bp->bio_cmd == BIO_WRITE) {
+			if (!g_eli_alloc_data(bp, bp->bio_length)) {
+				G_ELI_LOGREQ(0, bp, "Crypto request failed (ENOMEM).");
+				if (bp->bio_driver1 != NULL) {
+					g_destroy_bio(bp->bio_driver1);
+					bp->bio_driver1 = NULL;
+				}
+				bp->bio_error = ENOMEM;
+				g_io_deliver(bp, bp->bio_error);
+				if (sc != NULL)
+					atomic_subtract_int(&sc->sc_inflight, 1);
+				return (false);
+			}
+			/* 
+			 * This copy could be eliminated by using crypto's output
+			 * buffer, instead of using a single overwriting buffer.
+			 */
+			if ((bp->bio_flags & BIO_UNMAPPED) != 0)
+				g_eli_bio_copyin(bp, bp->bio_driver2);
+			else
+				bcopy(bp->bio_data, bp->bio_driver2, bp->bio_length);
+		}
+	}
+	if (bp->bio_cmd == BIO_WRITE) {
+		data = (u_char *)bp->bio_driver2 + (size_t)first * secsize;
 	} else {
 		if ((bp->bio_flags & BIO_UNMAPPED) != 0) {
-			pages = bp->bio_ma;
-			pages_offset = bp->bio_ma_offset;
+			pages_offset = bp->bio_ma_offset + first * secsize;
+			pages = bp->bio_ma + (pages_offset >> PAGE_SHIFT);
+			pages_offset &= PAGE_MASK;
 		} else {
-			data = bp->bio_data;
+			data = (u_char *)bp->bio_data + (size_t)first * secsize;
 		}
 	}
 
-	/* kwq-geli: every request and key first, without sleeping. */
-	if (g_eli_getreqs(sc, wr->w_sid, nsec, bp->bio_offset, secsize,
+	TAILQ_INIT(&crpq);
+	TAILQ_INIT(&pool);
+	batch = atomic_load_int(&g_eli_batch) != 0;
+	if (!sync && g_eli_getreqs(sc, wr->w_sid, nsec, bp->bio_offset, secsize,
 	    (sc->sc_flags & G_ELI_FLAG_SINGLE_KEY) == 0, &pool) != 0) {
 		G_ELI_LOGREQ(1, bp, "Crypto request failed (ENOMEM).");
-		/* A read's clone is gone already (g_eli_read_done()). */
 		if (bp->bio_cmd == BIO_WRITE && bp->bio_driver1 != NULL) {
 			g_destroy_bio(bp->bio_driver1);
 			bp->bio_driver1 = NULL;
@@ -321,16 +357,49 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 		bp->bio_completed = 0;
 		g_io_deliver(bp, ENOMEM);
 		atomic_subtract_int(&sc->sc_inflight, 1);
-		return;
+		return (false);
 	}
 
-	TAILQ_INIT(&crpq);
-	batch = atomic_load_int(&g_eli_batch) != 0;
-
-	for (i = 0, dstoff = bp->bio_offset; i < nsec; i++, dstoff += secsize) {
-		crp = TAILQ_FIRST(&pool);
-		TAILQ_REMOVE(&pool, crp, crp_next);
-
+	for (i = first, dstoff = bp->bio_offset + (off_t)first * secsize;
+	    i < nsec; i++, dstoff += secsize) {
+		if (!sync) {
+			/* all taken, keys held (g_eli_getreqs()) */
+			crp = TAILQ_FIRST(&pool);
+			TAILQ_REMOVE(&pool, crp, crp_next);
+			goto fill;
+		}
+		if (i > first && i % G_ELI_BUDGET_SECTORS == 0 &&
+		    kwq_budget_left(sc->sc_kwq) == 0) {
+			partial = true;
+			break;
+		}
+		crp = crypto_getreq(wr->w_sid, M_NOWAIT);
+		if (crp != NULL && (sc->sc_flags & G_ELI_FLAG_SINGLE_KEY) == 0) {
+			crp->crp_cipher_key = g_eli_key_hold(sc, dstoff,
+			    secsize);
+			if (crp->crp_cipher_key == NULL) {
+				crypto_freereq(crp);
+				crp = NULL;
+			}
+		}
+		if (crp == NULL) {
+			if (i == 0) {
+				G_ELI_LOGREQ(1, bp, "Crypto request failed (ENOMEM).");
+				/* A read's clone is gone already (g_eli_read_done()). */
+				if (bp->bio_cmd == BIO_WRITE && bp->bio_driver1 != NULL) {
+					g_destroy_bio(bp->bio_driver1);
+					bp->bio_driver1 = NULL;
+				}
+				g_eli_free_data(bp);
+				bp->bio_completed = 0;
+				g_io_deliver(bp, ENOMEM);
+				atomic_subtract_int(&sc->sc_inflight, 1);
+				return (false);
+			}
+			partial = true;		/* the rest after a while */
+			break;
+		}
+fill:
 		if (data) {
 			crypto_use_buf(crp, data, secsize);
 			data += secsize;
@@ -352,13 +421,16 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 		crp->crp_flags = CRYPTO_F_CBIFSYNC;
 		crp->crp_payload_start = 0;
 		crp->crp_payload_length = secsize;
-		/* The key, unless G_ELI_FLAG_SINGLE_KEY, is held already. */
 		if (g_eli_ivlen(sc->sc_ealgo) != 0) {
 			crp->crp_flags |= CRYPTO_F_IV_SEPARATE;
 			g_eli_crypto_ivgen(sc, dstoff, crp->crp_iv,
 			    sizeof(crp->crp_iv));
 		}
 
+		/*
+		 * The last sector's completion delivers the bio, which is not
+		 * ours to touch after this dispatch; the loop ends with it.
+		 */
 		if (batch) {
 			TAILQ_INSERT_TAIL(&crpq, crp, crp_next);
 		} else {
@@ -370,4 +442,5 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 
 	if (batch)
 		crypto_dispatch_batch(&crpq, 0);
+	return (partial);
 }

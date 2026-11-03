@@ -67,10 +67,18 @@ The port (all marked `kwq-geli:` in the source):
 - **Nothing on the request path sleeps.**  BULK handlers run under
   `THREAD_NO_SLEEPING()`.  GELI took a crypto request per sector with
   `M_WAITOK` inside its dispatch loop, and a key with `M_WAITOK` on a
-  key-cache miss.  `g_eli_getreqs()` now takes every request and key of
-  a bio with `M_NOWAIT` before the first dispatch, so a shortage fails
-  the whole bio with `ENOMEM` and nothing is half done.
-  `kern.geom.eli.blocking_malloc` is gone.
+  key-cache miss.  The privacy path takes them one per sector with
+  `M_NOWAIT`: a shortage at the first sector fails the bio with
+  `ENOMEM` for GEOM to retry; a shortage later, or the pass's budget
+  running out (checked every 16 sectors), leaves the bio partly
+  dispatched, its next sector saved in `bio_pflags`, and the handler
+  requeues it in front of the rest to go on first.  A 1 MiB bio is then
+  no longer one uninterruptible item.  The integrity path takes all of
+  a bio's requests and keys first (`g_eli_getreqs()`), so a shortage
+  fails it whole.  `kern.geom.eli.blocking_malloc` is gone.  (Taking
+  all requests first in the privacy path too, as the first version of
+  the port did, emptied UMA's per-CPU cache, 256 zeroed requests per
+  1 MiB bio, and cost lab's reads 18 %.)
 - **One crypto session per CPU**, where GELI had one per worker thread.
   A bio is run on the session of the CPU whose worker takes it.
 - **Suspend parks new bios** on the softc's queue and waits for the ones

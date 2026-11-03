@@ -343,6 +343,55 @@ detach_load_body() {
 }
 detach_load_cleanup() { kwqeli_cleanup; }
 
+atf_test_case resume cleanup
+resume_head() {
+	atf_set descr "bios cut part way (all on one CPU beside a spinning user process, so the share limit ends passes mid-bio) go on where they stopped: stock geli reads back exactly what kwq-geli wrote"
+	atf_set require.user root
+}
+resume_body() {
+	kwqeli_setup
+	if ! kldstat -q -m g_eli; then
+		kldload geom_eli || atf_skip "cannot load geom_eli"
+		echo geom_eli >> loaded
+	fi
+	knob kern.geom.kwqeli.cpu 1
+	knob kern.geom.kwqeli.stealable 0
+	cc -O2 -o spin -x c - <<'SPIN' || atf_skip "no cc"
+#include <time.h>
+int main(void) { struct timespec a, b; volatile unsigned long x = 0;
+	clock_gettime(CLOCK_MONOTONIC, &a);
+	do { for (int i = 0; i < 100000; i++) x += i; clock_gettime(CLOCK_MONOTONIC, &b); }
+	while (b.tv_sec - a.tv_sec < 20); return (0); }
+SPIN
+	list=""
+	for i in 1 2 3 4; do
+		m=$(newmd 64m)
+		atf_check -o ignore geli init -B none -P -K key -s 4096 "$m"
+		atf_check $GK attach -p -k key "$m"
+		list="$list $m"
+	done
+	cpuset -l 1 ./spin & spid=$!
+	sleep 0.5
+	dd if=data.in of=data.cmp bs=1m count=32 2>/dev/null
+	for m in $list; do dd if=data.cmp of="/dev/$m.kweli" bs=1m 2>/dev/null & done
+	wait $(jobs -p | grep -v "^$spid\$") 2>/dev/null
+	for m in $list; do dd if="/dev/$m.kweli" of="data.r.$m" bs=1m count=32 2>/dev/null; done
+	kill $spid 2>/dev/null; wait
+	req=0
+	for m in $list; do req=$((req + $(qsum "$m" requeued))); done
+	echo "requeued $req"
+	for m in $list; do
+		cmp -s data.cmp "data.r.$m" || atf_fail "$m: kwq-geli read back something else"
+		atf_check $GK detach "$m.kweli"
+		atf_check geli attach -p -k key "$m"
+		dd if="/dev/$m.eli" of=data.out bs=1m count=32 2>/dev/null
+		atf_check geli detach "$m.eli"
+		cmp -s data.cmp data.out || atf_fail "$m: stock geli reads something else"
+	done
+	[ "$req" -gt 0 ] || atf_skip "no bio was cut part way (requeued 0): nothing was resumed"
+}
+resume_cleanup() { kwqeli_cleanup; }
+
 atf_init_test_cases() {
 	atf_add_test_case onetime_xts
 	atf_add_test_case onetime_cbc
@@ -355,4 +404,5 @@ atf_init_test_cases() {
 	atf_add_test_case key_cache
 	atf_add_test_case ufs
 	atf_add_test_case detach_load
+	atf_add_test_case resume
 }

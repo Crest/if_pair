@@ -127,10 +127,18 @@
 #define	G_ELI_MAX_WORKERS	255
 #define	G_ELI_NEW_BIO		G_ELI_MAX_WORKERS
 #define	G_ELI_SETWORKER(pflags, w)	\
-    (pflags) = ((pflags) & 0xff00) | ((w) & 0xff)
+    (pflags) = ((pflags) & ~0xff) | ((w) & 0xff)
+/*
+ * kwq-geli: a partly dispatched bio goes on from the sector after the last
+ * completed one, bio_inbed, which is exact for synchronous sessions only
+ * (g_eli_crypto_run()).  bio_pflags is 16 bits wide, all in use above.
+ */
+#define	G_ELI_BUDGET_SECTORS	16	/* kwq_budget_left() every this many */
 #define	G_ELI_SET_NEW_BIO(pflags)	G_ELI_SETWORKER((pflags), G_ELI_NEW_BIO)
 #define	G_ELI_IS_NEW_BIO(pflags)	(G_ELI_WORKER(pflags) == G_ELI_NEW_BIO)
 #define	G_ELI_UMA_ALLOC		0x100	/* bio_driver2 alloc came from UMA */
+#define	G_ELI_ON_KWQ		0x200	/* kwq-geli: on the provider's queue (asserted) */
+#define	G_ELI_STARTED		0x400	/* kwq-geli: g_eli_crypto_run() began this bio */
 
 #define	SHA512_MDLEN		64
 #define	G_ELI_AUTH_SECKEYLEN	SHA256_DIGEST_LENGTH
@@ -709,7 +717,7 @@ bool g_eli_alloc_data(struct bio *bp, int sz);
 void g_eli_free_data(struct bio *bp);
 
 void g_eli_crypto_read(struct g_eli_softc *sc, struct bio *bp, boolean_t fromworker);
-void g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp);
+bool g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp);
 
 void g_eli_auth_read(struct g_eli_softc *sc, struct bio *bp);
 void g_eli_auth_run(struct g_eli_worker *wr, struct bio *bp);
