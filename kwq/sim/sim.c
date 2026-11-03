@@ -998,6 +998,50 @@ sc_cap_long(uint64_t secs)
 	return (S.violations);
 }
 
+/*
+ * S6.3 at the start of contention (review, 2026-11-03): a BULK flood
+ * alone for a second, then an interactive thread always runnable.  The
+ * first version of the carry charged the uncontended periods' use too,
+ * a period carried into each next one, so the onset found the worker a
+ * period over (1 ms charged against an allowance of 0.5) and paid it
+ * back in the next periods: 0.81 to 0.87 of the steady contended service
+ * in the first 4 ms over five seeds.  Use beyond the allowance while
+ * nothing else is runnable is now forgiven: 1.15 to 1.20, above 1
+ * because the run stops at a pass end, where an uncontended worker's
+ * period has just rolled over, so the onset meets a fresh allowance.
+ */
+static int
+sc_cap_onset(uint64_t secs)
+{
+	struct simq *a;
+	uint64_t s0, on, steady;
+
+	sim_reset(0, 0, 0, 0);
+	for (int c = 0; c < NCLASS; c++) {
+		S.knobs[c].cap_permille = 500;
+		S.knobs[c].cap_allow_ns = S.knobs[c].cap_period_ns / 2;
+	}
+	a = addq(C_BULK, 1, P_FLOOD, H_COOP, 20 * NS_PER_US); a->flood_depth = 256;
+	run_for(secs * NS_PER_S);
+	if (S.w[C_BULK].kw_cap_used > S.knobs[C_BULK].cap_allow_ns)
+		fail("S6.3: %" PRIu64 " ns charged after an uncontended run, allowance %" PRIu64,
+		    S.w[C_BULK].kw_cap_used, S.knobs[C_BULK].cap_allow_ns);
+	S.ext_kind = 1;
+	s0 = a->service_ns;
+	run_for(4 * NS_PER_MS);
+	on = a->service_ns - s0;
+	run_for(100 * NS_PER_MS);
+	s0 = a->service_ns;
+	run_for(4 * NS_PER_MS);
+	steady = a->service_ns - s0;
+	report("cap_onset: a BULK flood alone, then an interactive thread runnable");
+	printf("  info service in the 4 ms after the onset %.3f ms, steady %.3f ms (%.2f)\n",
+	    (double)on / NS_PER_MS, (double)steady / NS_PER_MS, (double)on / steady);
+	if ((double)on < 0.95 * (double)steady)
+		fail("S6.3: onset service %.2f of the steady state's", (double)on / steady);
+	return (S.violations);
+}
+
 static int
 sc_handback(uint64_t secs)
 {
@@ -1403,6 +1447,7 @@ static struct scenario scenarios[] = {
 	{ "handback",	sc_handback,	2, 1 },
 	{ "cut",	sc_cut,		2, 1 },
 	{ "cap_long",	sc_cap_long,	2, 1 },
+	{ "cap_onset",	sc_cap_onset,	1, 1 },
 	{ "storm",	sc_storm,	2, 1 },
 	{ "nnew",	sc_nnew,	2, 1 },
 	{ "manyq",	sc_manyq,	1, 1 },

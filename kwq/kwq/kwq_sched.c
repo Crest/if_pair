@@ -230,18 +230,29 @@ ks_next(struct kwq_worker *kw, bool higher_waiting, struct kwq_cpu **kcp)
 }
 
 /*
- * S6.3: start a new period if the current one is over.  Nothing carries:
- * unused allowance is lost, and the overshoot of a clamped pass is one
- * item, not worth charging.  Returns true if the worker was over the
- * allowance, i.e. the deadline callout must be disarmed.
+ * S6.3: start a new period if the current one is over, carrying what
+ * was used beyond the allowance (below).  `runnable' is sched_runnable()
+ * at this check.  Returns true if the worker was over the allowance,
+ * i.e. the deadline callout must be disarmed.
  */
 static bool
-ks_cap_period(struct kwq_worker *kw, uint64_t wall_now)
+ks_cap_period(struct kwq_worker *kw, uint64_t wall_now, bool runnable)
 {
 	const struct kwq_sched_knobs *k = kw->kw_knobs;
 	uint64_t el = wall_now - kw->kw_cap_start, earned, carry;
 	bool was_over;
 
+	/*
+	 * Time used beyond the allowance while nothing else was runnable is
+	 * owed to nobody: forgiven at every check that finds the CPU
+	 * uncontended (review, 2026-11-03).  Uncharged, an uncontended
+	 * worker used whole periods and carried one into each new period,
+	 * so the start of contention found it a period over and cost it the
+	 * rest of that period and two more.  Now that costs at most the
+	 * rest of the period, as before the carry.
+	 */
+	if (!runnable && kw->kw_cap_used > k->cap_allow_ns)
+		kw->kw_cap_used = k->cap_allow_ns;
 	if (el < k->cap_period_ns)
 		return (false);
 	/*
@@ -299,7 +310,7 @@ ks_pass_begin(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 	 * BULK queues on one CPU, Jain 0.92; 0.999 with the limit off).
 	 */
 	if (k->cap_permille < 1000) {
-		if (ks_cap_period(kw, wall_now))
+		if (ks_cap_period(kw, wall_now, runnable))
 			cap = KS_CAP_RESTORE;
 		if (runnable && kw->kw_cap_used < k->cap_allow_ns) {
 			left = (int64_t)(k->cap_allow_ns - kw->kw_cap_used);
@@ -454,7 +465,7 @@ ks_cap_check(struct kwq_worker *kw, uint64_t wall_now, bool runnable)
 	 * demoted again at once, with the new period's deadline: returning
 	 * the restore first let every other long pass run without a hand-over.
 	 */
-	restore = ks_cap_period(kw, wall_now);
+	restore = ks_cap_period(kw, wall_now, runnable);
 	if (kw->kw_cap_used < k->cap_allow_ns)
 		return (restore ? KS_CAP_RESTORE : KS_CAP_NONE);
 	if (!runnable) {

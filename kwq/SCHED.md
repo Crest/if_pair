@@ -659,7 +659,15 @@ off).  Unused allowance does not carry into the next period; time used
 beyond the allowance of the periods that elapsed does, as debt of at
 most one period, so a clamped pass's one-item overshoot is charged and a
 pass longer than the period, which a single item can be (a 1 MiB GELI
-bio), is.  Until 2026-11-03 nothing carried: such a pass ended in a new
+bio), is.  Time used beyond the allowance while nothing else is
+runnable is owed to nobody and is forgiven at every check that finds
+the CPU uncontended (the period's charge drops to the allowance), so
+the debt is only what contended passes overshot.  Charged in full, an
+uncontended worker carried a whole period into every next one, and the
+start of contention cost it the rest of that period and the next two
+(the simulator's `cap_onset` case: 0.81-0.87 of the steady contended
+service in the 4 ms after the onset, 1.15-1.20 with the forgiveness;
+found in review, 2026-11-03).  Until 2026-11-03 nothing carried: such a pass ended in a new
 period with nothing charged, the limit never bound, and a spinning user
 process got 5-7 % of a guest CPU that four kwq-geli providers' BULK
 queues shared (the simulator's `cap_long` case: no hand-over in 1268
