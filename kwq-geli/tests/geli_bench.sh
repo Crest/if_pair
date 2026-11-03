@@ -109,6 +109,8 @@ cp_sys() {	# kern.cp_time summed over CPUs: "sys+intr total"
 }
 share() { awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, " "); split(b, y, " "); d = y[2] - x[2]; printf("%.4f", d > 0 ? (y[1] - x[1]) / d : 0) }'; }
 now_ns() { date +%s%N; }
+swtch() { sysctl -n vm.stats.sys.v_swtch; }
+cs_rate() { awk -v a="$1" -v b="$2" -v dt="$3" 'BEGIN { printf("%.0f", dt > 0 ? (b - a) / (dt / 1e9) : 0) }'; }
 
 # attach N providers of the stage: prints their device names
 attach() {	# N
@@ -170,30 +172,49 @@ rates() {	# PREFIX DEV...: total, slowest and fastest provider's MB/s, Jain
 
 t_tput() {
 	devs=$(attach "$P")
-	c0=$(cp_sys); kwq_snap > "$WORK/k0"; t0=$(now_ns)
+	c0=$(cp_sys); kwq_snap > "$WORK/k0"; s0=$(swtch); t0=$(now_ns)
 	for d in $devs; do dd if=/dev/zero of="/dev/$d" bs=1m count="$MB" 2> "$WORK/l.$d" & done
 	wait
-	t1=$(now_ns); c1=$(cp_sys); kwq_snap > "$WORK/k1"
+	t1=$(now_ns); s1=$(swtch); c1=$(cp_sys); kwq_snap > "$WORK/k1"
+	row tput write_cs_s "$(cs_rate "$s0" "$s1" "$((t1 - t0))")"
 	row tput write_mbps "$(awk -v n="$P" -v mb="$MB" -v dt="$((t1 - t0))" 'BEGIN { printf("%.1f", n * mb * 1048576 / 1e6 / (dt / 1e9)) }')"
 	row tput write_sys "$(share "$c0" "$c1")"
 	rates write $devs | grep -v "^write_mbps" | while read -r k v; do row tput "$k" "$v"; done
 	kwq_rows tput "$WORK/k0" "$WORK/k1"
-	c0=$(cp_sys); t0=$(now_ns)
+	c0=$(cp_sys); s0=$(swtch); t0=$(now_ns)
 	for d in $devs; do dd if="/dev/$d" of=/dev/null bs=1m count="$MB" 2>/dev/null & done
 	wait
-	t1=$(now_ns); c1=$(cp_sys)
+	t1=$(now_ns); s1=$(swtch); c1=$(cp_sys)
+	row tput read_cs_s "$(cs_rate "$s0" "$s1" "$((t1 - t0))")"
 	row tput read_mbps "$(awk -v n="$P" -v mb="$MB" -v dt="$((t1 - t0))" 'BEGIN { printf("%.1f", n * mb * 1048576 / 1e6 / (dt / 1e9)) }')"
 	row tput read_sys "$(share "$c0" "$c1")"
 	detach_all
 }
 
+# One probe, timed from outside: a probe the load keeps from running
+# reports nothing of the wait before its first instruction, so the
+# start delay (the outside wall time beyond the probe's own) is a row of
+# its own, and the spin share is also given over the outside wall time.
+probe() {	# TEST PREFIX VICTIM-ARGS...
+	t=$1; pfx=$2; shift 2
+	p0=$(now_ns)
+	"$@" > "$WORK/p" || return 0
+	p1=$(now_ns)
+	probe_rows "$t" "$pfx"
+	tr ' ' '\n' < "$WORK/p" | awk -F= -v dt="$((p1 - p0))" -v pfx="$pfx" '
+	    $1 == "wall" { w = $2 } $1 == "cpu" { c = $2 } $1 == "n" { n = $2 }
+	    END { o = dt / 1e9
+		if (w != "") { printf("%s_start_delay_ms %.0f\n%s_share_outside %.4f\n", pfx, (o - w) * 1000, pfx, o > 0 ? c / o : 0) }
+		else if (n != "") printf("%s_elapsed_ms %.0f\n", pfx, o * 1000) }' |
+	while read -r k v; do row "$t" "$k" "$v"; done
+}
 probes() {	# TEST: the victim probes, rows prefixed by what was measured
 	ps=$(( SECS / 2 )); [ $ps -lt 2 ] && ps=2
-	"$VICTIM" timer "$ps" > "$WORK/p" && probe_rows "$1" timer
-	cpuset -l "$PCPU" "$VICTIM" timer "$ps" > "$WORK/p" && probe_rows "$1" timer_pin
-	"$VICTIM" spin "$ps" > "$WORK/p" && probe_rows "$1" spin
-	cpuset -l "$PCPU" "$VICTIM" spin "$ps" > "$WORK/p" && probe_rows "$1" spin_pin
-	"$VICTIM" exec 100 10 > "$WORK/p" && probe_rows "$1" exec
+	probe "$1" timer "$VICTIM" timer "$ps"
+	probe "$1" timer_pin cpuset -l "$PCPU" "$VICTIM" timer "$ps"
+	probe "$1" spin "$VICTIM" spin "$ps"
+	probe "$1" spin_pin cpuset -l "$PCPU" "$VICTIM" spin "$ps"
+	probe "$1" exec "$VICTIM" exec 100 10
 }
 probe_rows() {	# TEST PREFIX: key=value pairs of the probe's line
 	tr ' ' '\n' < "$WORK/p" | awk -F= -v p="$2" 'NF == 2 && $1 != "n" && $1 != "wall" && $1 != "cpu" { print p "_" $1, $2 }' |
@@ -234,11 +255,20 @@ t_onecpu() {
 		done
 		row onecpu eli_workers "$n"	# ours only, not the system's own
 	fi
+	# The probe first and the load half a second later, stopped after
+	# the probe exits: a probe started under a load that holds the CPU
+	# whole cannot run until the load ends (stock GELI's bound workers
+	# can), and would then measure an idle CPU.
 	for what in timer spin; do
+		cpuset -l "$PCPU" "$VICTIM" "$what" $(( SECS - 2 )) > "$WORK/p" &
+		vpid=$!
+		sleep 0.5
 		load_start $devs
-		sleep 1
-		cpuset -l "$PCPU" "$VICTIM" "$what" $(( SECS - 2 )) > "$WORK/p" && probe_rows onecpu "${what}_pin"
+		wait $vpid
 		load_stop
+		probe_rows onecpu "${what}_pin"
+		[ $what = spin ] && row onecpu spin_pin_share_loaded "$(tr ' ' '\n' < "$WORK/p" | awk -F= '$1 == "wall" { w = $2 } $1 == "cpu" { c = $2 }
+		    END { printf("%.4f", w > 0.5 ? (c - 0.5 < 0 ? 0 : c - 0.5) / (w - 0.5) : 0) }')"
 		rates "$what" $devs | while read -r k v; do row onecpu "$k" "$v"; done
 	done
 	detach_all

@@ -16,7 +16,12 @@
 #           depth 16 each: stage kwq puts every queue there, not
 #           stealable; stage thread binds one PUSER thread per queue
 #           there; a victim timer and then a spin loop pinned to PCPU
-#           run during the window
+#           run during the window.  The probe starts first and the load
+#           PRE (0.5 s) later, and the load outlasts the probe: a probe
+#           started under a load that takes the whole CPU never runs its
+#           first instruction until the load ends and then measures an
+#           idle CPU (GELI's model does take it whole).  The spin row
+#           spin_pin_share_loaded leaves the PRE out.
 # Knobs: REPS (3), SECS (8), BYTES (65536), PCPU (2), DEPTH_ALL, ONE_N.
 set -u
 [ "$(id -u)" -eq 0 ] || { echo "crypto_bench.sh: needs root" >&2; exit 1; }
@@ -69,6 +74,10 @@ kc_rows() {	# TEST
 	    END { printf("q_min_mbps %.2f\nq_max_mbps %.2f\n", min, max) }' |
 	while read -r k v; do row "$1" "$k" "$v"; done
 }
+spin_loaded() {	# the spin probe's share without its first PRE seconds, which ran unloaded
+	tr ' ' '\n' < "$WORK/p" | awk -F= '$1 == "wall" { w = $2 } $1 == "cpu" { c = $2 }
+	    END { pre = 0.5; printf("%.4f", w > pre ? (c - pre < 0 ? 0 : c - pre) / (w - pre) : 0) }'
+}
 probe_rows() {	# TEST PREFIX
 	tr ' ' '\n' < "$WORK/p" | awk -F= -v p="$2" 'NF == 2 && $1 != "n" && $1 != "wall" && $1 != "cpu" { print p "_" $1, $2 }' |
 	while read -r k v; do row "$1" "$k" "$v"; done
@@ -90,15 +99,18 @@ while [ "$REP" -le "$REPS" ]; do
 		for n in $ONE_N; do
 			for what in timer spin; do
 				echo "$(date +%T) rep $REP $STAGE one$n $what"
+				cpuset -l "$PCPU" "$VICTIM" "$what" $((SECS - 2)) > "$WORK/p" &
+				vpid=$!
+				sleep 0.5
 				if [ $STAGE = kwq ]; then
 					kc_start $common mode=kwq nq="$n" depth=16 cpu="$PCPU" stealable=0 secs="$SECS"
 				else
 					kc_start $common mode=thread nq="$n" depth=16 cpu="$PCPU" threads=1 secs="$SECS"
 				fi
-				sleep 1
-				cpuset -l "$PCPU" "$VICTIM" "$what" $((SECS - 3)) > "$WORK/p"
+				wait $vpid
 				kc_wait
 				probe_rows "one$n" "${what}_pin"
+				[ $what = spin ] && row "one$n" spin_pin_share_loaded "$(spin_loaded)"
 				[ $what = timer ] && kc_rows "one$n"
 			done
 		done
