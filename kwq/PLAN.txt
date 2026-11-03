@@ -1286,8 +1286,18 @@ Phases
       weight); crypto_bench.sh.
     - P6e done: kwq-geli (copy, rename, port), README.
     - P6f: kwq-geli ATF 11 cases; geli_bench.sh/geli_report.sh.
-    - Machines: guest ATF 31/31 + 11/11 (GENERIC-DEBUG); lab 31/31 +
-      11/11; a07 waits for crest's go-ahead (new kernel code).
+    - Machines: guest ATF 34/34 + 12/12 (GENERIC-DEBUG, KWQ_LIST_CHECK);
+      lab 31/31 + 11/11 and geli_bench x5, then down since 20:34 UTC (an
+      uncommitted kwq-geli build, BULK.md S5; waits for crest); a07 waits
+      for crest's go-ahead (new kernel code).
+    - Measured (BULK.md, KWQ.md S14.1): kwq-geli's writes within 2 % of
+      stock GELI on lab, its reads 18 % below before the per-sector
+      dispatch (0ad0126, unmeasured on lab); four providers on one CPU:
+      the timer pinned there 0.3 ms late at p99 against GELI's 37 ms, a
+      spin loop 52 % against 3 %; kwq_crypto: N queues on one CPU share
+      it (Jain >= 0.997) where GELI's thread model gives one of them all
+      of it and the user nothing.  S14's priority argument does not hold
+      against BULK with its share limit; the reserved-worker one stands.
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
     P7a Design and simulate first (the P1a pattern; nothing in the kernel

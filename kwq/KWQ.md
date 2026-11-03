@@ -1780,12 +1780,18 @@ because of three facts about GEOM and GELI as they are today
    when `g_clone_bio()` fails and in its crypto paths when
    `g_eli_alloc_data()` fails.  A kwq `ENOBUFS` maps onto it one for one:
    refused means retried with pacing, never lost.
-2. **GELI already never allocates with `M_WAITOK` on the request path.**
+2. **GELI's data buffers are taken with `M_NOWAIT` on the request path.**
    Its buffer pool comment: "Swap-related requests are special: they can
    only use the UMA pool, they use M_USE_RESERVE to let them dip farther
    into system resources, and they always use M_NOWAIT to prevent swap
    operations from deadlocking."  kwq adds no allocation to that path
    (S3), so the swap-deadlock argument GELI makes today still holds.
+   (Corrected 2026-11-03, P6: this point said GELI never allocates with
+   `M_WAITOK` there.  It does: a crypto request per sector,
+   `crypto_getreq(..., M_WAITOK)`, in `g_eli_crypto_run()` and
+   `g_eli_auth_run()`; a key on a cache miss in `g_eli_key_hold()`; and
+   the buffers themselves with `kern.geom.eli.blocking_malloc`.  A port
+   to a non-sleeping class makes all of them `M_NOWAIT`, see S14.1.)
 3. **GELI's workers do not sleep while holding work**, except to wait out
    an administrative suspend (`geli suspend`) or for the queue to become
    non-empty.  The crypto itself is synchronous CPU work through
@@ -1845,6 +1851,65 @@ against other BLOCKING clients, and one fewer thread pool in the system.
 The prerequisites are the reserved-worker mechanism and the BLOCKING
 class itself (PLAN.txt P7); until then GELI keeps its own workers, and
 nothing in kwq's first version pretends otherwise.
+
+### 14.1 GELI on BULK, measured (P6, 2026-11-03)
+
+crest asked for GELI on BULK with its cost to the machine measured,
+against point 3's priority argument.  ../kwq-geli is that port
+(README.md there): the provider's worker kprocs became one stealable
+BULK queue per provider whose items are the bios, the sleeping
+allocations of point 2 became `M_NOWAIT` with GEOM's ENOMEM retry
+behind them, and the privacy path dispatches a request per sector as
+GELI does, stopping part way when the budget is spent and going on
+from the completed sectors next pass (so a 1 MiB bio is not one
+uninterruptible item).  Measured against stock GELI on the same boot,
+md(4) providers, tests/victim.c as the rest of the machine
+(../kwq-geli/tests/geli_bench.sh; samples/p6_geli_*_2026-11-03.tsv),
+with the port as it was before the per-sector dispatch, a bio one
+item that the share limit charged after the fact (SCHED.md S6.3's
+carry).  Medians; lab five repetitions, GENERIC, 16 CPUs; the guest
+three, GENERIC-DEBUG, direction only:
+
+| | lab GELI | lab kwq-geli | guest GELI | guest kwq-geli |
+|---|---|---|---|---|
+| write, 16 (guest 4) providers at once, MB/s | 8477 | 8330 | 1994 | 1971 |
+| read, MB/s | 22304 | 18321 (1) | 2314 | 2367 |
+| the same writers looping: a spin loop's share, unpinned | 0.70 | 0.75 | 0.80 | 0.61 |
+| ... pinned to a loaded CPU | 0.25 | 0.44 | 0.62 | 0.51 |
+| ... a 1 kHz timer's p99 lateness, unpinned, us | 437 | 363 | 1587 | 1097 |
+| ... pinned, the maximum, us | 6155 | 3015 | 4263 | 3451 |
+| four providers' crypto all on one CPU: timer p99 there, us | 37331 (2) | 301 | 140933 (2) | 1220 |
+| ... the timer's catch-ups (10 periods late) | 4036 | 0 | 630 | 0 |
+| ... a spin loop's share of that CPU | 0.033 | 0.52 | 0.056 | 0.52 |
+| ... the providers' fairness, Jain | 0.76 | 1.00 | 1.00 | 1.00 |
+
+(1) Before the per-sector dispatch: the port's first version took all
+of a bio's crypto requests before the first dispatch, and a profile put
+lab's lost 18 % in UMA and memset; lab went down before the fixed
+version could be measured.  (2) Stock GELI's workers pinned to that CPU,
+one per provider (`kern.geom.eli.threads=1`).
+
+What it says about point 3: GELI's own workers at `PUSER` are better
+than every timeshare thread, so a CPU they keep busy is lost to user
+processes too (3 % of it on lab, the timer 37 ms late at the 99th
+percentile), and among themselves they are not fair (one kernel thread
+at `PUSER` never acts on ULE's slice end).  BULK is above them, at
+`PI_SOFT`, but its share limit (SCHED.md S6.3) hands the CPU over
+between passes, here between bios (the handler now also stops at the
+budget every 16 sectors, which makes the hand-over finer and is not yet
+measured on lab): half the CPU stays with the user, the
+timer stays within 0.3 ms, and the providers share evenly, for 3 % of
+the crypto throughput when the CPU is contended and 43 % when the spin
+loop takes its half.  Spread over the machine the two are close, BULK
+ahead on lab and behind on the guest.  Two faults the measurement found
+in the share limit were fixed on the way (SCHED.md S6.3: the clamp of
+a period's first pass, and passes longer than the period going
+uncharged); before the second fix the one-CPU case left the spin loop
+5-7 %, GELI's own result.  The priority argument therefore holds
+against BULK without a share limit and not against BULK with one: on
+these measurements GELI does not need BLOCKING for its priority.  It
+still wants BLOCKING's reserved workers for the swap and root-I/O path,
+the reliability argument below, which no BULK measurement addresses.
 
 ## 15. Scheduler choice: DRR (1995) and what came after
 

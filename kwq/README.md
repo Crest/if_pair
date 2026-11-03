@@ -20,6 +20,9 @@ if_pair Makefile in the parent directory.
                   art, candidates, and the batteries on three machines
                   behind the tick regime, the idle-class wait and the
                   urgent exemption (S7-S12)
+    BULK.md       the BULK class (PLAN P6): what was built, the crypto
+                  client and kwq-geli against GELI's model, the faults
+                  found (two in the share limit), what is open
     OBSERVABILITY.md
                   tunables, counters, DTrace probes, DDB and the test
                   runner, with the commands to type
