@@ -773,7 +773,8 @@ void g_eli_key_fill(struct g_eli_softc *sc, struct g_eli_key *key,
 void g_eli_key_init(struct g_eli_softc *sc);
 void g_eli_key_destroy(struct g_eli_softc *sc);
 void g_eli_key_resize(struct g_eli_softc *sc);
-uint8_t *g_eli_key_hold(struct g_eli_softc *sc, off_t offset, size_t blocksize);
+uint8_t *g_eli_key_hold(struct g_eli_softc *sc, off_t offset, size_t blocksize,
+    int flags);
 void g_eli_key_drop(struct g_eli_softc *sc, uint8_t *rawkey);
 #endif
 #endif	/* !_G_ELI_H_ */

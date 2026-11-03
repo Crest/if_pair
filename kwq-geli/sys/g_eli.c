@@ -501,10 +501,10 @@ g_eli_newsession(struct g_eli_worker *wr)
 	if (sc->sc_ealgo == CRYPTO_AES_XTS)
 		csp.csp_cipher_klen <<= 1;
 	if ((sc->sc_flags & G_ELI_FLAG_FIRST_KEY) != 0) {
+		/* kwq-geli: create and resume may sleep, as GELI's did */
 		key = g_eli_key_hold(sc, 0,
-		    LIST_FIRST(&sc->sc_geom->consumer)->provider->sectorsize);
-		if (key == NULL)	/* kwq-geli: the hold no longer sleeps */
-			return (ENOMEM);
+		    LIST_FIRST(&sc->sc_geom->consumer)->provider->sectorsize,
+		    M_WAITOK);
 		csp.csp_cipher_key = key;
 	} else {
 		key = NULL;
@@ -759,7 +759,7 @@ g_eli_getreqs(struct g_eli_softc *sc, crypto_session_t sid, u_int n,
 		TAILQ_INSERT_TAIL(q, crp, crp_next);
 		if (keys) {
 			crp->crp_cipher_key = g_eli_key_hold(sc,
-			    offset + (off_t)i * step, step);
+			    offset + (off_t)i * step, step, M_NOWAIT);
 			if (crp->crp_cipher_key == NULL)
 				goto fail;
 		}

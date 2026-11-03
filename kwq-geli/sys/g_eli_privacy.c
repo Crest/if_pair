@@ -376,7 +376,7 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 		crp = crypto_getreq(wr->w_sid, M_NOWAIT);
 		if (crp != NULL && (sc->sc_flags & G_ELI_FLAG_SINGLE_KEY) == 0) {
 			crp->crp_cipher_key = g_eli_key_hold(sc, dstoff,
-			    secsize);
+			    secsize, M_NOWAIT);
 			if (crp->crp_cipher_key == NULL) {
 				crypto_freereq(crp);
 				crp = NULL;

@@ -98,8 +98,9 @@ RB_PROTOTYPE(g_eli_key_tree, g_eli_key, gek_link, g_eli_key_cmp);
 RB_GENERATE(g_eli_key_tree, g_eli_key, gek_link, g_eli_key_cmp);
 
 /*
- * kwq-geli: `flags' is M_WAITOK at attach and resize, M_NOWAIT on the
- * request path (g_eli_key_hold(), in a BULK handler), where it may fail.
+ * kwq-geli: `flags' is M_WAITOK at attach, resize and session setup,
+ * M_NOWAIT on the request path (g_eli_key_hold() in a BULK handler),
+ * where it may fail.
  */
 static struct g_eli_key *
 g_eli_key_allocate(struct g_eli_softc *sc, uint64_t keyno, int flags)
@@ -305,9 +306,14 @@ g_eli_key_resize(struct g_eli_softc *sc)
  * Select encryption key. If G_ELI_FLAG_SINGLE_KEY is present we only have one
  * key available for all the data. If the flag is not present select the key
  * based on data offset.
+ *
+ * kwq-geli: flags is M_WAITOK (GELI's only way) or M_NOWAIT, for the BULK
+ * handlers, which must not sleep; with M_NOWAIT it returns NULL when no
+ * key can be had without allocating and the allocation fails.
  */
 uint8_t *
-g_eli_key_hold(struct g_eli_softc *sc, off_t offset, size_t blocksize)
+g_eli_key_hold(struct g_eli_softc *sc, off_t offset, size_t blocksize,
+    int flags)
 {
 	struct g_eli_key *key, keysearch;
 	uint64_t keyno;
@@ -345,15 +351,32 @@ g_eli_key_hold(struct g_eli_softc *sc, off_t offset, size_t blocksize)
 		 * or allocate one if we haven't reached our limit yet.
 		 */
 		key = NULL;
-		if (sc->sc_ekeys_allocated < g_eli_key_cache_limit)
-			key = g_eli_key_allocate(sc, keyno, M_NOWAIT);
+		if (sc->sc_ekeys_allocated < g_eli_key_cache_limit) {
+			key = g_eli_key_allocate(sc, keyno, flags);
+			/*
+			 * kwq-geli: a failed allocation dropped the lock, and
+			 * another thread may have added the key meanwhile;
+			 * replacing a key with keyno below would put it in
+			 * the tree twice.
+			 */
+			if (key == NULL) {
+				key = RB_FIND(g_eli_key_tree,
+				    &sc->sc_ekeys_tree, &keysearch);
+				if (key != NULL) {
+					TAILQ_REMOVE(&sc->sc_ekeys_queue, key,
+					    gek_next);
+					TAILQ_INSERT_TAIL(&sc->sc_ekeys_queue,
+					    key, gek_next);
+				}
+			}
+		}
 		if (key == NULL) {
 			/*
 			 * kwq-geli: the limit is reached or the allocation
 			 * failed; reuse the least recently used key, and only
-			 * when every key is in use allocate one more, without
-			 * sleeping.  NULL if that fails too: the caller fails
-			 * the bio with ENOMEM (g_eli_getreqs()).
+			 * when every key is in use allocate one more.  With
+			 * M_NOWAIT NULL if that fails too: the caller fails
+			 * the bio with ENOMEM.
 			 */
 			g_eli_key_cache_misses++;
 			key = g_eli_key_find_last(sc);
@@ -361,7 +384,7 @@ g_eli_key_hold(struct g_eli_softc *sc, off_t offset, size_t blocksize)
 				g_eli_key_replace(sc, key, keyno);
 			} else {
 				/* All keys are referenced? Allocate one. */
-				key = g_eli_key_allocate(sc, keyno, M_NOWAIT);
+				key = g_eli_key_allocate(sc, keyno, flags);
 			}
 		}
 		if (key == NULL) {
