@@ -228,7 +228,11 @@ t_onecpu() {
 				cpuset -l "$PCPU" -p "$pid" || exit 1
 			done
 		done
-		row onecpu eli_workers "$(pgrep -S "^g_eli\[" | wc -l | tr -d ' ')"
+		n=0
+		for d in $devs; do
+			n=$((n + $(pgrep -S "^g_eli\[[0-9]+\] ${d%.eli}\$" | wc -l)))
+		done
+		row onecpu eli_workers "$n"	# ours only, not the system's own
 	fi
 	for what in timer spin; do
 		load_start $devs
