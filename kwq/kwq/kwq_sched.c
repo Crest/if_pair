@@ -238,12 +238,28 @@ ks_next(struct kwq_worker *kw, bool higher_waiting, struct kwq_cpu **kcp)
 static bool
 ks_cap_period(struct kwq_worker *kw, uint64_t wall_now)
 {
+	const struct kwq_sched_knobs *k = kw->kw_knobs;
+	uint64_t el = wall_now - kw->kw_cap_start, earned, carry;
 	bool was_over;
 
-	if (wall_now - kw->kw_cap_start < kw->kw_knobs->cap_period_ns)
+	if (el < k->cap_period_ns)
 		return (false);
+	/*
+	 * Unused allowance is lost, but what was used beyond the allowance
+	 * of the periods that elapsed carries into the new period, at most one
+	 * period's worth (2026-11-03).  Without the carry a pass longer than
+	 * the period ended in a new period with nothing charged, so the limit
+	 * never bound for such items: 1 MiB GELI bios of about 1.1 ms each on
+	 * the guest left a spinning user process 7 % of the CPU, and the
+	 * simulator's cap_long case found no hand-over in 1268 passes.  With
+	 * short items the carry is the one item a pass overshoots by.
+	 */
+	earned = el / k->cap_period_ns * k->cap_allow_ns;
+	carry = kw->kw_cap_used > earned ? kw->kw_cap_used - earned : 0;
+	if (carry > k->cap_period_ns)
+		carry = k->cap_period_ns;
 	kw->kw_cap_start = wall_now;
-	kw->kw_cap_used = 0;
+	kw->kw_cap_used = carry;
 	was_over = kw->kw_cap_over;
 	kw->kw_cap_over = false;
 	return (was_over);
@@ -423,6 +439,7 @@ enum ks_cap
 ks_cap_check(struct kwq_worker *kw, uint64_t wall_now, bool runnable)
 {
 	const struct kwq_sched_knobs *k = kw->kw_knobs;
+	bool restore;
 
 	if (k->cap_permille >= 1000) {		/* off, or turned off just now */
 		if (kw->kw_cap_over) {
@@ -431,13 +448,18 @@ ks_cap_check(struct kwq_worker *kw, uint64_t wall_now, bool runnable)
 		}
 		return (KS_CAP_NONE);
 	}
-	if (ks_cap_period(kw, wall_now))
-		return (KS_CAP_RESTORE);
+	/*
+	 * A period that ended while over restores the worker, unless the
+	 * carry (ks_cap_period()) leaves it over in the new one, where it is
+	 * demoted again at once, with the new period's deadline: returning
+	 * the restore first let every other long pass run without a hand-over.
+	 */
+	restore = ks_cap_period(kw, wall_now);
 	if (kw->kw_cap_used < k->cap_allow_ns)
-		return (KS_CAP_NONE);
+		return (restore ? KS_CAP_RESTORE : KS_CAP_NONE);
 	if (!runnable) {
 		kw->kw_cap_runon++;	/* over, but nobody else wants the CPU */
-		return (KS_CAP_NONE);
+		return (restore ? KS_CAP_RESTORE : KS_CAP_NONE);
 	}
 	kw->kw_cap_yields++;
 	kw->kw_cap_handed = true;

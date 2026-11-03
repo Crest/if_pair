@@ -968,6 +968,36 @@ sc_cut(uint64_t secs)
 	return (S.violations);
 }
 
+/*
+ * S6.3 with items longer than the period (2026-11-03): a BULK flood of
+ * 1.5 ms items, cooperative, beside an always-runnable thread.  Every
+ * pass spends more than the allowance and must end in a hand-over; the
+ * first version rolled the period over at that pass's end before charging
+ * it, so the pass counted nothing and no hand-over ever happened (kwq-geli's
+ * 1 MiB bios on the guest: a spinning user process got 7 % of its CPU).
+ */
+static int
+sc_cap_long(uint64_t secs)
+{
+	struct simq *a;
+
+	sim_reset(0, 0, 0, 0);
+	S.ext_kind = 1;
+	for (int c = 0; c < NCLASS; c++) {
+		S.knobs[c].cap_permille = 500;
+		S.knobs[c].cap_allow_ns = S.knobs[c].cap_period_ns / 2;
+	}
+	a = addq(C_BULK, 1, P_FLOOD, H_COOP, 1500 * NS_PER_US); a->flood_depth = 16;
+	run_for(secs * NS_PER_S);
+	report("cap_long: BULK items of 1.5 ms, longer than the 1 ms period, beside an interactive thread");
+	printf("  info %" PRIu64 " passes, %" PRIu64 " hand-overs, %" PRIu64 " run-ons\n",
+	    a->kc.kc_passes, S.w[C_BULK].kw_cap_yields, S.w[C_BULK].kw_cap_runon);
+	if (S.w[C_BULK].kw_cap_yields + 1 < a->kc.kc_passes)
+		fail("S6.3: %" PRIu64 " hand-overs for %" PRIu64 " passes of 1.5 ms",
+		    S.w[C_BULK].kw_cap_yields, a->kc.kc_passes);
+	return (S.violations);
+}
+
 static int
 sc_handback(uint64_t secs)
 {
@@ -1372,6 +1402,7 @@ static struct scenario scenarios[] = {
 	{ "overrun_idle", sc_overrun_idle, 3, 1 },
 	{ "handback",	sc_handback,	2, 1 },
 	{ "cut",	sc_cut,		2, 1 },
+	{ "cap_long",	sc_cap_long,	2, 1 },
 	{ "storm",	sc_storm,	2, 1 },
 	{ "nnew",	sc_nnew,	2, 1 },
 	{ "manyq",	sc_manyq,	1, 1 },

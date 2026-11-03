@@ -655,9 +655,22 @@ alone on its CPU the worker runs through the whole period
 (work-conserving).  The defaults, 500 and 1000 us, are the equal share
 FreeBSD gives two competing processes, at tick granularity; they need
 no tuning and the knobs are expert overrides (1000 turns the limit
-off).  Nothing carries between periods: unused allowance is lost, and a
-clamped pass overshoots by one item.  Measured against the pass stamps
-the worker takes anyway, so the limit costs no clock read of its own.
+off).  Unused allowance does not carry into the next period; time used
+beyond the allowance of the periods that elapsed does, as debt of at
+most one period, so a clamped pass's one-item overshoot is charged and a
+pass longer than the period, which a single item can be (a 1 MiB GELI
+bio), is.  Until 2026-11-03 nothing carried: such a pass ended in a new
+period with nothing charged, the limit never bound, and a spinning user
+process got 5-7 % of a guest CPU that four kwq-geli providers' BULK
+queues shared (the simulator's `cap_long` case: no hand-over in 1268
+passes of 1.5 ms).  With the carry, and a period that ends while over
+judged by the new period's state rather than restored first, the
+process got 37 % beside the providers' dd and md threads, the 1 kHz
+timer's p99 lateness on that CPU fell from 149 ms to 1.3 ms, and the
+`cut` scenario's always-runnable thread gets the 50 % the default
+specifies (it got 33 %: the overshoot went uncharged).  Measured
+against the pass stamps the worker takes anyway, so the limit costs no
+clock read of its own.
 
 **Where the hand-over happens.**  In two places, both outside handlers:
 
