@@ -17,6 +17,8 @@
 #include <sys/lock.h>
 #include <sys/mutex.h>
 #include <sys/sx.h>
+#include <sys/rmlock.h>
+#include <sys/cpuset.h>
 #include <sys/proc.h>
 #include <sys/sched.h>
 #include <sys/pcpu.h>
@@ -41,6 +43,22 @@ static struct sx kwq_sx;
 SX_SYSINIT(kwq_sx, &kwq_sx, "kwq queues");
 
 /*
+ * BULK stealing and scatter (../SCHED.md S16).  The read side of
+ * kwq_steal_rm is taken by every steal attempt and every kwq_scatter(),
+ * the write side by kwq_create() and kwq_drain() of BULK queues only.
+ */
+struct kwq_steal_head kwq_steal_list = LIST_HEAD_INITIALIZER(kwq_steal_list);
+struct rmlock kwq_steal_rm;
+RM_SYSINIT(kwq_steal_rm, &kwq_steal_rm, "kwq steal");
+volatile u_int kwq_nstealable;
+u_int kwq_steal_on = 1;
+u_int kwq_steal_scope = KWQ_TOPO_RINGS;
+u_int kwq_steal_scan = 16;
+u_int kwq_steal_max = 64;
+u_int kwq_steal_wake_at = 2;
+u_int kwq_steal_batch = 16;
+
+/*
  * sysctl tree (../KWQ.md S10.7): kern.kwq.{version,ncpu,nqueues,clock,
  * clock_fast}; kern.kwq.<class>.{knobs,priority,limit}; kern.kwq.<class>.cpu.<N>.* per
  * worker; kern.kwq.<class>.queue.<name>.* and .cpu.<N>.* per queue.  User
@@ -52,6 +70,50 @@ SYSCTL_NODE(_kern_kwq, OID_AUTO, net, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "NET class: packet-latency work at PI_NET");
 SYSCTL_NODE(_kern_kwq, OID_AUTO, bulk, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "BULK class: CPU-heavy non-sleeping work at PI_SOFT");
+
+/* The stealing knobs (../SCHED.md S16), a range each. */
+static int
+kwq_sysctl_steal_knob(SYSCTL_HANDLER_ARGS)
+{
+	u_int *var = arg1, lo = (u_int)arg2 >> 16, hi = (u_int)arg2 & 0xffff;
+	u_int val = *var;
+	int error;
+
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (val < lo || val > hi)
+		return (EINVAL);
+	*var = val;
+	return (0);
+}
+#define	KWQ_RANGE(lo, hi)	(((lo) << 16) | (hi))
+SYSCTL_PROC(_kern_kwq_bulk, OID_AUTO, steal,
+    CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, &kwq_steal_on,
+    KWQ_RANGE(0, 1), kwq_sysctl_steal_knob, "IU",
+    "1: a BULK worker with nothing of its own takes batches of KWQ_F_STEALABLE queues from other CPUs before it sleeps, and producers wake sleeping workers to do so (SCHED.md S16); 0: off");
+SYSCTL_PROC(_kern_kwq_bulk, OID_AUTO, steal_scope,
+    CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, &kwq_steal_scope,
+    KWQ_RANGE(0, KWQ_TOPO_RINGS), kwq_sysctl_steal_knob, "IU",
+    "rings of the cache topology that stealing, the steal wake, kwq_scatter() and KWQ_CPU_ANY look at, nearest first (1: the CPUs sharing the smallest group with this one, the SMT sibling or L2; 8: all); 0: none, every item stays on its CPU");
+SYSCTL_PROC(_kern_kwq_bulk, OID_AUTO, steal_scan,
+    CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, &kwq_steal_scan,
+    KWQ_RANGE(1, 4096), kwq_sysctl_steal_knob, "IU",
+    "other CPUs probed at most by one steal attempt, steal wake, scatter or KWQ_CPU_ANY pick, nearest first");
+SYSCTL_PROC(_kern_kwq_bulk, OID_AUTO, steal_max,
+    CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, &kwq_steal_max,
+    KWQ_RANGE(1, 4096), kwq_sysctl_steal_knob, "IU",
+    "items one steal takes at most (half of the victim's list otherwise); the victim's lock is held while the stealer walks them");
+SYSCTL_PROC(_kern_kwq_bulk, OID_AUTO, steal_wake,
+    CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, &kwq_steal_wake_at,
+    KWQ_RANGE(0, 4096), kwq_sysctl_steal_knob, "IU",
+    "an enqueue that leaves a stealable list this deep, or at a doubling of it, wakes the nearest sleeping BULK worker to steal; 0: never");
+SYSCTL_PROC(_kern_kwq_bulk, OID_AUTO, steal_batch,
+    CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, &kwq_steal_batch,
+    KWQ_RANGE(1, 4096), kwq_sysctl_steal_knob, "IU",
+    "items a pass of a stealable queue takes at most while stealing is on; the rest stays on the live list, where idle workers can take it (a pass's own batch cannot be stolen)");
+SYSCTL_UINT(_kern_kwq_bulk, OID_AUTO, nstealable, CTLFLAG_RD,
+    __DEVOLATILE(u_int *, &kwq_nstealable), 0, "KWQ_F_STEALABLE queues in existence");
 
 static int kwq_version = 1;
 SYSCTL_INT(_kern_kwq, OID_AUTO, version, CTLFLAG_RD, &kwq_version, 0,
@@ -437,47 +499,63 @@ kwq_cpu_for_hash(uint32_t hash)
 }
 
 /*
- * KWQ_CPU_ANY: least loaded CPU in the caller's memory domain, ties to the
- * caller's CPU.  P0 uses the queue's own depth as the load measure and the
- * NUMA domain as the neighbourhood; the cache-domain refinement is P6.
+ * KWQ_CPU_ANY (../KWQ.md S3): unordered CPU-heavy work goes where it starts
+ * soonest.  First the nearest CPU in cache-topology order whose BULK worker
+ * sleeps with this queue's list empty there: the item starts at once and
+ * the caller keeps running, which is what a producer of many items wants
+ * (on its own CPU the worker would preempt it at the first item and the
+ * work would be serial).  Then the caller's own CPU if its list is empty,
+ * then the shallowest of the caller's list and the next KWQ_PICK_PROBES in
+ * topology order.  The idle mask and the depths are read unlocked, as
+ * hints; a wrong guess is what stealing corrects.  The search reaches as
+ * far as steal_scope and steal_scan allow (kwq_topo_reach()); the P0 pick
+ * probed four CPUs of the NUMA domain by id.
  */
-#define	KWQ_PICK_PROBES	4	/* other CPUs' shared lines read per KWQ_CPU_ANY pick */
+#define	KWQ_PICK_PROBES	4	/* other CPUs' depths read when no worker is idle */
 
 static int
 kwq_pick_any(struct kwq *q)
 {
-	struct kwq_cpu *kc;
-	int cpu, best, domain, probes;
-	u_int depth, bestdepth;
+	u_int i, reach, depth, bestdepth;
+	int me, c, best;
 
-	best = curcpu;
-	bestdepth = q->kwq_pcpu[best]->kc_depth;
-	if (bestdepth == 0)
-		return (best);
-	/*
-	 * Bounded probe (KWQ.md S17): the next KWQ_PICK_PROBES CPUs of the
-	 * caller's domain, each a read of another CPU's shared line, never
-	 * the whole domain (128 lines on a07).  P6 refines the neighbourhood.
-	 */
-	domain = pcpu_find(best)->pc_domain;
-	probes = 0;
-	for (cpu = best + 1; cpu != best && probes < KWQ_PICK_PROBES; cpu++) {
-		if (cpu > (int)mp_maxid)
-			cpu = -1;	/* the ++ wraps to 0 */
-		else if (!CPU_ABSENT(cpu) &&
-		    pcpu_find(cpu)->pc_domain == domain) {
-			probes++;
-			kc = q->kwq_pcpu[cpu];
-			depth = kc->kc_depth;	/* unlocked read: a hint */
-			if (depth < bestdepth) {
-				best = cpu;
-				bestdepth = depth;
-				if (depth == 0)
-					break;
-			}
+	me = curcpu;
+	reach = kwq_topo_reach(me);
+	for (i = 0; i < reach; i++) {
+		c = kwq_topo_order[me][i];
+		if (CPU_ISSET(c, &kwq_bulk_idle) && q->kwq_pcpu[c]->kc_depth == 0)
+			return (c);
+	}
+	best = me;
+	bestdepth = q->kwq_pcpu[me]->kc_depth;
+	for (i = 0; i < reach && i < KWQ_PICK_PROBES && bestdepth != 0; i++) {
+		c = kwq_topo_order[me][i];
+		depth = q->kwq_pcpu[c]->kc_depth;
+		if (depth < bestdepth) {
+			best = c;
+			bestdepth = depth;
 		}
 	}
 	return (best);
+}
+
+/*
+ * The steal wake's trigger (../SCHED.md S16): did a stealable list grow
+ * from `old' to `new' across steal_wake or one of its doublings?  A burst
+ * onto one busy CPU then wakes a helper at 2, 4, 8, ... items, a handful
+ * of wakes however long the burst, each helper stealing half of what it
+ * finds.
+ */
+static inline bool
+kwq_steal_crossed(u_int old, u_int new)
+{
+	u_int t = kwq_steal_wake_at;
+
+	if (t == 0 || new < t || !kwq_steal_on)
+		return (false);
+	while (t <= old && t < (1u << 31))
+		t <<= 1;
+	return (t > old && t <= new);
 }
 
 static inline int
@@ -520,6 +598,13 @@ kwq_kc_added(struct kwq_cpu *kc, u_int added, int ring)
 	return (false);
 }
 
+/* kwq_kc_added() for kwq_worker.c's steal: kc locked, `added' appended. */
+bool
+kwq_kc_place(struct kwq_cpu *kc, u_int added)
+{
+	return (kwq_kc_added(kc, added, KWQ_RING_PLAIN));
+}
+
 /*
  * Data path.
  */
@@ -537,8 +622,8 @@ static inline int
 kwq_enqueue_one(struct kwq *q, int cpu, struct kwq_item *it, bool urgent)
 {
 	struct kwq_cpu *kc;
-	u_int depth __unused;	/* SDT arguments */
-	bool woke __unused;
+	u_int depth;
+	bool woke __unused;	/* SDT argument */
 
 	KASSERT(it->kwi_link.stqe_next == NULL,
 	    ("kwq_enqueue: item %p already linked", it));
@@ -565,6 +650,9 @@ kwq_enqueue_one(struct kwq *q, int cpu, struct kwq_item *it, bool urgent)
 	woke = kwq_kc_added(kc, 1, urgent ? KWQ_RING_ITEM : KWQ_RING_PLAIN);
 	kwq_kc_unlock(kc);
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);
+	if (__predict_false(q->kwq_flags & KWQ_F_STEALABLE) &&
+	    kwq_steal_crossed(depth - 1, depth))
+		kwq_steal_wake(cpu);
 	return (0);
 }
 
@@ -585,8 +673,8 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
     struct kwq_item *tail, int n)
 {
 	struct kwq_cpu *kc;
-	u_int depth __unused;	/* SDT arguments */
-	bool woke __unused;
+	u_int depth;
+	bool woke __unused;	/* SDT argument */
 
 	KASSERT(n > 0 && head != NULL && tail != NULL,
 	    ("kwq_enqueue_list: bad list %p %p %d", head, tail, n));
@@ -618,6 +706,9 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 	woke = kwq_kc_added(kc, n, KWQ_RING_PLAIN);
 	kwq_kc_unlock(kc);
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);	/* once per call */
+	if (__predict_false(q->kwq_flags & KWQ_F_STEALABLE) &&
+	    kwq_steal_crossed(depth - n, depth))
+		kwq_steal_wake(cpu);
 	return (0);
 }
 
@@ -690,11 +781,119 @@ kwq_budget_left(struct kwq *q)
 	return (left);
 }
 
+/*
+ * kwq_scatter() (../KWQ.md S3, ../SCHED.md S16): the dispatch_apply and
+ * dispatch_group_notify pair.  The targets are the caller's CPU and the
+ * idle BULK workers near it, at most KWQ_SCATTER_MAX and never more than
+ * there are items; the items are cut in order into one chunk per target,
+ * sizes differing by one at most, and the caller's own chunk goes last,
+ * since its worker preempts the caller at that doorbell.  All or nothing:
+ * the room on every target is checked first (unlocked; the appends are
+ * exempt from the limit, as a requeue is, so the bound holds as checked,
+ * not to the item), and the read lock on kwq_steal_rm from the activity
+ * check to the last append keeps a drain from sweeping between two
+ * chunks.  The group is armed before the first chunk can run.
+ */
+#define	KWQ_SCATTER_MAX	64
+
 int
-kwq_scatter(struct kwq *q __unused, struct kwq_item *list __unused,
-    int n __unused, void (*done)(void *) __unused, void *arg __unused)
+kwq_scatter(struct kwq *q, struct kwq_group *g, struct kwq_item *list, int n,
+    void (*done)(void *), void *arg)
 {
-	return (EOPNOTSUPP);	/* P6 */
+	struct rm_priotracker tr;
+	struct kwq_cpu *kc;
+	struct kwq_item *head, *tail, *next;
+	int tgt[KWQ_SCATTER_MAX];
+	int ntgt, me, c, i, j, k, cnt, chunk, extra;
+	u_int reach, depth;
+
+	if (q->kwq_class != KWQ_BULK || g == NULL || done == NULL ||
+	    list == NULL || n <= 0)
+		return (EINVAL);
+	me = curcpu;
+	tgt[0] = me;
+	ntgt = 1;
+	reach = kwq_topo_reach(me);
+	for (i = 0; i < (int)reach && ntgt < n && ntgt < KWQ_SCATTER_MAX; i++) {
+		c = kwq_topo_order[me][i];
+		if (CPU_ISSET(c, &kwq_bulk_idle))
+			tgt[ntgt++] = c;
+	}
+	chunk = n / ntgt;
+	extra = n % ntgt;
+	for (i = 0; i < ntgt; i++) {
+		cnt = chunk + (i < extra ? 1 : 0);
+		kc = q->kwq_pcpu[tgt[i]];
+		depth = kc->kc_depth;
+		if (depth > q->kwq_limit || (u_int)cnt > q->kwq_limit - depth) {
+			kwq_kc_lock(kc);
+			kc->kc_rejected += n;
+			kwq_kc_unlock(kc);
+			SDT_PROBE3(kwq, , , reject, q, tgt[i], ENOBUFS);
+			return (ENOBUFS);
+		}
+	}
+	g->kg_n = n;
+	g->kg_done = done;
+	g->kg_arg = arg;
+	atomic_store_rel_int(&g->kg_left, n);
+
+	rm_rlock(&kwq_steal_rm, &tr);
+	if (!atomic_load_acq_int(&q->kwq_active)) {
+		rm_runlock(&kwq_steal_rm, &tr);
+		kc = q->kwq_pcpu[me];
+		kwq_kc_lock(kc);
+		kc->kc_rejected += n;
+		kwq_kc_unlock(kc);
+		SDT_PROBE3(kwq, , , reject, q, me, ENXIO);
+		return (ENXIO);
+	}
+	head = list;
+	for (j = 1; j <= ntgt; j++) {
+		i = j % ntgt;		/* the others first, the caller's own last */
+		cnt = chunk + (i < extra ? 1 : 0);
+		tail = head;
+		for (k = 1; k < cnt; k++)
+			tail = tail->kwi_link.stqe_next;
+		KASSERT(tail != NULL, ("kwq_scatter: %s: list shorter than %d",
+		    q->kwq_name, n));
+		next = tail->kwi_link.stqe_next;
+		tail->kwi_link.stqe_next = NULL;
+		kc = q->kwq_pcpu[tgt[i]];
+		kwq_kc_lock(kc);
+		kwq_list_concat(kc, head, tail);
+		kc->kc_depth += cnt;
+		kc->kc_scattered += cnt;
+		depth = kc->kc_depth;
+		(void)kwq_kc_added(kc, cnt, KWQ_RING_PLAIN);
+		kwq_kc_unlock(kc);
+		SDT_PROBE4(kwq, , , enqueue, q, tgt[i], depth, false);
+		head = next;
+	}
+	rm_runlock(&kwq_steal_rm, &tr);
+	KASSERT(head == NULL, ("kwq_scatter: %s: list longer than %d",
+	    q->kwq_name, n));
+	return (0);
+}
+
+/*
+ * Handler side of a scatter: n of the group's items are finished.  The
+ * release fence orders the handler's work before the count, the acquire
+ * fence the count before done(), so done() sees every item's results.
+ */
+void
+kwq_group_leave(struct kwq_group *g, int n)
+{
+	u_int old;
+
+	KASSERT(n > 0 && (u_int)n <= g->kg_left,
+	    ("kwq_group_leave: %d of %u left", n, g->kg_left));
+	atomic_thread_fence_rel();
+	old = atomic_fetchadd_int(&g->kg_left, -(u_int)n);
+	if (old == (u_int)n) {
+		atomic_thread_fence_acq();
+		g->kg_done(g->kg_arg);
+	}
 }
 
 /*
@@ -972,6 +1171,13 @@ kwq_sysctl_register(struct kwq *q)
 		KC_U64(kc_switched, "switched", "passes during which the worker left the CPU (preempted or blocked); NET charges them wall time");
 		KC_U64(kc_boosts, "boosts", "passes served from the new list");
 		KC_U64(kc_grace, "grace", "doorbells sent to the ring by the grace rule");
+		if (q->kwq_class == KWQ_BULK) {
+			KC_U64(kc_steals_in, "steals_in", "batches this CPU's worker took from other CPUs' lists of the queue (SCHED.md S16)");
+			KC_U64(kc_stolen_in, "stolen_in", "items in those batches");
+			KC_U64(kc_steals_out, "steals_out", "batches other CPUs' workers took from this list");
+			KC_U64(kc_stolen_out, "stolen_out", "items in those batches");
+			KC_U64(kc_scattered, "scattered", "items kwq_scatter() put on this list");
+		}
 #undef KC_U64
 	}
 	return (0);
@@ -1063,6 +1269,13 @@ kwq_create(const char *name, enum kwq_class cls, uint32_t flags,
 	}
 	LIST_INSERT_HEAD(&kwq_all, q, kwq_all);
 	sx_xunlock(&kwq_sx);
+	if (flags & KWQ_F_STEALABLE) {
+		rm_wlock(&kwq_steal_rm);
+		LIST_INSERT_HEAD(&kwq_steal_list, q, kwq_steal);
+		q->kwq_stealing = true;
+		atomic_add_int(&kwq_nstealable, 1);
+		rm_wunlock(&kwq_steal_rm);
+	}
 
 	q->kwq_state = KWQ_ST_INACTIVE;
 	if (kwq_sysctl_register(q) != 0) {
@@ -1101,6 +1314,19 @@ kwq_activate(struct kwq *q)
  * the list lock, so one lock/unlock per CPU after the store is a barrier
  * against producers that had passed the check.
  */
+/* Take q off the steal list, or just fence; write side of kwq_steal_rm. */
+static void
+kwq_steal_unlist(struct kwq *q)
+{
+	rm_wlock(&kwq_steal_rm);
+	if (q->kwq_stealing) {
+		LIST_REMOVE(q, kwq_steal);
+		q->kwq_stealing = false;
+		atomic_subtract_int(&kwq_nstealable, 1);
+	}
+	rm_wunlock(&kwq_steal_rm);
+}
+
 void
 kwq_drain(struct kwq *q)
 {
@@ -1122,6 +1348,14 @@ kwq_drain(struct kwq *q)
 		kwq_kc_lock(kc);
 		kwq_kc_unlock(kc);
 	}
+	/*
+	 * BULK (../SCHED.md S16): stop the steals of this queue and wait out
+	 * any steal or scatter that passed its activity check before the
+	 * store above, so no batch is between two CPUs' lists while the
+	 * sweep below looks at them one by one.
+	 */
+	if (q->kwq_class == KWQ_BULK)
+		kwq_steal_unlist(q);
 	CPU_FOREACH(cpu) {
 		kc = q->kwq_pcpu[cpu];
 		kwq_kc_lock(kc);
@@ -1155,6 +1389,8 @@ kwq_destroy(struct kwq *q)
 	KASSERT(THREAD_CAN_SLEEP(), ("kwq_destroy: non-sleepable context"));
 
 	SDT_PROBE1(kwq, , , destroy, q);
+	if (q->kwq_stealing)		/* a create that failed late */
+		kwq_steal_unlist(q);
 	if (q->kwq_sysctl.tqh_first != NULL || q->kwq_sysctl.tqh_last != NULL)
 		sysctl_ctx_free(&q->kwq_sysctl);
 	sx_xlock(&kwq_sx);
@@ -1201,9 +1437,12 @@ kwq_modevent(module_t mod __unused, int type, void *data __unused)
 		kwq_queue_oids[KWQ_BLOCKING] =
 		    SYSCTL_STATIC_CHILDREN(_kern_kwq_blocking_queue);
 		kwq_knobs_register();
+		kwq_topo_init();
 		error = kwq_workers_start(kwq_cpu_oids);
-		if (error != 0)
+		if (error != 0) {
+			kwq_topo_fini();
 			sysctl_ctx_free(&kwq_knob_sysctl);
+		}
 		return (error);
 	case MOD_UNLOAD:
 		sx_xlock(&kwq_sx);
@@ -1213,6 +1452,7 @@ kwq_modevent(module_t mod __unused, int type, void *data __unused)
 		}
 		sx_xunlock(&kwq_sx);
 		kwq_workers_stop();
+		kwq_topo_fini();
 		sysctl_ctx_free(&kwq_knob_sysctl);
 		return (0);
 	case MOD_QUIESCE:

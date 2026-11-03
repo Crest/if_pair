@@ -40,6 +40,7 @@
 #include <sys/smp.h>
 #include <sys/pcpu.h>
 #include <sys/domainset.h>
+#include <sys/cpuset.h>
 #include <sys/epoch.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
@@ -51,6 +52,11 @@
 
 struct kwq_worker **kwq_workers[KWQ_NCLASS];
 static struct sysctl_ctx_list kwq_worker_sysctl_ctx;
+
+/* BULK stealing (../SCHED.md S16); declared in kwq_internal.h. */
+struct _cpuset kwq_bulk_idle;
+int **kwq_topo_order;
+u_short (*kwq_topo_ring)[KWQ_TOPO_RINGS];
 
 /*
  * Wait channels: one 8-byte slot per (class, CPU) in a 256-byte-aligned
@@ -657,9 +663,9 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	uint64_t t0, age = 0, requeued0;
 	u_int head_word = 0, tail_word = 0;
 	bool head_nf = false, tail_nf = false;
-	u_int n;
+	u_int n, depth0;
 	int sign;
-	bool net, has_work;
+	bool net, has_work, cut;
 	uint64_t t1, cpu_now, wall;
 	enum ks_cap cap;
 
@@ -668,7 +674,32 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 
 	kwq_kc_lock(kc);
 	items = STAILQ_FIRST(&kc->kc_list);
-	n = kc->kc_depth;
+	n = depth0 = kc->kc_depth;
+	/*
+	 * A stealable queue's pass takes at most steal_batch items and leaves
+	 * the rest on the live list (../SCHED.md S16): a pass's batch belongs
+	 * to its handler and cannot be stolen, so a pass that took a whole
+	 * backlog would keep it out of reach of every idle worker until the
+	 * handler requeued it, and the next pass would swap it out again
+	 * microseconds later.  The cut is a walk of steal_batch links under
+	 * the list lock.  Stealable lists hold no notifiers (kwq_notify()
+	 * refuses them), so no tag is cut through.
+	 */
+	cut = false;
+	if (__predict_false(q->kwq_flags & KWQ_F_STEALABLE) && kwq_steal_on &&
+	    n > kwq_steal_batch) {
+		struct kwq_item *t = items;
+		u_int k;
+
+		for (k = 1; k < kwq_steal_batch; k++)
+			t = t->kwi_link.stqe_next;
+		kc->kc_list.stqh_first = t->kwi_link.stqe_next;
+		t->kwi_link.stqe_next = NULL;
+		kc->kc_depth = n - kwq_steal_batch;
+		n = kwq_steal_batch;
+		kw->kw_pass_tail = t;
+		cut = true;
+	} else
 	/*
 	 * Remember the tail so a handler that stops early can hand the rest
 	 * back without walking to it: with a deep backlog that walk cost
@@ -676,7 +707,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	 * next budget until one CPU held every item in flight (SCHED.md
 	 * S10.3, the ifpair layouts).
 	 */
-	kw->kw_pass_tail = STAILQ_LAST(&kc->kc_list, kwq_item, kwi_link);
+		kw->kw_pass_tail = STAILQ_LAST(&kc->kc_list, kwq_item, kwi_link);
 	/*
 	 * The handler consumes a notifier by fetching its successor with
 	 * KWQ_ITEM_NEXT(); a handler that does not walk, because it only
@@ -692,8 +723,10 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 		if (tail_nf)
 			tail_word = __containerof(kw->kw_pass_tail, struct kwq_notifier, kn_item)->kn_state;
 	}
-	STAILQ_INIT(&kc->kc_list);
-	kc->kc_depth = 0;
+	if (!cut) {
+		STAILQ_INIT(&kc->kc_list);
+		kc->kc_depth = 0;
+	}
 	/* Discard only ever happens on a drained queue. */
 	sign = (!q->kwq_active && (q->kwq_flags & KWQ_F_DISCARD)) ? -1 : 1;
 	/*
@@ -746,8 +779,8 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	SDT_PROBE4(kwq, , , pass__start, q, kc->kc_cpu, n, age);
 	requeued0 = kc->kc_requeued;
 
-	if (n > kc->kc_maxdepth)
-		kc->kc_maxdepth = n;
+	if (depth0 > kc->kc_maxdepth)
+		kc->kc_maxdepth = depth0;
 	THREAD_NO_SLEEPING();
 	if (net)
 		NET_EPOCH_ENTER(et);
@@ -846,6 +879,243 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	}
 }
 
+/*
+ * Cache topology for stealing, scatter and KWQ_CPU_ANY (../SCHED.md S16).
+ * For each CPU, every other present CPU in rings of growing distance:
+ * the CPUs of the smallest topology group around it that has any, then
+ * those its parent adds, and so on to the root, the same tree ULE steals
+ * along (smp_topo()); within a ring from the next id up, wrapping, so
+ * that neighbours do not all start at the same victim.  A ring is a
+ * group that adds CPUs; levels that add none (a single-CPU leaf, a
+ * package of one core) are skipped, so scope 1 is the nearest sharing
+ * on every machine: the SMT sibling on lab, everything on a flat
+ * topology such as a07's or the guest's.
+ */
+#ifdef SMP
+static struct cpu_group *
+kwq_topo_leaf(struct cpu_group *cg, int cpu)
+{
+	int i;
+
+	for (;;) {
+		for (i = 0; i < cg->cg_children; i++)
+			if (CPU_ISSET(cpu, &cg->cg_child[i].cg_mask))
+				break;
+		if (i == cg->cg_children)
+			return (cg);
+		cg = &cg->cg_child[i];
+	}
+}
+#endif
+
+static void
+kwq_topo_add(int cpu, cpuset_t *seen, const cpuset_t *grp, int *n, int *r)
+{
+	int c, i, added = 0;
+
+	for (i = 1; i <= (int)mp_maxid + 1; i++) {
+		c = (cpu + i) % ((int)mp_maxid + 1);
+		if (CPU_ABSENT(c) || CPU_ISSET(c, seen) ||
+		    (grp != NULL && !CPU_ISSET(c, grp)))
+			continue;
+		CPU_SET(c, seen);
+		kwq_topo_order[cpu][(*n)++] = c;
+		added++;
+	}
+	if (added == 0)
+		return;
+	if (*r < KWQ_TOPO_RINGS)
+		(*r)++;
+	kwq_topo_ring[cpu][*r - 1] = (u_short)*n;	/* the last ring absorbs the rest */
+}
+
+void
+kwq_topo_init(void)
+{
+#ifdef SMP
+	struct cpu_group *cg;
+#endif
+	cpuset_t seen;
+	int cpu, n, r, i;
+
+	kwq_topo_order = malloc(sizeof(*kwq_topo_order) * (mp_maxid + 1), M_KWQ,
+	    M_WAITOK | M_ZERO);
+	kwq_topo_ring = malloc(sizeof(*kwq_topo_ring) * (mp_maxid + 1), M_KWQ,
+	    M_WAITOK | M_ZERO);
+	CPU_FOREACH(cpu) {
+		kwq_topo_order[cpu] = malloc(sizeof(int) * (mp_maxid + 1), M_KWQ,
+		    M_WAITOK | M_ZERO);
+		CPU_ZERO(&seen);
+		CPU_SET(cpu, &seen);
+		n = r = 0;
+#ifdef SMP
+		for (cg = kwq_topo_leaf(smp_topo(), cpu); cg != NULL;
+		    cg = cg->cg_parent)
+			kwq_topo_add(cpu, &seen, &cg->cg_mask, &n, &r);
+#endif
+		kwq_topo_add(cpu, &seen, NULL, &n, &r);	/* anything the tree missed */
+		for (i = r; i < KWQ_TOPO_RINGS; i++)
+			kwq_topo_ring[cpu][i] = (u_short)n;
+	}
+	CPU_ZERO(&kwq_bulk_idle);
+}
+
+void
+kwq_topo_fini(void)
+{
+	int cpu;
+
+	if (kwq_topo_order == NULL)
+		return;
+	CPU_FOREACH(cpu)
+		free(kwq_topo_order[cpu], M_KWQ);
+	free(kwq_topo_order, M_KWQ);
+	free(kwq_topo_ring, M_KWQ);
+	kwq_topo_order = NULL;
+	kwq_topo_ring = NULL;
+}
+
+/* How far down kwq_topo_order[cpu] a search may go: scope rings, scan CPUs. */
+u_int
+kwq_topo_reach(int cpu)
+{
+	u_int scope = kwq_steal_scope, n;
+
+	if (scope == 0)
+		return (0);
+	if (scope > KWQ_TOPO_RINGS)
+		scope = KWQ_TOPO_RINGS;
+	n = kwq_topo_ring[cpu][scope - 1];
+	return (n < kwq_steal_scan ? n : kwq_steal_scan);
+}
+
+/*
+ * Is the victim's worker going to serve this one-item list soon by
+ * itself?  A hint read without its lock: awake and not inside a pass
+ * means it is between passes or on its way to this list.  A worker in a
+ * pass of another queue, asleep with the list placed (the tick regime)
+ * or waiting in the idle class leaves the item waiting, and those are
+ * the cases a lone item is worth stealing in.
+ */
+static bool
+kwq_steal_lone_ok(struct kwq_cpu *vkc)
+{
+	struct kwq_worker *vkw = kwq_workers[KWQ_BULK][vkc->kc_cpu];
+	struct kwq_cpu *cur = vkw->kw_cur;
+
+	return (vkw->kw_sleeping || vkw->kw_lowpri || (cur != NULL && cur != vkc));
+}
+
+/*
+ * Steal (../SCHED.md S16): a BULK worker with nothing of its own takes a
+ * batch of a stealable queue from another CPU, nearest first, and MOVES
+ * it to its own list of the same queue, where it runs as ordinary passes
+ * and is charged as all work is, on the CPU that runs it.  The batch is
+ * the older half of the victim's live list, at most steal_max items, a
+ * lone item only when its worker will not reach it soon; a pass in
+ * progress on the victim owns its own batch and is never touched.  The
+ * read lock on kwq_steal_rm, held from the victim's lock to the append,
+ * is what a drain waits for, so no batch is between two lists while a
+ * drain sweeps.  Called with no lock held; true if a batch was moved.
+ */
+static bool
+kwq_steal(struct kwq_worker *kw)
+{
+	struct rm_priotracker tr;
+	struct kwq *q;
+	struct kwq_cpu *vkc, *kc;
+	struct kwq_item *head, *tail;
+	u_int i, reach, n, take, k;
+	int vcpu;
+	bool moved = false;
+
+	reach = kwq_topo_reach(kw->kw_cpu);
+	if (reach == 0)
+		return (false);
+	kw->kw_steal_tries++;
+	rm_rlock(&kwq_steal_rm, &tr);
+	for (i = 0; i < reach && !moved; i++) {
+		vcpu = kwq_topo_order[kw->kw_cpu][i];
+		LIST_FOREACH(q, &kwq_steal_list, kwq_steal) {
+			vkc = q->kwq_pcpu[vcpu];
+			n = vkc->kc_depth;		/* unlocked: a hint */
+			if (n == 0 || (n == 1 && !kwq_steal_lone_ok(vkc)))
+				continue;
+			kwq_kc_lock(vkc);
+			n = vkc->kc_depth;
+			if (n == 0 || !q->kwq_active) {
+				kwq_kc_unlock(vkc);
+				continue;
+			}
+			take = n == 1 ? 1 : (n + 1) / 2;
+			if (take > kwq_steal_max)
+				take = kwq_steal_max;
+			head = STAILQ_FIRST(&vkc->kc_list);
+			tail = head;
+			for (k = 1; k < take; k++)
+				tail = tail->kwi_link.stqe_next;
+			KASSERT(KWQ_TAGBIT(tail->kwi_link.stqe_next) == 0,
+			    ("kwq_steal: %s: a notifier on a stealable list",
+			    q->kwq_name));
+			vkc->kc_list.stqh_first = tail->kwi_link.stqe_next;
+			if (vkc->kc_list.stqh_first == NULL)
+				vkc->kc_list.stqh_last = &vkc->kc_list.stqh_first;
+			tail->kwi_link.stqe_next = NULL;
+			vkc->kc_depth -= take;
+			vkc->kc_steals_out++;
+			vkc->kc_stolen_out += take;
+			kwq_kc_unlock(vkc);
+
+			kc = q->kwq_pcpu[kw->kw_cpu];
+			kwq_kc_lock(kc);
+			kwq_list_concat(kc, head, tail);
+			kc->kc_depth += take;
+			kc->kc_steals_in++;
+			kc->kc_stolen_in += take;
+			(void)kwq_kc_place(kc, take);	/* our own doorbell: places it */
+			kwq_kc_unlock(kc);
+			SDT_PROBE4(kwq, , , steal, q, vcpu, kw->kw_cpu, (int)take);
+			kw->kw_steals++;
+			kw->kw_stolen += take;
+			moved = true;
+			break;
+		}
+	}
+	rm_runlock(&kwq_steal_rm, &tr);
+	return (moved);
+}
+
+/*
+ * The steal wake (../SCHED.md S16): an enqueue left a stealable list on
+ * `cpu' deeper than steal_wake (and at each doubling after that), so its
+ * worker is behind; wake the nearest sleeping BULK worker to steal.  The
+ * idle mask is a hint; kw_sleeping under kw_mtx decides.  No lock held.
+ */
+void
+kwq_steal_wake(int cpu)
+{
+	struct kwq_worker *kw;
+	u_int i, reach;
+	int c;
+
+	reach = kwq_topo_reach(cpu);
+	for (i = 0; i < reach; i++) {
+		c = kwq_topo_order[cpu][i];
+		if (!CPU_ISSET(c, &kwq_bulk_idle))
+			continue;
+		kw = kwq_workers[KWQ_BULK][c];
+		mtx_lock_spin(&kw->kw_mtx);
+		if (kw->kw_sleeping && !kw->kw_exit) {
+			kw->kw_sleeping = false;
+			kw->kw_steal_wakes++;
+			wakeup_one(kw->kw_chan);
+			mtx_unlock_spin(&kw->kw_mtx);
+			return;
+		}
+		mtx_unlock_spin(&kw->kw_mtx);
+	}
+}
+
 static void
 kwq_worker_main(void *arg)
 {
@@ -857,6 +1127,7 @@ kwq_worker_main(void *arg)
 	uint64_t rate;
 	uint64_t wall;
 	int rv;
+	bool tried = false;	/* a steal was attempted since the last sleep or pass */
 
 #ifdef SMP
 	/* Before sched_bind() to a CPU, wait for all CPUs to go on-line. */
@@ -880,6 +1151,22 @@ kwq_worker_main(void *arg)
 		if (a == KS_IDLE) {
 			if (kw->kw_exit)
 				goto out;
+			/*
+			 * Nothing of its own: a BULK worker tries to steal
+			 * once before it sleeps (../SCHED.md S16).  The lock
+			 * is dropped for the attempt, so ks_next() runs again
+			 * after it, whether it moved a batch or not: a
+			 * doorbell rung meanwhile found the worker awake and
+			 * placed its list without a wake.
+			 */
+			if (!tried && kw->kw_class == KWQ_BULK &&
+			    kwq_nstealable != 0 && kwq_steal_on) {
+				mtx_unlock_spin(&kw->kw_mtx);
+				tried = true;
+				(void)kwq_steal(kw);
+				continue;
+			}
+			tried = false;
 			/*
 			 * Sleep at the class priority: a worker that handed
 			 * the CPU over and then ran out of work would
@@ -907,6 +1194,8 @@ kwq_worker_main(void *arg)
 			    (kw->kw_tick_round && kw->kw_tick_items <= 1)))
 				kwq_tick_exit(kw, tick, sbinuptime());
 			kw->kw_sleeping = true;
+			if (kw->kw_class == KWQ_BULK)	/* the steal wake's hint */
+				CPU_SET_ATOMIC(kw->kw_cpu, &kwq_bulk_idle);
 			SDT_PROBE3(kwq, , , idle, kw->kw_class, kw->kw_cpu,
 			    kw->kw_busy_ns - kw->kw_idle_busy);
 			t0 = sbinuptime();
@@ -925,6 +1214,8 @@ kwq_worker_main(void *arg)
 				rv = 0;
 			}
 			t1 = sbinuptime();
+			if (kw->kw_class == KWQ_BULK)
+				CPU_CLR_ATOMIC(kw->kw_cpu, &kwq_bulk_idle);
 			kw->kw_idle_ns += kwq_sbt2ns(t1 - t0);
 			kw->kw_idle_busy = kw->kw_busy_ns;
 			/*
@@ -954,6 +1245,7 @@ kwq_worker_main(void *arg)
 			mtx_unlock_spin(&kw->kw_mtx);
 			continue;
 		}
+		tried = false;
 		mtx_unlock_spin(&kw->kw_mtx);
 
 		switch (a) {
@@ -1078,6 +1370,12 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	KW_U64(kw_round, "round", "current round number");
 	KW_U64(kw_budget_calls, "budget_calls", "kwq_budget_left() calls by handlers on this worker");
 	KW_U64(kw_budget_reads, "budget_reads", "of those, the ones that read the clock (SCHED.md S4.4)");
+	if (kw->kw_class == KWQ_BULK) {
+		KW_U64(kw_steal_tries, "steal_tries", "steal attempts with nothing of its own to do (SCHED.md S16)");
+		KW_U64(kw_steals, "steals", "of those, the ones that moved a batch to this CPU");
+		KW_U64(kw_stolen, "stolen", "items in those batches");
+		KW_U64(kw_steal_wakes, "steal_wakes", "wakes from sleep sent by producers so that this worker steals (steal_wake)");
+	}
 #undef KW_U64
 	SYSCTL_ADD_UINT(&kwq_worker_sysctl_ctx, ch, OID_AUTO, "nactive",
 	    CTLFLAG_RD, &kw->kw_nactive, 0, "(queue, CPU) entries on the DRR ring");

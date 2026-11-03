@@ -15,7 +15,9 @@
 #include <sys/lock.h>
 #include <sys/mutex.h>
 #include <sys/queue.h>
+#include <sys/rmlock.h>
 #include <sys/sysctl.h>
+#include <sys/_cpuset.h>
 #include <sys/malloc.h>
 #include <sys/time.h>
 
@@ -117,7 +119,19 @@ struct kwq_cpu {
 					   (preempted or blocked); charged as wall time (S1a.4) */
 	uint64_t		kc_debts;	/* doorbells sent to the ring because the queue owed time */
 	uint64_t		kc_bc_avg;	/* ns per kwq_budget_left() call, learned (SCHED.md S4.4) */
-	uint64_t		kc_steals_in;	/* P6 */
+	uint64_t		kc_steals_in;	/* batches this CPU's worker took from
+						   other CPUs' lists of the queue (S16) */
+	uint64_t		kc_stolen_in;	/* items in those batches */
+	/*
+	 * Written by other CPUs under kc_mtx: by a BULK worker that takes a
+	 * batch from this list (SCHED.md S16), by kwq_scatter()'s caller.
+	 * Block 0 is full, and both are rare next to the passes that write
+	 * this block, so the line they cost the owner now and then is not
+	 * worth a block of their own.
+	 */
+	uint64_t		kc_steals_out;	/* batches taken from this list */
+	uint64_t		kc_stolen_out;	/* items in those batches */
+	uint64_t		kc_scattered;	/* items kwq_scatter() put on this list */
 } __aligned(KWQ_LINE);
 
 CTASSERT(__offsetof(struct kwq_cpu, kc_flags) < 64);	/* enqueue path in line 0 */
@@ -144,6 +158,8 @@ struct kwq {
 	u_int			kwq_drained;
 	u_int			kwq_state;	/* KWQ_ST_*, for sysctl and DDB */
 	LIST_ENTRY(kwq)		kwq_all;
+	LIST_ENTRY(kwq)		kwq_steal;	/* on kwq_steal_list, under kwq_steal_rm */
+	bool			kwq_stealing;	/* on that list */
 	struct sysctl_ctx_list	kwq_sysctl;
 } __aligned(KWQ_LINE);
 
@@ -262,6 +278,12 @@ struct kwq_worker {
 				kw_wakes_low, kw_wake_self, kw_wake_prom_deadline,
 				kw_wake_prom_urgent, kw_wake_low_ns, kw_wakes_urgent,
 				kw_turg_deferred, kw_turg_wakes;
+	/*
+	 * BULK stealing (SCHED.md S16): attempts made with nothing of its own
+	 * to do, of those the ones that moved a batch, the items moved, and
+	 * the wakes producers sent it to steal (kw_steal_wakes under kw_mtx).
+	 */
+	uint64_t		kw_steal_tries, kw_steals, kw_stolen, kw_steal_wakes;
 } __aligned(KWQ_LINE);
 
 extern struct kwq_worker **kwq_workers[KWQ_NCLASS];	/* [class][cpu] */
@@ -273,6 +295,27 @@ extern int kwq_cap_prio[KWQ_NCLASS];
 extern u_int kwq_tick_us[KWQ_NCLASS];	/* the tick regime's bound L; 0 = off (KWQ.md S16) */
 extern u_int kwq_wake_delay_us[KWQ_NCLASS];	/* the idle-class wait's deadline; 0 = off */
 extern u_int kwq_tick_urgent_us[KWQ_NCLASS];	/* urgent items' bound in the tick regime; 0 = at once */
+
+/*
+ * BULK stealing and scatter (SCHED.md S16, KWQ.md S3).  kwq_steal_list
+ * holds the KWQ_F_STEALABLE queues; kwq_steal_rm protects it and fences a
+ * BULK queue's drain against batches in flight (a steal or a scatter
+ * holds the read lock from its check of kwq_active to its last append).
+ * kwq_bulk_idle has a bit per CPU whose BULK worker sleeps, a hint read
+ * without locks (kw_sleeping under kw_mtx is the truth).  kwq_topo_order
+ * lists, per CPU, every other CPU nearest first in cache topology, and
+ * kwq_topo_ring the end of each ring of it (KWQ_TOPO_RINGS at most).
+ */
+#define	KWQ_TOPO_RINGS	8
+LIST_HEAD(kwq_steal_head, kwq);
+extern struct kwq_steal_head kwq_steal_list;
+extern struct rmlock kwq_steal_rm;
+extern volatile u_int kwq_nstealable;
+extern struct _cpuset kwq_bulk_idle;
+extern int **kwq_topo_order;
+extern u_short (*kwq_topo_ring)[KWQ_TOPO_RINGS];
+extern u_int kwq_steal_on, kwq_steal_scope, kwq_steal_scan, kwq_steal_max,
+	    kwq_steal_wake_at, kwq_steal_batch;
 
 /*
  * How many consecutive sleeps shorter than L enter the tick regime
@@ -342,6 +385,8 @@ kwq_sbt2ns(sbintime_t sbt)
 /* kwq_worker.c */
 int	kwq_workers_start(struct sysctl_oid_list **cpu_oids);
 void	kwq_workers_stop(void);
+bool	kwq_kc_place(struct kwq_cpu *kc, u_int added);	/* kc locked, `added'
+					   items just appended: stamp, doorbell */
 void	kwq_doorbell(struct kwq_cpu *kc, int ring);	/* kc locked, state IDLE;
 					   `ring' one of KWQ_RING_* */
 bool	kwq_urgent_nudge(struct kwq_cpu *kc, int ring);	/* kc locked, state
@@ -349,6 +394,12 @@ bool	kwq_urgent_nudge(struct kwq_cpu *kc, int ring);	/* kc locked, state
 					   urgent item added to an already placed
 					   list */
 bool	kwq_higher_waiting(enum kwq_class cls);	/* hand-back flags, this CPU */
+void	kwq_steal_wake(int cpu);	/* no locks held: wake a sleeping BULK worker
+					   near `cpu' to steal from it (S16) */
+void	kwq_topo_init(void);
+void	kwq_topo_fini(void);
+u_int	kwq_topo_reach(int cpu);	/* entries of kwq_topo_order[cpu] within
+					   kwq_steal_scope rings, at most kwq_steal_scan */
 uint64_t kwq_cputime_ns(struct kwq_worker *kw);
 uint64_t kwq_cputime_ns_tick(struct kwq_worker *kw, uint64_t *tick);
 

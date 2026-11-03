@@ -78,7 +78,7 @@ typedef void kwq_handler_t(struct kwq *q, struct kwq_item *head, int n,
 
 enum kwq_class {
 	KWQ_NET = 0,		/* PI_NET, never sleeps, one worker per CPU */
-	KWQ_BULK = 1,		/* PI_SOFT, never sleeps, stealable (P6) */
+	KWQ_BULK = 1,		/* PI_SOFT, never sleeps, may be stealable */
 	KWQ_BLOCKING = 2,	/* PUSER, may sleep (P7, not yet available) */
 };
 #define	KWQ_NCLASS	3
@@ -104,8 +104,9 @@ struct kwq_params {
 				   be interrupt filters or hold spin locks */
 #define	KWQ_F_ALL	0x3f
 
-#define	KWQ_CPU_ANY	(-1)	/* BULK only: shallowest list in the caller's
-				   NUMA domain (cache domain: P6) */
+#define	KWQ_CPU_ANY	(-1)	/* BULK only: an idle worker near the caller,
+				   else the caller's CPU, else the shallowest
+				   list near it (../KWQ.md S3) */
 #define	KWQ_NAMELEN	32
 
 /*
@@ -121,6 +122,21 @@ struct kwq_notifier {
 	struct kwq_item	kn_item;
 	int		kn_cpu;
 	u_int		kn_state;
+};
+
+/*
+ * A scatter's completion (kwq_scatter()).  Owned by the client, which
+ * embeds it in the object the scattered items belong to (a request, a
+ * batch); kwq keeps its fields.  The handler reports the group's items
+ * it has finished with kwq_group_leave(), and the leave that finishes the
+ * last one calls done(arg), once, in that handler's context.  The
+ * client may reuse the group after done() has been called.
+ */
+struct kwq_group {
+	volatile u_int	kg_left;	/* items not yet left */
+	u_int		kg_n;		/* items scattered */
+	void		(*kg_done)(void *);
+	void		*kg_arg;
 };
 
 /*
@@ -152,8 +168,17 @@ int		 kwq_enqueue_urgent(struct kwq *q, int cpu, struct kwq_item *it);
 int		 kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 		    struct kwq_item *tail, int n);
 int		 kwq_cpu_for_hash(uint32_t hash);
-int		 kwq_scatter(struct kwq *q, struct kwq_item *list, int n,
-		    void (*done)(void *), void *arg);
+/*
+ * BULK only, not from an interrupt filter: spread the n items of `list'
+ * (plain links, NULL-terminated) over the caller's CPU and idle BULK
+ * workers near it, all or nothing (ENOBUFS: nothing queued, done never
+ * called; ENXIO: the queue is draining or inactive; EINVAL: not BULK).
+ * On success the handler kwq_group_leave()s every item and the last
+ * leave calls done(arg).
+ */
+int		 kwq_scatter(struct kwq *q, struct kwq_group *g,
+		    struct kwq_item *list, int n, void (*done)(void *), void *arg);
+void		 kwq_group_leave(struct kwq_group *g, int n);
 
 /* Signals. */
 void		 kwq_notifier_init(struct kwq_notifier *nf, int cpu);
