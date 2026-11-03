@@ -88,6 +88,24 @@ sector.  The privacy path now dispatches per sector as GELI does
 (../kwq-geli README.md); lab went down before it could be measured
 there (section 5).
 
+With the per-sector dispatch (HEAD, the guest only, three repetitions,
+GENERIC-DEBUG so direction only; samples/p6_geli_guest_head_2026-11-03.tsv),
+against stock GELI on the same boot:
+
+| | stock GELI | kwq-geli before | kwq-geli HEAD |
+|---|---|---|---|
+| write / read, 4 providers, MB/s | 2022 / 2498 | -1 % / +2 % | 2137 / 2708 (+6 % / +8 %) |
+| writers looping: timer p99, unpinned / pinned, us | 1703 / 2118 | -31 % / +0 % | 734 / 956 (-57 % / -55 %) |
+| ... spin loop's share, unpinned / pinned | 0.82 / 0.67 | -24 % / -17 % | 0.74 / 0.57 (-10 % / -15 %) |
+| four providers on one CPU: timer p99 there, us | 130645 | 1220 | 490 |
+| ... spin loop's share of it (the load's half second left out) | 0.06 | 0.52 | 0.55 |
+
+The budget check every 16 sectors is what halves the timer's lateness:
+a bio no longer holds the worker for its whole length.  The spin loop
+beside the spread load still gets less under kwq-geli on the guest than
+under stock GELI, where lab showed the opposite; lab's numbers for HEAD
+are owed.
+
 ## 5. Faults found, and the one that took lab down
 
 | fault | found by | effect | fixed in |
