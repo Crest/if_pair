@@ -13,5 +13,7 @@ SRCS+=	g_eli_key_cache.c
 SRCS+=	g_eli_privacy.c
 SRCS+=	pkcs5v2.c
 SRCS+=	vnode_if.h
+# kwq.h, the kwq(9) KPI the port uses
+CFLAGS+=	-I${.CURDIR}/../../kwq/kwq
 
 .include <bsd.kmod.mk>

@@ -254,7 +254,7 @@ void
 g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 {
 	struct g_eli_softc *sc;
-	struct cryptopq crpq;
+	struct cryptopq crpq, pool;
 	struct cryptop *crp;
 	vm_page_t *pages;
 	u_int i, nsec, secsize;
@@ -308,11 +308,28 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 		}
 	}
 
+	/* kwq-geli: every request and key first, without sleeping. */
+	if (g_eli_getreqs(sc, wr->w_sid, nsec, bp->bio_offset, secsize,
+	    (sc->sc_flags & G_ELI_FLAG_SINGLE_KEY) == 0, &pool) != 0) {
+		G_ELI_LOGREQ(1, bp, "Crypto request failed (ENOMEM).");
+		/* A read's clone is gone already (g_eli_read_done()). */
+		if (bp->bio_cmd == BIO_WRITE && bp->bio_driver1 != NULL) {
+			g_destroy_bio(bp->bio_driver1);
+			bp->bio_driver1 = NULL;
+		}
+		g_eli_free_data(bp);
+		bp->bio_completed = 0;
+		g_io_deliver(bp, ENOMEM);
+		atomic_subtract_int(&sc->sc_inflight, 1);
+		return;
+	}
+
 	TAILQ_INIT(&crpq);
 	batch = atomic_load_int(&g_eli_batch) != 0;
 
 	for (i = 0, dstoff = bp->bio_offset; i < nsec; i++, dstoff += secsize) {
-		crp = crypto_getreq(wr->w_sid, M_WAITOK);
+		crp = TAILQ_FIRST(&pool);
+		TAILQ_REMOVE(&pool, crp, crp_next);
 
 		if (data) {
 			crypto_use_buf(crp, data, secsize);
@@ -335,10 +352,7 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 		crp->crp_flags = CRYPTO_F_CBIFSYNC;
 		crp->crp_payload_start = 0;
 		crp->crp_payload_length = secsize;
-		if ((sc->sc_flags & G_ELI_FLAG_SINGLE_KEY) == 0) {
-			crp->crp_cipher_key = g_eli_key_hold(sc, dstoff,
-			    secsize);
-		}
+		/* The key, unless G_ELI_FLAG_SINGLE_KEY, is held already. */
 		if (g_eli_ivlen(sc->sc_ealgo) != 0) {
 			crp->crp_flags |= CRYPTO_F_IV_SEPARATE;
 			g_eli_crypto_ivgen(sc, dstoff, crp->crp_iv,

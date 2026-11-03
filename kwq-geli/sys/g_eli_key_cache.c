@@ -97,15 +97,23 @@ g_eli_key_fill(struct g_eli_softc *sc, struct g_eli_key *key, uint64_t keyno)
 RB_PROTOTYPE(g_eli_key_tree, g_eli_key, gek_link, g_eli_key_cmp);
 RB_GENERATE(g_eli_key_tree, g_eli_key, gek_link, g_eli_key_cmp);
 
+/*
+ * kwq-geli: `flags' is M_WAITOK at attach and resize, M_NOWAIT on the
+ * request path (g_eli_key_hold(), in a BULK handler), where it may fail.
+ */
 static struct g_eli_key *
-g_eli_key_allocate(struct g_eli_softc *sc, uint64_t keyno)
+g_eli_key_allocate(struct g_eli_softc *sc, uint64_t keyno, int flags)
 {
 	struct g_eli_key *key, *ekey, keysearch;
 
 	mtx_assert(&sc->sc_ekeys_lock, MA_OWNED);
 	mtx_unlock(&sc->sc_ekeys_lock);
 
-	key = malloc(sizeof(*key), M_ELI, M_WAITOK);
+	key = malloc(sizeof(*key), M_ELI, flags);
+	if (key == NULL) {
+		mtx_lock(&sc->sc_ekeys_lock);
+		return (NULL);
+	}
 	g_eli_key_fill(sc, key, keyno);
 
 	mtx_lock(&sc->sc_ekeys_lock);
@@ -218,7 +226,7 @@ g_eli_key_init(struct g_eli_softc *sc)
 			uint64_t keyno;
 
 			for (keyno = 0; keyno < sc->sc_ekeys_total; keyno++)
-				(void)g_eli_key_allocate(sc, keyno);
+				(void)g_eli_key_allocate(sc, keyno, M_WAITOK);
 			KASSERT(sc->sc_ekeys_total == sc->sc_ekeys_allocated,
 			    ("sc_ekeys_total=%ju != sc_ekeys_allocated=%ju",
 			    (uintmax_t)sc->sc_ekeys_total,
@@ -280,7 +288,7 @@ g_eli_key_resize(struct g_eli_softc *sc)
 
 		for (keyno = sc->sc_ekeys_total; keyno < new_ekeys_total;
 		    keyno++) {
-			(void)g_eli_key_allocate(sc, keyno);
+			(void)g_eli_key_allocate(sc, keyno, M_WAITOK);
 		}
 		KASSERT(new_ekeys_total == sc->sc_ekeys_allocated,
 		    ("new_ekeys_total=%ju != sc_ekeys_allocated=%ju",
@@ -336,17 +344,29 @@ g_eli_key_hold(struct g_eli_softc *sc, off_t offset, size_t blocksize)
 		 * No key in cache, find the least recently unreferenced key
 		 * or allocate one if we haven't reached our limit yet.
 		 */
-		if (sc->sc_ekeys_allocated < g_eli_key_cache_limit) {
-			key = g_eli_key_allocate(sc, keyno);
-		} else {
+		key = NULL;
+		if (sc->sc_ekeys_allocated < g_eli_key_cache_limit)
+			key = g_eli_key_allocate(sc, keyno, M_NOWAIT);
+		if (key == NULL) {
+			/*
+			 * kwq-geli: the limit is reached or the allocation
+			 * failed; reuse the least recently used key, and only
+			 * when every key is in use allocate one more, without
+			 * sleeping.  NULL if that fails too: the caller fails
+			 * the bio with ENOMEM (g_eli_getreqs()).
+			 */
 			g_eli_key_cache_misses++;
 			key = g_eli_key_find_last(sc);
 			if (key != NULL) {
 				g_eli_key_replace(sc, key, keyno);
 			} else {
 				/* All keys are referenced? Allocate one. */
-				key = g_eli_key_allocate(sc, keyno);
+				key = g_eli_key_allocate(sc, keyno, M_NOWAIT);
 			}
+		}
+		if (key == NULL) {
+			mtx_unlock(&sc->sc_ekeys_lock);
+			return (NULL);
 		}
 	}
 	key->gek_count++;

@@ -42,6 +42,7 @@
 #include <sys/mutex.h>
 #include <geom/geom.h>
 #include <crypto/intake.h>
+#include "kwq.h"
 #else
 #include <assert.h>
 #include <stdio.h>
@@ -167,9 +168,13 @@ extern u_int g_eli_batch;
 #define	G_ELI_LOGREQ(lvl, bp, ...) \
     _GEOM_DEBUG("GEOM_KWQELI", g_eli_debug, (lvl), (bp), __VA_ARGS__)
 
+/*
+ * kwq-geli: a worker is a CPU's crypto session (and first key), no longer
+ * a thread: the provider's bios run in the BULK handler of whichever CPU
+ * takes them, on that CPU's worker (sc_wr[curcpu]); w_number is the CPU.
+ */
 struct g_eli_worker {
 	struct g_eli_softc	*w_softc;
-	struct proc		*w_proc;
 	void			*w_first_key;
 	u_int			 w_number;
 	crypto_session_t	 w_sid;
@@ -215,9 +220,11 @@ struct g_eli_softc {
 	boolean_t	 sc_cpubind;
 
 	/* Only for software cryptography. */
-	struct bio_queue_head sc_queue;
+	struct bio_queue_head sc_queue;	/* kwq-geli: new bios parked while suspended */
 	struct mtx	 sc_queue_mtx;
 	LIST_HEAD(, g_eli_worker) sc_workers;
+	struct g_eli_worker **sc_wr;	/* kwq-geli: [mp_maxid + 1], by CPU */
+	struct kwq	*sc_kwq;	/* kwq-geli: the provider's BULK queue */
 #endif /* _KERNEL */
 };
 #define	sc_name		 sc_geom->name
@@ -706,6 +713,19 @@ void g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp);
 
 void g_eli_auth_read(struct g_eli_softc *sc, struct bio *bp);
 void g_eli_auth_run(struct g_eli_worker *wr, struct bio *bp);
+
+/*
+ * kwq-geli: a bio waiting for the BULK queue carries the kwq item in its
+ * bio_queue link, free while GELI holds the bio (GELI's own bioq used it).
+ */
+#define	G_ELI_BIO_ITEM(bp)	((struct kwq_item *)(void *)&(bp)->bio_queue)
+#define	G_ELI_ITEM_BIO(it)	\
+    ((struct bio *)(void *)((char *)(it) - __offsetof(struct bio, bio_queue)))
+int g_eli_getreqs(struct g_eli_softc *sc, crypto_session_t sid, u_int n,
+    off_t offset, u_int step, bool keys, struct cryptopq *q);
+void g_eli_kwq_resume(struct g_eli_softc *sc);
+int g_eli_newsession(struct g_eli_worker *wr);
+void g_eli_freesession(struct g_eli_worker *wr);
 #endif
 void g_eli_crypto_ivgen(struct g_eli_softc *sc, off_t offset, u_char *iv,
     size_t size);

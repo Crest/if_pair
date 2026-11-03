@@ -1,0 +1,10 @@
+-- kwq-geli test suite: kyua test -k /path/to/kwq-geli/tests/Kyuafile
+-- Needs root; loads kwq.ko, geom_kwqeli.ko and (cross_geli) geom_eli.ko
+-- and finds geom_kwqeli.so in the `moddir' configuration variable
+-- (-v test_suites.kwqeli.moddir=/root/kwq-geli), the test directory
+-- otherwise.  md(4) providers only.
+syntax(2)
+
+test_suite("kwqeli")
+
+atf_test_program{name="kwqeli_test.sh", timeout=1800}

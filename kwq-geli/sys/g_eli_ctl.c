@@ -880,17 +880,19 @@ g_eli_suspend_one(struct g_eli_softc *sc, struct gctl_req *req)
 		return;
 	}
 	sc->sc_flags |= G_ELI_FLAG_SUSPEND;
-	wakeup(sc);
-	for (;;) {
-		LIST_FOREACH(wr, &sc->sc_workers, w_next) {
-			if (wr->w_active)
-				break;
+	/*
+	 * kwq-geli: GELI's workers waited out the bios in flight, then each
+	 * freed its session.  From here on the BULK handler parks every new
+	 * bio (g_eli_kwq_one()); the ones already counted in sc_inflight
+	 * finish, and once none is left no handler uses a session.
+	 */
+	while (sc->sc_inflight > 0)
+		msleep(sc, &sc->sc_queue_mtx, PRIBIO, "geli:inf", hz / 5);
+	LIST_FOREACH(wr, &sc->sc_workers, w_next) {
+		if (wr->w_active) {
+			g_eli_freesession(wr);
+			wr->w_active = FALSE;
 		}
-		if (wr == NULL)
-			break;
-		/* Not all threads suspended. */
-		msleep(&sc->sc_workers, &sc->sc_queue_mtx, PRIBIO,
-		    "geli:suspend", 0);
 	}
 	/*
 	 * Clear sensitive data on suspend, they will be recovered on resume.
@@ -969,6 +971,7 @@ g_eli_ctl_resume(struct gctl_req *req, struct g_class *mp)
 {
 	struct g_eli_metadata md;
 	struct g_eli_softc *sc;
+	struct g_eli_worker *wr;
 	struct g_provider *pp;
 	struct g_consumer *cp;
 	const char *name;
@@ -1037,9 +1040,24 @@ g_eli_ctl_resume(struct gctl_req *req, struct g_class *mp)
 	else {
 		/* Restore sc_mkey, sc_ekeys, sc_akey and sc_ivkey. */
 		g_eli_mkey_propagate(sc, mkey);
+		/*
+		 * kwq-geli: the sessions, which GELI's workers made again
+		 * when they woke, then the parked bios back to the queue.
+		 */
+		mtx_unlock(&sc->sc_queue_mtx);
+		LIST_FOREACH(wr, &sc->sc_workers, w_next) {
+			error = g_eli_newsession(wr);
+			KASSERT(error == 0,
+			    ("g_eli_newsession() failed on resume (error=%d)",
+			    error));
+			wr->w_active = TRUE;
+		}
+		mtx_lock(&sc->sc_queue_mtx);
 		sc->sc_flags &= ~G_ELI_FLAG_SUSPEND;
 		G_ELI_DEBUG(1, "Resumed %s.", pp->name);
-		wakeup(sc);
+		mtx_unlock(&sc->sc_queue_mtx);
+		g_eli_kwq_resume(sc);
+		mtx_lock(&sc->sc_queue_mtx);
 	}
 	mtx_unlock(&sc->sc_queue_mtx);
 	explicit_bzero(mkey, sizeof(mkey));

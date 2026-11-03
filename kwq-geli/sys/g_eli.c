@@ -29,6 +29,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/cons.h>
+#include <sys/ctype.h>
 #include <sys/kenv.h>
 #include <sys/kernel.h>
 #include <sys/linker.h>
@@ -83,9 +84,22 @@ SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, visible_passphrase, CTLFLAG_RWTUN,
 u_int g_eli_overwrites = G_ELI_OVERWRITES;
 SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, overwrites, CTLFLAG_RWTUN, &g_eli_overwrites,
     0, "Number of times on-disk keys should be overwritten when destroying them");
-static u_int g_eli_threads = 0;
-SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, threads, CTLFLAG_RWTUN, &g_eli_threads, 0,
-    "Number of threads doing crypto work");
+/*
+ * kwq-geli: the crypto runs in kwq(9)'s BULK workers, one per CPU, so
+ * there are no threads to count; the queue is set up by these three.
+ */
+static int g_eli_kwq_cpu = -1;
+SYSCTL_INT(_kern_geom_kwqeli, OID_AUTO, cpu, CTLFLAG_RWTUN, &g_eli_kwq_cpu, 0,
+    "CPU a bio is queued to: -1 KWQ_CPU_ANY (an idle BULK worker near the "
+    "caller), -2 the caller's CPU, N CPU N for every provider");
+static u_int g_eli_kwq_stealable = 1;
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, stealable, CTLFLAG_RWTUN,
+    &g_eli_kwq_stealable, 0,
+    "Providers attached from now on create their queue KWQ_F_STEALABLE");
+static u_int g_eli_kwq_weight = 1;
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, weight, CTLFLAG_RWTUN,
+    &g_eli_kwq_weight, 0,
+    "DRR weight (1..8) of the queues of providers attached from now on");
 u_int g_eli_batch = 0;
 SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, batch, CTLFLAG_RWTUN, &g_eli_batch, 0,
     "Use crypto operations batching");
@@ -94,9 +108,10 @@ static int sysctl_g_eli_minbufs(SYSCTL_HANDLER_ARGS);
 SYSCTL_PROC(_kern_geom_kwqeli, OID_AUTO, minbufs, CTLTYPE_UINT | CTLFLAG_RW |
     CTLFLAG_MPSAFE, NULL, 0, sysctl_g_eli_minbufs, "IU",
     "Number of GELI bufs reserved for swap transactions");
-static bool g_eli_blocking_malloc = false;
-SYSCTL_BOOL(_kern_geom_kwqeli, OID_AUTO, blocking_malloc, CTLFLAG_RWTUN,
-    &g_eli_blocking_malloc, 0, "Use blocking malloc calls for GELI buffers");
+/*
+ * kwq-geli: GELI's blocking_malloc (M_WAITOK for the data buffers) is
+ * gone: the request path runs in a BULK handler, which may not sleep.
+ */
 static bool g_eli_unmapped_io = true;
 SYSCTL_BOOL(_kern_geom_kwqeli, OID_AUTO, unmapped_io, CTLFLAG_RDTUN,
     &g_eli_unmapped_io, 0, "Enable support for unmapped I/O");
@@ -158,6 +173,7 @@ static void g_eli_fini(struct g_class *mp);
 
 static g_taste_t g_eli_taste;
 static g_dumpconf_t g_eli_dumpconf;
+static void g_eli_kwq_enqueue(struct g_eli_softc *sc, struct bio *bp);
 
 struct g_class g_eli_class = {
 	.name = G_ELI_CLASS_NAME,
@@ -254,10 +270,7 @@ g_eli_read_done(struct bio *bp)
 			atomic_subtract_int(&sc->sc_inflight, 1);
 		return;
 	}
-	mtx_lock(&sc->sc_queue_mtx);
-	bioq_insert_tail(&sc->sc_queue, pbp);
-	mtx_unlock(&sc->sc_queue_mtx);
-	wakeup(sc);
+	g_eli_kwq_enqueue(sc, pbp);
 }
 
 /*
@@ -450,10 +463,7 @@ g_eli_start(struct bio *bp)
 		}
 		/* FALLTHROUGH */
 	case BIO_WRITE:
-		mtx_lock(&sc->sc_queue_mtx);
-		bioq_insert_tail(&sc->sc_queue, bp);
-		mtx_unlock(&sc->sc_queue_mtx);
-		wakeup(sc);
+		g_eli_kwq_enqueue(sc, bp);
 		break;
 	case BIO_GETATTR:
 	case BIO_FLUSH:
@@ -472,7 +482,7 @@ g_eli_start(struct bio *bp)
 	}
 }
 
-static int
+int
 g_eli_newsession(struct g_eli_worker *wr)
 {
 	struct g_eli_softc *sc;
@@ -493,6 +503,8 @@ g_eli_newsession(struct g_eli_worker *wr)
 	if ((sc->sc_flags & G_ELI_FLAG_FIRST_KEY) != 0) {
 		key = g_eli_key_hold(sc, 0,
 		    LIST_FIRST(&sc->sc_geom->consumer)->provider->sectorsize);
+		if (key == NULL)	/* kwq-geli: the hold no longer sleeps */
+			return (ENOMEM);
 		csp.csp_cipher_key = key;
 	} else {
 		key = NULL;
@@ -545,7 +557,7 @@ g_eli_newsession(struct g_eli_worker *wr)
 	return (error);
 }
 
-static void
+void
 g_eli_freesession(struct g_eli_worker *wr)
 {
 	struct g_eli_softc *sc;
@@ -572,135 +584,173 @@ g_eli_cancel(struct g_eli_softc *sc)
 	}
 }
 
-static struct bio *
-g_eli_takefirst(struct g_eli_softc *sc)
+/*
+ * kwq-geli: the provider's queue (GELI's sc_queue and its workers' loop).
+ *
+ * A bio goes to the provider's BULK queue at the two points where GELI
+ * queued it for its workers: g_eli_start() for a write (and an
+ * authenticated read) and g_eli_read_done() for the decryption of a read.
+ * kwq refuses an item only when that CPU's list is at its limit (ENOBUFS)
+ * or the queue is draining or inactive (ENXIO).  The first becomes GEOM's
+ * ENOMEM, which g_io_deliver() answers by issuing the bio again with a
+ * 1 ms pause (GELI does the same when its buffers run out); the second is
+ * the provider going away.  A bio refused before it was counted in
+ * sc_inflight is new: its clone is dropped, as GEOM's retry clones anew.
+ */
+static void
+g_eli_kwq_refuse(struct g_eli_softc *sc, struct bio *bp, int error)
 {
-	struct bio *bp;
 
-	mtx_assert(&sc->sc_queue_mtx, MA_OWNED);
-
-	if (!(sc->sc_flags & G_ELI_FLAG_SUSPEND))
-		return (bioq_takefirst(&sc->sc_queue));
-	/*
-	 * Device suspended, so we skip new I/O requests.
-	 */
-	TAILQ_FOREACH(bp, &sc->sc_queue.queue, bio_queue) {
-		if (!G_ELI_IS_NEW_BIO(bp->bio_pflags))
-			break;
+	if (G_ELI_IS_NEW_BIO(bp->bio_pflags)) {
+		if (bp->bio_driver1 != NULL) {
+			g_destroy_bio(bp->bio_driver1);
+			bp->bio_driver1 = NULL;
+		}
+		g_eli_free_data(bp);
+		g_io_deliver(bp, error);
+		return;
 	}
-	if (bp != NULL)
-		bioq_remove(&sc->sc_queue, bp);
-	return (bp);
+	bp->bio_completed = 0;
+	g_eli_free_data(bp);
+	g_io_deliver(bp, error);
+	atomic_subtract_int(&sc->sc_inflight, 1);
+}
+
+static void
+g_eli_kwq_enqueue(struct g_eli_softc *sc, struct bio *bp)
+{
+	int cpu, error;
+
+	cpu = g_eli_kwq_cpu;
+	if (cpu == -2)
+		cpu = curcpu;
+	else if (cpu < 0)
+		cpu = KWQ_CPU_ANY;
+	KWQ_ITEM_INIT(G_ELI_BIO_ITEM(bp));
+	error = kwq_enqueue(sc->sc_kwq, cpu, G_ELI_BIO_ITEM(bp));
+	if (__predict_false(error != 0))
+		g_eli_kwq_refuse(sc, bp, error == ENOBUFS ? ENOMEM : ENXIO);
 }
 
 /*
- * This is the main function for kernel worker thread when we don't have
- * hardware acceleration and we have to do cryptography in software.
- * Dedicated thread is needed, so we don't slow down g_up/g_down GEOM
- * threads with crypto work.
+ * One bio, as GELI's worker loop ran it, on this CPU's worker (session).
+ * A new bio while the provider is suspended is parked on sc_queue, where
+ * g_eli_kwq_resume() finds it again; a bio already counted in sc_inflight
+ * is finished first, as GELI's workers finished it.
  */
 static void
-g_eli_worker(void *arg)
+g_eli_kwq_one(struct g_eli_softc *sc, struct g_eli_worker *wr, struct bio *bp)
 {
-	struct g_eli_softc *sc;
-	struct g_eli_worker *wr;
-	struct bio *bp;
-	int error __diagused;
 
-	wr = arg;
-	sc = wr->w_softc;
-#ifdef EARLY_AP_STARTUP
-	MPASS(!sc->sc_cpubind || smp_started);
-#elif defined(SMP)
-	/* Before sched_bind() to a CPU, wait for all CPUs to go on-line. */
-	if (sc->sc_cpubind) {
-		while (!smp_started)
-			tsleep(wr, 0, "geli:smp", hz / 4);
-	}
-#endif
-	thread_lock(curthread);
-	sched_prio(curthread, PUSER);
-	if (sc->sc_cpubind)
-		sched_bind(curthread, wr->w_number % mp_ncpus);
-	thread_unlock(curthread);
-
-	G_ELI_DEBUG(1, "Thread %s started.", curthread->td_proc->p_comm);
-
-	for (;;) {
+	if (G_ELI_IS_NEW_BIO(bp->bio_pflags)) {
 		mtx_lock(&sc->sc_queue_mtx);
-again:
-		bp = g_eli_takefirst(sc);
-		if (bp == NULL) {
-			if (sc->sc_flags & G_ELI_FLAG_DESTROY) {
-				g_eli_cancel(sc);
-				LIST_REMOVE(wr, w_next);
-				g_eli_freesession(wr);
-				free(wr, M_ELI);
-				G_ELI_DEBUG(1, "Thread %s exiting.",
-				    curthread->td_proc->p_comm);
-				wakeup(&sc->sc_workers);
-				mtx_unlock(&sc->sc_queue_mtx);
-				kproc_exit(0);
-			}
-			while (sc->sc_flags & G_ELI_FLAG_SUSPEND) {
-				if (sc->sc_inflight > 0) {
-					G_ELI_DEBUG(0, "inflight=%d",
-					    sc->sc_inflight);
-					/*
-					 * We still have inflight BIOs, so
-					 * sleep and retry.
-					 */
-					msleep(sc, &sc->sc_queue_mtx, PRIBIO,
-					    "geli:inf", hz / 5);
-					goto again;
-				}
-				/*
-				 * Suspend requested, mark the worker as
-				 * suspended and go to sleep.
-				 */
-				if (wr->w_active) {
-					g_eli_freesession(wr);
-					wr->w_active = FALSE;
-				}
-				wakeup(&sc->sc_workers);
-				msleep(sc, &sc->sc_queue_mtx, PRIBIO,
-				    "geli:suspend", 0);
-				if (!wr->w_active &&
-				    !(sc->sc_flags & G_ELI_FLAG_SUSPEND)) {
-					error = g_eli_newsession(wr);
-					KASSERT(error == 0,
-					    ("g_eli_newsession() failed on resume (error=%d)",
-					    error));
-					wr->w_active = TRUE;
-				}
-				goto again;
-			}
-			msleep(sc, &sc->sc_queue_mtx, PDROP, "geli:w", 0);
-			continue;
+		if (sc->sc_flags & G_ELI_FLAG_SUSPEND) {
+			bioq_insert_tail(&sc->sc_queue, bp);
+			mtx_unlock(&sc->sc_queue_mtx);
+			return;
 		}
-		if (G_ELI_IS_NEW_BIO(bp->bio_pflags))
-			atomic_add_int(&sc->sc_inflight, 1);
+		atomic_add_int(&sc->sc_inflight, 1);
 		mtx_unlock(&sc->sc_queue_mtx);
-		if (G_ELI_IS_NEW_BIO(bp->bio_pflags)) {
-			G_ELI_SETWORKER(bp->bio_pflags, 0);
-			if (sc->sc_flags & G_ELI_FLAG_AUTH) {
-				if (bp->bio_cmd == BIO_READ)
-					g_eli_auth_read(sc, bp);
-				else
-					g_eli_auth_run(wr, bp);
-			} else {
-				if (bp->bio_cmd == BIO_READ)
-					g_eli_crypto_read(sc, bp, 1);
-				else
-					g_eli_crypto_run(wr, bp);
-			}
-		} else {
-			if (sc->sc_flags & G_ELI_FLAG_AUTH)
+		G_ELI_SETWORKER(bp->bio_pflags, 0);
+		if (sc->sc_flags & G_ELI_FLAG_AUTH) {
+			if (bp->bio_cmd == BIO_READ)
+				g_eli_auth_read(sc, bp);
+			else
 				g_eli_auth_run(wr, bp);
+		} else {
+			if (bp->bio_cmd == BIO_READ)
+				g_eli_crypto_read(sc, bp, 1);
 			else
 				g_eli_crypto_run(wr, bp);
 		}
+	} else {
+		if (sc->sc_flags & G_ELI_FLAG_AUTH)
+			g_eli_auth_run(wr, bp);
+		else
+			g_eli_crypto_run(wr, bp);
 	}
+}
+
+/*
+ * The BULK handler: bios in arrival order on this CPU, each run to its
+ * crypto dispatch (synchronous for the software and accelerated drivers,
+ * whose completions then run here too), the rest handed back when the
+ * quantum is spent.  It never sleeps: crypto requests, buffers and keys
+ * are all taken with M_NOWAIT, and a shortage fails the bio with ENOMEM
+ * for GEOM to retry.  The queue is not KWQ_F_DISCARD, so n > 0.
+ */
+static void
+g_eli_kwq_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
+{
+	struct g_eli_softc *sc = ctx;
+	struct g_eli_worker *wr = sc->sc_wr[curcpu];
+	struct kwq_item *it, *next;
+	int done = 0;
+
+	KASSERT(n > 0 && wr != NULL, ("%s: n %d wr %p", __func__, n, wr));
+	for (it = head; it != NULL; it = next) {
+		next = KWQ_ITEM_NEXT(q, it);
+		g_eli_kwq_one(sc, wr, G_ELI_ITEM_BIO(it));
+		done++;
+		if (next != NULL && kwq_budget_left(q) == 0) {
+			kwq_requeue(q, next, NULL, n - done);
+			return;
+		}
+	}
+}
+
+/* Resume: the new bios parked while suspended go to the queue again. */
+void
+g_eli_kwq_resume(struct g_eli_softc *sc)
+{
+	struct bio_queue_head parked;
+	struct bio *bp;
+
+	bioq_init(&parked);
+	mtx_lock(&sc->sc_queue_mtx);
+	while ((bp = bioq_takefirst(&sc->sc_queue)) != NULL)
+		bioq_insert_tail(&parked, bp);
+	mtx_unlock(&sc->sc_queue_mtx);
+	while ((bp = bioq_takefirst(&parked)) != NULL)
+		g_eli_kwq_enqueue(sc, bp);
+}
+
+/*
+ * kwq-geli: a bio's crypto requests (and, with `keys', their keys), all
+ * taken without sleeping before the first is dispatched, so that a
+ * shortage fails the whole bio and nothing is half done.  GELI took each
+ * with M_WAITOK inside the dispatch loop, which a BULK handler may not.
+ * Sector i of the bio is at offset + i * step for the key.
+ */
+int
+g_eli_getreqs(struct g_eli_softc *sc, crypto_session_t sid, u_int n,
+    off_t offset, u_int step, bool keys, struct cryptopq *q)
+{
+	struct cryptop *crp;
+	u_int i;
+
+	TAILQ_INIT(q);
+	for (i = 0; i < n; i++) {
+		crp = crypto_getreq(sid, M_NOWAIT);
+		if (crp == NULL)
+			goto fail;
+		TAILQ_INSERT_TAIL(q, crp, crp_next);
+		if (keys) {
+			crp->crp_cipher_key = g_eli_key_hold(sc,
+			    offset + (off_t)i * step, step);
+			if (crp->crp_cipher_key == NULL)
+				goto fail;
+		}
+	}
+	return (0);
+fail:
+	while ((crp = TAILQ_FIRST(q)) != NULL) {
+		TAILQ_REMOVE(q, crp, crp_next);
+		if (crp->crp_cipher_key != NULL)
+			g_eli_key_drop(sc, __DECONST(void *, crp->crp_cipher_key));
+		crypto_freereq(crp);
+	}
+	return (ENOMEM);
 }
 
 static int
@@ -814,16 +864,6 @@ g_eli_access(struct g_provider *pp, int dr, int dw, int de)
 	return (0);
 }
 
-static int
-g_eli_cpu_is_disabled(int cpu)
-{
-#ifdef SMP
-	return (CPU_ISSET(cpu, &hlt_cpus_mask));
-#else
-	return (0);
-#endif
-}
-
 static void
 g_eli_init_uma(void)
 {
@@ -911,8 +951,7 @@ g_eli_alloc_data(struct bio *bp, int sz)
 			return (bp->bio_driver2 != NULL);
 	}
 	bp->bio_pflags &= ~(G_ELI_UMA_ALLOC);
-	bp->bio_driver2 = malloc(sz, M_ELI, g_eli_blocking_malloc ? M_WAITOK :
-	    M_NOWAIT);
+	bp->bio_driver2 = malloc(sz, M_ELI, M_NOWAIT);
 	return (bp->bio_driver2 != NULL);
 }
 
@@ -955,8 +994,10 @@ g_eli_create(struct gctl_req *req, struct g_class *mp, struct g_provider *bpp,
 	struct g_provider *pp;
 	struct g_consumer *cp;
 	struct g_geom_alias *gap;
-	u_int i, threads;
-	int dcw, error;
+	struct kwq_params kp;
+	char qname[KWQ_NAMELEN];
+	u_int i;
+	int cpu, dcw, error;
 
 	G_ELI_DEBUG(1, "Creating device %s%s.", bpp->name, G_ELI_SUFFIX);
 	KASSERT(eli_metadata_crypto_supported(md),
@@ -1035,19 +1076,25 @@ g_eli_create(struct gctl_req *req, struct g_class *mp, struct g_provider *bpp,
 
 	LIST_INIT(&sc->sc_workers);
 
-	threads = g_eli_threads;
-	if (threads == 0)
-		threads = mp_ncpus;
-	sc->sc_cpubind = (mp_ncpus > 1 && threads == mp_ncpus);
-	for (i = 0; i < threads; i++) {
-		if (g_eli_cpu_is_disabled(i)) {
-			G_ELI_DEBUG(1, "%s: CPU %u disabled, skipping.",
-			    bpp->name, i);
-			continue;
-		}
+	/*
+	 * kwq-geli: a crypto session per CPU, where GELI made one per worker
+	 * thread, and one BULK queue for the provider, named after it
+	 * (kern.kwq.bulk.queue.kweli-<provider>).  A bio carries its worker
+	 * in eight bits of bio_pflags, with 255 marking a new bio.
+	 */
+	if (mp_maxid >= G_ELI_MAX_WORKERS) {
+		error = EOPNOTSUPP;
+		if (req != NULL)
+			gctl_error(req, "CPU ids above %d are not supported.",
+			    G_ELI_MAX_WORKERS - 1);
+		goto failed;
+	}
+	sc->sc_wr = malloc(sizeof(*sc->sc_wr) * (mp_maxid + 1), M_ELI,
+	    M_WAITOK | M_ZERO);
+	CPU_FOREACH(cpu) {
 		wr = malloc(sizeof(*wr), M_ELI, M_WAITOK | M_ZERO);
 		wr->w_softc = sc;
-		wr->w_number = i;
+		wr->w_number = cpu;
 		wr->w_active = TRUE;
 
 		error = g_eli_newsession(wr);
@@ -1062,22 +1109,25 @@ g_eli_create(struct gctl_req *req, struct g_class *mp, struct g_provider *bpp,
 			}
 			goto failed;
 		}
-
-		error = kproc_create(g_eli_worker, wr, &wr->w_proc, 0, 0,
-		    "g_eli[%u] %s", i, bpp->name);
-		if (error != 0) {
-			g_eli_freesession(wr);
-			free(wr, M_ELI);
-			if (req != NULL) {
-				gctl_error(req, "Cannot create kernel thread "
-				    "for %s (error=%d).", bpp->name, error);
-			} else {
-				G_ELI_DEBUG(1, "Cannot create kernel thread "
-				    "for %s (error=%d).", bpp->name, error);
-			}
-			goto failed;
-		}
 		LIST_INSERT_HEAD(&sc->sc_workers, wr, w_next);
+		sc->sc_wr[cpu] = wr;
+	}
+	snprintf(qname, sizeof(qname), "kweli-%s", bpp->name);
+	for (i = 0; qname[i] != '\0'; i++)	/* kwq_name_valid()'s alphabet */
+		if (!isalpha(qname[i]) && !isdigit(qname[i]) &&
+		    qname[i] != '_' && qname[i] != '-')
+			qname[i] = '_';
+	memset(&kp, 0, sizeof(kp));
+	kp.weight = MIN(MAX(g_eli_kwq_weight, 1), 8);
+	kp.domain = -1;
+	sc->sc_kwq = kwq_create(qname, KWQ_BULK,
+	    g_eli_kwq_stealable ? KWQ_F_STEALABLE : 0, &kp, g_eli_kwq_handler, sc);
+	if (sc->sc_kwq == NULL) {
+		error = EEXIST;
+		if (req != NULL)
+			gctl_error(req, "Cannot create kwq queue %s for %s.",
+			    qname, bpp->name);
+		goto failed;
 	}
 
 	/*
@@ -1112,16 +1162,17 @@ g_eli_create(struct gctl_req *req, struct g_class *mp, struct g_provider *bpp,
 	return (gp);
 
 failed:
-	mtx_lock(&sc->sc_queue_mtx);
-	sc->sc_flags |= G_ELI_FLAG_DESTROY;
-	wakeup(sc);
-	/*
-	 * Wait for kernel threads self destruction.
-	 */
-	while (!LIST_EMPTY(&sc->sc_workers)) {
-		msleep(&sc->sc_workers, &sc->sc_queue_mtx, PRIBIO,
-		    "geli:destroy", 0);
+	/* kwq-geli: no bio has reached the queue, nothing runs on a session. */
+	if (sc->sc_kwq != NULL) {
+		kwq_drain(sc->sc_kwq);
+		kwq_destroy(sc->sc_kwq);
 	}
+	while ((wr = LIST_FIRST(&sc->sc_workers)) != NULL) {
+		LIST_REMOVE(wr, w_next);
+		g_eli_freesession(wr);
+		free(wr, M_ELI);
+	}
+	free(sc->sc_wr, M_ELI);
 	mtx_destroy(&sc->sc_queue_mtx);
 	if (cp->provider != NULL) {
 		if (cp->acr == 1)
@@ -1139,6 +1190,7 @@ failed:
 int
 g_eli_destroy(struct g_eli_softc *sc, boolean_t force)
 {
+	struct g_eli_worker *wr;
 	struct g_geom *gp;
 	struct g_provider *pp;
 
@@ -1165,13 +1217,29 @@ g_eli_destroy(struct g_eli_softc *sc, boolean_t force)
 		}
 	}
 
+	/*
+	 * kwq-geli: GELI's workers ran their queue empty, then cancelled the
+	 * new bios held while suspended, then exited.  The drain runs what is
+	 * left on the queue (not KWQ_F_DISCARD) and waits for its passes; a
+	 * bio that comes back from below after it is refused with ENXIO.
+	 */
 	mtx_lock(&sc->sc_queue_mtx);
 	sc->sc_flags |= G_ELI_FLAG_DESTROY;
-	wakeup(sc);
-	while (!LIST_EMPTY(&sc->sc_workers)) {
-		msleep(&sc->sc_workers, &sc->sc_queue_mtx, PRIBIO,
-		    "geli:destroy", 0);
+	mtx_unlock(&sc->sc_queue_mtx);
+	kwq_drain(sc->sc_kwq);
+	mtx_lock(&sc->sc_queue_mtx);
+	g_eli_cancel(sc);
+	mtx_unlock(&sc->sc_queue_mtx);
+	kwq_destroy(sc->sc_kwq);
+	sc->sc_kwq = NULL;
+	while ((wr = LIST_FIRST(&sc->sc_workers)) != NULL) {
+		LIST_REMOVE(wr, w_next);
+		if (wr->w_active)
+			g_eli_freesession(wr);
+		free(wr, M_ELI);
 	}
+	free(sc->sc_wr, M_ELI);
+	sc->sc_wr = NULL;
 	mtx_destroy(&sc->sc_queue_mtx);
 	gp->softc = NULL;
 	g_eli_key_destroy(sc);
@@ -1341,4 +1409,5 @@ g_eli_fini(struct g_class *mp)
 
 DECLARE_GEOM_CLASS(g_eli_class, g_kwqeli);
 MODULE_DEPEND(g_kwqeli, crypto, 1, 1, 1);
+MODULE_DEPEND(g_kwqeli, kwq, 1, 1, 1);
 MODULE_VERSION(geom_kwqeli, 0);

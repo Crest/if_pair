@@ -448,7 +448,7 @@ void
 g_eli_auth_run(struct g_eli_worker *wr, struct bio *bp)
 {
 	struct g_eli_softc *sc;
-	struct cryptopq crpq;
+	struct cryptopq crpq, pool;
 	struct cryptop *crp;
 	u_int i, lsec, nsec, data_secsize, decr_secsize, encr_secsize;
 	off_t dstoff;
@@ -508,11 +508,28 @@ g_eli_auth_run(struct g_eli_worker *wr, struct bio *bp)
 	p = (char *)roundup((uintptr_t)p, sizeof(uintptr_t));
 #endif
 
+	/* kwq-geli: every request and key first, without sleeping. */
+	if (g_eli_getreqs(sc, wr->w_sid, nsec, dstoff, encr_secsize,
+	    (sc->sc_flags & G_ELI_FLAG_FIRST_KEY) == 0, &pool) != 0) {
+		G_ELI_LOGREQ(1, bp, "Crypto request failed (ENOMEM).");
+		/* A read's clone is gone already (g_eli_read_done()). */
+		if (bp->bio_cmd == BIO_WRITE && bp->bio_driver1 != NULL) {
+			g_destroy_bio(bp->bio_driver1);
+			bp->bio_driver1 = NULL;
+		}
+		g_eli_free_data(bp);
+		bp->bio_completed = 0;
+		g_io_deliver(bp, ENOMEM);
+		atomic_subtract_int(&sc->sc_inflight, 1);
+		return;
+	}
+
 	TAILQ_INIT(&crpq);
 	batch = atomic_load_int(&g_eli_batch) != 0;
 
 	for (i = 1; i <= nsec; i++, dstoff += encr_secsize) {
-		crp = crypto_getreq(wr->w_sid, M_WAITOK);
+		crp = TAILQ_FIRST(&pool);
+		TAILQ_REMOVE(&pool, crp, crp_next);
 		authkey = (u_char *)p;		p += G_ELI_AUTH_SECKEYLEN;
 
 		data_secsize = sc->sc_data_per_sector;
@@ -560,10 +577,7 @@ g_eli_auth_run(struct g_eli_worker *wr, struct bio *bp)
 		crp->crp_digest_start = 0;
 		crp->crp_payload_start = sc->sc_alen;
 		crp->crp_payload_length = data_secsize;
-		if ((sc->sc_flags & G_ELI_FLAG_FIRST_KEY) == 0) {
-			crp->crp_cipher_key = g_eli_key_hold(sc, dstoff,
-			    encr_secsize);
-		}
+		/* The key, unless G_ELI_FLAG_FIRST_KEY, is held already. */
 		if (g_eli_ivlen(sc->sc_ealgo) != 0) {
 			crp->crp_flags |= CRYPTO_F_IV_SEPARATE;
 			g_eli_crypto_ivgen(sc, dstoff, crp->crp_iv,
