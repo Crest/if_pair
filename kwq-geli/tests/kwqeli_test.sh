@@ -392,6 +392,34 @@ SPIN
 }
 resume_cleanup() { kwqeli_cleanup; }
 
+atf_test_case resume_fail cleanup
+resume_fail_head() {
+	atf_set descr "a resume whose second session cannot be made (fail point kwqeli_resume_session) fails and leaves the provider suspended, its parked bios waiting; the next resume sends them through"
+	atf_set require.user root
+}
+resume_fail_body() {
+	kwqeli_setup
+	[ "$(sysctl -n kern.smp.cpus)" -ge 2 ] || atf_skip "needs two CPUs"
+	m=$(newmd 64m)
+	atf_check -o ignore $GK init -B none -P -K key -s 4096 "$m"
+	atf_check $GK attach -p -k key "$m"
+	dd if=data.in of=data.cmp bs=1m count=32 2>/dev/null
+	dd if=data.cmp of="/dev/$m.kweli" bs=1m 2>/dev/null || atf_fail "write"
+	atf_check $GK suspend "$m.kweli"
+	(dd if="/dev/$m.kweli" of=data.out bs=1m count=32 2>/dev/null; echo $? > reader.rc) &
+	knob debug.fail_point.kwqeli_resume_session '1*off->1*return(12)'
+	atf_check -s not-exit:0 -e match:"still suspended" $GK resume -p -k key "$m"
+	sleep 1
+	[ ! -f reader.rc ] || atf_fail "the reader finished after the failed resume"
+	$GK list "$m.kweli" | grep -q "SUSPEND" || atf_fail "not suspended after the failed resume"
+	sysctl -q debug.fail_point.kwqeli_resume_session=off >/dev/null
+	atf_check $GK resume -p -k key "$m"
+	wait
+	atf_check_equal 0 "$(cat reader.rc)"
+	cmp -s data.cmp data.out || atf_fail "data after the second resume differs"
+}
+resume_fail_cleanup() { kwqeli_cleanup; }
+
 atf_init_test_cases() {
 	atf_add_test_case onetime_xts
 	atf_add_test_case onetime_cbc
@@ -405,4 +433,5 @@ atf_init_test_cases() {
 	atf_add_test_case ufs
 	atf_add_test_case detach_load
 	atf_add_test_case resume
+	atf_add_test_case resume_fail
 }

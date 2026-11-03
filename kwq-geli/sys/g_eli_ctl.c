@@ -33,6 +33,7 @@
 #include <sys/lock.h>
 #include <sys/mutex.h>
 #include <sys/bio.h>
+#include <sys/fail.h>
 #include <sys/sysctl.h>
 #include <sys/malloc.h>
 #include <sys/kthread.h>
@@ -856,10 +857,36 @@ g_eli_ctl_delkey(struct gctl_req *req, struct g_class *mp)
 		G_ELI_DEBUG(1, "Key %d removed from %s.", nkey, pp->name);
 }
 
+/*
+ * kwq-geli: the sessions and the keys go, as GELI's suspend did; also
+ * used by a resume that could not make its sessions.
+ */
+static void
+g_eli_suspend_wipe(struct g_eli_softc *sc)
+{
+	struct g_eli_worker *wr;
+
+	mtx_assert(&sc->sc_queue_mtx, MA_OWNED);
+	LIST_FOREACH(wr, &sc->sc_workers, w_next) {
+		if (wr->w_active) {
+			g_eli_freesession(wr);
+			wr->w_active = FALSE;
+		}
+	}
+	/*
+	 * Clear sensitive data on suspend, they will be recovered on resume.
+	 */
+	explicit_bzero(sc->sc_mkey, sizeof(sc->sc_mkey));
+	g_eli_key_destroy(sc);
+	explicit_bzero(sc->sc_akey, sizeof(sc->sc_akey));
+	explicit_bzero(&sc->sc_akeyctx, sizeof(sc->sc_akeyctx));
+	explicit_bzero(sc->sc_ivkey, sizeof(sc->sc_ivkey));
+	explicit_bzero(&sc->sc_ivctx, sizeof(sc->sc_ivctx));
+}
+
 static void
 g_eli_suspend_one(struct g_eli_softc *sc, struct gctl_req *req)
 {
-	struct g_eli_worker *wr;
 
 	g_topology_assert();
 
@@ -888,21 +915,7 @@ g_eli_suspend_one(struct g_eli_softc *sc, struct gctl_req *req)
 	 */
 	while (sc->sc_inflight > 0)
 		msleep(sc, &sc->sc_queue_mtx, PRIBIO, "geli:inf", hz / 5);
-	LIST_FOREACH(wr, &sc->sc_workers, w_next) {
-		if (wr->w_active) {
-			g_eli_freesession(wr);
-			wr->w_active = FALSE;
-		}
-	}
-	/*
-	 * Clear sensitive data on suspend, they will be recovered on resume.
-	 */
-	explicit_bzero(sc->sc_mkey, sizeof(sc->sc_mkey));
-	g_eli_key_destroy(sc);
-	explicit_bzero(sc->sc_akey, sizeof(sc->sc_akey));
-	explicit_bzero(&sc->sc_akeyctx, sizeof(sc->sc_akeyctx));
-	explicit_bzero(sc->sc_ivkey, sizeof(sc->sc_ivkey));
-	explicit_bzero(&sc->sc_ivctx, sizeof(sc->sc_ivctx));
+	g_eli_suspend_wipe(sc);
 	mtx_unlock(&sc->sc_queue_mtx);
 	G_ELI_DEBUG(0, "Device %s has been suspended.", sc->sc_name);
 }
@@ -1042,17 +1055,35 @@ g_eli_ctl_resume(struct gctl_req *req, struct g_class *mp)
 		g_eli_mkey_propagate(sc, mkey);
 		/*
 		 * kwq-geli: the sessions, which GELI's workers made again
-		 * when they woke, then the parked bios back to the queue.
+		 * when they woke (asserting that it worked), then the parked
+		 * bios back to the queue.  A session that cannot be made (the
+		 * crypto driver gone since the suspend) leaves the device
+		 * suspended and its keys wiped again, for a later resume.
 		 */
 		mtx_unlock(&sc->sc_queue_mtx);
+		error = 0;
 		LIST_FOREACH(wr, &sc->sc_workers, w_next) {
 			error = g_eli_newsession(wr);
-			KASSERT(error == 0,
-			    ("g_eli_newsession() failed on resume (error=%d)",
-			    error));
+			/* the failure on demand, for the resume_fail case */
+			KFAIL_POINT_CODE(DEBUG_FP, kwqeli_resume_session,
+			    if (error == 0) {
+				g_eli_freesession(wr);
+				error = RETURN_VALUE != 0 ? RETURN_VALUE : ENOMEM;
+			});
+			if (error != 0)
+				break;
 			wr->w_active = TRUE;
 		}
 		mtx_lock(&sc->sc_queue_mtx);
+		if (error != 0) {
+			g_eli_suspend_wipe(sc);
+			mtx_unlock(&sc->sc_queue_mtx);
+			gctl_error(req, "Cannot set up crypto session for %s "
+			    "(error=%d); still suspended.", pp->name, error);
+			explicit_bzero(mkey, sizeof(mkey));
+			explicit_bzero(&md, sizeof(md));
+			return;
+		}
 		sc->sc_flags &= ~G_ELI_FLAG_SUSPEND;
 		G_ELI_DEBUG(1, "Resumed %s.", pp->name);
 		mtx_unlock(&sc->sc_queue_mtx);
