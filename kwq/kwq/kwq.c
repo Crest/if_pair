@@ -743,6 +743,7 @@ kwq_requeue(struct kwq *q, struct kwq_item *head, struct kwq_item *tail,
 	kwq_list_prepend(kc, head, tail);
 	kc->kc_depth += n;
 	kc->kc_requeued += n;
+	kwq_list_check(kc, "requeue");
 	kwq_kc_unlock(kc);
 }
 
@@ -864,6 +865,7 @@ kwq_scatter(struct kwq *q, struct kwq_group *g, struct kwq_item *list, int n,
 		kwq_list_concat(kc, head, tail);
 		kc->kc_depth += cnt;
 		kc->kc_scattered += cnt;
+		kwq_list_check(kc, "scatter");
 		depth = kc->kc_depth;
 		(void)kwq_kc_added(kc, cnt, KWQ_RING_PLAIN);
 		kwq_kc_unlock(kc);

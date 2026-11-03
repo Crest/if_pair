@@ -38,6 +38,11 @@ INSTALL_NODEBUG=
 .if !defined(KWQ_HARD_INVARIANTS)
 CFLAGS+=	-DKWQ_SOFT_INVARIANTS
 .endif
+# make KWQ_LIST_CHECK=1: walk a list after every multi-element change and
+# assert its length and tail (kwq_internal.h); O(depth), for test kernels
+.if defined(KWQ_LIST_CHECK)
+CFLAGS+=	-DKWQ_LIST_CHECK
+.endif
 # make KWQ_NO_SDT=1: probe sites compiled out, to measure the disabled-probe cost
 .if defined(KWQ_NO_SDT)
 CFLAGS+=	-DKWQ_NO_SDT

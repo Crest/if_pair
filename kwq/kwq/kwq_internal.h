@@ -413,6 +413,36 @@ uint64_t kwq_cputime_ns_tick(struct kwq_worker *kw, uint64_t *tick);
  */
 #define	KWQ_TAGBIT(p)	((uintptr_t)(p) & KWQ_LINK_TAG)
 
+/*
+ * make KWQ_LIST_CHECK=1: walk a (queue, CPU) list under its lock after
+ * every change that moves more than one element (a pass's cut, a steal, a
+ * requeue, a scatter's chunk) and assert that its length is kc_depth and
+ * that stqh_last is its last link.  O(depth); for tests on the guest.
+ */
+#ifdef KWQ_LIST_CHECK
+static inline void
+kwq_list_check(struct kwq_cpu *kc, const char *where)
+{
+	struct kwq_item *it, *last = NULL;
+	u_int n = 0;
+
+	for (it = kc->kc_list.stqh_first; it != NULL;
+	    it = (struct kwq_item *)((uintptr_t)it->kwi_link.stqe_next & ~KWQ_LINK_TAG)) {
+		last = it;
+		if (++n > kc->kc_depth + 1)
+			break;
+	}
+	KASSERT(n == kc->kc_depth, ("kwq %s: %s cpu%d: %u elements, depth %u",
+	    where, kc->kc_q->kwq_name, kc->kc_cpu, n, kc->kc_depth));
+	KASSERT(last == NULL ? kc->kc_list.stqh_last == &kc->kc_list.stqh_first :
+	    kc->kc_list.stqh_last == &last->kwi_link.stqe_next,
+	    ("kwq %s: %s cpu%d: stqh_last %p, last element %p", where,
+	    kc->kc_q->kwq_name, kc->kc_cpu, kc->kc_list.stqh_last, last));
+}
+#else
+#define	kwq_list_check(kc, where)	do { } while (0)
+#endif
+
 /* Append `it' (a notifier if `tag') as the last element. */
 static inline void
 kwq_list_append(struct kwq_cpu *kc, struct kwq_item *it, bool tag)

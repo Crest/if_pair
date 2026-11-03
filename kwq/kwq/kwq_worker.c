@@ -708,6 +708,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 			n = take;
 			kw->kw_pass_tail = t;
 			cut = true;
+			kwq_list_check(kc, "cut");
 		}
 	}
 	if (!cut)
@@ -1077,6 +1078,7 @@ kwq_steal(struct kwq_worker *kw)
 			vkc->kc_depth -= take;
 			vkc->kc_steals_out++;
 			vkc->kc_stolen_out += take;
+			kwq_list_check(vkc, "steal victim");
 			kwq_kc_unlock(vkc);
 
 			kc = q->kwq_pcpu[kw->kw_cpu];
@@ -1085,6 +1087,7 @@ kwq_steal(struct kwq_worker *kw)
 			kc->kc_depth += take;
 			kc->kc_steals_in++;
 			kc->kc_stolen_in += take;
+			kwq_list_check(kc, "steal stealer");
 			(void)kwq_kc_place(kc, take);	/* our own doorbell: places it */
 			kwq_kc_unlock(kc);
 			SDT_PROBE4(kwq, , , steal, q, vcpu, kw->kw_cpu, (int)take);
