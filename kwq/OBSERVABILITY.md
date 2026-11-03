@@ -52,6 +52,12 @@ handler rejects values outside its range with EINVAL.
 | `cap_prio` (RWTUN) | class priority + 1 .. 255 | 224 (PRI_MIN_IDLE) | the priority the worker waits at between passes while over its allowance, and the priority it waits at under the idle-class wait of `wake_delay_us`; never the priority of a pass.  224 runs only when the CPU would otherwise idle and is preempted by anything; 223 (PRI_MAX_TIMESHARE) is the other useful value: the last batch slot, no idle-affinity shortcut in `sched_pickcpu()`, preempted only by priorities <= `kern.sched.preempt_thresh`.  Other values are for experiments; the default covers both waits with one decision (SCHED.md S6.3) |
 | `tick_us` (RWTUN) | 0 .. 100000 | 0 (off) | the tick regime's bound L, an opt-in (KWQ.md S16): while the worker's producer is dense (three consecutive sleeps shorter than L) its sleep has a timeout of L and precision L/8, a producer that places a list counts `doorbells_skipped` instead of waking the worker, and the timeout serves what accumulated; it leaves on a tick that served one element or none.  An item that arrives while the regime is on waits at most L plus the pass in progress, so every co-scheduled small flow pays L; 20 to 50 us where it is worth having, off everywhere else |
 | `tick_urgent_us` (RWTUN) | 0 .. 100000 | 0 (at once) | inside the tick regime, an urgent item (`kwq_enqueue_urgent()`) that finds the worker asleep wakes it this much later instead of at once, so the urgent items within the bound share one wake (`tick_urgent_deferred`, `tick_urgent_wakes`); a bound at or above `tick_us` is the tick's own and arms nothing.  Outside the regime, and for a notifier, a drain or a cancel, an urgent ring wakes at once at any setting (KWQ.md S16) |
+| `steal` (RWTUN) | 0, 1 | bulk: 1 | BULK only: a worker with nothing of its own takes batches of `KWQ_F_STEALABLE` queues from other CPUs before it sleeps, and producers wake sleeping workers to do so; 0 turns stealing off and a stealable pass takes its whole list again (SCHED.md S16) |
+| `steal_scope` (RWTUN) | 0 .. 8 | bulk: 8 | rings of the cache topology that stealing, the steal wake, `kwq_scatter()` and `KWQ_CPU_ANY` look at, nearest first; 0 keeps every item on its CPU |
+| `steal_scan` (RWTUN) | 1 .. 4096 | bulk: 16 | other CPUs probed at most per attempt, wake, scatter or pick |
+| `steal_max` (RWTUN) | 1 .. 4096 | bulk: 64 | items one steal takes at most, otherwise half the victim's live list |
+| `steal_batch` (RWTUN) | 1 .. 4096 | bulk: 16 | items a pass of a stealable queue takes at most; one while a BULK worker near it sleeps, which the pass wakes for the rest |
+| `steal_wake` (RWTUN) | 0 .. 4096 | bulk: 2 | an enqueue that leaves a stealable list this deep, or at a doubling of it, wakes the nearest sleeping BULK worker; 0: never |
 | `wake_delay_us` (RWTUN) | 0 .. 1000000 | 0 (off) | the idle-class wait's deadline, an opt-in (KWQ.md S16): an enqueue from the worker's own CPU makes the worker runnable in the idle class at `cap_prio` instead of preempting the producer, and the worker runs when the producer sleeps or at this deadline, whichever is first.  An item from the worker's CPU waits at most the deadline; an enqueue from another CPU rings the doorbell at either setting |
 
 Examples:
@@ -157,6 +163,8 @@ belong to the two optional regimes and the urgent exemption (section
 | `nnew` | entries on the new list right now, waiting for a boosted pass (a gauge) |
 | `budget_calls` | `kwq_budget_left()` calls by handlers on this worker |
 | `budget_reads` | of those, the ones that read the clock |
+| `steal_tries`, `steals`, `stolen` | BULK: steal attempts made with nothing of its own to do, the ones that moved a batch here, and the items moved (SCHED.md S16) |
+| `steal_wakes` | BULK: wakes from sleep sent to this worker so that it steals (a producer past `steal_wake`, or a stealable pass that left items) |
 
 Examples:
 
@@ -247,6 +255,9 @@ Per CPU, `kern.kwq.<class>.queue.<queue>.cpu.<N>.`:
 | `doorbells_skipped` | placements of this list with the worker (the idle-to-placed step that rings the doorbell) that woke nothing because the worker slept in the tick regime (`tick_us` > 0), urgent items held back by `tick_urgent_us` included: the producer paid the append only.  Appends to a list already placed count in neither column.  compare.sh: `kwq_db_skipped_s`, summed over the queues on the worker's CPU |
 | `switched` | passes of this queue during which the worker left the CPU; under NET's wall-time accounting these are charged the time away as well |
 | `glitches` | passes whose CPU-time delta was negative or over 1 s (a broken clock; charged one quantum) |
+| `steals_in`, `stolen_in` | BULK: batches and items this CPU's worker took from other CPUs' lists of the queue |
+| `steals_out`, `stolen_out` | BULK: batches and items other CPUs' workers took from this list; summed over the CPUs, in equals out |
+| `scattered` | BULK: items `kwq_scatter()` put on this list |
 
 Examples:
 
@@ -583,6 +594,11 @@ Checks:
 
     ctfdump -S kwq/kwq.ko | grep 'total number of types'
     nm kwq/kwq.ko | grep -c __set_sdt          # non-zero: probes compiled in
+
+`make KWQ_LIST_CHECK=1` walks a (queue, CPU) list after every change
+that moves more than one element (a pass's cut, a steal, a requeue, a
+scatter's chunk) and asserts its length and tail: O(depth), for test
+kernels, where a corrupted list should panic where it was corrupted.
 
 `make KWQ_NO_SDT=1` compiles every probe site out, for measuring what
 the disabled probes cost.
