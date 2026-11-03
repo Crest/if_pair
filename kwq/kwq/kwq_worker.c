@@ -665,7 +665,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	bool head_nf = false, tail_nf = false;
 	u_int n, depth0;
 	int sign;
-	bool net, has_work, cut;
+	bool net, has_work, cut, helper;
 	uint64_t t1, cpu_now, wall;
 	enum ks_cap cap;
 
@@ -681,25 +681,36 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	 * to its handler and cannot be stolen, so a pass that took a whole
 	 * backlog would keep it out of reach of every idle worker until the
 	 * handler requeued it, and the next pass would swap it out again
-	 * microseconds later.  The cut is a walk of steal_batch links under
-	 * the list lock.  Stealable lists hold no notifiers (kwq_notify()
-	 * refuses them), so no tag is cut through.
+	 * microseconds later.  While a BULK worker near this CPU sleeps, the
+	 * pass takes one item and wakes that worker for the rest, the work
+	 * stealing deque's rule: a few large items (four writers' 1 MiB bios
+	 * on kwq-geli) otherwise all fit one pass and nobody can help.  The
+	 * cut is a walk of at most steal_batch links under the list lock.
+	 * Stealable lists hold no notifiers (kwq_notify() refuses them), so
+	 * no tag is cut through.
 	 */
-	cut = false;
+	cut = helper = false;
 	if (__predict_false(q->kwq_flags & KWQ_F_STEALABLE) && kwq_steal_on &&
-	    n > kwq_steal_batch) {
-		struct kwq_item *t = items;
-		u_int k;
+	    n > 1) {
+		u_int k, take = kwq_steal_batch;
 
-		for (k = 1; k < kwq_steal_batch; k++)
-			t = t->kwi_link.stqe_next;
-		kc->kc_list.stqh_first = t->kwi_link.stqe_next;
-		t->kwi_link.stqe_next = NULL;
-		kc->kc_depth = n - kwq_steal_batch;
-		n = kwq_steal_batch;
-		kw->kw_pass_tail = t;
-		cut = true;
-	} else
+		helper = kwq_steal_idle_near(kc->kc_cpu);
+		if (helper)
+			take = 1;
+		if (n > take) {
+			struct kwq_item *t = items;
+
+			for (k = 1; k < take; k++)
+				t = t->kwi_link.stqe_next;
+			kc->kc_list.stqh_first = t->kwi_link.stqe_next;
+			t->kwi_link.stqe_next = NULL;
+			kc->kc_depth = n - take;
+			n = take;
+			kw->kw_pass_tail = t;
+			cut = true;
+		}
+	}
+	if (!cut)
 	/*
 	 * Remember the tail so a handler that stops early can hand the rest
 	 * back without walking to it: with a deep backlog that walk cost
@@ -770,6 +781,8 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 #endif
 	}
 	kwq_class_prio_restore(kw);
+	if (__predict_false(cut && helper))
+		kwq_steal_wake(kc->kc_cpu);	/* the rest of the list is for it */
 	if (__predict_false(kw->kw_knobs->cap_permille < 1000)) {
 		if (cap == KS_CAP_RESTORE)
 			kwq_cap_act(kw, cap, wall);
@@ -993,7 +1006,8 @@ kwq_topo_reach(int cpu)
  * Is the victim's worker going to serve this one-item list soon by
  * itself?  A hint read without its lock: awake and not inside a pass
  * means it is between passes or on its way to this list.  A worker in a
- * pass of another queue, asleep with the list placed (the tick regime)
+ * pass (of this queue or another: BULK items are long, and the pass took
+ * what it could already), asleep with the list placed (the tick regime)
  * or waiting in the idle class leaves the item waiting, and those are
  * the cases a lone item is worth stealing in.
  */
@@ -1001,9 +1015,8 @@ static bool
 kwq_steal_lone_ok(struct kwq_cpu *vkc)
 {
 	struct kwq_worker *vkw = kwq_workers[KWQ_BULK][vkc->kc_cpu];
-	struct kwq_cpu *cur = vkw->kw_cur;
 
-	return (vkw->kw_sleeping || vkw->kw_lowpri || (cur != NULL && cur != vkc));
+	return (vkw->kw_sleeping || vkw->kw_lowpri || vkw->kw_cur != NULL);
 }
 
 /*
@@ -1083,6 +1096,19 @@ kwq_steal(struct kwq_worker *kw)
 	}
 	rm_runlock(&kwq_steal_rm, &tr);
 	return (moved);
+}
+
+/* Does a BULK worker near `cpu' sleep (the idle mask, a hint)? */
+bool
+kwq_steal_idle_near(int cpu)
+{
+	u_int i, reach;
+
+	reach = kwq_topo_reach(cpu);
+	for (i = 0; i < reach; i++)
+		if (CPU_ISSET(kwq_topo_order[cpu][i], &kwq_bulk_idle))
+			return (true);
+	return (false);
 }
 
 /*

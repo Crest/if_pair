@@ -396,6 +396,7 @@ bool	kwq_urgent_nudge(struct kwq_cpu *kc, int ring);	/* kc locked, state
 bool	kwq_higher_waiting(enum kwq_class cls);	/* hand-back flags, this CPU */
 void	kwq_steal_wake(int cpu);	/* no locks held: wake a sleeping BULK worker
 					   near `cpu' to steal from it (S16) */
+bool	kwq_steal_idle_near(int cpu);	/* a BULK worker near `cpu' sleeps (hint) */
 void	kwq_topo_init(void);
 void	kwq_topo_fini(void);
 u_int	kwq_topo_reach(int cpu);	/* entries of kwq_topo_order[cpu] within
