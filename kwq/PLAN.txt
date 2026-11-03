@@ -1160,13 +1160,112 @@ Phases
     Exit: epair matrix within noise of current numbers at P>=4 and the
     single-flow cell not worse.
 
-[TODO] P6  BULK proof: if_wg (3 days)
-    - Crypto via a BULK queue with KWQ_F_STEALABLE and kwq_scatter for
-      batches; delivery via ONE NET queue with the CPU keyed by peer, so
-      each peer's packets stay ordered without a queue per peer.
-    Exit: wg throughput on the Ampere with 8 and 64 peers not below the
-    private-taskqgroup baseline; steal counters show spreading; latency
-    (ping under load) not worse.
+[STARTED 2026-11-03] P6  The BULK class, proven on crypto and GELI
+    (branch kwq-bulk, worktree ~/if_pair-scratch/wt/bulk)
+    crest, 2026-11-03: "Implement the kwq BULK class on the kwq-bulk.
+    Write a dummy test class that performs crypto benchmarks as a test
+    case.  Then copy GEOM ELI under the name kwq-geli into its own
+    directory and port it to use kwq.  Test it with md(4).  Measure the
+    impact on the system responsiveness and multiple busy queues on the
+    same CPU.  Test the code first on the test VM, then on lab and a07."
+    This replaces the if_wg proof of the first plan: GELI is the client
+    with the longest items and the strictest reliability contract, and
+    md(4) makes it testable on all three machines without hardware.
+    Review of the first plan against the code at d1e8d3a:
+      what BULK has: a worker per CPU at PI_SOFT, DRR with weights, CPU
+      time charged to the deficit and the share limit, the hand-back to
+      NET (SCHED.md S6.4), the yield at PUSER, KWQ_CPU_ANY over the NUMA
+      domain (four probes);
+      what it lacks: stealing (KWQ_F_STEALABLE is accepted and inert;
+      kc_steals_in and the kwq:::steal probe exist, nothing fires them),
+      kwq_scatter() (EOPNOTSUPP), the cache-domain KWQ_CPU_ANY, a client.
+    Three points of the first plan do not survive the review:
+      - kwq_scatter(q, list, n, done, arg) cannot call `done' once
+        without memory per call: the items carry one link, and the
+        no-allocation rule (KWQ.md S3) forbids kwq's own.  It takes a
+        client-owned struct kwq_group instead, the kwq_notifier
+        precedent, and the handler reports finished items with
+        kwq_group_leave(); `done' runs from the last leave.
+      - SCHED.md S14 case 11 (whose deficit a stolen batch is charged)
+        suggested the victim's kc_deficit.  The victim's deficit is
+        consumer-private to the victim's worker, so the stealer would
+        need that worker's lock for every pass of the batch.  A steal
+        instead MOVES the batch to the stealer's own list of the same
+        queue, where it runs as ordinary passes and is charged as all
+        work is: to the queue's deficit and the share limit on the CPU
+        that ran it.
+      - KWQ.md S14 makes GELI a BLOCKING client for its priority: its
+        workers run at PUSER, and bulk encryption at PI_SOFT would beat
+        every user thread on the CPU.  crest's request is GELI on BULK
+        with that impact measured, so the port uses BULK and the
+        measurement decides what S14 says afterwards.
+    P6a Specification (SCHED.md S16, KWQ.md S1/S3/S14, reference.md):
+      - Stealing: who (a BULK worker whose own lists are empty, before
+        it sleeps, and one woken for the purpose), from where (other
+        CPUs in cache-topology order from smp_topo(): SMT sibling, L2,
+        L3, package, rest; kern.kwq.bulk.steal_scope bounds the levels,
+        steal_scan the CPUs probed per attempt), what (half of the
+        victim's live list, at most steal_max items, oldest first;
+        never a notifier, since kwq_notify() on a stealable queue is
+        refused), where it is charged (above), the steal wake (an
+        enqueue onto a busy CPU's stealable list wakes the nearest
+        sleeping BULK worker when the depth crosses steal_wake, 2x,
+        4x, ...), the drain (stealing of a queue stops under an rmlock
+        before its drain sweeps the CPUs, so no batch is in flight
+        between two CPUs while the drain looks).
+      - kwq_scatter with struct kwq_group: chunks over the caller's CPU
+        and the idle BULK workers of its cache domain, all-or-nothing
+        against the limits as checked at the call (the append itself is
+        exempt, as a requeue is), ENOBUFS otherwise.
+      - KWQ_CPU_ANY: the caller's CPU if its list is empty and its
+        worker idle, else an idle worker's CPU in the cache domain,
+        else the shallowest of four probed in topology order.
+    P6b Kernel (kwq.c, kwq_worker.c, kwq_internal.h): the above, with
+      counters steals_in/steals_out/stolen per (queue, CPU) and
+      steal_attempts/steal_fails/steal_wakes per worker, sysctls,
+      kwq:::steal and DDB.
+    P6c kwq_test.ko: scenarios steal (one producer CPU, a busy worker
+      there, items spread to the others), scatter (one completion per
+      call, after all items), stealdrain (100 activate/drain cycles
+      under stealing: nothing lost or run twice); ATF cases for each.
+    P6d kwq_crypto.ko, the dummy BULK client: AES-XTS through crypto(9)
+      (the GELI path: one session per CPU, synchronous software or
+      accelerated drivers), items of crypto_bytes each, nq queues fed by
+      producers that keep `depth' items in flight; reports MB/s per
+      queue, per-item latency percentiles, steals and the share each of
+      nq equal queues on one CPU gets; a baseline mode runs the same
+      work in one kthread per queue at PUSER (GELI's own model).  Its
+      own module so that kwq_test.ko keeps no crypto dependency.
+    P6e kwq-geli (../kwq-geli): sys/geom/eli of releng/15.1 copied and
+      renamed (class KWQELI, geom_kwqeli.ko, suffix .kweli, sysctl
+      kern.geom.kwqeli, no taste and no boot-time passphrase code, the
+      on-disk format unchanged so that stock geli(8) reads what it
+      wrote) and ported: the per-provider worker kprocs become one BULK
+      queue per provider whose items are the bios (bio_queue as the
+      link); a refused enqueue is ENOMEM, which GEOM retries; the four
+      sleeps on the request path become M_NOWAIT with ENOMEM;
+      suspend parks new bios on the softc's own queue; one crypto
+      session per CPU.  The userland half is lib/geom/eli renamed to
+      geom_kwqeli.so and used through GEOM_LIBRARY_PATH; nothing is
+      installed into /lib/geom.
+    P6f Tests and benchmarks on md(4): ATF (onetime privacy and
+      integrity, data round trips by checksum, cross-reads with stock
+      GELI both ways, suspend/resume under I/O, detach under load,
+      many providers at once); a benchmark against stock GELI on the
+      same boot: throughput, CPU, and responsiveness by tests/victim.c
+      (timer lateness, spin share, exec latency) on the busy CPUs,
+      unpinned and pinned, and N providers pinned to one CPU (the
+      multiple-busy-queues case: per-provider shares, the victim on
+      that CPU, a NET queue's latency there).
+    Order: guest (GENERIC-DEBUG: correctness and direction only), then
+      lab, then a07 (new kernel code: crest's go-ahead first).
+    Exit: stealing spreads a one-CPU feed over the cache domain with
+    steals_in == steals_out machine-wide and no item lost in stealdrain;
+    kwq_scatter completes exactly once; kwq_crypto on BULK not below its
+    PUSER baseline and nq equal queues on one CPU within 5 % of 1/nq;
+    kwq-geli round-trips data and cross-reads with stock GELI on all
+    three machines; the responsiveness cost of BULK against stock GELI
+    measured and S14 rewritten from the numbers.
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
     P7a Design and simulate first (the P1a pattern; nothing in the kernel
