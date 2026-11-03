@@ -45,8 +45,8 @@
 
 #include <geom/geom.h>
 #include <geom/geom_dbg.h>
-#include <geom/eli/g_eli.h>
-#include <geom/eli/pkcs5v2.h>
+#include "g_eli.h"
+#include "pkcs5v2.h"
 
 /*
  * Code paths:

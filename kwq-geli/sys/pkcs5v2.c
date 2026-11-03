@@ -36,8 +36,8 @@
 #include <strings.h>
 #endif
 
-#include <geom/eli/g_eli.h>
-#include <geom/eli/pkcs5v2.h>
+#include "g_eli.h"
+#include "pkcs5v2.h"
 
 static __inline void
 xor(uint8_t *dst, const uint8_t *src, size_t size)

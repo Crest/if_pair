@@ -55,53 +55,53 @@
 
 #include <geom/geom.h>
 #include <geom/geom_dbg.h>
-#include <geom/eli/g_eli.h>
-#include <geom/eli/pkcs5v2.h>
+#include "g_eli.h"
+#include "pkcs5v2.h"
 
 #include <crypto/intake.h>
 
-FEATURE(geom_eli, "GEOM crypto module");
+FEATURE(geom_kwqeli, "GEOM crypto module on kwq(9) (kwq-geli)");
 
-MALLOC_DEFINE(M_ELI, "eli_data", "GEOM_ELI Data");
+MALLOC_DEFINE(M_ELI, "kwqeli_data", "GEOM_KWQELI Data");
 
 SYSCTL_DECL(_kern_geom);
-SYSCTL_NODE(_kern_geom, OID_AUTO, eli, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+SYSCTL_NODE(_kern_geom, OID_AUTO, kwqeli, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "GEOM_ELI stuff");
 static int g_eli_version = G_ELI_VERSION;
-SYSCTL_INT(_kern_geom_eli, OID_AUTO, version, CTLFLAG_RD, &g_eli_version, 0,
+SYSCTL_INT(_kern_geom_kwqeli, OID_AUTO, version, CTLFLAG_RD, &g_eli_version, 0,
     "GELI version");
 int g_eli_debug = 0;
-SYSCTL_INT(_kern_geom_eli, OID_AUTO, debug, CTLFLAG_RWTUN, &g_eli_debug, 0,
+SYSCTL_INT(_kern_geom_kwqeli, OID_AUTO, debug, CTLFLAG_RWTUN, &g_eli_debug, 0,
     "Debug level");
 static u_int g_eli_tries = 3;
-SYSCTL_UINT(_kern_geom_eli, OID_AUTO, tries, CTLFLAG_RWTUN, &g_eli_tries, 0,
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, tries, CTLFLAG_RWTUN, &g_eli_tries, 0,
     "Number of tries for entering the passphrase");
 static u_int g_eli_visible_passphrase = GETS_NOECHO;
-SYSCTL_UINT(_kern_geom_eli, OID_AUTO, visible_passphrase, CTLFLAG_RWTUN,
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, visible_passphrase, CTLFLAG_RWTUN,
     &g_eli_visible_passphrase, 0,
     "Visibility of passphrase prompt (0 = invisible, 1 = visible, 2 = asterisk)");
 u_int g_eli_overwrites = G_ELI_OVERWRITES;
-SYSCTL_UINT(_kern_geom_eli, OID_AUTO, overwrites, CTLFLAG_RWTUN, &g_eli_overwrites,
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, overwrites, CTLFLAG_RWTUN, &g_eli_overwrites,
     0, "Number of times on-disk keys should be overwritten when destroying them");
 static u_int g_eli_threads = 0;
-SYSCTL_UINT(_kern_geom_eli, OID_AUTO, threads, CTLFLAG_RWTUN, &g_eli_threads, 0,
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, threads, CTLFLAG_RWTUN, &g_eli_threads, 0,
     "Number of threads doing crypto work");
 u_int g_eli_batch = 0;
-SYSCTL_UINT(_kern_geom_eli, OID_AUTO, batch, CTLFLAG_RWTUN, &g_eli_batch, 0,
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, batch, CTLFLAG_RWTUN, &g_eli_batch, 0,
     "Use crypto operations batching");
 static u_int g_eli_minbufs = 16;
 static int sysctl_g_eli_minbufs(SYSCTL_HANDLER_ARGS);
-SYSCTL_PROC(_kern_geom_eli, OID_AUTO, minbufs, CTLTYPE_UINT | CTLFLAG_RW |
+SYSCTL_PROC(_kern_geom_kwqeli, OID_AUTO, minbufs, CTLTYPE_UINT | CTLFLAG_RW |
     CTLFLAG_MPSAFE, NULL, 0, sysctl_g_eli_minbufs, "IU",
     "Number of GELI bufs reserved for swap transactions");
 static bool g_eli_blocking_malloc = false;
-SYSCTL_BOOL(_kern_geom_eli, OID_AUTO, blocking_malloc, CTLFLAG_RWTUN,
+SYSCTL_BOOL(_kern_geom_kwqeli, OID_AUTO, blocking_malloc, CTLFLAG_RWTUN,
     &g_eli_blocking_malloc, 0, "Use blocking malloc calls for GELI buffers");
 static bool g_eli_unmapped_io = true;
-SYSCTL_BOOL(_kern_geom_eli, OID_AUTO, unmapped_io, CTLFLAG_RDTUN,
+SYSCTL_BOOL(_kern_geom_kwqeli, OID_AUTO, unmapped_io, CTLFLAG_RDTUN,
     &g_eli_unmapped_io, 0, "Enable support for unmapped I/O");
 static int g_eli_alloc_sz;
-SYSCTL_UINT(_kern_geom_eli, OID_AUTO, use_uma_bytes, CTLFLAG_RD,
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, use_uma_bytes, CTLFLAG_RD,
     &g_eli_alloc_sz, 0, "Use uma(9) for allocations of this size or smaller.");
 
 static struct sx g_eli_umalock;	/* Controls changes to UMA zone. */
@@ -139,67 +139,12 @@ sysctl_g_eli_minbufs(SYSCTL_HANDLER_ARGS)
 }
 
 /*
- * Passphrase cached during boot, in order to be more user-friendly if
- * there are multiple providers using the same passphrase.
+ * kwq-geli: no boot-time attach, so none of GELI's loader passphrase
+ * cache (kern.geom.eli.passphrase, boot_passcache) and no zeroing of the
+ * loader's key intake at mountroot: those belong to geom_eli.ko, which a
+ * system booting from GELI has loaded, and a copy loaded later must not
+ * read or clear them.
  */
-static char cached_passphrase[256];
-static u_int g_eli_boot_passcache = 1;
-TUNABLE_INT("kern.geom.eli.boot_passcache", &g_eli_boot_passcache);
-SYSCTL_UINT(_kern_geom_eli, OID_AUTO, boot_passcache, CTLFLAG_RD,
-    &g_eli_boot_passcache, 0,
-    "Passphrases are cached during boot process for possible reuse");
-static void
-fetch_loader_passphrase(void * dummy)
-{
-	char * env_passphrase;
-
-	KASSERT(dynamic_kenv, ("need dynamic kenv"));
-
-	if ((env_passphrase = kern_getenv("kern.geom.eli.passphrase")) != NULL) {
-		/* Extract passphrase from the environment. */
-		strlcpy(cached_passphrase, env_passphrase,
-		    sizeof(cached_passphrase));
-		freeenv(env_passphrase);
-
-		/* Wipe the passphrase from the environment. */
-		kern_unsetenv("kern.geom.eli.passphrase");
-	}
-}
-SYSINIT(geli_fetch_loader_passphrase, SI_SUB_KMEM + 1, SI_ORDER_ANY,
-    fetch_loader_passphrase, NULL);
-
-static void
-zero_boot_passcache(void)
-{
-
-	explicit_bzero(cached_passphrase, sizeof(cached_passphrase));
-}
-
-static void
-zero_geli_intake_keys(void)
-{
-	struct keybuf *keybuf;
-	int i;
-
-	if ((keybuf = get_keybuf()) != NULL) {
-		/* Scan the key buffer, clear all GELI keys. */
-		for (i = 0; i < keybuf->kb_nents; i++) {
-			 if (keybuf->kb_ents[i].ke_type == KEYBUF_TYPE_GELI) {
-				explicit_bzero(keybuf->kb_ents[i].ke_data,
-				    sizeof(keybuf->kb_ents[i].ke_data));
-				keybuf->kb_ents[i].ke_type = KEYBUF_TYPE_NONE;
-			}
-		}
-	}
-}
-
-static void
-zero_intake_passcache(void *dummy __unused)
-{
-	zero_boot_passcache();
-	zero_geli_intake_keys();
-}
-EVENTHANDLER_DEFINE(mountroot, zero_intake_passcache, NULL, 0);
 
 static eventhandler_tag g_eli_pre_sync = NULL;
 
@@ -1249,253 +1194,18 @@ g_eli_destroy_geom(struct gctl_req *req __unused,
 	return (g_eli_destroy(sc, FALSE));
 }
 
-static int
-g_eli_keyfiles_load(struct hmac_ctx *ctx, const char *provider)
-{
-	u_char *keyfile, *data;
-	char *file, name[64];
-	size_t size;
-	int i;
-
-	for (i = 0; ; i++) {
-		snprintf(name, sizeof(name), "%s:geli_keyfile%d", provider, i);
-		keyfile = preload_search_by_type(name);
-		if (keyfile == NULL && i == 0) {
-			/*
-			 * If there is only one keyfile, allow simpler name.
-			 */
-			snprintf(name, sizeof(name), "%s:geli_keyfile", provider);
-			keyfile = preload_search_by_type(name);
-		}
-		if (keyfile == NULL)
-			return (i);	/* Return number of loaded keyfiles. */
-		data = preload_fetch_addr(keyfile);
-		if (data == NULL) {
-			G_ELI_DEBUG(0, "Cannot find key file data for %s.",
-			    name);
-			return (0);
-		}
-		size = preload_fetch_size(keyfile);
-		if (size == 0) {
-			G_ELI_DEBUG(0, "Cannot find key file size for %s.",
-			    name);
-			return (0);
-		}
-		file = preload_search_info(keyfile, MODINFO_NAME);
-		if (file == NULL) {
-			G_ELI_DEBUG(0, "Cannot find key file name for %s.",
-			    name);
-			return (0);
-		}
-		G_ELI_DEBUG(1, "Loaded keyfile %s for %s (type: %s).", file,
-		    provider, name);
-		g_eli_crypto_hmac_update(ctx, data, size);
-	}
-}
-
-static void
-g_eli_keyfiles_clear(const char *provider)
-{
-	u_char *keyfile, *data;
-	char name[64];
-	size_t size;
-	int i;
-
-	for (i = 0; ; i++) {
-		snprintf(name, sizeof(name), "%s:geli_keyfile%d", provider, i);
-		keyfile = preload_search_by_type(name);
-		if (keyfile == NULL)
-			return;
-		data = preload_fetch_addr(keyfile);
-		size = preload_fetch_size(keyfile);
-		if (data != NULL && size != 0)
-			explicit_bzero(data, size);
-	}
-}
-
 /*
- * Tasting is only made on boot.
- * We detect providers which should be attached before root is mounted.
+ * kwq-geli never attaches by itself: GELI's taste attaches providers
+ * marked for boot (geli init -b), asking for their passphrases on the
+ * console, and this copy shares GELI's metadata format, so tasting would
+ * offer a system's own boot disks to the test class.  Providers attach
+ * only by "geom kwqeli attach" or "onetime".
  */
 static struct g_geom *
-g_eli_taste(struct g_class *mp, struct g_provider *pp, int flags __unused)
+g_eli_taste(struct g_class *mp __unused, struct g_provider *pp __unused,
+    int flags __unused)
 {
-	struct g_eli_metadata md;
-	struct g_geom *gp;
-	struct hmac_ctx ctx;
-	char passphrase[256];
-	u_char key[G_ELI_USERKEYLEN], mkey[G_ELI_DATAIVKEYLEN];
-	u_int i, nkey, nkeyfiles, tries, showpass;
-	int error;
-	struct keybuf *keybuf;
-
-	g_trace(G_T_TOPOLOGY, "%s(%s, %s)", __func__, mp->name, pp->name);
-	g_topology_assert();
-
-	if (root_mounted() || g_eli_tries == 0)
-		return (NULL);
-
-	G_ELI_DEBUG(3, "Tasting %s.", pp->name);
-
-	error = g_eli_read_metadata(mp, pp, &md);
-	if (error != 0)
-		return (NULL);
-	gp = NULL;
-
-	if (strcmp(md.md_magic, G_ELI_MAGIC) != 0)
-		return (NULL);
-	if (md.md_version > G_ELI_VERSION) {
-		printf("geom_eli.ko module is too old to handle %s.\n",
-		    pp->name);
-		return (NULL);
-	}
-	if (md.md_provsize != pp->mediasize)
-		return (NULL);
-	/* Should we attach it on boot? */
-	if (!(md.md_flags & G_ELI_FLAG_BOOT) &&
-	    !(md.md_flags & G_ELI_FLAG_GELIBOOT))
-		return (NULL);
-	if (md.md_keys == 0x00) {
-		G_ELI_DEBUG(0, "No valid keys on %s.", pp->name);
-		return (NULL);
-	}
-	if (!eli_metadata_crypto_supported(&md)) {
-		G_ELI_DEBUG(0, "%s uses invalid or unsupported algorithms\n",
-		    pp->name);
-		return (NULL);
-	}
-	if (md.md_iterations == -1) {
-		/* If there is no passphrase, we try only once. */
-		tries = 1;
-	} else {
-		/* Ask for the passphrase no more than g_eli_tries times. */
-		tries = g_eli_tries;
-	}
-
-	if ((keybuf = get_keybuf()) != NULL) {
-		/* Scan the key buffer, try all GELI keys. */
-		for (i = 0; i < keybuf->kb_nents; i++) {
-			 if (keybuf->kb_ents[i].ke_type == KEYBUF_TYPE_GELI) {
-				 memcpy(key, keybuf->kb_ents[i].ke_data,
-				     sizeof(key));
-
-				if (g_eli_mkey_decrypt_any(&md, key,
-				    mkey, &nkey) == 0 ) {
-					explicit_bzero(key, sizeof(key));
-					goto have_key;
-				}
-			}
-		}
-	}
-
-	for (i = 0; i <= tries; i++) {
-		g_eli_crypto_hmac_init(&ctx, NULL, 0);
-
-		/*
-		 * Load all key files.
-		 */
-		nkeyfiles = g_eli_keyfiles_load(&ctx, pp->name);
-
-		if (nkeyfiles == 0 && md.md_iterations == -1) {
-			/*
-			 * No key files and no passphrase, something is
-			 * definitely wrong here.
-			 * geli(8) doesn't allow for such situation, so assume
-			 * that there was really no passphrase and in that case
-			 * key files are no properly defined in loader.conf.
-			 */
-			G_ELI_DEBUG(0,
-			    "Found no key files in loader.conf for %s.",
-			    pp->name);
-			return (NULL);
-		}
-
-		/* Ask for the passphrase if defined. */
-		if (md.md_iterations >= 0) {
-			/* Try first with cached passphrase. */
-			if (i == 0) {
-				if (!g_eli_boot_passcache)
-					continue;
-				memcpy(passphrase, cached_passphrase,
-				    sizeof(passphrase));
-			} else {
-				printf("Enter passphrase for %s: ", pp->name);
-				showpass = g_eli_visible_passphrase;
-				if ((md.md_flags & G_ELI_FLAG_GELIDISPLAYPASS) != 0)
-					showpass = GETS_ECHOPASS;
-				cngets(passphrase, sizeof(passphrase),
-				    showpass);
-				memcpy(cached_passphrase, passphrase,
-				    sizeof(passphrase));
-			}
-		}
-
-		/*
-		 * Prepare Derived-Key from the user passphrase.
-		 */
-		if (md.md_iterations == 0) {
-			g_eli_crypto_hmac_update(&ctx, md.md_salt,
-			    sizeof(md.md_salt));
-			g_eli_crypto_hmac_update(&ctx, passphrase,
-			    strlen(passphrase));
-			explicit_bzero(passphrase, sizeof(passphrase));
-		} else if (md.md_iterations > 0) {
-			u_char dkey[G_ELI_USERKEYLEN];
-
-			pkcs5v2_genkey(dkey, sizeof(dkey), md.md_salt,
-			    sizeof(md.md_salt), passphrase, md.md_iterations);
-			explicit_bzero(passphrase, sizeof(passphrase));
-			g_eli_crypto_hmac_update(&ctx, dkey, sizeof(dkey));
-			explicit_bzero(dkey, sizeof(dkey));
-		}
-
-		g_eli_crypto_hmac_final(&ctx, key, 0);
-
-		/*
-		 * Decrypt Master-Key.
-		 */
-		error = g_eli_mkey_decrypt_any(&md, key, mkey, &nkey);
-		explicit_bzero(key, sizeof(key));
-		if (error == -1) {
-			if (i == tries) {
-				G_ELI_DEBUG(0,
-				    "Wrong key for %s. No tries left.",
-				    pp->name);
-				g_eli_keyfiles_clear(pp->name);
-				return (NULL);
-			}
-			if (i > 0) {
-				G_ELI_DEBUG(0,
-				    "Wrong key for %s. Tries left: %u.",
-				    pp->name, tries - i);
-			}
-			/* Try again. */
-			continue;
-		} else if (error > 0) {
-			G_ELI_DEBUG(0,
-			    "Cannot decrypt Master Key for %s (error=%d).",
-			    pp->name, error);
-			g_eli_keyfiles_clear(pp->name);
-			return (NULL);
-		}
-		g_eli_keyfiles_clear(pp->name);
-		G_ELI_DEBUG(1, "Using Master Key %u for %s.", nkey, pp->name);
-		break;
-	}
-have_key:
-
-	/*
-	 * We have correct key, let's attach provider.
-	 */
-	gp = g_eli_create(NULL, mp, pp, &md, mkey, nkey);
-	explicit_bzero(mkey, sizeof(mkey));
-	explicit_bzero(&md, sizeof(md));
-	if (gp == NULL) {
-		G_ELI_DEBUG(0, "Cannot create device %s%s.", pp->name,
-		    G_ELI_SUFFIX);
-		return (NULL);
-	}
-	return (gp);
+	return (NULL);
 }
 
 static void
@@ -1629,6 +1339,6 @@ g_eli_fini(struct g_class *mp)
 		EVENTHANDLER_DEREGISTER(shutdown_pre_sync, g_eli_pre_sync);
 }
 
-DECLARE_GEOM_CLASS(g_eli_class, g_eli);
-MODULE_DEPEND(g_eli, crypto, 1, 1, 1);
-MODULE_VERSION(geom_eli, 0);
+DECLARE_GEOM_CLASS(g_eli_class, g_kwqeli);
+MODULE_DEPEND(g_kwqeli, crypto, 1, 1, 1);
+MODULE_VERSION(geom_kwqeli, 0);

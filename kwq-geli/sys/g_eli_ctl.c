@@ -44,7 +44,7 @@
 
 #include <geom/geom.h>
 #include <geom/geom_dbg.h>
-#include <geom/eli/g_eli.h>
+#include "g_eli.h"
 
 MALLOC_DECLARE(M_ELI);
 

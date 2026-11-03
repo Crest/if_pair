@@ -47,8 +47,8 @@
 #include <strings.h>
 #include <unistd.h>
 
-#include <geom/eli/g_eli.h>
-#include <geom/eli/pkcs5v2.h>
+#include "g_eli.h"
+#include "pkcs5v2.h"
 
 #include "core/geom.h"
 #include "misc/subr.h"
@@ -991,7 +991,7 @@ eli_init(struct gctl_req *req)
 			}
 		} else {
 			/* Generate filename automatically. */
-			snprintf(backfile, sizeof(backfile), "%s%s.eli",
+			snprintf(backfile, sizeof(backfile), "%s%s.kweli",
 			    GELI_BACKUP_DIR, p);
 			/* Replace all / with _. */
 			for (j = strlen(GELI_BACKUP_DIR); backfile[j] != '\0';
@@ -1595,7 +1595,7 @@ eli_trash_metadata(struct gctl_req *req, const char *prov, int fd, off_t offset)
 	int error;
 
 	size = sizeof(overwrites);
-	if (sysctlbyname("kern.geom.eli.overwrites", &overwrites, &size,
+	if (sysctlbyname("kern.geom.kwqeli.overwrites", &overwrites, &size,
 	    NULL, 0) == -1 || overwrites == 0) {
 		overwrites = G_ELI_OVERWRITES;
 	}
@@ -1937,7 +1937,7 @@ eli_version(struct gctl_req *req)
 		ssize_t size;
 
 		size = sizeof(kernver);
-		if (sysctlbyname("kern.geom.eli.version", &kernver, &size,
+		if (sysctlbyname("kern.geom.kwqeli.version", &kernver, &size,
 		    NULL, 0) == -1) {
 			warn("Unable to obtain GELI kernel version");
 		} else {

@@ -40,7 +40,7 @@
 #include <openssl/evp.h>
 #define	_OpenSSL_
 #endif
-#include <geom/eli/g_eli.h>
+#include "g_eli.h"
 
 #ifdef _KERNEL
 MALLOC_DECLARE(M_ELI);

@@ -54,9 +54,9 @@
 #include <sys/md5.h>
 #endif
 
-#define	G_ELI_CLASS_NAME	"ELI"
+#define	G_ELI_CLASS_NAME	"KWQELI"	/* kwq-geli: coexists with ELI */
 #define	G_ELI_MAGIC		"GEOM::ELI"
-#define	G_ELI_SUFFIX		".eli"
+#define	G_ELI_SUFFIX		".kweli"
 
 /*
  * Version history:
@@ -163,9 +163,9 @@ extern u_int g_eli_overwrites;
 extern u_int g_eli_batch;
 
 #define	G_ELI_DEBUG(lvl, ...) \
-    _GEOM_DEBUG("GEOM_ELI", g_eli_debug, (lvl), NULL, __VA_ARGS__)
+    _GEOM_DEBUG("GEOM_KWQELI", g_eli_debug, (lvl), NULL, __VA_ARGS__)
 #define	G_ELI_LOGREQ(lvl, bp, ...) \
-    _GEOM_DEBUG("GEOM_ELI", g_eli_debug, (lvl), (bp), __VA_ARGS__)
+    _GEOM_DEBUG("GEOM_KWQELI", g_eli_debug, (lvl), (bp), __VA_ARGS__)
 
 struct g_eli_worker {
 	struct g_eli_softc	*w_softc;

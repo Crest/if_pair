@@ -1,6 +1,8 @@
-.PATH: ${SRCTOP}/sys/geom/eli
+# geom_kwqeli.ko: GEOM_ELI of releng/15.1 (sys/geom/eli, copied into this
+# directory) as class KWQELI, loadable beside geom_eli.ko (../README.md).
+# Build with `make`; SYSDIR and KERNBUILDDIR as for ../../kwq.
 
-KMOD=	geom_eli
+KMOD=	geom_kwqeli
 SRCS=	g_eli.c
 SRCS+=	g_eli_crypto.c
 SRCS+=	g_eli_ctl.c

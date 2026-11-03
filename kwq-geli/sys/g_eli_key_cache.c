@@ -38,24 +38,24 @@
 
 #include <geom/geom.h>
 
-#include <geom/eli/g_eli.h>
+#include "g_eli.h"
 
 #ifdef _KERNEL
 MALLOC_DECLARE(M_ELI);
 
-SYSCTL_DECL(_kern_geom_eli);
+SYSCTL_DECL(_kern_geom_kwqeli);
 /*
  * The default limit (8192 keys) will allow to cache all keys for 4TB
  * provider with 512 bytes sectors and will take around 1MB of memory.
  */
 static u_int g_eli_key_cache_limit = 8192;
-SYSCTL_UINT(_kern_geom_eli, OID_AUTO, key_cache_limit, CTLFLAG_RDTUN,
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, key_cache_limit, CTLFLAG_RDTUN,
     &g_eli_key_cache_limit, 0, "Maximum number of encryption keys to cache");
 static uint64_t g_eli_key_cache_hits;
-SYSCTL_UQUAD(_kern_geom_eli, OID_AUTO, key_cache_hits, CTLFLAG_RW,
+SYSCTL_UQUAD(_kern_geom_kwqeli, OID_AUTO, key_cache_hits, CTLFLAG_RW,
     &g_eli_key_cache_hits, 0, "Key cache hits");
 static uint64_t g_eli_key_cache_misses;
-SYSCTL_UQUAD(_kern_geom_eli, OID_AUTO, key_cache_misses, CTLFLAG_RW,
+SYSCTL_UQUAD(_kern_geom_kwqeli, OID_AUTO, key_cache_misses, CTLFLAG_RW,
     &g_eli_key_cache_misses, 0, "Key cache misses");
 
 static int
