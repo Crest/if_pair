@@ -150,11 +150,12 @@ enum ks_action ks_next(struct kwq_worker *kw, bool higher_waiting,
 /*
  * Pass bracketing (S4.3, S4.4).  `wall_now' is the worker's wall clock for
  * the share limit (S6.3), which rolls its period over here as well, so that
- * the first pass of a period is clamped to the allowance; KS_CAP_RESTORE
- * means the period ended while the worker was over.
+ * the first pass of a period is clamped to the allowance when `runnable'
+ * (sched_runnable(): something else wants the CPU); KS_CAP_RESTORE means
+ * the period ended while the worker was over.
  */
 enum ks_cap ks_pass_begin(struct kwq_worker *kw, struct kwq_cpu *kc,
-	    uint64_t cpu_now, uint64_t wall_now);
+	    uint64_t cpu_now, uint64_t wall_now, bool runnable);
 uint64_t ks_budget_left(struct kwq_worker *kw, uint64_t cpu_now);
 /*
  * S4.4: the handler's budget query.  Returns true when a clock read is

@@ -598,7 +598,7 @@ run_pass(int c, struct kwq_cpu *kc)
 	struct item it;
 	bool stop = false;
 
-	ks_pass_begin(kw, kc, S.cputime[c], S.now);
+	ks_pass_begin(kw, kc, S.cputime[c], S.now, runnable_any(c));
 	cpu0 = S.cputime[c];
 	if (S.glitch_pos_pass != 0 && kc->kc_passes + 1 == S.glitch_pos_pass)
 		S.cputime[c] += 171798691840ULL;	/* +2^32 ticks at 25 MHz: a07's fault */

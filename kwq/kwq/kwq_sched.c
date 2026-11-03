@@ -251,7 +251,7 @@ ks_cap_period(struct kwq_worker *kw, uint64_t wall_now)
 
 enum ks_cap
 ks_pass_begin(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
-    uint64_t wall_now)
+    uint64_t wall_now, bool runnable)
 {
 	const struct kwq_sched_knobs *k = kw->kw_knobs;
 	enum ks_cap cap = KS_CAP_NONE;
@@ -273,11 +273,19 @@ ks_pass_begin(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 	 * conserving), and when something else is runnable the budget cut
 	 * (ks_cap_spent() in the handler's budget query) ends the pass at
 	 * the next item, so one-item passes happen only while contended.
+	 * The clamp, too, applies only while something else is runnable
+	 * (2026-11-03): uncontended it bought nothing and cut short the pass
+	 * that opened each period, and with several queues on the worker the
+	 * same queues opened the periods round after round (a round of four
+	 * queues against a period of 1 ms locks in), so they got the clamp's
+	 * allowance per round while the others got their deficit: shares of
+	 * up to 1 : 2 between equal queues on the guest (kwq_crypto, four
+	 * BULK queues on one CPU, Jain 0.92; 0.999 with the limit off).
 	 */
 	if (k->cap_permille < 1000) {
 		if (ks_cap_period(kw, wall_now))
 			cap = KS_CAP_RESTORE;
-		if (kw->kw_cap_used < k->cap_allow_ns) {
+		if (runnable && kw->kw_cap_used < k->cap_allow_ns) {
 			left = (int64_t)(k->cap_allow_ns - kw->kw_cap_used);
 			if (kw->kw_pass_budget > left)
 				kw->kw_pass_budget = left;

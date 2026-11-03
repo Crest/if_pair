@@ -713,7 +713,8 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	kw->kw_pass_rt = curthread->td_runtime;
 	cpu_now = kwq_cputime_ns_tick(kw, &t0);
 	wall = net ? cpu_now : ks_ticks2ns(t0, kw->kw_ns_scale);
-	cap = ks_pass_begin(kw, kc, cpu_now, wall);
+	cap = ks_pass_begin(kw, kc, cpu_now, wall,
+	    kw->kw_knobs->cap_permille < 1000 && sched_runnable());
 	kwq_kc_unlock(kc);
 	/*
 	 * S6.3 and the promise of ../KWQ.md S3: a pass runs at the class
