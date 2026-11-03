@@ -1941,12 +1941,21 @@ batches of its items taken by other CPUs' BULK workers.
 - *From where.*  The other CPUs in rings of growing distance in the
   cache topology (`smp_topo()`, the tree ULE steals along): the CPUs of
   the smallest group around this one that has any, then those its
-  parent adds, up to the root, each ring from the next CPU id up so
-  that neighbours do not all start at the same victim.  Levels that add
-  no CPU are skipped, so ring 1 is the SMT sibling on lab, the L3 on a
-  machine without SMT, and everything on a flat topology (a07, the
+  parent adds, up to the root, each ring by distance in CPU ids,
+  alternating up and down (+1, -1, +2, -2, ...), wrapping.  Levels that
+  add no CPU are skipped, so ring 1 is the SMT sibling on lab, the L3 on
+  a machine without SMT, and everything on a flat topology (a07, the
   guest).  `kern.kwq.bulk.steal_scope` bounds the rings (0 none, 8 all,
-  the default) and `steal_scan` the CPUs probed per attempt (16).
+  the default) and `steal_scan` the CPUs probed per attempt (16).  The
+  alternation makes the cut at `steal_scan` symmetric: the workers a
+  backlog wakes and the pass cap counts on (the nearest sleepers in the
+  victim's order, below) have the victim within their own first
+  `steal_scan`.  The first version ordered each ring from the next id
+  up, so on a ring wider than `steal_scan` (a07: 127 CPUs) the helpers
+  woken for CPU v, v+1..v+16, searched v+2..v+32 and never found v;
+  every pass of v's stealable queue was cut to one item for helpers
+  that could not help.  The guest and lab, whose rings fit in
+  `steal_scan`, could not show it (found in review, 2026-11-03).
 - *What.*  The older half of the victim's *live* list, at most
   `steal_max` (64) items; a lone item only when the victim's worker is
   inside a pass, asleep with the list placed (the tick regime) or

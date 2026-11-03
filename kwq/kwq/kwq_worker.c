@@ -898,8 +898,13 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
  * For each CPU, every other present CPU in rings of growing distance:
  * the CPUs of the smallest topology group around it that has any, then
  * those its parent adds, and so on to the root, the same tree ULE steals
- * along (smp_topo()); within a ring from the next id up, wrapping, so
- * that neighbours do not all start at the same victim.  A ring is a
+ * along (smp_topo()); within a ring by distance in ids, one up, one down,
+ * two up, two down and so on, wrapping.  The alternation makes the cut at
+ * steal_scan symmetric: a worker that a CPU's backlog wakes (it is near
+ * the victim in the victim's order) has the victim near in its own order
+ * too.  The first version went up from the next id only, so on a ring
+ * wider than steal_scan (a07's 127) the helpers a CPU woke, v+1..v+16,
+ * searched v+2..v+32 and never reached v (found in review, 2026-11-03).  A ring is a
  * group that adds CPUs; levels that add none (a single-CPU leaf, a
  * package of one core) are skipped, so scope 1 is the nearest sharing
  * on every machine: the SMT sibling on lab, everything on a flat
@@ -925,16 +930,18 @@ kwq_topo_leaf(struct cpu_group *cg, int cpu)
 static void
 kwq_topo_add(int cpu, cpuset_t *seen, const cpuset_t *grp, int *n, int *r)
 {
-	int c, i, added = 0;
+	int c, d, ids = (int)mp_maxid + 1, s, added = 0;
 
-	for (i = 1; i <= (int)mp_maxid + 1; i++) {
-		c = (cpu + i) % ((int)mp_maxid + 1);
-		if (CPU_ABSENT(c) || CPU_ISSET(c, seen) ||
-		    (grp != NULL && !CPU_ISSET(c, grp)))
-			continue;
-		CPU_SET(c, seen);
-		kwq_topo_order[cpu][(*n)++] = c;
-		added++;
+	for (d = 1; d < ids; d++) {
+		for (s = 0; s < 2; s++) {
+			c = s == 0 ? (cpu + d) % ids : (cpu - d + ids) % ids;
+			if (CPU_ABSENT(c) || CPU_ISSET(c, seen) ||
+			    (grp != NULL && !CPU_ISSET(c, grp)))
+				continue;
+			CPU_SET(c, seen);
+			kwq_topo_order[cpu][(*n)++] = c;
+			added++;
+		}
 	}
 	if (added == 0)
 		return;
