@@ -102,6 +102,24 @@ New knobs, in `kern.geom.kwqeli`:
 above 254 are refused at attach: a bio carries its worker in eight bits
 of `bio_pflags`, as in GELI.
 
+## Known limits
+
+- **A crypto driver that detaches under an attached provider.**
+  crypto(9) moves the session to another driver inside the next
+  dispatch (`crypto_invoke()`), and `crypto_newsession()` there
+  allocates with `M_WAITOK`, in a BULK handler that must not sleep.
+  GELI's workers could sleep there.  Unload `aesni` or `ossl` only
+  with no kwq-geli provider attached.
+- **A refusal at a full list recurses.**  GEOM issues an `ENOMEM` bio
+  again at once by direct dispatch, so a bio refused in the caller's
+  thread because its CPU's list is at `kern.kwq.bulk.limit` (4096)
+  goes through `g_eli_start()` again, nested, until GEOM's half-stack
+  guard sends it to `g_down`, which paces the retries.  Bounded, but
+  it costs that thread's stack.
+- **A resume whose sessions cannot be made** (the crypto driver gone
+  since the suspend) fails, the provider stays suspended and its keys
+  are wiped again; GELI asserted that it could not happen.
+
 ## Not changed
 
 Key handling and the crypto itself (`g_eli_crypto.c`, `g_eli_hmac.c`,

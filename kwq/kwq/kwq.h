@@ -43,9 +43,12 @@ struct kwq_item {
  * save-next-first walk does; for a notifier that fetch is the pending ->
  * idle flip, so the level the handler reads afterwards covers every
  * signal up to that instant and a later signal is a fresh arrival for
- * the next pass.  An element already passed to KWQ_ITEM_NEXT() must not
- * be handed back with kwq_requeue(); the remainder from `next' on is
- * fine.  Never call KWQ_ITEM_INIT() on a notifier: its link is kwq's.
+ * the next pass.  A notifier already passed to KWQ_ITEM_NEXT() must not
+ * be handed back with kwq_requeue(): it is idle, and a new signal may
+ * have linked it again already.  An item may be, after KWQ_ITEM_INIT()
+ * (kwq-geli hands back a bio it dispatched in part that way), and so may
+ * the remainder from `next' on.  Never call KWQ_ITEM_INIT() on a
+ * notifier: its link is kwq's.
  */
 #define	KWQ_LINK_TAG	((uintptr_t)1)
 void		 kwq_notifier_consumed(struct kwq *q, struct kwq_item *it);

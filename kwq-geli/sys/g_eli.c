@@ -592,10 +592,18 @@ g_eli_cancel(struct g_eli_softc *sc)
  * authenticated read) and g_eli_read_done() for the decryption of a read.
  * kwq refuses an item only when that CPU's list is at its limit (ENOBUFS)
  * or the queue is draining or inactive (ENXIO).  The first becomes GEOM's
- * ENOMEM, which g_io_deliver() answers by issuing the bio again with a
- * 1 ms pause (GELI does the same when its buffers run out); the second is
- * the provider going away.  A bio refused before it was counted in
- * sc_inflight is new: its clone is dropped, as GEOM's retry clones anew.
+ * ENOMEM, which g_io_deliver() answers by issuing the bio again (GELI does
+ * the same when its buffers run out); the second is the provider going
+ * away.  A bio refused before it was counted in sc_inflight is new: its
+ * clone is dropped, as GEOM's retry clones anew.  GEOM issues the bio
+ * again at once, by direct dispatch where it can, and paces later
+ * retries through g_down with 1 ms pauses: `pace' is set only after the
+ * nested g_io_request() returns.  So a refusal in the caller's thread
+ * recurses through g_eli_start() while the list stays full, until
+ * g_io_request()'s guard against using more than half the stack queues
+ * the bio to g_down instead.  It takes a CPU's list at its limit
+ * (kern.kwq.bulk.limit, 4096 by default); the depth is bounded, the cost
+ * is stack (review, 2026-11-03).
  */
 static void
 g_eli_kwq_refuse(struct g_eli_softc *sc, struct bio *bp, int error)
@@ -703,9 +711,9 @@ g_eli_kwq_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 		G_ELI_ITEM_BIO(it)->bio_pflags &= ~G_ELI_ON_KWQ;
 		if (g_eli_kwq_one(sc, wr, G_ELI_ITEM_BIO(it))) {
 			/*
-			 * Partly dispatched (out of budget, or no crypto
-			 * request without sleeping): the rest of the list goes
-			 * back, then this bio in front of it, to go on first.
+			 * Partly dispatched, out of budget: the rest of the
+			 * list goes back, then this bio in front of it, to go
+			 * on first (kwq.h allows an item already walked past).
 			 */
 			if (next != NULL)
 				kwq_requeue(q, next, NULL, n - done);
