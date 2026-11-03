@@ -1372,7 +1372,7 @@ Per worker: `kern.kwq.<class>.cpu.<N>.`
 | `cpu.<N>.nactive` | uint | RD | | entries on the DRR ring right now (a gauge, not a counter) |
 | `cpu.<N>.nnew` | uint | RD | | entries on the new list right now, waiting for a boosted pass (SCHED.md S3 `kw_nnew`) |
 | `cpu.<N>.idle_ns` | counter | RD | | time the worker spent asleep with nothing queued (P1) |
-| `cpu.<N>.busy_ns` | counter | RD | | CPU time spent in passes (P1) |
+| `cpu.<N>.busy_ns` | counter | RD | | time charged to passes: CPU time, NET wall time (P1; SCHED.md S1a.4) |
 | `cpu.<N>.steals_out` | counter | RD | | bulk only: batches taken from this CPU by others (P6) |
 
 Per queue: `kern.kwq.<class>.queue.<name>.`
@@ -2696,3 +2696,9 @@ decision deferred until real clients show what fan-in they produce.
   pure-ACK exception of `urgent_bytes`, the reach of `tick_urgent_us`
   and a park that outlasts the tick's timeout; S17's block 0 as
   kwq_internal.h has it.
+- 2026-11-03: BULK and BLOCKING charge CPU time, to the deficit and to
+  the share limit alike; NET stays charged wall time (SCHED.md S1a.4,
+  S4.6, S6.3).  The code already did so; SCHED.md, kwq_sched.h and
+  kwq_sched.c said the share limit counted wall time, and the
+  descriptions of `busy_ns` and `kwq:::pass-end`'s time said CPU time
+  for NET too.

@@ -457,10 +457,12 @@ queues, and the share limit's budget cut does not change that window
 
 ### How a pass is charged
 
-A NET pass is charged the wall time it spanned, a BULK pass the
-thread's CPU time (SCHED.md S1a.4, S6.3).  For NET the wall-time charge
-is exact up to interrupt threads and lock blocks, both counted in the
-worker's `switched`, and it stays: interrupt *context* is inside both
+A NET pass is charged the wall time it spanned, a BULK or BLOCKING
+pass the thread's CPU time, so a BULK pass is not charged for time NET
+preempted it and a BLOCKING pass not for its handler's sleep; the share
+limit counts passes the same way (SCHED.md S1a.4, S6.3).  For NET the
+wall-time charge is exact up to interrupt threads and lock blocks, both
+counted in the worker's `switched`, and it stays: interrupt *context* is inside both
 the wall clock and the thread's `td_runtime`, so no charge mode can
 exclude it, and the hundreds of switched overruns per run that wall
 time was seen to charge came from the earlier form of the share limit,
@@ -735,7 +737,7 @@ co-located receiver got (WAKE.md S12.1).
 | `wakes_urgent` | wakes of a sleeping worker by an urgent item or a notifier added to a list already placed with it (the urgent nudge), counted in the queue's `doorbells` too |
 | `tick_urgent_deferred` | urgent items that found the worker asleep in the tick regime and waited up to `tick_urgent_us` instead of waking it |
 | `tick_urgent_wakes` | wakes by the `tick_urgent_us` bound, one per window of deferred urgent items |
-| `busy_ns` | CPU time inside handlers |
+| `busy_ns` | time charged to passes: CPU time, wall time for NET |
 | `idle_ns` | wall time asleep with nothing queued |
 | `round` | current round number (gauge) |
 | `nactive` | entries on the DRR ring now (gauge) |
@@ -801,7 +803,7 @@ default build produces.
 | `enqueue` | each accepted `kwq_enqueue()` and `kwq_enqueue_urgent()`; once per `kwq_enqueue_list()` | `arg1` cpu, `arg2` depth after, `arg3` 1 if it rang the doorbell, whatever the doorbell then did, or its urgent nudge woke the worker |
 | `reject` | enqueue or notify refused with `ENOBUFS` or `ENXIO`.  **Not** for `EINVAL`, which is detected before the list lock and fires nothing | `arg1` cpu, `arg2` errno |
 | `pass-start` | list swapped, handler about to run | `arg1` cpu, `arg2` items, `arg3` doorbell-to-pass ns (0 on later passes of one backlog) |
-| `pass-end` | handler returned | `arg1` cpu, `arg2` items, `arg3` CPU time ns, `arg4` items requeued |
+| `pass-end` | handler returned | `arg1` cpu, `arg2` items, `arg3` ns charged (CPU time, NET wall time), `arg4` items requeued |
 | `overrun` | a pass exceeded its budget by more than one quantum x weight | `arg1` cpu, `arg2` ns over |
 | `park` | a queue skipped for owing time | `arg1` cpu, `arg2` deficit ns, zero or negative |
 | `budget-hit` | `kwq_budget_left()` answered 0 | `arg1` cpu |

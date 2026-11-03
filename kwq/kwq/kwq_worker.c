@@ -101,15 +101,17 @@ kwq_cputime_ns(struct kwq_worker *kw)
  * changes at every switch-out).  Two bare counter reads per pass, nothing
  * from the kernel's ticker.
  *
- * BULK: CPU time.  NET workers preempt BULK workers as a matter of course,
- * so wall time would charge NET's work to BULK queues.  The thread's CPU
- * time is td_runtime (accounted at each switch-out) plus the time since
- * the last switch-in; the latter needs the kernel's ticker, which on
- * arm64 is a 32-bit extension that misfires when read with interrupts
- * enabled (tools/clockprobe).  So the exact sum is taken once as a base,
- * with interrupts off, and advanced with kwq_ticks() while td_runtime has
- * not changed; a changed td_runtime re-bases: one ticker read per
- * preemption or stat tick, not per pass (kwq_clock.h).
+ * BULK and BLOCKING: CPU time.  NET workers preempt them as a matter of
+ * course and a BLOCKING handler sleeps inside its passes, so wall time
+ * would charge NET's work and the sleep to their queues; the share limit
+ * charges the same (S6.3).  The thread's CPU time is td_runtime
+ * (accounted at each switch-out) plus the time since the last switch-in;
+ * the latter needs the kernel's ticker, which on arm64 is a 32-bit
+ * extension that misfires when read with interrupts enabled
+ * (tools/clockprobe).  So the exact sum is taken once as a base, with
+ * interrupts off, and advanced with kwq_ticks() while td_runtime has not
+ * changed; a changed td_runtime re-bases: one ticker read per preemption
+ * or stat tick, not per pass (kwq_clock.h).
  */
 uint64_t
 kwq_cputime_ns_tick(struct kwq_worker *kw, uint64_t *tick)
@@ -1070,7 +1072,7 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	KW_U64(kw_turg_deferred, "tick_urgent_deferred", "urgent items that found the worker asleep in the tick regime and waited tick_urgent_us instead of waking it");
 	KW_U64(kw_turg_wakes, "tick_urgent_wakes", "wakes by the tick_urgent_us bound (one per window of deferred urgent items)");
 	KW_U64(kw_prio_violations, "prio_violations", "passes that began below the class priority or outside its class (0; counted under KWQ_SOFT_INVARIANTS, asserted otherwise)");
-	KW_U64(kw_busy_ns, "busy_ns", "worker CPU time inside handlers");
+	KW_U64(kw_busy_ns, "busy_ns", "time charged to passes: worker CPU time, NET wall time");
 	KW_U64(kw_idle_ns, "idle_ns", "wall time asleep with nothing queued");
 	KW_U64(kw_round, "round", "current round number");
 	KW_U64(kw_budget_calls, "budget_calls", "kwq_budget_left() calls by handlers on this worker");

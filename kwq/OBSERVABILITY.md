@@ -150,7 +150,7 @@ belong to the two optional regimes and the urgent exemption (section
 | `wakes_urgent` | wakes of a sleeping worker by an urgent item or a notifier added to a list already placed with it (the urgent nudge): the wake neither regime would have given it; counted in the queue's `doorbells` too.  compare.sh: `kwq_wakes_urgent_s` |
 | `tick_urgent_deferred` | urgent items that found the worker asleep in the tick regime and waited up to `tick_urgent_us` instead of waking it.  compare.sh: `kwq_turg_deferred_s` |
 | `tick_urgent_wakes` | wakes by the `tick_urgent_us` bound, one per window of deferred urgent items (a tick that comes first takes the window).  compare.sh: `kwq_turg_wakes_s` |
-| `busy_ns` | CPU time spent inside handlers |
+| `busy_ns` | time charged to passes: CPU time, wall time for NET (SCHED.md S1a.4) |
 | `idle_ns` | wall time asleep with nothing queued |
 | `round` | current round number |
 | `nactive` | entries on the DRR ring right now (a gauge) |
@@ -287,7 +287,7 @@ definition is available".
 | `enqueue` | every accepted `kwq_enqueue()` and `kwq_enqueue_urgent()`; once per `kwq_enqueue_list()` | `arg1` cpu, `arg2` depth after, `arg3` 1 if this enqueue rang the doorbell, whatever the doorbell then did, or its urgent nudge woke the worker |
 | `reject` | enqueue or notify refused | `arg1` cpu, `arg2` errno |
 | `pass-start` | list swapped, handler about to run | `arg1` cpu, `arg2` items, `arg3` doorbell-to-pass latency ns (0 on later passes of one backlog) |
-| `pass-end` | handler returned | `arg1` cpu, `arg2` items, `arg3` CPU time ns, `arg4` items requeued |
+| `pass-end` | handler returned | `arg1` cpu, `arg2` items, `arg3` ns charged (CPU time, NET wall time), `arg4` items requeued |
 | `overrun` | a pass exceeded budget + one quantum | `arg1` cpu, `arg2` ns over |
 | `park` | a queue skipped for owing time | `arg1` cpu, `arg2` deficit ns (zero or negative) |
 | `budget-hit` | `kwq_budget_left()` answered 0 | `arg1` cpu |

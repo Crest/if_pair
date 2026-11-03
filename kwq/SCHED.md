@@ -109,10 +109,13 @@ falls out for pseudo-interfaces is a side effect, not the design goal.
    scenarios and 25 % in the guest's single flow where the receiver on
    the same vCPU holds the socket locks the handler blocks on; shares,
    latency and throughput unchanged on all three
-   (samples/walltime_2026-10-20_three_machines.txt).  BULK keeps CPU
-   time: NET workers preempt BULK workers as a matter of course.  The
-   remaining dependency on the kernel ticker is BULK's once-per-switch
-   re-base, with interrupts off (S15.2).
+   (samples/walltime_2026-10-20_three_machines.txt).  BULK and
+   BLOCKING keep CPU time (confirmed 2026-11-03): NET workers preempt
+   them as a matter of course, and a BLOCKING handler sleeps inside its
+   passes, so wall time would charge NET's work and the sleep to their
+   queues.  The share limit (S6.3) charges every class what its deficit
+   is charged.  The remaining dependency on the kernel ticker is BULK's
+   and BLOCKING's once-per-switch re-base, with interrupts off (S15.2).
 5. **The producer chooses the "link".**  A link scheduler has one link;
    kwq has one scheduler per (class, CPU) and the client picks the CPU per
    item (KWQ.md S3).  There is no cross-CPU fairness or balancing in the
@@ -471,10 +474,12 @@ the following rounds, and if the worker instead runs out of work and
 sleeps, the queue was idle and its deficit was reset, so no debt survives
 an idle period (I3).  The end-of-round yield happens per round: while the
 worker sleeps it is not holding the CPU and there is nothing to yield.
-The share limit (S6.3) is defined in wall time on the worker's own
+The share limit's period (S6.3) runs in wall time on the worker's own
 clock (the pass stamps), because the fraction it bounds is the worker's
 share of the CPU over time, sleep included; a period that passed
-entirely while the worker slept starts the next one clean.
+entirely while the worker slept starts the next one clean.  What a pass
+spends of the period's allowance is what it is charged (S1a.4): CPU
+time for BULK and BLOCKING, wall time for NET.
 
 ### 4.7 Invariants
 
@@ -639,7 +644,10 @@ system.
 
 **The share.**  A worker may spend at most `cap_permille`/1000 of each
 `cap_period_us` of its CPU's wall time in passes while anything else is
-runnable on that CPU.  For the rest of such a period it waits between
+runnable on that CPU, the passes counted as S1a.4 charges them: CPU
+time for BULK and BLOCKING, so neither a BULK pass's time preempted by
+NET nor a BLOCKING handler's sleep spends the allowance, and wall time
+for NET.  For the rest of such a period it waits between
 passes at the waiting priority `cap_prio`, by default an idle-priority
 thread (`PRI_MIN_IDLE`), which ULE runs only when nothing else is
 runnable and preempts for anything that wakes;
@@ -1552,7 +1560,7 @@ case 4 added the progress rule (S5); the rest are documented limits.
 | 10 | a heavy-weight queue arrives new | boost of `Qw` with `w = 8` jumps eight quanta ahead of the ring | light queues' `maxlat_ns` | S12 open question: cap the boost at `Q` if seen |
 | 11 | BULK stealing (P6) runs a batch of CPU A's queue on CPU B | whose deficit is charged is undefined | | P6 must define it (charge the victim's `kc_deficit` on A; the stealer's own share limit) |
 | 12 | a BLOCKING handler sleeps mid-pass | the worker holds its place in the round while asleep; other BLOCKING queues on the CPU wait for worker replacement | | P7; CPU-time charging (S1a.4) already excludes the sleep from the deficit |
-| 13 | an ithread preempts the worker mid-pass | wall-clock pass length grows; the deficit (CPU time) does not | `cycles` (wall) vs `busy_ns` (CPU) diverge | by design; B1-B5 are CPU-time bounds, wall-clock latency includes interrupt load |
+| 13 | an ithread preempts the worker mid-pass | wall-clock pass length grows; a BULK or BLOCKING deficit (CPU time) does not, a NET deficit is charged the wall time (S1a.4) | BULK, BLOCKING: `cycles` (wall) vs `busy_ns` (CPU) diverge; NET: `switched` | by design; B1-B5 are bounds in the charged time, wall-clock latency includes interrupt load |
 | 14 | `quantum_us` changed at runtime | deficits refilled and clamped with the new `Qw` from the next round | | fine; the clamps re-bound old values immediately |
 | 15 | worker sleeps with parked queues | cannot happen: a parked queue has work, and the worker sleeps only when both lists are empty | | I2 |
 | 16 | `kwq_drain()` during a round | producers refused, the worker finishes queued passes, the drain waits for IDLE | | P0 protocol |

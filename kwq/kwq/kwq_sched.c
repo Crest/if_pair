@@ -406,9 +406,10 @@ ks_round_end(struct kwq_worker *kw, uint64_t wall_now __unused, bool runnable)
 }
 
 /*
- * S6.3, at every pass end.  The limit is a share of wall time per period
- * that the worker may take while anything else is runnable on its CPU;
- * with nothing else runnable it runs on.
+ * S6.3, at every pass end.  The limit is a share of each wall-time period
+ * that the worker may spend in passes while anything else is runnable on
+ * its CPU, the passes counted as the deficit is charged (CPU time, NET
+ * wall time, S1a.4); with nothing else runnable it runs on.
  */
 enum ks_cap
 ks_cap_check(struct kwq_worker *kw, uint64_t wall_now, bool runnable)

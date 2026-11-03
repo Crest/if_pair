@@ -245,7 +245,8 @@ more.  "kwq:" marks terms this project defines.
 - **share limit** (kwq; "CPU-share cap" in earlier text) - the
   substitute for a bounded yield: a worker may take `cap_permille`/1000
   of its CPU's time per `cap_period_us` while other threads are runnable
-  there (`sched_runnable()`); over that it hands the CPU over between
+  there (`sched_runnable()`), in the time its passes are charged (see
+  *pass*); over that it hands the CPU over between
   passes at the waiting priority `cap_prio`, by default an idle-priority
   thread, which ULE runs only when nothing else is runnable, and cuts a pass short through the budget, until a
   callout at the period's end raises it back; a pass itself always runs
@@ -311,7 +312,7 @@ more.  "kwq:" marks terms this project defines.
   notifier and one for the item list), by one worker; charged to the
   queue in wall time on the bound CPU for NET and in the worker's own
   CPU time (`td_runtime` plus the time since its last switch-in) for
-  BULK (SCHED.md S1a.4, amended 2026-10-20).  Alias: *slice*
+  BULK and BLOCKING (SCHED.md S1a.4, amended 2026-10-20).  Alias: *slice*
   (earlier project text; avoided because ULE's *time slice* is unrelated),
   *drain* (illumos squeue).  Probes: `kwq:::pass-start`, `kwq:::pass-end`.
 - **round** (kwq) - one traversal by a worker of its ring, with *new

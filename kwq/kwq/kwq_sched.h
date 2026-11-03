@@ -25,7 +25,8 @@
  *                      kw_phase,
  *                      kw_ring_left, kw_tail_left, kw_want_new, kw_cur,
  *                      kw_served, kw_pass_start, kw_pass_budget,
- *                      kw_cap_start, kw_cap_used (wall ns), kw_cap_over,
+ *                      kw_cap_start (wall ns), kw_cap_used (charged ns:
+ *                      CPU time, NET wall time), kw_cap_over,
  *                      kw_cap_handed, kw_pass_switched (bool), kw_knobs, kw_rounds,
  *                      kw_passes, kw_yields, kw_cap_demotions,
  *                      kw_cap_yields, kw_cap_cuts, kw_cap_runon,
