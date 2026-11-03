@@ -43,7 +43,7 @@ handler rejects values outside its range with EINVAL.
 | node | range | default (net / bulk / blocking) | what it does |
 |---|---|---|---|
 | `quantum_us` (RWTUN) | 10 .. 1000000 | 200 / 1000 / 5000 | CPU time a queue of weight 1 may use per round before its turn ends.  Larger: fewer yields and lock hand-offs per item, longer worst-case wait for the other queues on the CPU |
-| `limit` (RWTUN) | any | 4096 | per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards.  A queue at its limit refuses enqueues with ENOBUFS and counts them in `rejected`.  0 is accepted, and a queue then created with `limit = 0` gets limit 0 and refuses every enqueue |
+| `limit` (RWTUN) | 1..UINT_MAX | 4096 | per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards, clamped to INT_MAX there.  A queue at its limit refuses enqueues with ENOBUFS and counts them in `rejected`.  0 is refused with EINVAL, since every queue created afterwards would refuse every enqueue; as a loader tunable 0 leaves 4096 and the kernel prints `Setting sysctl kern.kwq.<class>.limit failed: 22` |
 | `penalty_rounds` (RWTUN) | 1 .. 1024 | 32 | how many rounds a queue can be parked for overrunning its budget, in quanta of debt.  Smaller forgives a misbehaving handler sooner |
 | `budget_check_every` (RWTUN) | 1 .. 64 | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; between reads it estimates.  1 = a clock read per call (exact, expensive with cheap items) |
 | `yield_prio` (RW) | class priority .. 223 | 56 (PUSER) | the priority the worker yields at after a round when something else is runnable.  223 lets every user thread run a full time slice per round |
@@ -499,9 +499,10 @@ kwq source tree after an in-tree build:
     FANIN=8 PROD_NS=500 CONS_NS=500 LOCKSTAT=1 tests/run_p1b.sh ifpair
 
 `tests/kwq_test.sh` is the ATF test program and `tests/Kyuafile` its
-suite: twenty-five cases that load the two modules, run a scenario and
+suite: twenty-six cases that load the two modules, run a scenario and
 assert the property it proves (per-CPU FIFO and exactly-once delivery,
-rejects and discards, notifier coalescing, name validation, fairness
+rejects and discards, notifier coalescing, name validation, the class
+limit refusing 0, fairness
 within 10 %, the light queue's latency bound, the grace rule, overrun
 parking, tick yields, two flow smoke tests, the eight `mix` cases on
 notifiers among items, the priority promise with every moderation knob

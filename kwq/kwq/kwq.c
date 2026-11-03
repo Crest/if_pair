@@ -107,15 +107,43 @@ SYSCTL_NODE(_kern_kwq_bulk, OID_AUTO, queue, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "qu
 SYSCTL_NODE(_kern_kwq_blocking, OID_AUTO, cpu, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "workers by CPU");
 SYSCTL_NODE(_kern_kwq_blocking, OID_AUTO, queue, CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "queues by name");
 
+/*
+ * kern.kwq.<class>.limit: the default per-CPU item limit for queues
+ * created with limit = 0, a loader tunable and writable at run time.  0 is
+ * refused, as by the per-queue knob: every queue created afterwards would
+ * refuse every item.  A refused tunable leaves the default and the kernel
+ * prints "Setting sysctl ... failed: 22".  Values above INT_MAX stay
+ * accepted and are clamped at kwq_create(), as a client's are.
+ */
 static u_int kwq_limit[KWQ_NCLASS] = { 4096, 4096, 4096 };
-SYSCTL_UINT(_kern_kwq_net, OID_AUTO, limit, CTLFLAG_RWTUN, &kwq_limit[KWQ_NET],
-    0, "default per-CPU item limit for queues created with limit = 0");
-SYSCTL_UINT(_kern_kwq_bulk, OID_AUTO, limit, CTLFLAG_RWTUN,
-    &kwq_limit[KWQ_BULK], 0,
-    "default per-CPU item limit for queues created with limit = 0");
-SYSCTL_UINT(_kern_kwq_blocking, OID_AUTO, limit, CTLFLAG_RWTUN,
-    &kwq_limit[KWQ_BLOCKING], 0,
-    "default per-CPU item limit for queues created with limit = 0");
+
+static int
+kwq_sysctl_class_limit(SYSCTL_HANDLER_ARGS)
+{
+	u_int *lp = arg1;
+	u_int v = *lp;
+	int error;
+
+	error = sysctl_handle_int(oidp, &v, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (v == 0)
+		return (EINVAL);
+	*lp = v;
+	return (0);
+}
+SYSCTL_PROC(_kern_kwq_net, OID_AUTO, limit,
+    CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, &kwq_limit[KWQ_NET], 0,
+    kwq_sysctl_class_limit, "IU",
+    "default per-CPU item limit for queues created with limit = 0; 1..UINT_MAX, clamped to INT_MAX at creation");
+SYSCTL_PROC(_kern_kwq_bulk, OID_AUTO, limit,
+    CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, &kwq_limit[KWQ_BULK], 0,
+    kwq_sysctl_class_limit, "IU",
+    "default per-CPU item limit for queues created with limit = 0; 1..UINT_MAX, clamped to INT_MAX at creation");
+SYSCTL_PROC(_kern_kwq_blocking, OID_AUTO, limit,
+    CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, &kwq_limit[KWQ_BLOCKING],
+    0, kwq_sysctl_class_limit, "IU",
+    "default per-CPU item limit for queues created with limit = 0; 1..UINT_MAX, clamped to INT_MAX at creation");
 
 /*
  * The classes' worker priorities, loader tunables (kern.kwq.<class>.priority

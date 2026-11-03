@@ -1320,7 +1320,7 @@ Per class: `kern.kwq.<class>.`
 | `quantum_us` | uint | RWTUN | net 200, bulk 1000, blocking 5000 | CPU time a queue of weight 1 may consume per round (BLOCKING too: the quantum shares a worker between queues, which ULE's slice does not) |
 | `penalty_rounds` | uint | RWTUN | 32 | debt clamp in quanta: the most rounds an overrunning queue is parked (P1; SCHED.md S4.3) |
 | `budget_check_every` | uint | RWTUN | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; 1 = every call (SCHED.md S4.4) (P2) |
-| `limit` | uint | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards |
+| `limit` | uint | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards; 1..`UINT_MAX`, clamped to `INT_MAX` at creation; 0 is refused (EINVAL), as a tunable it leaves the default |
 | `cap_permille` | uint | RWTUN | 500 | share limit: the share of its CPU the worker may spend in passes per `cap_period_us` while other threads are runnable, the rest waiting between passes as an idle-priority thread, in 1/1000; 1000 = off, and the worker then obeys ULE's slice end as a process would (S11 Missing 1; SCHED.md S6.3) |
 | `cap_period_us` | uint | RWTUN | 1000 | the share limit's period |
 | `cap_prio` | int | RWTUN | `PRI_MIN_IDLE` (224) | the priority the worker waits at between passes while over its allowance, never the priority of a pass; `PRI_MAX_TIMESHARE` (223) is the other useful value; class priority + 1 .. `PRI_MAX_IDLE` (255) accepted for experiments (SCHED.md S6.3) |
@@ -2702,3 +2702,7 @@ decision deferred until real clients show what fan-in they produce.
   kwq_sched.c said the share limit counted wall time, and the
   descriptions of `busy_ns` and `kwq:::pass-end`'s time said CPU time
   for NET too.
+- 2026-11-03: `kern.kwq.<class>.limit` refuses 0 (EINVAL), by sysctl
+  and as a loader tunable, as the per-queue `limit` does; it accepted 0
+  until then, and every queue created afterwards with `limit = 0` got
+  limit 0 and refused every enqueue.  ATF case `class_limit`.

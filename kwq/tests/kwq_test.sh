@@ -217,6 +217,43 @@ bad_names_body() {
 }
 bad_names_cleanup() { kwq_cleanup; }
 
+atf_test_case class_limit cleanup
+class_limit_head() {
+	atf_set descr "kern.kwq.<class>.limit refuses 0 (EINVAL), by sysctl and as a loader tunable, and keeps its value; a queue created afterwards with limit = 0 takes items"
+	atf_set require.user root
+}
+class_limit_body() {
+	local c v
+	# The tunable is read when kwq.ko registers its sysctls, so it is
+	# tested only when this case loads the module.
+	if ! kldstat -q -m kwq && kenv kern.kwq.bulk.limit=0 >/dev/null; then
+		: > kenv_set
+	fi
+	kwq_setup
+	if [ -f kenv_set ]; then
+		kenv -u kern.kwq.bulk.limit
+		rm kenv_set
+		atf_check_equal 4096 "$(sysctl -n kern.kwq.bulk.limit)"
+	fi
+	for c in net bulk blocking; do
+		v=$(sysctl -n kern.kwq.$c.limit)
+		echo "kern.kwq.$c.limit=$v" >> limits
+		atf_check -s not-exit:0 -o ignore -e match:"Invalid argument" \
+		    sysctl kern.kwq.$c.limit=0
+		atf_check_equal "$v" "$(sysctl -n kern.kwq.$c.limit)"
+		atf_check -o ignore sysctl kern.kwq.$c.limit=8
+		atf_check_equal 8 "$(sysctl -n kern.kwq.$c.limit)"
+		atf_check -o ignore sysctl kern.kwq.$c.limit=$v
+	done
+	kwq_run lifecycle reps=1 items=10 limit=0
+	kwq_done "limit = 0 after the refused writes"
+}
+class_limit_cleanup() {
+	[ -f kenv_set ] && kenv -u kern.kwq.bulk.limit
+	[ -f limits ] && kldstat -q -m kwq && sysctl -q $(cat limits) >/dev/null
+	kwq_cleanup
+}
+
 # ---------------------------------------------------------------- P1b
 
 atf_test_case fairness cleanup
@@ -610,6 +647,7 @@ atf_init_test_cases() {
 	atf_add_test_case discard
 	atf_add_test_case notify
 	atf_add_test_case bad_names
+	atf_add_test_case class_limit
 	atf_add_test_case fairness
 	atf_add_test_case fairness_2to1
 	atf_add_test_case latency

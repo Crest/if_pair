@@ -601,7 +601,7 @@ module is preloaded.  Out-of-range values are refused with `EINVAL`.
 | node | flags | range | default net / bulk / blocking | effect |
 |---|---|---|---|---|
 | `quantum_us` | RWTUN | 10 .. 1000000 | 200 / 1000 / 5000 | CPU time a weight-1 queue may use per round.  Larger: fewer hand-offs per item, longer worst-case wait for others |
-| `limit` | RWTUN | any | 4096 | default per-CPU bound for queues created with `limit = 0`; applies to queues created afterwards.  0 is accepted, and a queue then created with `limit = 0` gets bound 0 and refuses every enqueue |
+| `limit` | RWTUN | 1 .. UINT_MAX | 4096 | default per-CPU bound for queues created with `limit = 0`; applies to queues created afterwards, clamped to `INT_MAX` there.  0 is refused (EINVAL; a loader tunable of 0 leaves 4096 and the kernel prints `Setting sysctl ... failed: 22`): every queue created afterwards would refuse every enqueue |
 | `penalty_rounds` | RWTUN | 1 .. 1024 | 32 | how many quanta of debt a queue may accumulate, i.e. the longest parking |
 | `budget_check_every` | RWTUN | 1 .. 64 | 8 | how often `kwq_budget_left()` reads the clock; 1 is exact and expensive |
 | `cap_permille` | RWTUN | 1 .. 1000 | 500 | share limit: the share of its CPU the worker may spend in passes per period while other threads are runnable, in 1/1000; the rest of the period it waits between passes as an idle-priority thread.  Equal share by default, 1000 = off, and the worker then obeys ULE's slice end as a process would (SCHED.md S6.3) |
