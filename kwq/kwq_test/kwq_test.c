@@ -12,6 +12,8 @@
  *                                             #     pingpong pingpong_tq clocks
  *                                             # P4 shape: ifpair
  *                                             # P4e: burst (SPEC-p4e 2.1, 2.4)
+ *                                             # P6: steal scatter stealdrain
+ *                                             #     stealdrain_discard (BULK)
  *   sysctl kern.kwq_test.intr_cpu=1 kern.kwq_test.intr_us=100 \
  *          kern.kwq_test.intr_work_ns=20000 kern.kwq_test.intr_secs=10
  *                                             # interrupt load on CPU 1 beside
@@ -75,6 +77,7 @@ struct titem {
 	int		ti_cpu;
 	int		ti_qidx;	/* flood queue index (P1b) */
 	u_int		ti_seen;	/* P0: rep tag of the delivery, catches an item run twice */
+	struct kt_sgroup *ti_grp;	/* scatter: the call the item belongs to */
 } __aligned(KT_LINE);
 
 /* Knobs. */
@@ -127,6 +130,8 @@ static uint64_t	kt_r_requeues;		/* mix: kwq_requeue() calls by the handler */
 static uint64_t	kt_r_patterns;		/* mix: patterns checked */
 static uint64_t	kt_r_with, kt_r_without;	/* mixstarve: items with/without the notifier */
 static uint64_t	kt_r_wcpu;		/* mix: the worker CPU */
+static uint64_t	kt_r_cpus;		/* P6: CPUs that ran items (steal; scatter: most in one call) */
+static uint64_t	kt_r_offcpu;		/* P6 steal: items run on a CPU other than the target */
 /* burst: a burst's first item served after a gap, and its last item, age at service */
 static uint64_t	kt_r_bursts;
 static uint64_t	kt_r_first_p50_us, kt_r_first_p99_us, kt_r_first_max_us;
@@ -148,13 +153,19 @@ static u_int	kt_rep_tag;		/* P0: current rep + 1, stamped into ti_seen */
 static int	kt_pcpu = -1;		/* P0: the producer's CPU, never a target */
 static int	kt_pcpu_knob = -1;	/* producer CPU for the two-CPU scenarios; -1: the next CPU */
 static uint64_t	*kt_last_seq;		/* [mp_maxid + 1] */
+static enum kwq_class kt_class = KWQ_NET;	/* class kt_create() uses (P6: BULK) */
+static bool	kt_nofifo;		/* P6: items may run off their CPU (stealing) */
+static bool	kt_coop;		/* P6: the item handler honours its budget and
+					   requeues the rest, as the contract asks */
+static uint64_t	*kt_cpu_hits;		/* P6: [mp_maxid + 1] items run per CPU */
 
 SYSCTL_NODE(_kern, OID_AUTO, kwq_test, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "kwq test harness");
 SYSCTL_STRING(_kern_kwq_test, OID_AUTO, scenario, CTLFLAG_RW, kt_scenario,
     sizeof(kt_scenario), "lifecycle fifo notify reject discard sleep | "
     "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline pingpong pingpong_tq clocks burst | ifpair | "
-    "mixorder mixpattern mixbudget mixstarve mixrearm mixcancel mixrequeue mixdrain mixdrain_discard");
+    "mixorder mixpattern mixbudget mixstarve mixrearm mixcancel mixrequeue mixdrain mixdrain_discard | "
+    "steal scatter stealdrain stealdrain_discard");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, items, CTLFLAG_RW, &kt_items, 0,
     "items per repetition (P0), pool size per flood (P1b)");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, reps, CTLFLAG_RW, &kt_reps, 0,
@@ -309,7 +320,11 @@ SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_intr_late, CTLFLAG_RD, &kt_r_intr_la
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_intr_work_ns, CTLFLAG_RD, &kt_r_intr_work_ns, 0,
     "intr_load: busy time spent in interrupt context, ns");
 SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_wcpu, CTLFLAG_RD,
-    &kt_r_wcpu, 0, "mix: the worker CPU used");
+    &kt_r_wcpu, 0, "mix: the worker CPU used; steal: the target CPU");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_cpus, CTLFLAG_RD,
+    &kt_r_cpus, 0, "steal: CPUs that ran items; scatter: the most CPUs one call ran on");
+SYSCTL_U64(_kern_kwq_test, OID_AUTO, result_offcpu, CTLFLAG_RD,
+    &kt_r_offcpu, 0, "steal: items run on a CPU other than the one they were enqueued to");
 
 static void
 kt_fail(const char *fmt, ...)
@@ -442,14 +457,26 @@ kt_item_handler(struct kwq *q, struct kwq_item *head, int n,
 			atomic_add_64(&kt_dups, 1);
 		ti->ti_seen = kt_rep_tag;
 		if (n > 0) {
-			if (ti->ti_cpu != cpu ||
-			    ti->ti_seq <= kt_last_seq[cpu])
+			if (!kt_nofifo && (ti->ti_cpu != cpu ||
+			    ti->ti_seq <= kt_last_seq[cpu]))
 				atomic_add_64(&kt_fifo_errors, 1);
 			kt_last_seq[cpu] = ti->ti_seq;
 			if (kt_cost_us != 0)
 				DELAY(kt_cost_us);
+			if (kt_cpu_hits != NULL)
+				atomic_add_64(&kt_cpu_hits[cpu], 1);
 		}
 		cnt++;
+		/*
+		 * Only the live list can be stolen from, not a pass's batch:
+		 * a handler that ignores its budget keeps a whole backlog out
+		 * of reach (../SCHED.md S16).
+		 */
+		if (kt_coop && n > 0 && next != NULL && kwq_budget_left(q) == 0) {
+			kwq_requeue(q, next, NULL, n - (int)cnt);
+			atomic_add_64(&kt_handled, cnt);
+			return;
+		}
 	}
 	if (cnt != (u_int)(n < 0 ? -n : n))
 		panic("kwq_test: handler count %u != n %d", cnt, n);
@@ -505,7 +532,7 @@ kt_create(const char *name, uint32_t flags, u_int weight, kwq_handler_t *fn,
 	p.limit = kt_limit;
 	p.weight = weight;
 	p.domain = -1;
-	return (kwq_create(name, KWQ_NET, flags | KWQ_F_INACTIVE, &p, fn, ctx));
+	return (kwq_create(name, kt_class, flags | KWQ_F_INACTIVE, &p, fn, ctx));
 }
 
 static int
@@ -3506,6 +3533,296 @@ kt_run_mixdrain(uint32_t flags)
 	}
 }
 
+
+/* ================================================================ P6 */
+
+/*
+ * BULK stealing and scatter (../SCHED.md S16).  The queue (kern.kwq.bulk.
+ * queue.kts) and its items are kept until the next run or the unload, so
+ * the ATF cases can read kwq's steal counters afterwards.
+ */
+struct kt_sgroup {
+	struct kwq_group g;
+	volatile u_int	handled;	/* items of this call run so far */
+	volatile u_int	done;		/* done() calls: must end at 1 */
+	u_int		n;
+	cpuset_t	cpus;		/* CPUs that ran its items */
+	struct mtx	mtx;		/* for cpus */
+};
+
+static struct kwq *kt_bq;
+static struct titem *kt_bitems;
+static struct kt_sgroup *kt_sg;
+static uint64_t kt_sdone, kt_sdone_errors;
+
+static void
+kt_bulk_destroy(void)
+{
+	if (kt_bq != NULL) {
+		kwq_drain(kt_bq);
+		kwq_destroy(kt_bq);
+		kt_bq = NULL;
+	}
+	free(kt_bitems, M_KWQ_TEST);
+	kt_bitems = NULL;
+	if (kt_sg != NULL) {
+		mtx_destroy(&kt_sg->mtx);
+		free(kt_sg, M_KWQ_TEST);
+		kt_sg = NULL;
+	}
+	free(kt_cpu_hits, M_KWQ_TEST);
+	kt_cpu_hits = NULL;
+}
+
+static int
+kt_bulk_target(void)
+{
+	int cpu = kt_cpu >= 0 ? kt_cpu : 1;
+
+	if (cpu > (int)mp_maxid || CPU_ABSENT(cpu))
+		cpu = 0;
+	return (cpu);
+}
+
+static void
+kt_bind(int cpu)
+{
+	thread_lock(curthread);
+	if (cpu >= 0)
+		sched_bind(curthread, cpu);
+	else
+		sched_unbind(curthread);
+	thread_unlock(curthread);
+}
+
+/*
+ * steal: kt_items items of cost_us each onto one CPU's list of a stealable
+ * queue, from a producer on another CPU, as fast as the limit admits.  The
+ * target's worker falls behind; the steal wake and the idle workers' own
+ * attempts spread the backlog.  Passes when every admitted item ran exactly
+ * once; result_offcpu and result_cpus say how far it spread, and the queue's
+ * steals_in/steals_out say how.
+ */
+static void
+kt_run_steal(void)
+{
+	struct kwq_params p;
+	struct titem *ti;
+	uint64_t in = 0, rejected = 0;
+	u_int i;
+	int tcpu, c, error, deadline;
+
+	tcpu = kt_bulk_target();
+	kt_bind(kt_other_cpu(tcpu));
+	memset(&p, 0, sizeof(p));
+	p.limit = kt_limit;
+	p.domain = -1;
+	kt_cpu_hits = malloc(sizeof(*kt_cpu_hits) * (mp_maxid + 1), M_KWQ_TEST,
+	    M_WAITOK | M_ZERO);
+	kt_bitems = malloc(sizeof(*kt_bitems) * kt_items, M_KWQ_TEST,
+	    M_WAITOK | M_ZERO);
+	kt_bq = kwq_create("kts", KWQ_BULK, KWQ_F_STEALABLE, &p, kt_item_handler,
+	    NULL);
+	if (kt_bq == NULL) {
+		kt_fail("kwq_create(kts) failed");
+		kt_bind(-1);
+		return;
+	}
+	kt_nofifo = true;
+	kt_coop = true;
+	kt_dups = 0;
+	kt_rep_tag = 1;
+	for (i = 0; i < kt_items; i++) {
+		ti = &kt_bitems[i];
+		ti->ti_magic = TITEM_MAGIC;
+		ti->ti_cpu = tcpu;
+		ti->ti_seq = i + 1;
+		KWQ_ITEM_INIT(&ti->ti_item);
+		in++;
+		error = kwq_enqueue(kt_bq, tcpu, &ti->ti_item);
+		if (error == ENOBUFS)
+			rejected++;
+		else if (error != 0) {
+			kt_fail("enqueue error %d", error);
+			break;
+		}
+	}
+	deadline = ticks + 60 * hz;
+	while (atomic_load_64(&kt_handled) + rejected < in &&
+	    ticks - deadline < 0)
+		pause("ktstl", 1);
+	kt_r_in = in;
+	kt_r_out = kt_handled;
+	kt_r_rejected = rejected;
+	kt_r_dups = kt_dups;
+	kt_r_wcpu = tcpu;
+	CPU_FOREACH(c) {
+		if (kt_cpu_hits[c] != 0)
+			kt_r_cpus++;
+		if (c != tcpu)
+			kt_r_offcpu += kt_cpu_hits[c];
+	}
+	if (kt_state[0] != 'f' && kt_handled + rejected != in)
+		kt_fail("in %ju != run %ju + rejected %ju after 60 s",
+		    (uintmax_t)in, (uintmax_t)kt_handled, (uintmax_t)rejected);
+	else if (kt_dups != 0)
+		kt_fail("%ju items run twice", (uintmax_t)kt_dups);
+	kt_nofifo = false;
+	kt_coop = false;
+	kt_bind(-1);
+}
+
+static void
+kt_scatter_handler(struct kwq *q, struct kwq_item *head, int n,
+    void *ctx __unused)
+{
+	struct kwq_item *it, *next;
+	struct titem *ti;
+	struct kt_sgroup *sg;
+	int cpu = curcpu;
+
+	for (it = head; it != NULL; it = next) {
+		next = KWQ_ITEM_NEXT(q, it);
+		KWQ_ITEM_INIT(it);
+		ti = __containerof(it, struct titem, ti_item);
+		if (ti->ti_magic != TITEM_MAGIC)
+			panic("kwq_test: bad item %p", ti);
+		if (ti->ti_seen == kt_rep_tag)
+			atomic_add_64(&kt_dups, 1);
+		ti->ti_seen = kt_rep_tag;
+		sg = ti->ti_grp;
+		if (n > 0 && kt_cost_us != 0)
+			DELAY(kt_cost_us);
+		mtx_lock(&sg->mtx);
+		CPU_SET(cpu, &sg->cpus);
+		mtx_unlock(&sg->mtx);
+		atomic_add_int(&sg->handled, 1);
+		atomic_add_64(&kt_handled, 1);
+		kwq_group_leave(&sg->g, 1);
+	}
+}
+
+static void
+kt_scatter_done(void *arg)
+{
+	struct kt_sgroup *sg = arg;
+
+	/* Every item's handled++ came before its leave, so all are counted. */
+	if (sg->handled != sg->n)
+		atomic_add_64(&kt_sdone_errors, 1);
+	if (atomic_fetchadd_int(&sg->done, 1) != 0)
+		atomic_add_64(&kt_sdone_errors, 1);
+	atomic_add_64(&kt_sdone, 1);
+}
+
+/*
+ * scatter: kt_reps calls of kt_items items each (cost_us apiece), one at a
+ * time from a producer bound to the target CPU: each must complete exactly
+ * once, after all of its items, and result_cpus reports the most CPUs one
+ * call reached.  A refused call (ENOBUFS) is counted and retried.
+ */
+static void
+kt_run_scatter(void)
+{
+	struct kwq_params p;
+	struct kt_sgroup *sg;
+	struct titem *ti;
+	u_int rep, i, ncpu;
+	int error, deadline, tcpu;
+
+	tcpu = kt_bulk_target();
+	kt_bind(tcpu);
+	memset(&p, 0, sizeof(p));
+	p.limit = kt_limit;
+	p.domain = -1;
+	kt_bitems = malloc(sizeof(*kt_bitems) * kt_items, M_KWQ_TEST,
+	    M_WAITOK | M_ZERO);
+	kt_sg = sg = malloc(sizeof(*sg), M_KWQ_TEST, M_WAITOK | M_ZERO);
+	mtx_init(&sg->mtx, "kt scatter", NULL, MTX_DEF);
+	kt_bq = kwq_create("kts", KWQ_BULK, 0, &p, kt_scatter_handler, NULL);
+	if (kt_bq == NULL) {
+		kt_fail("kwq_create(kts) failed");
+		kt_bind(-1);
+		return;
+	}
+	kt_sdone = kt_sdone_errors = 0;
+	kt_dups = 0;
+	for (rep = 0; rep < kt_reps && kt_state[0] != 'f'; rep++) {
+		kt_rep_tag = rep + 1;
+		sg->handled = 0;
+		sg->done = 0;
+		sg->n = kt_items;
+		CPU_ZERO(&sg->cpus);
+		for (i = 0; i < kt_items; i++) {
+			ti = &kt_bitems[i];
+			ti->ti_magic = TITEM_MAGIC;
+			ti->ti_grp = sg;
+			ti->ti_item.kwi_link.stqe_next = i + 1 < kt_items ?
+			    &kt_bitems[i + 1].ti_item : NULL;
+		}
+		while ((error = kwq_scatter(kt_bq, &sg->g, &kt_bitems[0].ti_item,
+		    kt_items, kt_scatter_done, sg)) == ENOBUFS) {
+			kt_r_rejected++;
+			pause("ktscr", 1);
+		}
+		if (error != 0) {
+			kt_fail("kwq_scatter: %d", error);
+			break;
+		}
+		kt_r_in += kt_items;
+		deadline = ticks + 30 * hz;
+		while (atomic_load_int(&sg->done) == 0 && ticks - deadline < 0)
+			pause("ktscw", 1);
+		if (sg->done == 0) {
+			kt_fail("rep %u: no completion after 30 s (%u of %u run)",
+			    rep, sg->handled, sg->n);
+			break;
+		}
+		ncpu = CPU_COUNT(&sg->cpus);
+		if (ncpu > kt_r_cpus)
+			kt_r_cpus = ncpu;
+	}
+	/* a second done() would come after the first: give it a moment */
+	pause("ktscz", hz / 10);
+	kt_r_out = kt_handled;
+	kt_r_runs = kt_sdone;
+	kt_r_exact_errors = kt_sdone_errors;
+	kt_r_dups = kt_dups;
+	if (kt_state[0] != 'f') {
+		if (kt_sdone != kt_r_in / (kt_items ? kt_items : 1))
+			kt_fail("%ju completions for %ju calls", (uintmax_t)kt_sdone,
+			    (uintmax_t)(kt_r_in / (kt_items ? kt_items : 1)));
+		else if (kt_sdone_errors != 0)
+			kt_fail("%ju completions early or repeated",
+			    (uintmax_t)kt_sdone_errors);
+		else if (kt_dups != 0)
+			kt_fail("%ju items run twice", (uintmax_t)kt_dups);
+	}
+	kt_bind(-1);
+}
+
+/*
+ * stealdrain: the P0 create/activate/enqueue/drain/destroy cycle on a
+ * stealable BULK queue, every item onto one CPU so that stealing runs while
+ * the drain sweeps: nothing may be lost or run twice (with `discard', the
+ * drain hands the rest back with n < 0 instead of running it).
+ */
+static void
+kt_run_stealdrain(uint32_t flags)
+{
+	int cpu = kt_cpu;
+
+	kt_cpu = kt_bulk_target();
+	kt_class = KWQ_BULK;
+	kt_nofifo = true;
+	kt_coop = true;
+	kt_run_items(KWQ_F_STEALABLE | flags, kt_item_handler);
+	kt_coop = false;
+	kt_nofifo = false;
+	kt_class = KWQ_NET;
+	kt_cpu = cpu;
+}
+
 static void
 kt_thread(void *arg __unused)
 {
@@ -3513,6 +3830,7 @@ kt_thread(void *arg __unused)
 
 	nanouptime(&t0);
 	kt_floods_destroy();
+	kt_bulk_destroy();
 	kt_handled = kt_discarded = kt_nf_runs = kt_nf_seen = kt_nf_state = 0;
 	kt_fifo_errors = 0;
 	kt_r_in = kt_r_out = kt_r_discarded = kt_r_rejected = kt_r_coalesced = 0;
@@ -3526,6 +3844,7 @@ kt_thread(void *arg __unused)
 	kt_r_patterns = kt_r_with = kt_r_without = kt_r_wcpu = 0;
 	kt_r_bursts = kt_r_first_p50_us = kt_r_first_p99_us = kt_r_first_max_us = 0;
 	kt_r_last_p50_us = kt_r_last_p99_us = kt_r_last_max_us = 0;
+	kt_r_cpus = kt_r_offcpu = 0;
 	kt_msg[0] = '\0';
 
 	if (strcmp(kt_scenario, "lifecycle") == 0 ||
@@ -3589,6 +3908,14 @@ kt_thread(void *arg __unused)
 		kt_run_pingpong(true);
 	else if (strcmp(kt_scenario, "clocks") == 0)
 		kt_run_clocks();
+	else if (strcmp(kt_scenario, "steal") == 0)
+		kt_run_steal();
+	else if (strcmp(kt_scenario, "scatter") == 0)
+		kt_run_scatter();
+	else if (strcmp(kt_scenario, "stealdrain") == 0)
+		kt_run_stealdrain(0);
+	else if (strcmp(kt_scenario, "stealdrain_discard") == 0)
+		kt_run_stealdrain(KWQ_F_DISCARD);
 	else
 		kt_fail("unknown scenario %s", kt_scenario);
 
@@ -3666,6 +3993,7 @@ kt_modevent(module_t mod __unused, int type, void *data __unused)
 		mtx_unlock(&kt_mtx);
 		kt_intr_stop();
 		kt_floods_destroy();
+		kt_bulk_destroy();
 		free(kt_last_seq, M_KWQ_TEST);
 		mtx_destroy(&kt_mtx);
 		return (0);

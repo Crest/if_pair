@@ -104,6 +104,22 @@ kwq_run() {
 R() { sysctl -n kern.kwq_test.result_$1; }
 Q() { sysctl -n kern.kwq.net.queue.$1; }
 
+# kwq_bulk_sum counter: the sum over CPUs of kern.kwq.bulk.queue.kts.cpu.*.counter
+kwq_bulk_sum() {
+	sysctl -a kern.kwq.bulk.queue.kts.cpu 2>/dev/null | \
+	    awk -v c="$1" -F': ' '{ n = split($1, p, "."); if (p[n] == c) s += $2 } END { print s + 0 }'
+}
+
+# Set a kwq.ko knob for this case and restore it in cleanup.
+kwq_knob() {
+	echo "$1=$(sysctl -n "$1")" >> knobs
+	sysctl -q "$1=$2" >/dev/null || atf_fail "sysctl $1=$2"
+}
+kwq_knobs_restore() {
+	[ -f knobs ] || return 0
+	sysctl -q $(cat knobs) >/dev/null 2>&1 || :
+}
+
 kwq_done() {
 	[ "$(R state)" = done ] || atf_fail "$1: $(R state): $(R msg)"
 }
@@ -640,6 +656,101 @@ no_arm_when_idle_body() {
 }
 no_arm_when_idle_cleanup() { knobs_restore; kwq_cleanup; }
 
+# ---------------------------------------------------------------- P6 BULK
+
+atf_test_case steal cleanup
+steal_head() {
+	atf_set descr "2000 items of 100 us onto one CPU of a stealable BULK queue: other CPUs steal batches, every item runs exactly once, steals_in == steals_out"
+	atf_set require.user root
+}
+steal_body() {
+	kwq_setup
+	kwq_run steal cpu=1 items=2000 cost_us=100 limit=100000
+	kwq_done steal
+	echo "  cpus=$(R cpus) offcpu=$(R offcpu) steals_in=$(kwq_bulk_sum steals_in) steals_out=$(kwq_bulk_sum steals_out) stolen_in=$(kwq_bulk_sum stolen_in) stolen_out=$(kwq_bulk_sum stolen_out)"
+	atf_check_equal 0 "$(R dups)"
+	[ "$(R in)" -eq $(( $(R out) + $(R rejected) )) ] || \
+	    atf_fail "in $(R in) != out $(R out) + rejected $(R rejected)"
+	# Ideal is (ncpu - 1) / ncpu off the target (0.75 on the guest's 4).
+	[ $(( $(R offcpu) * 4 )) -ge "$(R in)" ] || \
+	    atf_fail "$(R offcpu) of $(R in) items ran off their CPU, wanted a quarter"
+	[ "$(R cpus)" -ge 2 ] || atf_fail "items ran on $(R cpus) CPU(s)"
+	atf_check_equal "$(kwq_bulk_sum steals_in)" "$(kwq_bulk_sum steals_out)"
+	atf_check_equal "$(kwq_bulk_sum stolen_in)" "$(kwq_bulk_sum stolen_out)"
+	[ "$(kwq_bulk_sum stolen_in)" -ge "$(R offcpu)" ] || \
+	    atf_fail "$(R offcpu) items ran off their CPU, $(kwq_bulk_sum stolen_in) moved"
+}
+steal_cleanup() { kwq_cleanup; }
+
+atf_test_case steal_off cleanup
+steal_off_head() {
+	atf_set descr "kern.kwq.bulk.steal=0: the same load stays on its CPU"
+	atf_set require.user root
+}
+steal_off_body() {
+	kwq_setup
+	kwq_knob kern.kwq.bulk.steal 0
+	kwq_run steal cpu=1 items=500 cost_us=100 limit=100000
+	kwq_done steal
+	atf_check_equal 0 "$(R offcpu)"
+	atf_check_equal 0 "$(kwq_bulk_sum steals_in)"
+	[ "$(R in)" -eq $(( $(R out) + $(R rejected) )) ] || \
+	    atf_fail "in $(R in) != out $(R out) + rejected $(R rejected)"
+}
+steal_off_cleanup() { kwq_knobs_restore; kwq_cleanup; }
+
+atf_test_case scatter cleanup
+scatter_head() {
+	atf_set descr "kwq_scatter(): 200 calls of 64 items, each completes exactly once and after all of its items, spread over more than one CPU"
+	atf_set require.user root
+}
+scatter_body() {
+	kwq_setup
+	kwq_run scatter cpu=1 reps=200 items=64 cost_us=20 limit=100000
+	kwq_done scatter
+	echo "  cpus=$(R cpus) exact_errors=$(R exact_errors) scattered=$(kwq_bulk_sum scattered)"
+	atf_check_equal 200 "$(R runs)"
+	atf_check_equal 0 "$(R exact_errors)"
+	atf_check_equal 0 "$(R dups)"
+	atf_check_equal "$(R in)" "$(R out)"
+	atf_check_equal "$(R in)" "$(kwq_bulk_sum scattered)"
+	[ "$(R cpus)" -ge 2 ] || atf_fail "no call reached a second CPU"
+}
+scatter_cleanup() { kwq_cleanup; }
+
+atf_test_case stealdrain cleanup
+stealdrain_head() {
+	atf_set descr "100 activate/drain cycles of a stealable BULK queue fed on one CPU: nothing lost or run twice while batches move"
+	atf_set require.user root
+}
+stealdrain_body() {
+	kwq_setup
+	kwq_run stealdrain cpu=1 reps=100 items=2000 cost_us=5 limit=100000
+	kwq_done stealdrain
+	atf_check_equal 0 "$(R dups)"
+	[ "$(R in)" -eq $(( $(R out) + $(R discarded) + $(R rejected) )) ] || \
+	    atf_fail "items lost or duplicated: in $(R in) out $(R out) discarded $(R discarded) rejected $(R rejected)"
+	atf_check_equal 0 "$(sysctl -n kern.kwq.nqueues)"
+	atf_check_equal 0 "$(sysctl -n kern.kwq.bulk.nstealable)"
+}
+stealdrain_cleanup() { kwq_cleanup; }
+
+atf_test_case stealdrain_discard cleanup
+stealdrain_discard_head() {
+	atf_set descr "the same with KWQ_F_DISCARD: the drain hands back what is left, wherever stealing put it"
+	atf_set require.user root
+}
+stealdrain_discard_body() {
+	kwq_setup
+	kwq_run stealdrain_discard cpu=1 reps=50 items=5000 cost_us=20 limit=100000
+	kwq_done stealdrain_discard
+	atf_check_equal 0 "$(R dups)"
+	[ "$(R discarded)" -gt 0 ] || atf_fail "nothing discarded at drain"
+	[ "$(R in)" -eq $(( $(R out) + $(R discarded) + $(R rejected) )) ] || \
+	    atf_fail "items lost or duplicated: in $(R in) out $(R out) discarded $(R discarded) rejected $(R rejected)"
+}
+stealdrain_discard_cleanup() { kwq_cleanup; }
+
 atf_init_test_cases() {
 	atf_add_test_case lifecycle
 	atf_add_test_case fifo
@@ -667,4 +778,9 @@ atf_init_test_cases() {
 	atf_add_test_case prio_invariant
 	atf_add_test_case tick_hysteresis
 	atf_add_test_case no_arm_when_idle
+	atf_add_test_case steal
+	atf_add_test_case steal_off
+	atf_add_test_case scatter
+	atf_add_test_case stealdrain
+	atf_add_test_case stealdrain_discard
 }
