@@ -264,7 +264,39 @@ lock order, the group's fences, the `bio_pflags` widths and
 an attached provider, and a refusal at a full list recursing up to
 GEOM's stack guard.
 
-## 6. Open
+## 6. The share-limit changes and if_pair
+
+The share limit changed three times on this branch (3696ce3, 79d9957,
+1dc88f6; section 1, SCHED.md S6.3), and the simulator's `cut` case,
+a NET flood of 20 us items beside an always-runnable thread, said NET
+would change under contention: the thread now gets the specified half
+where it got a third.  An A/B of if_pair on lab, 2026-11-04: A = kwq
+d1e8d3a (kwq before this branch), B = 9186555, if_pair.c and
+tests/compare.sh the same in both; the default eight tests interleaved
+three times, then the single flow out of the box eight times
+(samples/p6_sl_pin_lab_2026-11-04.tsv, p6_sl_oob_lab_2026-11-04.tsv).
+Medians, the runs where they matter:
+
+| | A | B | runs |
+|---|---|---|---|
+| a spin loop pinned to the flow's worker CPU: its share | 0.509 | 0.509 | 0.502-0.509 in all six |
+| ... the flow meanwhile, Gbit/s | 105 | 110 | A 100-110, B 110, 110, 78 |
+| a 1 kHz timer pinned there: p99 lateness, us | 518 | 515 | 515-518, one B run 358 |
+| fork+exec pinned there: mean, us | 830 | 877 | A 671-858, B 873-885 |
+| UDP request-reply beside the flow: p99, us | 15 | 14 | |
+| the timer unpinned under 32 connections: p99, us | 25 900 | 25 900 | |
+| single flow, out of the box: Gbit/s | 140 | 151 | A 76-151, B 137-152 |
+
+The spin loop gets half the worker's CPU under both: the overshoot A
+left uncharged is one item per cut pass, 20 us in the simulator and
+about a microsecond for if_pair (a 16 KiB packet at 150 Gbit/s).
+Nothing else moves beyond the spread but fork+exec, whose three B runs
+all lie above A's three, 6 % at the median: three runs each, so it may
+be noise.  B's third pinned repetition had the flow at 78 and 79
+Gbit/s beside the spin loop and the timer, where every other run had
+100 to 148, and the timer's p99 at 358 us; not traced.
+
+## 7. Open
 
 - lab's one-CPU case got worse between 01a87c3 and 9186555 (section 4:
   the timer's p99 301 to 542 us, kwq-geli's MB/s beside the spin loop
@@ -272,10 +304,9 @@ GEOM's stack guard.
 - Stock GELI's resume holds `sc_queue_mtx` over the key cache's
   `M_WAITOK` allocations (releng/15.1 g_eli_ctl.c, `g_eli_ctl_resume()`):
   kwq-geli no longer does (5f72da2); a report upstream is crest's call.
-- The two share-limit changes alter NET's behaviour under contention
-  (the simulator's `cut` case: the competing thread now gets the
-  specified half where it got a third); an if_pair A/B on lab before
-  kwq-bulk is merged.
+- Keeping the share-limit changes and merging kwq-bulk into kwq are
+  crest's decisions (section 6: if_pair on lab is unchanged by them
+  within the spread, fork+exec beside a flow perhaps 6 % slower).
 - GELI and BLOCKING: the priority argument of KWQ.md S14 does not hold
   against BULK with its share limit; the reserved-worker argument for
   the swap and root-I/O path stands and needs P7.

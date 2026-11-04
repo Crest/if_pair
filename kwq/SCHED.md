@@ -676,7 +676,10 @@ judged by the new period's state rather than restored first, the
 process got 37 % beside the providers' dd and md threads, the 1 kHz
 timer's p99 lateness on that CPU fell from 149 ms to 1.3 ms, and the
 `cut` scenario's always-runnable thread gets the 50 % the default
-specifies (it got 33 %: the overshoot went uncharged).  Measured
+specifies (it got 33 %: the overshoot went uncharged).  if_pair does
+not show the difference: on lab a spin loop beside a flow got 0.509 of
+the worker's CPU before and after, its items being about a microsecond
+against the scenario's 20 us (BULK.md S6, 2026-11-04).  Measured
 against the pass stamps the worker takes anyway, so the limit costs no
 clock read of its own.
 

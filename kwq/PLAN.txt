@@ -1328,6 +1328,10 @@ Phases
       per-sector dispatch); four providers on one CPU leave the timer
       there 0.54 ms late at p99 against 38 ms, up from 0.30 at 01a87c3
       (not traced).  No leak, panic or WITNESS line in the syslog.
+      if_pair A/B for the share-limit changes (A d1e8d3a, B 9186555;
+      BULK.md S6): a spin loop beside a flow gets 0.509 under both,
+      the out-of-box single flow 140 against 151 Gbit/s; fork+exec
+      beside the flow 6 % slower in B (three runs, maybe noise).
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
     P7a Design and simulate first (the P1a pattern; nothing in the kernel
