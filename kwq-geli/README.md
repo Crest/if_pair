@@ -86,7 +86,9 @@ The port (all marked `kwq-geli:` in the source):
   A bio is run on the session of the CPU whose worker takes it.
 - **Suspend parks new bios** on the softc's queue and waits for the ones
   in flight, then frees the sessions.  Resume makes the sessions again
-  and sends the parked bios through.
+  and sends the parked bios through.  It sets up the keys outside the
+  queue mutex, which GELI holds over the key cache's `M_WAITOK`
+  allocations (a WITNESS warning on every resume).
 - **Destroy drains the queue**, which runs what is left as GELI's
   workers did, then cancels the bios parked while suspended.
 

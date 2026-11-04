@@ -1290,8 +1290,8 @@ Phases
     - P6f: kwq-geli ATF 14 cases; geli_bench.sh/geli_report.sh.
     - Machines: guest ATF 34/34 + 12/12 (GENERIC-DEBUG, KWQ_LIST_CHECK);
       lab 31/31 + 11/11 and geli_bench x5, then down since 20:34 UTC (an
-      uncommitted kwq-geli build, BULK.md S5; waits for crest); a07 waits
-      for crest's go-ahead (new kernel code).
+      uncommitted kwq-geli build, BULK.md S5; waits for crest); a07
+      2026-11-04, below.
     - Measured (BULK.md, KWQ.md S14.1): kwq-geli's writes within 2 % of
       stock GELI on lab, its reads 18 % below before the per-sector
       dispatch (0ad0126, unmeasured on lab); four providers on one CPU:
@@ -1307,6 +1307,18 @@ Phases
       retry of a bio short part way (now ENOMEM; fail point and ATF
       case nomem), resume's unchecked session setup (fail point and ATF
       case resume_fail).  Guest 34/34 + 14/14 after them.
+    - a07 (2026-11-04, crest's go-ahead; GENERIC, arm64, 128 CPUs) at
+      0a37c05: ATF 33/34 (no_arm_when_idle skips on arm64) + 14/14;
+      geli_bench and crypto_bench x3 (BULK.md S2-S4, KWQ.md S14.1).
+      kwq-geli reads 32 % above stock GELI at a sys+intr share of
+      0.40 against 0.73; four providers on one CPU leave the
+      timer there 0.8 ms late at p99 against 105 ms; kwq_crypto on the
+      whole machine 1.8 times the thread model.  Stealing reaches 48
+      CPUs in the steal case.  Three faults fixed on the way
+      (5f72da2..0a37c05): resume's key setup under the queue mutex
+      (inherited from GELI, seen in the guest's dmesg), kwq_crypto's
+      "done" before its teardown, geli_bench taking exiting GELI
+      workers for new ones.
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
     P7a Design and simulate first (the P1a pattern; nothing in the kernel

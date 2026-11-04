@@ -1889,6 +1889,25 @@ lab's lost 18 % in UMA and memset; lab went down before the fixed
 version could be measured.  (2) Stock GELI's workers pinned to that CPU,
 one per provider (`kern.geom.eli.threads=1`).
 
+a07 (2026-11-04: GENERIC, arm64, 128 CPUs, armv8crypto; the port with
+the per-sector dispatch, HEAD 0a37c05; 64 providers, three
+repetitions; BULK.md S4 has the whole table,
+samples/p6_geli_a07_2026-11-04.tsv):
+
+| | a07 GELI | a07 kwq-geli |
+|---|---|---|
+| write, 64 providers at once, MB/s | 6692 | 6754 |
+| read, MB/s | 35514 | 46830 |
+| ... sys+intr share of the machine | 0.73 | 0.40 |
+| the same writers looping: a spin loop's share, unpinned / pinned | 0.77 / 0.34 | 1.00 / 0.74 |
+| ... a 1 kHz timer's p99 lateness, unpinned, us (idle 3) | 49 | 11 |
+| ... fork+exec, mean, us (idle 1238) | 2619 | 1428 |
+| four providers' crypto all on one CPU: timer p99 there, us | 105296 (2) | 820 |
+| ... a spin loop's share of that CPU | 0.029 | 0.52 |
+
+Stock GELI's `wakeup()` wakes all 128 workers of a provider; it
+switches 14 times as often as kwq-geli while reading (not profiled).
+
 What it says about point 3: GELI's own workers at `PUSER` are better
 than every timeshare thread, so a CPU they keep busy is lost to user
 processes too (3 % of it on lab, the timer 37 ms late at the 99th
@@ -1900,12 +1919,16 @@ budget every 16 sectors, which makes the hand-over finer and is not yet
 measured on lab): half the CPU stays with the user, the
 timer stays within 0.3 ms, and the providers share evenly, for 3 % of
 the crypto throughput when the CPU is contended and 43 % when the spin
-loop takes its half.  Spread over the machine the two are close, BULK
-ahead on lab and behind on the guest.  Two faults the measurement found
-in the share limit were fixed on the way (SCHED.md S6.3: the clamp of
-a period's first pass, and passes longer than the period going
-uncharged); before the second fix the one-CPU case left the spin loop
-5-7 %, GELI's own result.  The priority argument therefore holds
+loop takes its half.  Spread over the machine the two are close on
+lab and the guest, BULK ahead on lab and behind on the guest; on
+a07's 128 CPUs kwq-geli reads 32 % faster for little more than half
+the system time, and beside its writers the spin loop, the unpinned
+timer and fork+exec all do better (the pinned timer is 10 ms late at
+p99 under both, not the crypto's doing: BULK.md S4).  Two faults the
+measurement found in the share limit were fixed on the way (SCHED.md
+S6.3: the clamp of a period's first pass, and passes longer than the
+period going uncharged); before the second fix the one-CPU case left
+the spin loop 5-7 %, GELI's own result.  The priority argument therefore holds
 against BULK without a share limit and not against BULK with one: on
 these measurements GELI does not need BLOCKING for its priority.  It
 still wants BLOCKING's reserved workers for the swap and root-I/O path,
@@ -2817,3 +2840,5 @@ decision deferred until real clients show what fan-in they produce.
   allowance while nothing else is runnable (S6.3); kwq.h's requeue rule
   forbids handing back a notifier already walked past, not an item, as
   S3 says.
+- 2026-11-04 (P6, a07): S14.1 has a07's measurements of kwq-geli
+  against stock GELI.
