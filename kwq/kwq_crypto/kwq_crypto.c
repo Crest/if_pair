@@ -180,7 +180,8 @@ SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, verify, CTLFLAG_RW, &kc_verify, 0,
 SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, limit, CTLFLAG_RW, &kc_limit, 0,
     "kwq modes: per-CPU item limit of the queues (0 = class default)");
 SYSCTL_STRING(_kern_kwq_crypto, OID_AUTO, result_state, CTLFLAG_RD, kc_state,
-    sizeof(kc_state), "idle | running | done | fail");
+    sizeof(kc_state),
+    "idle | running | done | fail (done and fail once torn down)");
 SYSCTL_STRING(_kern_kwq_crypto, OID_AUTO, result_msg, CTLFLAG_RD, kc_msg,
     sizeof(kc_msg), "failure description");
 SYSCTL_STRING(_kern_kwq_crypto, OID_AUTO, result_driver, CTLFLAG_RD, kc_driver,
@@ -822,14 +823,6 @@ kc_run(void *arg __unused)
 		}
 	mtx_unlock(&kc_mtx);
 	kc_report(t1 - t0);
-	if (kc_state[0] != 'f') {
-		if (kc_r_errors != 0)
-			kc_fail("%ju crypto or verify errors", (uintmax_t)kc_r_errors);
-		else if (kc_r_items == 0)
-			kc_fail("nothing completed");
-		else
-			strlcpy(kc_state, "done", sizeof(kc_state));
-	}
 	printf("kwq_crypto: %s nq %u depth %u bytes %u cpu %d: %ju.%02ju MB/s "
 	    "p50 %ju p99 %ju max %ju us jain %ju cpus %ju driver %s [%s]\n",
 	    kc_mode, kc_nq, kc_depth, kc_bytes, kc_cpu,
@@ -839,7 +832,21 @@ kc_run(void *arg __unused)
 out:
 	/* The inflight wait can time out; teardown's drain then waits for the rest. */
 	kc_teardown();
+	/*
+	 * The verdict only now: a harness that sees "done" unloads the
+	 * module or starts the next run, both refused (EBUSY) until here.
+	 * Tearing down thread mode on a07's 128 CPUs takes long enough to
+	 * matter.
+	 */
 	mtx_lock(&kc_mtx);
+	if (kc_state[0] != 'f') {
+		if (kc_r_errors != 0)
+			kc_fail("%ju crypto or verify errors", (uintmax_t)kc_r_errors);
+		else if (kc_r_items == 0)
+			kc_fail("nothing completed");
+		else
+			strlcpy(kc_state, "done", sizeof(kc_state));
+	}
 	kc_running = false;
 	wakeup(&kc_running);
 	mtx_unlock(&kc_mtx);
