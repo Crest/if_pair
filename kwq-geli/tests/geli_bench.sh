@@ -71,6 +71,15 @@ detach_all() {
 		$GK detach -f "$m.kweli" 2>/dev/null
 		geli detach -f "$m.eli" 2>/dev/null
 	done
+	# Stock GELI's workers ("g_eli[N] mdM", a kernel process each) exit
+	# after the detach returns, 64 providers x 128 CPUs on a07 taking
+	# seconds.  The next attach reuses the md names: a worker still
+	# exiting would be bound and counted with the new ones.
+	re="^g_eli\[[0-9]+\] ($(tr '\n' '|' < "$WORK/mds" | sed 's/|$//'))\$"
+	n=0
+	while pgrep -S "$re" >/dev/null && [ $n -lt 600 ]; do
+		sleep 0.1; n=$((n + 1))
+	done
 	sleep 0.5
 }
 cleanup() {
