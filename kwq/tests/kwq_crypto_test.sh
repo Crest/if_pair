@@ -114,9 +114,19 @@ weight_head() {
 }
 weight_body() {
 	kc_setup
-	# Weights act only on backlogged queues: 32 requests of 256 KiB are
-	# several quanta of work per round, 32 of 64 KiB were less than one.
-	kc_run mode=kwq nq=2 depth=32 bytes=262144 cpu=1 stealable=0 weight0=3
+	# Weights act only on queues backlogged through their pass: a pass
+	# serves the requests queued when it began (../SCHED.md S4.2), so
+	# queue 0's depth has to hold more than its three quanta of work.
+	# No fixed depth does on every CPU: 32 requests of 256 KiB are
+	# 4.4 ms of AES-XTS on a07 but 1.5 ms on lab (5.5 GB/s on one core),
+	# where queue 0 ran dry every round and the ratio was 1.52.  So the
+	# CPU's rate is measured first and the depth holds six quanta.
+	kc_run mode=kwq nq=1 depth=32 bytes=262144 cpu=1 stealable=0 secs=1
+	q=$(sysctl -n kern.kwq.bulk.quantum_us)
+	d=$(echo "$(C mbps_x100) $q" | awk '{ d = int(6 * $2 * $1 / 100 / 262144) + 1; print(d < 32 ? 32 : d) }')
+	echo "quantum $q us, depth $d"
+	[ "$d" -le 1024 ] || atf_skip "six quanta of AES-XTS on one CPU exceed 1024 requests of 256 KiB"
+	kc_run mode=kwq nq=2 depth=$d bytes=262144 cpu=1 stealable=0 weight0=3 secs=3
 	r=$(C shares | awk '{ split($1, a, ":"); split($2, b, ":"); printf("%d", b[2] > 0 ? a[2] * 100 / b[2] : 0) }')
 	echo "ratio x100: $r"
 	[ "$r" -ge 240 ] && [ "$r" -le 360 ] || atf_fail "weight 3:1 gave a ratio of $r/100"
