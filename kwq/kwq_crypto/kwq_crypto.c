@@ -834,9 +834,9 @@ out:
 	kc_teardown();
 	/*
 	 * The verdict only now: a harness that sees "done" unloads the
-	 * module or starts the next run, both refused (EBUSY) until here.
-	 * Tearing down thread mode on a07's 128 CPUs takes long enough to
-	 * matter.
+	 * module or starts the next run, both refused (EBUSY) until here,
+	 * and it can do so within milliseconds, before the teardown has
+	 * drained the queues or stopped the threads.
 	 */
 	mtx_lock(&kc_mtx);
 	if (kc_state[0] != 'f') {
