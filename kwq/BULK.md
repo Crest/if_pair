@@ -296,8 +296,90 @@ be noise.  B's third pinned repetition had the flow at 78 and 79
 Gbit/s beside the spin loop and the timer, where every other run had
 100 to 148, and the timer's p99 at 358 us; not traced.
 
-## 7. Open
+## 7. Many providers, and a SATA SSD model
 
+crest's question of 2026-11-04: what stock GELI's worker per CPU per
+provider, n x m threads, does to the whole machine against kwq-geli's
+queue per provider.  geli_bench.sh's `scale` test attaches 1 to 128
+providers on md(4) devices of 32 MiB and loads them two ways, one
+request in flight per provider from its own thread (iolat.c): 4 KiB
+reads at random offsets and 1 MiB sequential writes; the probes run
+unpinned beside the load.  Its `ssd` test puts a gnop(8) provider
+under each of four 256 MiB devices that holds a request to the next
+clock tick (0 to 1 ms) with a set probability, a model of a SATA SSD
+in which the device sets the pace (../kwq-geli/tests/geli_bench.sh
+has the calibration).  lab, 0ef1ebc, three repetitions, medians
+(samples/p6_scale_lab_2026-11-04.tsv, p6_ssd_lab_2026-11-04.tsv); the
+charts are in crest's dashboard "GELI Threads vs kwq Queues".
+
+What the providers hold once attached, idle:
+
+| providers | 1 | 16 | 128 |
+|---|---|---|---|
+| threads added, stock GELI / kwq-geli | 16 / 0 | 256 / 0 | 2048 / 0 |
+| kernel memory, MiB | 0.3 / 0.1 | 5.1 / 2.1 | 40.6 / 16.6 |
+| `ps -axH`, ms | 3.4 / 3.4 | 4.9 / 3.5 | 57.5 / 3.4 |
+| attach, all of them, ms | 4 / 4 | 42 / 46 | 321 / 356 |
+
+GELI's memory is its workers' processes, threads and kernel stacks;
+kwq-geli's is the per-CPU sysctl nodes of each queue (about 6 KiB per
+CPU), which the memory audit of the same day also found.  Idle, neither
+costs CPU: GELI's workers sleep without a timeout.
+
+Under load (`s` = 4 KiB reads, `b` = 1 MiB writes):
+
+| providers | 1 | 16 | 32 | 128 |
+|---|---|---|---|---|
+| s: requests/s, GELI / kwq-geli | 194 k / 232 k | 676 k / 1.50 M | 686 k / 1.39 M | 663 k / 549 k |
+| s: crypto worker wakeups per request | 12.4 / 1.0 | 15.6 / 1.3 | 15.9 / 2.1 | 15.9 / 2.1 |
+| s: kernel CPU per request, us | 44 / 3.3 | 23 / 9.5 | 23 / 11 | 23 / 28 |
+| s: request p99, us | 6.1 / 4.7 | 63 / 20 | 199 / 73 | 1688 / 1655 |
+| s: CPU-bound loop's share | 0.83 / 1.00 | 0.28 / 0.78 | 0.25 / 0.55 | 0.25 / 0.36 |
+| s: fork+exec, us | 504 / 342 | 2317 / 1035 | 2403 / 1267 | 2611 / 2777 |
+| b: MB/s | 3191 / 3392 | 13250 / 13350 | 10050 / 8230 | 9832 / 5396 |
+| b: kernel CPU per MiB, us | | 1254 / 1229 | 1595 / 1997 | 1685 / 3006 |
+| b: fork+exec, us | 386 / 384 | 11460 / 6048 | 9044 / 57530 | 18240 / 48550 |
+
+On the quiet machine fork+exec takes 358 us and the loop gets 1.00.
+GELI queues each request and wakes every worker of the provider
+(`wakeup(sc)`): 12 to 16 of its 16 bound workers wake per request,
+one finds work, and a single provider's 4 KiB reads cost 44 us of
+kernel time each against 3.3.  Up to one provider per CPU that
+leaves the machine's other users far more: at 16, the loop's share
+0.78 against 0.28, fork+exec 1.0 against 2.3 ms, at twice the reads.
+
+Past two providers per CPU kwq-geli falls behind, and with the 1 MiB
+writes far behind: its kernel CPU per MiB grows from 1.2 to 3.0 ms
+between 16 and 128 providers where GELI's stays near 1.6, its
+throughput drops to 55 % of GELI's, and a fork+exec beside the
+writers waits 49 to 58 ms.  Not traced; section 8.
+
+The SSD model, four devices, the device the limit (MB/s and requests/s
+equal for gnop alone, GELI and kwq-geli: 2096 MB/s sequential, 376 k
+random reads/s):
+
+| | gnop only | stock GELI | kwq-geli |
+|---|---|---|---|
+| sequential read: kernel CPU per 128 KiB, us | 19 | 80 | 68 |
+| sequential write: same | 31 | 132 | 89 |
+| random 4 KiB read: same | 3.4 | 12.9 | 8.1 |
+| ... median latency, us | 26 | 50 | 39 |
+| ... crypto worker wakeups per request | | 5.6 | 1.8 |
+| ... CPU-bound loop's share | 1.00 | 0.74 | 0.83 |
+
+What the encryption adds to a request's kernel time, above gnop alone,
+is 20 % less with kwq-geli for sequential reads, 43 % for writes and
+50 % for random reads, and its wakeups a third to a sixth of GELI's.
+The model's p99 is its own tick, 1.1 ms, for all three.
+
+## 8. Open
+
+- kwq-geli past two providers per CPU (section 7): with 64 and 128
+  providers of 1 MiB writes on lab's 16 CPUs its kernel CPU per MiB
+  is nearly twice GELI's and fork+exec beside it 50 ms.  Candidates,
+  none measured: the share limit yielding to the md(4) threads,
+  stealing among 128 backlogged queues, the pass's per-sector budget
+  checks suspending bios, the idle-worker scan of `KWQ_CPU_ANY`.
 - lab's one-CPU case got worse between 01a87c3 and 9186555 (section 4:
   the timer's p99 301 to 542 us, kwq-geli's MB/s beside the spin loop
   13 % lower); which of the changes between them, not traced.

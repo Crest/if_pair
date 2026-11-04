@@ -1332,6 +1332,13 @@ Phases
       BULK.md S6): a spin loop beside a flow gets 0.509 under both,
       the out-of-box single flow 140 against 151 Gbit/s; fork+exec
       beside the flow 6 % slower in B (three runs, maybe noise).
+    - crest's follow-up (2026-11-04): geli_bench scale (1 to 128
+      providers on small md(4) devices) and ssd (a gnop(8) SATA SSD
+      model), 0ef1ebc, lab (BULK.md S7): GELI wakes 12 to 16 workers
+      per request; kwq-geli serves twice the 4 KiB reads at 16 providers
+      and leaves the machine more, costs half the encryption's CPU in
+      the SSD model, but past two providers per CPU falls behind (1 MiB
+      writes at 128: 5.4 against 9.8 GB/s, fork+exec 49 ms; open).
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
     P7a Design and simulate first (the P1a pattern; nothing in the kernel

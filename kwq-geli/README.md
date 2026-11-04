@@ -18,7 +18,7 @@ the base system.
 |---|---|
 | `sys/` | `geom_kwqeli.ko`: the kernel half, class `KWQELI` |
 | `lib/` | `geom_kwqeli.so`: the userland half of geli(8), for `geom kwqeli ...` |
-| `tests/` | ATF suite on md(4) providers (`Kyuafile`, `kwqeli_test.sh`) |
+| `tests/` | ATF suite on md(4) providers (`Kyuafile`, `kwqeli_test.sh`); `geli_bench.sh`, the benchmark against stock GELI (its header lists the tests: `tput`, `resp`, `onecpu`, `scale` for many providers, `ssd` for a gnop(8) SATA SSD model), with `iolat.c`, the load of the last two, and `geli_report.sh` for its tables |
 
 The history is reviewable against upstream: the first commit is the
 unchanged copy, the second the rename, the third the port.

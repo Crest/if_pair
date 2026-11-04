@@ -1952,6 +1952,17 @@ these measurements GELI does not need BLOCKING for its priority.  It
 still wants BLOCKING's reserved workers for the swap and root-I/O path,
 the reliability argument below, which no BULK measurement addresses.
 
+With many providers (BULK.md S7, lab, 2026-11-04) GELI's worker per
+CPU per provider shows its other cost: each request wakes every worker
+of its provider, 12 to 16 of lab's 16, and one 4 KiB read costs 44 us
+of kernel time against kwq-geli's 3.3.  Up to one provider per CPU
+kwq-geli serves twice the reads and leaves user processes far more;
+in a gnop(8) SATA SSD model it halves what the encryption adds to a
+random read.  Past two providers per CPU it falls behind, with 1 MiB
+writes to 55 % of GELI's throughput and fork+exec beside them 49 ms,
+not yet traced: a result against BULK as built, not yet one against
+the class.
+
 ## 15. Scheduler choice: DRR (1995) and what came after
 
 The fairness core of S5 is deficit round robin (Shreedhar & Varghese,
