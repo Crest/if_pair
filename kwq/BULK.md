@@ -1,7 +1,7 @@
 # BULK: stealing, scatter, a crypto client and GELI (PLAN P6)
 
 Report of the BULK class work on branch kwq-bulk, 2026-11-03, with
-a07's runs of 2026-11-04.  crest's
+a07's and lab's runs of 2026-11-04.  crest's
 request: implement the BULK class, write a dummy client that benchmarks
 crypto as a test case, copy GEOM ELI as kwq-geli and port it to kwq,
 test it with md(4), and measure the impact on the system's
@@ -27,11 +27,15 @@ place among the classes is KWQ.md S14.1.  Raw rows are in
 | machine | kwq suite | kwq-geli suite |
 |---|---|---|
 | guest, GENERIC-DEBUG (WITNESS, INVARIANTS) | 34/34 with KWQ_LIST_CHECK (31 kwq_test, 3 kwq_crypto), again after the review's fixes | 14/14 after the review's fixes; before them 12/12, and 11/11 five times in a row with KWQ_LIST_CHECK and the double-enqueue assertion, resume 3/3 |
-| lab, GENERIC | 31/31 (before kwq_crypto's cases) | 11/11 (before the resume case) |
+| lab, GENERIC, amd64, 16 CPUs | 34/34 at 9186555; at f953f11 33/34, the `weight` case failing on lab's fast AES-NI (section 5) | 14/14 at 9186555 |
 | a07, GENERIC, arm64, 128 CPUs | 33/34 at 0a37c05 (31 kwq_test, 3 kwq_crypto), `no_arm_when_idle` skipped: arm64 has no per-CPU timer line in `vmstat -i` | 14/14 at 0a37c05 |
 
-The lab rows predate the review's fixes (section 5) and the per-sector
-dispatch.  a07's first run, at f9120cb, had the same results once
+The kernel code is the same at 0a37c05, f953f11 and 9186555 (one
+comment differs).  Before
+the review lab passed 31/31 and 11/11 (01a87c3).  lab's syslog over the
+whole run, every case and benchmark stage unloading its modules, has
+no leak warning, no UMA zone freed non-empty, no panic and no WITNESS
+line.  a07's first run, at f9120cb, had the same results once
 three cases were run again by themselves: a07's kyua crashed in
 `yield` and in `providers` ("PID already in all_exec_data"), and the
 crashed case's cleanup, still running, unloaded geom_kwqeli under
@@ -54,19 +58,20 @@ back by stock geli).
 
 ## 3. The crypto client: BULK against GELI's thread model
 
-kwq_crypto on the guest (GENERIC-DEBUG, aesni0) and on a07 (GENERIC,
-armv8crypto0, 128 CPUs), 64 KiB requests in 4 KiB operations, three
-repetitions, medians; samples/p6_crypto_guest_2026-11-03.tsv and
-p6_crypto_a07_2026-11-04.tsv (0a37c05):
+kwq_crypto on the guest (GENERIC-DEBUG, aesni0), on lab (GENERIC,
+aesni0, 16 CPUs) and on a07 (GENERIC, armv8crypto0, 128 CPUs), 64 KiB
+requests in 4 KiB operations, three repetitions, medians;
+samples/p6_crypto_guest_2026-11-03.tsv, p6_crypto_lab_2026-11-04.tsv
+(9186555) and p6_crypto_a07_2026-11-04.tsv (0a37c05):
 
-| | guest BULK | guest thread model (PUSER) | a07 BULK | a07 thread model |
-|---|---|---|---|---|
-| whole machine, 4 requests per CPU in flight (16, 512): MB/s | 4901 | 5016 | 134243 | 74205 |
-| ... latency p99, us | 383 | 319 | 447 | 767 |
-| N queues busy on one CPU: MB/s, N = 1 / 8 | 1520 / 1486 | 1565 / 1516 | 1916 / 1911 | 1921 / 1924 |
-| ... Jain over the queues, N = 2 / 4 / 8 | 0.997 / 0.997 / 0.999 | 0.5 / 0.25 / 0.125 | 0.999 / 0.999 / 0.999 | 0.5 / 0.25 / 0.125 |
-| ... a spin loop pinned there: its share of the CPU | 0.55 | 0.004 | 0.52 | 0.002 |
-| ... a 1 kHz timer pinned there, N = 8: p99 / max lateness, us | 270 / 1376 | 292 / 8 093 682 | 527 / 869 | 3 / 8 082 651 |
+| | guest BULK | guest thread model (PUSER) | lab BULK | lab thread model | a07 BULK | a07 thread model |
+|---|---|---|---|---|---|---|
+| whole machine, 4 requests per CPU in flight (16, 64, 512): MB/s | 4901 | 5016 | 52429 | 51668 | 134243 | 74205 |
+| ... latency p99, us | 383 | 319 | 127 | 95 | 447 | 767 |
+| N queues busy on one CPU: MB/s, N = 1 / 8 | 1520 / 1486 | 1565 / 1516 | 5452 / 5461 | 5464 / 5505 | 1916 / 1911 | 1921 / 1924 |
+| ... Jain over the queues, N = 2 / 4 / 8 | 0.997 / 0.997 / 0.999 | 0.5 / 0.25 / 0.125 | 0.999 / 0.999 / 0.999 | 0.942 / 0.795 / 0.451 | 0.999 / 0.999 / 0.999 | 0.5 / 0.25 / 0.125 |
+| ... a spin loop pinned there: its share of the CPU | 0.55 | 0.004 | 0.52 | 0.001 | 0.52 | 0.002 |
+| ... a 1 kHz timer pinned there, N = 8: p99 / max lateness, us | 270 / 1376 | 292 / 8 093 682 | 491 / 504 | 2 / 8 087 824 | 527 / 869 | 3 / 8 082 651 |
 
 The thread model takes the CPU whole: a kernel thread at PUSER is above
 every timeshare thread and, never returning to user mode, never acts on
@@ -74,7 +79,9 @@ ULE's slice end, so the first of N such threads keeps it from the
 others (Jain 1/N) and from the user (the timer slept through the run in
 one 8 s catch-up).  BULK shares the CPU evenly among its queues by
 DRR and with the user by the share limit.  `weight` 3 against 1 on one
-CPU gives exactly 3.00 times the throughput.  (A first version of the
+CPU gives exactly 3.00 times the throughput, given a backlog that
+outlasts the three quanta (section 5: on lab a fixed depth did not).
+(A first version of the
 benchmark started the probe after the load and measured the thread
 model's starved probe as running alone: a share of 1.0.  Probes now
 start first.)  The thread model's low p99 on a07 is the same
@@ -86,7 +93,11 @@ On the whole of a07 BULK delivers 1.8 times the thread model's
 throughput (the thread model 54 000 to 77 000 MB/s over six
 repetitions in two runs, BULK 134 060 to 134 290).  The thread model
 keeps one list per queue under one mutex for its 128 threads, BULK a
-list per CPU; that is the likely cause, not profiled.
+list per CPU; that is the likely cause, not profiled.  lab's 16 CPUs
+show no such gap (52 429 against 51 668 MB/s).  On lab's one CPU the
+thread model's starvation is less complete than on a07, Jain 0.94 /
+0.80 / 0.45 rather than 1/N, but the slowest of eight queues got
+11 MB/s, the spin loop 0.1 % and the timer one catch-up 8 s late.
 
 ## 4. kwq-geli against stock GELI
 
@@ -111,7 +122,8 @@ with `uma_zalloc_arg` at 879 samples against 315 and `memset_erms` at
 one, completes it inside the dispatch and reuses it for the next
 sector.  The privacy path now dispatches per sector as GELI does
 (../kwq-geli README.md); lab went down before it could be measured
-there (section 5).
+there (section 5), and after crest's reboot kwq-geli reads 5 % faster
+than stock GELI there (the lab table below).
 
 With the per-sector dispatch (HEAD, the guest only, three repetitions,
 GENERIC-DEBUG so direction only; samples/p6_geli_guest_head_2026-11-03.tsv),
@@ -128,8 +140,7 @@ against stock GELI on the same boot:
 The budget check every 16 sectors is what halves the timer's lateness:
 a bio no longer holds the worker for its whole length.  The spin loop
 beside the spread load still gets less under kwq-geli on the guest than
-under stock GELI, where lab showed the opposite; lab's numbers for HEAD
-are owed.
+under stock GELI, where lab shows the opposite, at HEAD as before.
 
 On a07 (GENERIC, arm64, 128 CPUs, armv8crypto0; HEAD 0a37c05, three
 repetitions, medians; samples/p6_geli_a07_2026-11-04.tsv), 64
@@ -165,6 +176,38 @@ same picture: reads 36873 against 46189 MB/s, the spin loop pinned
 beside the writers 0.34 against 0.78, the timer on the one CPU 104 ms
 against 0.81 ms at p99.
 
+On lab (GENERIC, amd64, 16 CPUs, aesni0; 9186555, the kernel code of
+0a37c05; 16 providers, five repetitions, medians;
+samples/p6_geli_lab_2026-11-04.tsv), against stock GELI on the same
+boot; "local" is kwq-geli with each bio queued on the CPU that issued
+it (`kern.geom.kwqeli.cpu=-2`):
+
+| | stock GELI | kwq-geli | not stealable | local |
+|---|---|---|---|---|
+| write, 16 providers at once, MB/s | 7641 | 8014 | 7751 | 7837 |
+| read, MB/s | 21740 | 22811 (+5 %) | 22947 | 21921 |
+| ... context switches per second while reading | 396 000 | 120 000 | 126 000 | 139 000 |
+| writers looping: a spin loop's share, unpinned / pinned | 0.69 / 0.25 | 0.77 / 0.49 | 0.78 / 0.50 | 0.80 / 0.46 |
+| ... a 1 kHz timer's p99 lateness, unpinned / pinned, us (idle: 2 / 2) | 431 / 1911 | 431 / 1560 | 384 / 1528 | 486 / 1231 |
+| ... fork+exec, mean / max, us (idle: 356 / 385) | 5136 / 8693 | 4875 / 8028 | 4843 / 7294 | 4553 / 7444 |
+| four providers' crypto on one CPU: timer p99 there, us | 37869 | 542 | 539 | 546 |
+| ... the timer's catch-ups | 3809 | 0 | 0 | 0 |
+| ... a spin loop's share of that CPU (the load's half second left out) | 0.033 | 0.52 | 0.52 | 0.52 |
+| ... MB/s with the timer / with the spin loop there | 3479 / 3458 | 3495 / 1741 | 3489 / 1739 | 3500 / 1742 |
+
+Against lab's run at 01a87c3 (KWQ.md S14.1, the same tests), the reads
+went from 18 % behind stock GELI to 5 % ahead, and the spin loop
+pinned beside the writers from 0.44 to 0.49 of its CPU.  Two numbers
+of the one-CPU case got worse: the timer's p99 there rose from 301 to
+542 us, still 70 times below stock GELI's, and kwq-geli's MB/s beside
+the spin loop fell from 1997 to 1741 with the spin loop's share
+unchanged.  Several changes lie between the two runs: the per-sector
+dispatch, which ends passes on the budget every 16 sectors, the share
+limit's carry change (1dc88f6) and the ENOMEM path.  Which of them
+made the difference is not measured.  fork+exec is slower than on
+2026-11-03 under stock GELI too (4226 then), so that is the boot, not
+the port.
+
 ## 5. Faults found, and the one that took lab down
 
 | fault | found by | effect | fixed in |
@@ -183,6 +226,7 @@ against 0.81 ms at p99.
 | resume propagated the keys with the queue mutex held, as stock GELI does, and the key cache allocates with `M_WAITOK` there | the guest's dmesg, 2026-11-04 | a WITNESS warning on every resume on GENERIC-DEBUG since the port; on GENERIC a panic if the allocation slept while another thread waited for the mutex | 5f72da2 |
 | kwq_crypto turned `result_state` "done" before its teardown | a07 | the module refuses to unload (EBUSY) until the teardown ends, and crypto_bench unloads within milliseconds of "done": on a07, after the last run (eight thread-mode queues), it left kwq and kwq_crypto loaded | 7b8310b |
 | geli_bench took stock GELI workers still exiting from the previous test for the new providers' | a07 | 8192 workers (64 providers x 128 CPUs) exit for seconds; `cpuset` failed with ESRCH and ended the benchmark in its third repetition | 0a37c05 |
+| kwq_crypto's weight case took 32 requests of 256 KiB for several quanta of work | lab | aesni does the 8 MiB in 1.5 ms, less than queue 0's three quanta (a07: 4.4 ms); a pass serves what was queued when it began (SCHED.md S4.2), so queue 0 ran dry every round and got its 32 requests to queue 1's 21, a ratio of 1.52, the specified behaviour; the case now measures the CPU's rate first and takes a depth holding six quanta | 9186555 |
 
 The lab hang, 2026-11-03 20:34 UTC: the uncommitted first per-sector
 dispatch was built and loaded on lab for a read A/B at 20:33:50,
@@ -222,8 +266,9 @@ GEOM's stack guard.
 
 ## 6. Open
 
-- lab: reboot (crest), then the read A/B and the onecpu and resp tests
-  again with the per-sector dispatch, and kwq_crypto's cases.
+- lab's one-CPU case got worse between 01a87c3 and 9186555 (section 4:
+  the timer's p99 301 to 542 us, kwq-geli's MB/s beside the spin loop
+  13 % lower); which of the changes between them, not traced.
 - Stock GELI's resume holds `sc_queue_mtx` over the key cache's
   `M_WAITOK` allocations (releng/15.1 g_eli_ctl.c, `g_eli_ctl_resume()`):
   kwq-geli no longer does (5f72da2); a report upstream is crest's call.

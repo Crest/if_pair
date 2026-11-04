@@ -74,8 +74,12 @@ defined in GLOSSARY.md.
   starve user processes, and blocking work does not need to beat them.
   No API takes a priority
   [L4].  A queue may declare a WEIGHT in 1..8 (default 1) that only
-  affects its share within its class on its CPU: `w` quanta per round.
-  Clients are reviewed kernel code, not tenants, so a weight above 1 is
+  affects its share within its class on its CPU: `w` quanta per round,
+  of the work queued when its pass begins.  A shorter backlog is served
+  whole and the rest of the share is not used: a client that keeps a
+  fixed number of requests in flight and queues each again on its
+  completion gets that number per round whatever its weight (BULK.md
+  S5, lab).  Clients are reviewed kernel code, not tenants, so a weight above 1 is
   a declaration that is reviewed with the client, not a privilege kwq
   enforces (an earlier version of this sentence said weights could only
   be lowered, which the 1..8 range with default 1 contradicted;
@@ -1885,8 +1889,8 @@ three, GENERIC-DEBUG, direction only:
 
 (1) Before the per-sector dispatch: the port's first version took all
 of a bio's crypto requests before the first dispatch, and a profile put
-lab's lost 18 % in UMA and memset; lab went down before the fixed
-version could be measured.  (2) Stock GELI's workers pinned to that CPU,
+lab's lost 18 % in UMA and memset; with the per-sector dispatch lab
+reads 22811 against stock GELI's 21740 MB/s (+5 %, below).  (2) Stock GELI's workers pinned to that CPU,
 one per provider (`kern.geom.eli.threads=1`).
 
 a07 (2026-11-04: GENERIC, arm64, 128 CPUs, armv8crypto; the port with
@@ -1908,6 +1912,20 @@ samples/p6_geli_a07_2026-11-04.tsv):
 Stock GELI's `wakeup()` wakes all 128 workers of a provider; it
 switches 14 times as often as kwq-geli while reading (not profiled).
 
+lab again (2026-11-04, after crest's reboot: 9186555, the kernel code
+of a07's run; 16 providers, five repetitions; BULK.md S4 has the whole
+table, samples/p6_geli_lab_2026-11-04.tsv):
+
+| | lab GELI | lab kwq-geli |
+|---|---|---|
+| write, 16 providers at once, MB/s | 7641 | 8014 |
+| read, MB/s | 21740 | 22811 |
+| the same writers looping: a spin loop's share, unpinned / pinned | 0.69 / 0.25 | 0.77 / 0.49 |
+| ... a 1 kHz timer's p99 lateness, unpinned, us (idle 2) | 431 | 431 |
+| ... fork+exec, mean, us (idle 356) | 5136 | 4875 |
+| four providers' crypto all on one CPU: timer p99 there, us | 37869 (2) | 542 |
+| ... a spin loop's share of that CPU | 0.033 | 0.52 |
+
 What it says about point 3: GELI's own workers at `PUSER` are better
 than every timeshare thread, so a CPU they keep busy is lost to user
 processes too (3 % of it on lab, the timer 37 ms late at the 99th
@@ -1915,11 +1933,11 @@ percentile), and among themselves they are not fair (one kernel thread
 at `PUSER` never acts on ULE's slice end).  BULK is above them, at
 `PI_SOFT`, but its share limit (SCHED.md S6.3) hands the CPU over
 between passes, here between bios (the handler now also stops at the
-budget every 16 sectors, which makes the hand-over finer and is not yet
-measured on lab): half the CPU stays with the user, the
-timer stays within 0.3 ms, and the providers share evenly, for 3 % of
-the crypto throughput when the CPU is contended and 43 % when the spin
-loop takes its half.  Spread over the machine the two are close on
+budget every 16 sectors): half the CPU stays with the user, the timer
+stays within 0.3 ms (0.54 ms on lab at HEAD), and the providers share
+evenly, for 3 % of the crypto throughput when the CPU is contended and
+43 % when the spin loop takes its half (on lab at HEAD: none, and
+50 %).  Spread over the machine the two are close on
 lab and the guest, BULK ahead on lab and behind on the guest; on
 a07's 128 CPUs kwq-geli reads 32 % faster for little more than half
 the system time, and beside its writers the spin loop, the unpinned
@@ -2842,3 +2860,8 @@ decision deferred until real clients show what fan-in they produce.
   S3 says.
 - 2026-11-04 (P6, a07): S14.1 has a07's measurements of kwq-geli
   against stock GELI.
+- 2026-11-04 (P6, lab): S14.1 has lab's measurements of the port with
+  the per-sector dispatch.  S1: a weight's `w` quanta per round are of
+  the work queued when the queue's pass begins; a shorter backlog is
+  served whole and the rest of the share goes unused (kwq_crypto's
+  `weight` case on lab, BULK.md S5).

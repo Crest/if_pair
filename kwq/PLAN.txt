@@ -1289,9 +1289,9 @@ Phases
     - P6e done: kwq-geli (copy, rename, port), README.
     - P6f: kwq-geli ATF 14 cases; geli_bench.sh/geli_report.sh.
     - Machines: guest ATF 34/34 + 12/12 (GENERIC-DEBUG, KWQ_LIST_CHECK);
-      lab 31/31 + 11/11 and geli_bench x5, then down since 20:34 UTC (an
-      uncommitted kwq-geli build, BULK.md S5; waits for crest); a07
-      2026-11-04, below.
+      lab 31/31 + 11/11 and geli_bench x5, then down from 2026-11-03
+      20:34 UTC to crest's reset on 2026-11-04 (an uncommitted kwq-geli
+      build, BULK.md S5); a07 and lab 2026-11-04, below.
     - Measured (BULK.md, KWQ.md S14.1): kwq-geli's writes within 2 % of
       stock GELI on lab, its reads 18 % below before the per-sector
       dispatch (0ad0126, unmeasured on lab); four providers on one CPU:
@@ -1319,6 +1319,15 @@ Phases
       (inherited from GELI, seen in the guest's dmesg), kwq_crypto's
       "done" before its teardown, geli_bench taking exiting GELI
       workers for new ones.
+    - lab (2026-11-04, after crest's reset; GENERIC, amd64, 16 CPUs) at
+      9186555, the kernel code of a07's run: ATF 34/34 + 14/14 once
+      kwq_crypto's weight case sized its backlog by the CPU's rate (at
+      a fixed depth lab's AES-NI emptied queue 0 every round: 1.52
+      instead of 3; BULK.md S5); geli_bench x5, crypto_bench x3.
+      kwq-geli reads 5 % above stock GELI (18 % below before the
+      per-sector dispatch); four providers on one CPU leave the timer
+      there 0.54 ms late at p99 against 38 ms, up from 0.30 at 01a87c3
+      (not traced).  No leak, panic or WITNESS line in the syslog.
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
     P7a Design and simulate first (the P1a pattern; nothing in the kernel
