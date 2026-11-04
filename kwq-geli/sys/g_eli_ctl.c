@@ -991,6 +991,7 @@ g_eli_ctl_resume(struct gctl_req *req, struct g_class *mp)
 	u_char *key, mkey[G_ELI_DATAIVKEYLEN];
 	int *nargs, keysize, error;
 	u_int nkey;
+	bool suspended;
 
 	g_topology_assert();
 
@@ -1047,8 +1048,18 @@ g_eli_ctl_resume(struct gctl_req *req, struct g_class *mp)
 	}
 	G_ELI_DEBUG(1, "Using Master Key %u for %s.", nkey, pp->name);
 
+	/*
+	 * kwq-geli: the keys outside the queue mutex.  GELI propagates them
+	 * under it, and the key cache allocates with M_WAITOK there (WITNESS
+	 * warns; a sleep with a thread waiting on the mutex would panic).
+	 * GEOM runs the control verbs one at a time in its event thread and
+	 * a suspended device has no bio in flight, so nothing else reads or
+	 * changes the keys or the flag meanwhile.
+	 */
 	mtx_lock(&sc->sc_queue_mtx);
-	if (!(sc->sc_flags & G_ELI_FLAG_SUSPEND))
+	suspended = (sc->sc_flags & G_ELI_FLAG_SUSPEND) != 0;
+	mtx_unlock(&sc->sc_queue_mtx);
+	if (!suspended)
 		gctl_error(req, "Device %s is not suspended.", name);
 	else {
 		/* Restore sc_mkey, sc_ekeys, sc_akey and sc_ivkey. */
@@ -1060,7 +1071,6 @@ g_eli_ctl_resume(struct gctl_req *req, struct g_class *mp)
 		 * crypto driver gone since the suspend) leaves the device
 		 * suspended and its keys wiped again, for a later resume.
 		 */
-		mtx_unlock(&sc->sc_queue_mtx);
 		error = 0;
 		LIST_FOREACH(wr, &sc->sc_workers, w_next) {
 			error = g_eli_newsession(wr);
@@ -1088,9 +1098,7 @@ g_eli_ctl_resume(struct gctl_req *req, struct g_class *mp)
 		G_ELI_DEBUG(1, "Resumed %s.", pp->name);
 		mtx_unlock(&sc->sc_queue_mtx);
 		g_eli_kwq_resume(sc);
-		mtx_lock(&sc->sc_queue_mtx);
 	}
-	mtx_unlock(&sc->sc_queue_mtx);
 	explicit_bzero(mkey, sizeof(mkey));
 	explicit_bzero(&md, sizeof(md));
 }
