@@ -103,6 +103,9 @@ struct cfg {
 	int	donor_bound;	/* a steal takes no more than stays below donor_us */
 	double	watch_us;	/* P8: the starved-worker tick, us (0: none) */
 	int	donor_lone;	/* P8: a lone item behind running work is a backlog */
+	int	lazy;		/* P5, hybrid H1: idle lines for sleepers past lazy_us */
+	double	lazy_us;	/* H1: how long a sleeper waits to set its bit (<0: the hold) */
+	int	lazy_step;	/* H1: gossip's steps from this on look at the idle lines */
 	int	oneq;		/* all open producers share one queue */
 	int	extraq;		/* stealable queues without producers */
 	int	verbose;
@@ -128,6 +131,8 @@ cfg_default(void)
 	C.donor_bound = 1;	/* L: the matrix sweep of 200, 500 and 2000 us */
 	C.watch_us = 1000;
 	C.donor_lone = 1;
+	C.lazy_us = -1;
+	C.lazy_step = KP_STEP_TABLE;
 	C.probe_groups = 2;
 	C.far_probe = 1;
 	C.far_us = 0;	/* any backlog: the screen of 0 and 20 us, 2026-11-05 */
@@ -185,7 +190,7 @@ static uint64_t gs;		/* the run's own stream */
 /* Events: a binary heap */
 
 enum { EV_DONE_B, EV_DONE_O, EV_WAKE, EV_PUBLISH, EV_ARRIVE, EV_ISSUE,
-    EV_RETRY, EV_PHASE, EV_SAMPLE, EV_CAP, EV_WATCH, EV_END };
+    EV_RETRY, EV_PHASE, EV_SAMPLE, EV_CAP, EV_WATCH, EV_LAZY, EV_END };
 
 struct ev {
 	double		t;
@@ -817,6 +822,7 @@ struct cpu {
 	bool		donor;
 	int		dq;		/* the donor's longest stealable queue */
 	int		far_g;		/* P8: the far probe's group, -1 before the first */
+	uint64_t	lazyseq;	/* H1: the sleep the lazy timer belongs to */
 	uint64_t	dec_n, watch_n;	/* P8: decision points, and at the tick's arming */
 	bool		watch_armed;
 	bool		starved;	/* P8: flagged by the tick; lone items stealable */
@@ -1078,7 +1084,7 @@ static struct {
 	struct hist	regret, age, herd, disc, react;
 	uint64_t	place, good, sampled, local[5], steps[8], checks, fails;
 	uint64_t	expired, moves[5], handoffs, steals, steal_tries, pingpong;
-	uint64_t	refused, ops, merges, spills, selfs;
+	uint64_t	refused, ops, merges, spills, selfs, lazy_hits;
 	double		work, idle_l3, idle_any, cap_t;
 	double		disc_hop_sum[32], disc_hop_max[32];
 	uint64_t	disc_hop_n[32];
@@ -1213,7 +1219,7 @@ shard_of(int c)
 static int
 idle_line(int c)
 {
-	return (C.policy == P_SHARD ? L_SHARD + shard_of(c) : L_IDLE);
+	return (C.policy == P_SHARD || C.lazy ? L_SHARD + shard_of(c) : L_IDLE);
 }
 
 /*
@@ -1306,6 +1312,41 @@ pick_shard(int q, int me)
 		}
 	}
 	return (best);
+}
+
+/*
+ * H1: gossip's pick found no idle core: the nearest sleeper of the near
+ * groups' idle lines, then a far group's, or NONE.  The lines hold only
+ * workers asleep for the hold (EV_LAZY).
+ */
+static int
+pick_lazy(int q, int me)
+{
+	int i, c, g, seen[MAXCPU / 1 + 1], ns = 0, k;
+	bool read;
+
+	for (i = -1; i < order_n[me]; i++) {
+		c = i < 0 ? me : order[me][i];
+		g = shard_of(c);
+		read = false;
+		for (k = 0; k < ns; k++)
+			if (seen[k] == g)
+				read = true;
+		if (!read) {
+			if (ns > C.probe_groups)
+				break;
+			seen[ns++] = g;
+			cur_cost += line_read(me, L_SHARD + g);
+		}
+		if (c == me || !cpus[c].inmask)
+			continue;
+		cur_cost += line_read(me, LISTLINE(q, c));
+		if (QL(q, c)->depth == 0)
+			return (c);
+	}
+	if (C.far_probe > 0)
+		return (pick_far(q, me, seen, ns));
+	return (NONE);
 }
 
 /* P1/P2: kwq_pick_any() */
@@ -1472,9 +1513,21 @@ pick_gossip(int q, int me, bool self)
 		fprintf(stderr, " merges %ju ival %u\n", (uintmax_t)kc->kc_ctl.kx_merges,
 		    KP_T2US(kc->kc_ctl.kx_ival));
 	}
-	return (kp_place(&T, me, kpnow(), (uint64_t)cost,
-	    self && C.selfstep ? (int)self_load(me) : -1, &C.kp, &cpus[me].rng,
-	    queue_ok, &qq, &lastpick));
+	{
+		int t = kp_place(&T, me, kpnow(), (uint64_t)cost,
+		    self && C.selfstep ? (int)self_load(me) : -1, &C.kp, &cpus[me].rng,
+		    queue_ok, &qq, &lastpick);
+		int c;
+
+		/* H1: no idle core in gossip's view: the idle lines, if they know one */
+		if (C.lazy && lastpick.step >= (u_int)C.lazy_step &&
+		    (c = pick_lazy(q, me)) != NONE) {
+			if (warm())
+				M.lazy_hits++;
+			return (c);
+		}
+		return (t);
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -2101,6 +2154,16 @@ go_sleep(int c)
 	    C.policy == P_SHARD) {
 		p->inmask = true;
 		charge_bulk(c, line_write(c, idle_line(c)) + C.c_atomic);
+	}
+	/* H1: the idle line learns of a sleeper only once it has slept the hold */
+	if (C.policy == P_GOSSIP && C.lazy) {
+		p->lazyseq++;
+		if (C.lazy_us == 0) {
+			p->inmask = true;	/* P8's mask, written at every sleep */
+			charge_bulk(c, line_write(c, idle_line(c)) + C.c_atomic);
+		} else
+			ev_push(now + (C.lazy_us < 0 ? KP_T2US(C.kp.hold) : C.lazy_us) * US + 1,
+			    EV_LAZY, c, p->lazyseq);
 	}
 	p->ws = W_SLEEP;
 	p->sleep_t = now;
@@ -3068,6 +3131,7 @@ report(void)
 	out("local_l3_frac", M.place ? (double)M.local[2] / M.place : 0);
 	out("local_far_frac", M.place ? (double)(M.local[3] + M.local[4]) / M.place : 0);
 	out("spills", (double)M.spills);
+	out("lazy_hits", (double)M.lazy_hits);
 	out("ops_per_s", span > 0 ? M.ops / (span / SEC) : 0);
 	out("work_frac", span > 0 ? M.work / (span * ncpu) : 0);
 	out("cpu_per_op_us", M.ops ? (bulk + oth) / M.ops / US : 0);
@@ -3210,6 +3274,9 @@ parse(int argc, char **argv)
 		else if (KEY("donor_bound")) C.donor_bound = (int)d;
 		else if (KEY("watch_us")) C.watch_us = d;
 		else if (KEY("donor_lone")) C.donor_lone = (int)d;
+		else if (KEY("lazy")) C.lazy = (int)d;
+		else if (KEY("lazy_us")) C.lazy_us = d;
+		else if (KEY("lazy_step")) C.lazy_step = (int)d;
 		else if (KEY("probe_groups")) C.probe_groups = (int)d;
 		else if (KEY("far_probe")) C.far_probe = (int)d;
 		else if (KEY("far_us")) C.far_us = d;
@@ -3406,6 +3473,14 @@ main(int argc, char **argv)
 			break;
 		case EV_WATCH:
 			watch_fire(e.a);
+			break;
+		case EV_LAZY:
+			if (e.b == cpus[e.a].lazyseq && cpus[e.a].ws == W_SLEEP &&
+			    !cpus[e.a].inmask) {
+				cpus[e.a].inmask = true;
+				charge_bulk(e.a, line_write(e.a, idle_line(e.a)) + C.c_atomic +
+				    C.timer_ns);
+			}
 			break;
 		case EV_SAMPLE:
 			if (warm())
