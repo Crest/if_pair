@@ -1353,12 +1353,12 @@ Per class: `kern.kwq.<class>.`
 | node | type | access | default | meaning |
 |---|---|---|---|---|
 | `yield_prio` | int | RW | `PUSER` (56) | priority the worker yields at after each round; `PRI_MAX_TIMESHARE` (223) lets every user thread run a full slice per round |
-| `quantum_us` | uint | RWTUN | net 200, bulk 1000, blocking 5000 | CPU time a queue of weight 1 may consume per round (BLOCKING too: the quantum shares a worker between queues, which ULE's slice does not) |
+| `quantum_us` | uint | RWTUN | net 200, bulk 5000, blocking 5000 | CPU time a queue of weight 1 may consume per round (BLOCKING too: the quantum shares a worker between queues, which ULE's slice does not) |
 | `penalty_rounds` | uint | RWTUN | 32 | debt clamp in quanta: the most rounds an overrunning queue is parked (P1; SCHED.md S4.3) |
 | `budget_check_every` | uint | RWTUN | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; 1 = every call (SCHED.md S4.4) (P2) |
 | `limit` | uint | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards; 1..`UINT_MAX`, clamped to `INT_MAX` at creation; 0 is refused (EINVAL), as a tunable it leaves the default |
 | `cap_permille` | uint | RWTUN | 500 | share limit: the share of its CPU the worker may spend in passes per `cap_period_us` while other threads are runnable, the rest waiting between passes as an idle-priority thread, in 1/1000; 1000 = off, and the worker then obeys ULE's slice end as a process would (S11 Missing 1; SCHED.md S6.3) |
-| `cap_period_us` | uint | RWTUN | 1000 | the share limit's period |
+| `cap_period_us` | uint | RWTUN | net 1000, bulk 10000, blocking 1000 | the share limit's period (BULK's holds a 1 MiB item with slack, SCHED.md S8) |
 | `cap_prio` | int | RWTUN | `PRI_MIN_IDLE` (224) | the priority the worker waits at between passes while over its allowance, never the priority of a pass; `PRI_MAX_TIMESHARE` (223) is the other useful value; class priority + 1 .. `PRI_MAX_IDLE` (255) accepted for experiments (SCHED.md S6.3) |
 | `priority` | int | RDTUN | `PI_NET` / `PI_SOFT` / `PUSER` | scheduler priority of the class's workers, a loader tunable; net and bulk in [`PRI_MIN_ITHD`, `PRI_MAX_KERN`] (4BSD recomputes a kernel thread's priority in the timeshare range), blocking up to `PRI_MAX_TIMESHARE`, and net <= bulk <= blocking, else all three default |
 | `tick_us` | uint | RWTUN | 0 (off) | the tick regime's bound `L` (S16): after three consecutive sleeps shorter than `L` the worker sleeps with `L` as its timeout and producers place their lists without waking it, until a tick serves one element or none; 0..100000 (P4f) |

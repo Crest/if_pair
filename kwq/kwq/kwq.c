@@ -282,16 +282,26 @@ int kwq_yield_prio[KWQ_NCLASS] = { PUSER, PUSER, PUSER };
  * idle CPU.  Anything below the class priority is accepted for experiments.
  */
 int kwq_cap_prio[KWQ_NCLASS] = { PRI_MIN_IDLE, PRI_MIN_IDLE, PRI_MIN_IDLE };
-static u_int kwq_quantum_us[KWQ_NCLASS] = { 200, 1000, 5000 };
+/*
+ * BULK's quantum and share-limit period (SCHED.md S8, 2026-11-05) leave a
+ * pass room for a 1 MiB item of AES-XTS-256 with slack: 5 ms of allowance
+ * against 1.1 ms per 1 MiB GELI write on a07 and 0.34 ms on lab, request
+ * to completion at four providers, and 1 to 4 ms for a write's first
+ * piece on lab at 128 providers.  At
+ * 1 ms each the allowance, 500 us, was below one such item and every
+ * 1 MiB bio was encrypted in pieces (../BULK.md S7.1, S7.2).
+ */
+static u_int kwq_quantum_us[KWQ_NCLASS] = { 200, 5000, 5000 };
 /*
  * The share limit (SCHED.md S6.3) is on by default at an equal share:
- * half of each millisecond in passes at the class priority while anything
+ * half of each period in passes at the class priority while anything
  * else is runnable on the CPU, the other half waiting between passes at
- * cap_prio (by default an idle priority).  The
+ * cap_prio (by default an idle priority).  The period is 1 ms for NET and
+ * BLOCKING and 10 ms for BULK (above).  The
  * knobs are expert overrides; 1000 turns it off.
  */
 static u_int kwq_cap_permille[KWQ_NCLASS] = { 500, 500, 500 };
-static u_int kwq_cap_period_us[KWQ_NCLASS] = { 1000, 1000, 1000 };
+static u_int kwq_cap_period_us[KWQ_NCLASS] = { 1000, 10000, 1000 };
 static u_int kwq_penalty_rounds[KWQ_NCLASS] = { 32, 32, 32 };
 /*
  * The tick regime's bound L (../KWQ.md S16, PLAN P4e): with it set, a

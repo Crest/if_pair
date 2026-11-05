@@ -153,7 +153,7 @@ falls out for pseudo-interfaces is a side effect, not the design goal.
 - **Round**: one traversal of the worker's ring with new-list passes
   interleaved (S4.2).  Rounds are the unit of refill and of yielding.
 - **Quantum `Q`**: nanoseconds, per class, `kern.kwq.<class>.quantum_us`
-  x 1000.  Defaults: NET 200 us, BULK 1 ms, BLOCKING 5 ms (S8).
+  x 1000.  Defaults: NET 200 us, BULK 5 ms, BLOCKING 5 ms (S8).
 - **Weight `w`**: per queue, 1..8, default 1, from `kwq_params.weight`.
   A queue's refill is `Qw = Q x w`.
 - **Deficit `D`**: signed nanoseconds per (queue, CPU); the service the
@@ -655,9 +655,10 @@ thread (`PRI_MIN_IDLE`), which ULE runs only when nothing else is
 runnable and preempts for anything that wakes;
 alone on its CPU the worker runs through the whole period
 (work-conserving).  The defaults, 500 and 1000 us, are the equal share
-FreeBSD gives two competing processes, at tick granularity; they need
-no tuning and the knobs are expert overrides (1000 turns the limit
-off).  Unused allowance does not carry into the next period; time used
+FreeBSD gives two competing processes, at tick granularity; BULK's
+period is 10000 us, so that its 5 ms allowance holds a 1 MiB item of
+AES-XTS-256 with slack (S8, 2026-11-05).  They need no tuning and the
+knobs are expert overrides (1000 turns the limit off).  Unused allowance does not carry into the next period; time used
 beyond the allowance of the periods that elapsed does, as debt of at
 most one period, so a clamped pass's one-item overshoot is charged and a
 pass longer than the period, which a single item can be (a 1 MiB GELI
@@ -1043,12 +1044,12 @@ client's `c_max`; `Y` the time the yielded-to threads run at a yield
 
 | knob | scope | default | effect |
 |---|---|---|---|
-| `kern.kwq.<class>.quantum_us` | class, RWTUN | 200 / 1000 / 5000 | `Q`; the throughput/latency dial: larger = fewer yields and lock hand-offs per item, longer B4/B5.  Validated to `[10, 1000000]` us by the sysctl handler: 0 would park every queue forever (S13) |
+| `kern.kwq.<class>.quantum_us` | class, RWTUN | 200 / 5000 / 5000 | `Q`; the throughput/latency dial: larger = fewer yields and lock hand-offs per item, longer B4/B5.  Validated to `[10, 1000000]` us by the sysctl handler: 0 would park every queue forever (S13) |
 | `kwq_params.weight` | queue, create time | 1 | share within the class on a CPU, 1..8, read as "this queue gets `w` quanta per round".  Clients are reviewed kernel code, not tenants, so a weight above 1 is a declaration reviewed with the client, not a privilege kwq enforces (KWQ.md S1 corrected 2026-09-28) |
 | `kern.kwq.<class>.yield_prio` | class, RW | `PUSER` | who may run at a yield (S6.2) |
 | `kern.kwq.<class>.priority` | class, RDTUN | `PI_NET` / `PI_SOFT` / `PUSER` | the class's worker priority, a loader tunable; net and bulk in [`PRI_MIN_ITHD`, `PRI_MAX_KERN`], blocking up to `PRI_MAX_TIMESHARE`, net <= bulk <= blocking, else all three default (S6.3, under 4BSD) |
 | `kern.kwq.<class>.cap_permille` | class, RWTUN | 500 | share of its CPU the worker may spend in passes per period while other threads are runnable, in 1/1000; the rest of the period it waits between passes as an idle-priority thread; 1000 = off, and the worker then obeys ULE's slice end as a process would (S6.3) |
-| `kern.kwq.<class>.cap_period_us` | class, RWTUN | 1000 | the period of the share limit; also the bound on how long the CPU is given away at a time |
+| `kern.kwq.<class>.cap_period_us` | class, RWTUN | 1000 / 10000 / 1000 | the period of the share limit; also the bound on how long the CPU is given away at a time |
 | `kern.kwq.<class>.cap_prio` | class, RWTUN | `PRI_MIN_IDLE` (224) | the priority the worker waits at between passes while over its allowance, never the priority of a pass; `PRI_MAX_TIMESHARE` (223) is the other useful value (no idle-affinity shortcut, preempted only by priorities <= `preempt_thresh`); any priority below the class priority up to `PRI_MAX_IDLE` (255) is accepted for experiments (S6.3) |
 | `GRACE_SERVICE` | derived | `Q x max(kw_nactive, 1)` at the doorbell: an empty ring counts as one | anti-gaming window in service delivered to the other queues (S4.6); replaced `GRACE_ROUNDS` 1 on 2026-10-28 when the budget cut broke the round count; the P1a sweep's finding that one and two rounds are indistinguishable carries over (S12) |
 | `kern.kwq.<class>.budget_check_every` | class, RWTUN | 8 | `K` of S4.4: `kwq_budget_left()` reads the clock at least every `K` calls; 1 = read on every call (exact B1, expensive with cheap items); validated to `[1, 64]` |
@@ -1064,6 +1065,16 @@ least `c_max` of every client in the class (S1a.1: below that a client's
 single item overruns every pass and is parked most rounds - correct but
 poor for everyone's latency), and well below a tick (1 ms at hz=1000) so
 the tick guard rarely fires.
+BULK is the exception since 2026-11-05: its clients' items are up to a
+MAXPHYS bio of crypto, and both its quantum and its share-limit
+allowance were below one (a 1 MiB GELI write takes 1.1 ms on a07 and
+0.34 ms on lab, request to completion at four providers, and its first
+piece 1 to 4 ms on lab at 128 providers), so every such bio ran in
+pieces (BULK.md S7.1, S7.2).  BULK's `Q` is 5 ms and its `cap_period_us`
+10 ms, an allowance of 5 ms: room for a 1 MiB item with slack for any
+well-behaved client.  The price is the bound for the other threads on
+a saturated CPU, which wait up to 5 ms at a time instead of 0.5, still
+below ULE's own slice; BULK.md S7.3 measures both sides.
 PLAN.txt P1 sweeps 50/100/200/500 us on the Ampere before the default is
 final.  Swept 2026-10-19 (P4b goal 2, tests/t_29_multi_pair.sh with
 QUANTA, samples/t29_a07_2026-10-19_quantum_sweep.txt): 50..2000 us on

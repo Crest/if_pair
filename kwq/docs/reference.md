@@ -552,7 +552,8 @@ are leaves.
 | workers | one per CPU | one per CPU | none created; a pool is specified for P7 |
 | handler may sleep | no | no | yes |
 | network epoch entered by kwq | yes | no | no |
-| `quantum_us` default | 200 | 1000 | 5000 |
+| `quantum_us` default | 200 | 5000 | 5000 |
+| `cap_period_us` default | 1000 | 10000 | 1000 |
 | `limit` default | 4096 | 4096 | 4096 |
 | stealing | never | `KWQ_F_STEALABLE`: idle workers nearest first in cache topology (`place` 0 and 2), or the busy worker's hand-off (`place=1`), batch moved and charged where it runs (SCHED.md S16, S17) | n/a |
 | status | available | available | **refused at create** |
@@ -621,12 +622,12 @@ also read from `loader.conf` when the module is preloaded.  Out-of-range values 
 
 | node | flags | range | default net / bulk / blocking | effect |
 |---|---|---|---|---|
-| `quantum_us` | RWTUN | 10 .. 1000000 | 200 / 1000 / 5000 | CPU time a weight-1 queue may use per round.  Larger: fewer hand-offs per item, longer worst-case wait for others |
+| `quantum_us` | RWTUN | 10 .. 1000000 | 200 / 5000 / 5000 | CPU time a weight-1 queue may use per round.  Larger: fewer hand-offs per item, longer worst-case wait for others |
 | `limit` | RWTUN | 1 .. UINT_MAX | 4096 | default per-CPU bound for queues created with `limit = 0`; applies to queues created afterwards, clamped to `INT_MAX` there.  0 is refused (EINVAL; a loader tunable of 0 leaves 4096 and the kernel prints `Setting sysctl ... failed: 22`): every queue created afterwards would refuse every enqueue |
 | `penalty_rounds` | RWTUN | 1 .. 1024 | 32 | how many quanta of debt a queue may accumulate, i.e. the longest parking |
 | `budget_check_every` | RWTUN | 1 .. 64 | 8 | how often `kwq_budget_left()` reads the clock; 1 is exact and expensive |
 | `cap_permille` | RWTUN | 1 .. 1000 | 500 | share limit: the share of its CPU the worker may spend in passes per period while other threads are runnable, in 1/1000; the rest of the period it waits between passes as an idle-priority thread.  Equal share by default, 1000 = off, and the worker then obeys ULE's slice end as a process would (SCHED.md S6.3) |
-| `cap_period_us` | RWTUN | 100 .. 1000000 | 1000 | the share limit's period, the longest the CPU is given away at a time |
+| `cap_period_us` | RWTUN | 100 .. 1000000 | 1000 / 10000 / 1000 | the share limit's period, the longest the CPU is given away at a time |
 | `cap_prio` | RWTUN | class priority + 1 .. 255 | 224 (`PRI_MIN_IDLE`) | the priority the worker waits at between passes while over its allowance, never the priority of a pass.  224 runs only when the CPU would otherwise idle and is preempted by anything that wakes; 223 (`PRI_MAX_TIMESHARE`) is the other useful value, the last batch slot, which ULE does not treat as idle when placing a waking thread.  The rest of the range is for experiments (SCHED.md S6.3) |
 | `tick_us` | RWTUN | 0 .. 100000 | 0 (off) | the tick regime's bound `L` (KWQ.md S16, opt-in): while a worker's producer is dense its sleep has a timeout of `tick_us`, producers append without ringing the doorbell, and the timeout serves what accumulated.  0 is the doorbell regime, one wake per backlog |
 | `tick_urgent_us` | RWTUN | 0 .. 100000 | 0 (at once) | inside the tick regime, an urgent item (`kwq_enqueue_urgent()`) that finds the worker asleep wakes it this much later instead of at once, so that urgent items within the bound share one wake (`tick_urgent_deferred`, `tick_urgent_wakes`); a bound at or above `tick_us` is the tick's own and arms nothing; outside the regime, and for a notifier, a drain or a cancel, nothing changes (WAKE.md S12.5, S12.8) |
