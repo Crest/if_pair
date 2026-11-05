@@ -136,8 +136,9 @@ Kernel criteria (P6g.3), medians over at least three repetitions, same boot:
   hence "up to four".
 - **Distance** in the ranking is topology distance (the rings of
   `kwq_topo_order`), not torus hops.
-- **Sizes**: lab, 8 cores, 2 x 4, 3 hops across; a07, 128 cores, 8 x 16,
-  12 hops; the guest, 4 CPUs, 2 x 2.  Built once at module load:
+- **Sizes**: lab, 8 cores, 2 x 4, 3 hops across; a07, 128 cores, 11 x 12
+  with a last row of 8, 11 hops; the guest, 4 CPUs, 2 x 2, 2 hops.
+  Built once at module load:
   FreeBSD does not hot-plug CPUs.
 
 ### 2.2 Per-core blocks
@@ -157,8 +158,13 @@ layout is fixed by CTASSERTs.
   are independent hints, and a table mixing old and new entries is
   harmless.
 - **Time**: `sbinuptime() >> 12` (about 1 us), truncated to 32 bits.
-  It wraps after 4096 s and is compared by signed difference; entries
-  expire long before that.  `cpu_ticks()` is not used: it jumps on a07.
+  It wraps after 4096 s and is compared by signed difference.  A stamp
+  that seems to lie more than 61 us in the future is one that wrapped
+  (more than 2048 s old) and counts as expired; so does a merge time,
+  which makes the merge due, and a pending fall's start, which lets the
+  fall be published.  Without this a table left alone for half an hour
+  would look fresh again (found by the simulator, whose clock starts
+  near the wrap).  `cpu_ticks()` is not used: it jumps on a07.
 - **Memory**: 384 bytes per core, 48 KB on 128 cores.  The counters go
   into one per-class sysctl table, not per queue (the memory audit's
   per-(queue, CPU) sysctl cost is not repeated).
@@ -182,7 +188,11 @@ before it sleeps, but writes it only when the quantized bucket changes:
 
 - **Asymmetric hysteresis**: a rise is written at once, a fall only after
   it has held for 100 us.  Producers avoid a core as soon as it fills,
-  and a core that empties for a moment does not attract a herd.
+  and a core that empties for a moment does not attract a herd.  A
+  worker that goes to sleep with a fall pending sleeps with a timeout
+  of the rest of the hold, publishes, and sleeps again if it woke too
+  early; otherwise an idle core keeps advertising its last load (the
+  simulator's first run lost two idle cores to this).
 - **No per-item flag**: the word does not carry "asleep".  Whether to
   wake a worker stays the doorbell's business (`kw_sleeping` under
   `kw_mtx`).  "Idle thread" in the ranking means load bucket 0, smoothed.
@@ -225,7 +235,11 @@ randomized among equal ranks, from a per-CPU generator.
 0. **The own CPU, when the producer is its BULK worker** (a handler
    resubmitting work) and its backlog without this item is below
    L_local: the item runs at the next pass, without a wake, in a warm
-   cache (P6g.0, section 0a).
+   cache (P6g.0, section 0a).  Except when a large item's sibling is
+   busy and the table holds a whole idle core within D_near: then the
+   item goes there (step 1).  Without that exception two requests that
+   once landed on one core run beside each other at the SMT rate for
+   good (the simulator, V4: 26.8 GB/s against today's 41.9).
 1. **An idle core in the table** within the near distance D_near (same
    L3): check its status block (1 read) and place on its idle thread.
 2. **Else the idle sibling**, from the own core's status block (local).
@@ -298,7 +312,7 @@ The simulator sets the final values (scenario S18):
 | status fall hold | 100 us | a lower bucket is published after it held this long |
 | H, L | 2 ms, 0.5 ms of backlog | hand-off and spill above H, to cores at or below L |
 | L_adv | 0.5 ms | cores at or below it are advertised |
-| L_local | 0.2 ms | a producer's own thread is good enough below it |
+| L_local | 50 us | a producer's own thread is good enough below it: M2's tolerance for a good placement (0.2 ms in the first draft kept two 191 us requests in series on one thread beside idle cores) |
 | C_small | 20 us | items cheaper than this prefer the near choices |
 | D_near | the L3 | a near candidate's distance |
 | table, neighbours | 4, 4 | |
