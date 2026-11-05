@@ -33,7 +33,12 @@
  *
  * Policies: 0 oracle, 10 oracle within the L3, 1 today (kwq_pick_any,
  * idle-path steal, steal wake, pass cap), 2 no stealing, 3 two choices,
- * 4 one summary word per L3, 5 gossip (kwq_place.c) with ablations.
+ * 4 per-L3 load arrays, 5 gossip (kwq_place.c) with ablations, 6 random,
+ * 7 donor (today's placement; idle workers steal only from CPUs that
+ * flagged a backlog of H or more in one donor line, crest's first idea),
+ * 8 shard (7 with the idle mask cut into lines of `group' CPUs, each
+ * written by its own CPUs only; a producer reads its own group's line
+ * and up to probe_groups more).
  */
 
 #include <sys/types.h>
@@ -59,7 +64,7 @@
 /* Configuration */
 
 enum { P_ORACLE = 0, P_TODAY = 1, P_NOSTEAL = 2, P_TWO = 3, P_GROUP = 4,
-    P_GOSSIP = 5, P_RANDOM = 6, P_ORACLE_L3 = 10 };
+    P_GOSSIP = 5, P_RANDOM = 6, P_DONOR = 7, P_SHARD = 8, P_ORACLE_L3 = 10 };
 
 struct cfg {
 	/* topology */
@@ -69,7 +74,7 @@ struct cfg {
 	int	policy;
 	u_int	shape;
 	struct kp_params kp;
-	int	handoff, spill, selfstep;
+	int	handoff, spill, selfstep, handoff_n, busyterm;
 	/* costs, ns */
 	double	c_hit, c_sib, c_l3, c_pkg, c_far, c_atomic, scan_entry;
 	double	place_ns, merge_ns, timer_ns;
@@ -88,6 +93,8 @@ struct cfg {
 	char	mix[16];
 	int	series;		/* print the 1 ms series */
 	int	expcost;	/* exponential item costs (V1) */
+	int	contend;	/* line serialization (default on) */
+	int	group, probe_groups;	/* P8 */
 	int	oneq;		/* all open producers share one queue */
 	int	extraq;		/* stealable queues without producers */
 	int	verbose;
@@ -104,6 +111,11 @@ cfg_default(void)
 	C.shape = KP_TORUS4;
 	kp_params_default(&C.kp);
 	C.handoff = C.spill = C.selfstep = 1;
+	C.handoff_n = 4;
+	C.busyterm = 0;		/* the other-threads term hurt: S2 at 128 providers */
+	C.contend = 1;
+	C.group = 16;
+	C.probe_groups = 2;
 	C.c_hit = 2; C.c_sib = 20; C.c_l3 = 40; C.c_pkg = 100; C.c_far = 200;
 	C.c_atomic = 10; C.scan_entry = 4;	/* V3: 17.9 us per scan of 2048 lists */
 	C.place_ns = 30; C.merge_ns = 200; C.timer_ns = 150;
@@ -410,7 +422,31 @@ struct line {
 	uint64_t	hold[HOLD_W];
 	int		writer;
 	uint32_t	version;
+	double		busy;		/* serialization: the line moves one at a time */
 };
+
+static uint64_t	st_waits;
+static double	st_wait_ns;
+
+/*
+ * Contention: a transfer or an invalidation holds the line for its
+ * transfer time; one that finds the line held waits for it (an RMW or a
+ * miss queues behind the others in the coherence fabric).  Hits do not.
+ */
+static double
+line_occupy(struct line *ln, double xfer)
+{
+	double start = now > ln->busy ? now : ln->busy, w = start - now;
+
+	if (!C.contend)
+		return (xfer);
+	ln->busy = start + xfer;
+	if (w > 0) {
+		st_waits++;
+		st_wait_ns += w;
+	}
+	return (w + xfer);
+}
 
 static struct line *lines;
 static int	nlines;
@@ -419,6 +455,9 @@ static int	L_GROUP;		/* P4's group words: L_GROUP + l3 */
 static int	L_BLOCK;		/* P5's blocks: L_BLOCK + 3 * core + k */
 static int	L_LIST;			/* (queue, cpu) list heads: L_LIST + q * maxid + cpu */
 static int	L_WMTX;			/* P1: a worker's kw_mtx: L_WMTX + cpu */
+static int	L_DONOR;		/* P7's donor mask */
+static int	L_SHARD;		/* P8: the idle mask of group g, L_SHARD + g */
+static int	L_DHINT;		/* P7: a donor's longest stealable list, L_DHINT + cpu */
 
 /* What the running code costs: charged by its caller to a thread. */
 static int	cur_cpu = 0;
@@ -435,7 +474,7 @@ line_read(int cpu, int l)
 	if (ln->hold[cpu / 64] & (1ULL << (cpu % 64)))
 		return (C.c_hit);
 	st_xfers++;
-	c = xfer_cost(cpu, ln->writer);
+	c = line_occupy(ln, xfer_cost(cpu, ln->writer));
 	ln->hold[cpu / 64] |= 1ULL << (cpu % 64);
 	return (c);
 }
@@ -461,7 +500,7 @@ line_write(int cpu, int l)
 	}
 	if (others || !(ln->hold[cpu / 64] & (1ULL << (cpu % 64)))) {
 		st_invals += others;
-		c = xfer_cost(cpu, others ? far : ln->writer);
+		c = line_occupy(ln, xfer_cost(cpu, others ? far : ln->writer));
 	}
 	memset(ln->hold, 0, sizeof(ln->hold));
 	ln->hold[cpu / 64] = 1ULL << (cpu % 64);
@@ -479,6 +518,9 @@ lines_init(int nq)
 	L_BLOCK = nlines; nlines += 3 * ncores_t;
 	L_LIST = nlines; nlines += nq * maxid;
 	L_WMTX = nlines; nlines += maxid;
+	L_DONOR = nlines++;
+	L_SHARD = nlines; nlines += maxid;
+	L_DHINT = nlines; nlines += maxid;
 	lines = calloc((size_t)nlines, sizeof(*lines));
 	for (int i = 0; i < nlines; i++)
 		lines[i].writer = -1;
@@ -756,6 +798,9 @@ struct cpu {
 	int		idle_hops;
 	/* P4 */
 	u_int		grp_load;
+	/* P7 */
+	bool		donor;
+	int		dq;		/* the donor's longest stealable queue */
 	/* last handoff, M7 */
 	uint64_t	handoffs_in, handoffs_out;
 };
@@ -1110,6 +1155,63 @@ queue_ok(void *arg, int c)
 	    (double)l->depth * l->cost_e < (double)C.kp.h_us * US);
 }
 
+/* P8: the idle mask's group of a CPU, and its line */
+static int
+shard_of(int c)
+{
+	return (c / (C.group > 0 ? C.group : 16));
+}
+
+static int
+idle_line(int c)
+{
+	return (C.policy == P_SHARD ? L_SHARD + shard_of(c) : L_IDLE);
+}
+
+/*
+ * P8: the nearest idle worker with this queue empty, in the own group's
+ * line, then in up to probe_groups other groups' lines (the nearest by
+ * topology order); else kwq_pick_any()'s own CPU and probes.
+ */
+static int
+pick_shard(int q, int me)
+{
+	int i, c, g, seen[MAXCPU / 1 + 1], ns = 0, k, best = me;
+	u_int bd;
+	bool read;
+
+	for (i = -1; i < order_n[me]; i++) {
+		c = i < 0 ? me : order[me][i];
+		g = shard_of(c);
+		read = false;
+		for (k = 0; k < ns; k++)
+			if (seen[k] == g)
+				read = true;
+		if (!read) {
+			if (ns > C.probe_groups)
+				break;
+			seen[ns++] = g;
+			cur_cost += line_read(me, L_SHARD + g);
+		}
+		if (c == me || !cpus[c].inmask)
+			continue;
+		cur_cost += line_read(me, LISTLINE(q, c));
+		if (QL(q, c)->depth == 0)
+			return (c);
+	}
+	cur_cost += line_read(me, LISTLINE(q, me));
+	bd = QL(q, me)->depth;
+	for (i = 0; i < order_n[me] && i < 4 && bd != 0; i++) {
+		c = order[me][i];
+		cur_cost += line_read(me, LISTLINE(q, c));
+		if (QL(q, c)->depth < bd) {
+			best = c;
+			bd = QL(q, c)->depth;
+		}
+	}
+	return (best);
+}
+
 /* P1/P2: kwq_pick_any() */
 static int
 pick_any(int q, int me)
@@ -1242,7 +1344,7 @@ self_load(int c)
 		b += w < C.quantum ? w : C.quantum;
 	}
 	return (kp_load_us((uint64_t)b, (u_int)(p->share_e * 1024),
-	    (u_int)(p->busy_e * 1024), (u_int)(C.quantum / US)));
+	    C.busyterm ? (u_int)(p->busy_e * 1024) : 0, (u_int)(C.quantum / US)));
 }
 
 static void merge_at(int c, bool worker);
@@ -1354,6 +1456,99 @@ ring_rotate(int c)
 	QL(q, c)->fresh = true;
 }
 
+static void	steal_wake(int c, int from, double *cost);
+static void	mark_moved(int32_t h);
+
+/*
+ * P7: a CPU whose stealable backlog is at or above H flags itself in
+ * the donor line (written on the transitions only) and names its
+ * longest stealable list in a hint line of its own; becoming a donor it
+ * wakes the nearest sleeping worker, which steals from it.
+ */
+static void
+donor_point(int c)
+{
+	struct cpu *p = &cpus[c];
+	struct qlist *l;
+	double b = 0, share = p->share_e > 1.0 / 16 ? p->share_e : 1.0 / 16, cost = 0;
+	u_int bd = 0;
+	int k, q, bq = NONE;
+	bool d;
+
+	for (k = 0; k < p->rn; k++) {
+		q = p->ring[(p->rhead + k) % nq];
+		l = QL(q, c);
+		if (!Q[q].stealable)
+			continue;
+		b += (double)l->depth * l->cost_e;
+		if (l->depth > bd) {
+			bd = l->depth;
+			bq = q;
+		}
+	}
+	d = bd >= 2 && b / share >= (double)C.kp.h_us * US;
+	if (d && bq != p->dq) {
+		cost += line_write(c, L_DHINT + c);
+		p->dq = bq;
+	}
+	if (d != p->donor) {
+		cost += line_write(c, L_DONOR) + C.c_atomic;
+		p->donor = d;
+		if (d)
+			steal_wake(c, c, &cost);
+	}
+	charge_bulk(c, cost);
+}
+
+/* P7's idle path: the donors in reach, nearest first; one line each. */
+static bool
+steal_donor(int c, double *costp)
+{
+	int reach = order_n[c] < (int)C.steal_scan ? order_n[c] : (int)C.steal_scan;
+	int i, v, q;
+	double cost = 0, w;
+	struct qlist *l, *dl;
+	u_int take;
+	int32_t h, t;
+
+	if (warm())
+		M.steal_tries++;
+	cost += line_read(c, L_DONOR);
+	for (i = 0; i < reach; i++) {
+		v = order[c][i];
+		if (!cpus[v].donor)
+			continue;
+		cost += line_read(c, L_DHINT + v);
+		q = cpus[v].dq;
+		if (q == NONE)
+			continue;
+		l = QL(q, v);
+		cost += line_write(c, LISTLINE(q, v)) + C.c_atomic;
+		if (l->depth < 2)
+			continue;
+		take = (l->depth + 1) / 2;
+		if (take > C.steal_max)
+			take = C.steal_max;
+		h = list_cut(l, take, &t, &w);
+		cpus[v].qwork -= w;
+		mark_moved(h);
+		dl = QL(q, c);
+		cost += line_write(c, LISTLINE(q, c)) + C.c_atomic;
+		list_append_chain(dl, h, t, take, w);
+		cpus[c].qwork += w;
+		if (!dl->active)
+			ring_add(c, q);
+		if (warm())
+			M.steals++;
+		*costp = cost;
+		cpus[c].t_scheme += cost;
+		return (true);
+	}
+	*costp = cost;
+	cpus[c].t_scheme += cost;
+	return (false);
+}
+
 /* P5's load figure at a decision point (S2.3); P4 publishes the same figure. */
 static void
 load_point(int c)
@@ -1365,6 +1560,10 @@ load_point(int c)
 	u_int us;
 	int k, q;
 
+	if (C.policy == P_DONOR || C.policy == P_SHARD) {
+		donor_point(c);
+		return;
+	}
 	if (C.policy != P_GOSSIP && C.policy != P_GROUP)
 		return;
 	for (k = 0; k < p->rn; k++) {
@@ -1374,7 +1573,7 @@ load_point(int c)
 		b += w < C.quantum ? w : C.quantum;
 	}
 	us = kp_load_us((uint64_t)b, (u_int)(p->share_e * 1024),
-	    (u_int)(p->busy_e * 1024), (u_int)(C.quantum / US));
+	    C.busyterm ? (u_int)(p->busy_e * 1024) : 0, (u_int)(C.quantum / US));
 	cur_cpu = c;
 	cur_cost = 0;
 	if (kp_load_update(&p->kl, kpnow(), us, &C.kp, &word)) {
@@ -1457,6 +1656,14 @@ idle_near_p1(int c)
 {
 	int reach = order_n[c] < (int)C.steal_scan ? order_n[c] : (int)C.steal_scan, i;
 
+	if (C.policy == P_SHARD) {
+		/* the own group's line: a helper nearby is one in the group */
+		charge_bulk(c, line_read(c, idle_line(c)));
+		for (i = 0; i < reach; i++)
+			if (shard_of(order[c][i]) == shard_of(c) && cpus[order[c][i]].inmask)
+				return (true);
+		return (false);
+	}
 	charge_bulk(c, line_read(c, L_IDLE));
 	for (i = 0; i < reach; i++)
 		if (cpus[order[c][i]].inmask)
@@ -1481,10 +1688,10 @@ steal_wake(int c, int from, double *cost)
 {
 	int reach = order_n[c] < (int)C.steal_scan ? order_n[c] : (int)C.steal_scan, i, v;
 
-	*cost += line_read(from, L_IDLE);
+	*cost += line_read(from, C.policy == P_SHARD ? idle_line(c) : L_IDLE);
 	for (i = 0; i < reach; i++) {
 		v = order[c][i];
-		if (!cpus[v].inmask)
+		if (!cpus[v].inmask || (C.policy == P_SHARD && shard_of(v) != shard_of(c)))
 			continue;
 		*cost += line_write(from, L_WMTX + v) + C.c_atomic;
 		if (cpus[v].ws == W_SLEEP) {
@@ -1571,8 +1778,19 @@ static int	last_ho_to[MAXCPU];
 static double	last_ho_t[MAXCPU];
 
 /* P5: hand-off at the end of a pass (S2.7) */
+static bool handoff_one(int c);
+
 static void
 handoff_check(int c)
+{
+	int i;
+
+	for (i = 0; i < C.handoff_n && handoff_one(c); i++)
+		;
+}
+
+static bool
+handoff_one(int c)
 {
 	struct cpu *p = &cpus[c];
 	struct kp_pick pk;
@@ -1583,7 +1801,7 @@ handoff_check(int c)
 	int32_t h, tl;
 
 	if (C.policy != P_GOSSIP || !C.handoff || nsteal == 0)
-		return;
+		return (false);
 	for (k = 0; k < p->rn; k++) {
 		q = p->ring[(p->rhead + k) % nq];
 		l = QL(q, c);
@@ -1595,13 +1813,13 @@ handoff_check(int c)
 	}
 	share = p->share_e > 1.0 / 16 ? p->share_e : 1.0 / 16;
 	if (bq == NONE || bd < 2 || b / share < (double)C.kp.h_us * US)
-		return;
+		return (false);
 	cur_cpu = c;
 	cur_cost = 0;
 	t = kp_handoff_target(&T, c, kpnow(), &C.kp, &p->rng, &pk);
 	if (t < 0 || t == c) {
 		charge_bulk(c, cur_cost);
-		return;
+		return (false);
 	}
 	l = QL(bq, c);
 	take = kp_handoff_batch(l->depth, (uint64_t)l->cost_e, C.steal_max, &C.kp);
@@ -1629,6 +1847,7 @@ handoff_check(int c)
 	discovered(t);
 	wake_worker(t);
 	charge_bulk(c, cur_cost);
+	return (true);
 }
 
 /*
@@ -1657,9 +1876,10 @@ go_sleep(int c)
 
 	load_point(c);
 	arm_publish(c);
-	if (C.policy == P_TODAY || C.policy == P_NOSTEAL) {
+	if (C.policy == P_TODAY || C.policy == P_NOSTEAL || C.policy == P_DONOR ||
+	    C.policy == P_SHARD) {
 		p->inmask = true;
-		charge_bulk(c, line_write(c, L_IDLE) + C.c_atomic);
+		charge_bulk(c, line_write(c, idle_line(c)) + C.c_atomic);
 	}
 	p->ws = W_SLEEP;
 	p->sleep_t = now;
@@ -1689,9 +1909,9 @@ pass_start(int c)
 		return (false);
 	}
 	take = l->depth;
-	if (Q[q].stealable && take > 1 &&
-	    (C.policy == P_TODAY || (C.policy == P_GOSSIP && C.handoff))) {
-		if (C.policy == P_TODAY)
+	if (Q[q].stealable && take > 1 && (C.policy == P_TODAY || C.policy == P_DONOR ||
+	    C.policy == P_SHARD || (C.policy == P_GOSSIP && C.handoff))) {
+		if (C.policy == P_TODAY || C.policy == P_DONOR || C.policy == P_SHARD)
 			helper = idle_near_p1(c);
 		else {
 			cur_cpu = c;
@@ -1788,11 +2008,15 @@ worker_kick(int c)
 			(void)pass_start(c);
 			continue;
 		}
-		if (C.policy == P_TODAY && !p->tried && nsteal > 0) {
+		if ((C.policy == P_TODAY || C.policy == P_DONOR || C.policy == P_SHARD) &&
+		    !p->tried && nsteal > 0) {
 			double cost = 0;
 
 			p->tried = true;
-			(void)steal(c, &cost);
+			if (C.policy == P_DONOR || C.policy == P_SHARD)
+				(void)steal_donor(c, &cost);
+			else
+				(void)steal(c, &cost);
 			if (cost >= 100) {
 				start_ovh(c, cost);
 				return;
@@ -1947,7 +2171,10 @@ enqueue_item(int32_t it, int from, int fixed, bool self)
 	lastpick.step = 99;
 	if (!any && C.policy == P_GOSSIP && C.spill && Q[q].stealable) {
 		cur_cpu = from;
-		if (kp_spill(&T, fixed, &C.kp)) {
+		/* the target's status, or the queue's own list there (the lock line) */
+		cur_cost += line_read(from, LISTLINE(q, fixed));
+		if (kp_spill(&T, fixed, &C.kp) || (double)QL(q, fixed)->depth *
+		    QL(q, fixed)->cost_e >= (double)C.kp.h_us * US) {
 			any = true;
 			if (warm())
 				M.spills++;
@@ -1959,7 +2186,8 @@ enqueue_item(int32_t it, int from, int fixed, bool self)
 		switch (C.policy) {
 		case P_ORACLE: t = oracle(q, from, false); break;
 		case P_ORACLE_L3: t = oracle(q, from, true); break;
-		case P_TODAY: case P_NOSTEAL: t = pick_any(q, from); break;
+		case P_TODAY: case P_NOSTEAL: case P_DONOR: t = pick_any(q, from); break;
+		case P_SHARD: t = pick_shard(q, from); break;
 		case P_TWO: t = pick_two(q, from); break;
 		case P_GROUP: t = pick_group(q, from); break;
 		case P_RANDOM:
@@ -1970,7 +2198,7 @@ enqueue_item(int32_t it, int from, int fixed, bool self)
 	if (t < 0 || !cpu_present[t])
 		t = from;
 	cur_cpu = from;
-	sample = warm() && (M.place % 4) == 0;
+	sample = warm() && (M.place % (maxid > 16 ? 16 : 4)) == 0;
 	if (sample) {
 		/* M2: regret against the least start delay at this instant */
 		e = est_start(t, q);
@@ -2388,7 +2616,10 @@ scen_setup(void)
 		}
 		break;
 	case 3:		/* S3 a hot island of k cores at factor x capacity, ringed by idle */
-		mark_block(C.k, C.layout / 100, C.layout % 100, 1);
+		if (C.layout < 0)	/* across the wrap: from the last row and column */
+			mark_block(C.k, (int)T.kt_rows - 1, (int)T.kt_cols - 1, 1);
+		else
+			mark_block(C.k, C.layout / 100, C.layout % 100, 1);
 		open_on(sel_r1, C.factor, true);
 		break;
 	case 4:		/* S4 an idle island in a sea of load */
@@ -2468,6 +2699,8 @@ scen_setup(void)
 		break;
 	case 15:	/* S15 all loaded at rho, core 0 hogged at share 0, then freed */
 		open_on(sel_all, C.rho > 0 ? C.rho : 1.2, true);
+		if (C.layout == 1)	/* steady overload: no needle, no recovery */
+			break;
 		for (k = 0; k < core_nthr[0]; k++) {
 			cpus[core_cpu[0][k]].hog = true;
 			cpus[core_cpu[0][k]].capx = 0;
@@ -2582,6 +2815,8 @@ report(void)
 	out("steals_per_op", M.ops ? (double)M.steals / M.ops : 0);
 	out("xfers_per_place", M.place ? (double)(st_xfers - M.xfers0) / M.place : 0);
 	out("reads_per_place", M.place ? (double)(st_reads - M.reads0) / M.place : 0);
+	out("line_waits_per_s", span > 0 ? st_waits / (now / SEC) : 0);
+	out("line_wait_ns_per_place", M.place ? st_wait_ns / M.place : 0);
 	out("scheme_cpu_frac", (bulk + oth) > 0 ? sch / (bulk + oth) : 0);
 	out("merges_per_s_core", span > 0 ? M.merges / (span / SEC) / ncores_t : 0);
 	out("age_p50_us", h_q(&M.age, 0.5));
@@ -2724,6 +2959,14 @@ parse(int argc, char **argv)
 		else if (KEY("nosplit")) C.kp.flags |= (int)d ? KP_F_NOSPLIT : 0;
 		else if (KEY("norepair")) C.kp.flags |= (int)d ? KP_F_NOREPAIR : 0;
 		else if (KEY("handoff")) C.handoff = (int)d;
+		else if (KEY("handoff_n")) C.handoff_n = (int)d;
+		else if (KEY("busyterm")) C.busyterm = (int)d;
+		else if (KEY("contend")) C.contend = (int)d;
+		else if (KEY("remerge")) C.kp.flags |= (int)d ? KP_F_REMERGE : 0;
+		else if (KEY("noremerge")) C.kp.flags |= (int)d ? KP_F_NOREMERGE : 0;
+		else if (KEY("tomb")) C.kp.flags |= (int)d ? KP_F_TOMB : 0;
+		else if (KEY("group")) C.group = (int)d;
+		else if (KEY("probe_groups")) C.probe_groups = (int)d;
 		else if (KEY("spill")) C.spill = (int)d;
 		else if (KEY("imin_us")) C.kp.imin = KP_US2T(d);
 		else if (KEY("imax_us")) C.kp.imax = KP_US2T(d);
@@ -2814,10 +3057,12 @@ main(int argc, char **argv)
 		else if (p->hog && p->capx == 0 && scen_id != 15)
 			p->capx = C.cap;
 		p->share_e = 1;
+		p->dq = NONE;
 		p->rng = (uint32_t)(C.seed * 2654435761u + (uint32_t)c * 40503u + 1);
 		p->ws = W_SLEEP;
 		p->sleep_t = -10 * SEC;
-		p->inmask = C.policy == P_TODAY || C.policy == P_NOSTEAL;
+		p->inmask = C.policy == P_TODAY || C.policy == P_NOSTEAL || C.policy == P_DONOR ||
+		    C.policy == P_SHARD;
 		if (C.policy == P_GOSSIP) {
 			cur_cpu = c;
 			kp_load_update(&p->kl, kpnow(), 0, &C.kp, &w);
@@ -2875,7 +3120,7 @@ main(int argc, char **argv)
 			p->ws = W_RUN;
 			if (p->inmask) {
 				p->inmask = false;
-				charge_bulk(e.a, line_write(e.a, L_IDLE) + C.c_atomic);
+				charge_bulk(e.a, line_write(e.a, idle_line(e.a)) + C.c_atomic);
 			}
 			if (C.policy == P_GOSSIP && now - p->sleep_t > KP_T2US(C.kp.imax) * US)
 				merge_at(e.a, true);

@@ -200,6 +200,9 @@ struct kp_params {
 #define	KP_F_NOSPLIT	0x020	/* no size split: small items as large */
 #define	KP_F_NOREPAIR	0x040	/* a failed check leaves the table alone */
 #define	KP_F_NOSELF	0x080	/* no step 0: a resubmitting worker searches too */
+#define	KP_F_REMERGE	0x100	/* a failed check makes a merge due (ablation: a merge storm) */
+#define	KP_F_TOMB	0x200	/* tombstones relay busy news (ablation: no gain in S3) */
+#define	KP_F_NOREMERGE	0x400	/* a failed check leaves the merge interval alone */
 
 void	kp_params_default(struct kp_params *p);
 

@@ -377,29 +377,95 @@ kp_merge_due(struct kp_topo *t, u_int core, kp_time_t now)
 
 #define	KP_MCAND	(KP_NB_MAX * (KP_TABLE_MAX + 1) + KP_TABLE_MAX)
 
+/* Tombstones kept after the table_n entries: as many, if they fit. */
+static u_int
+kp_ntomb(const struct kp_params *p, u_int tn)
+{
+	return ((p->flags & KP_F_TOMB) != 0 && 2 * tn <= KP_TABLE_MAX ? tn : 0);
+}
+
+/*
+ * Write keep[0..nk) into the own table's slots [lo, hi), slot-stable: a
+ * kept core stays in its slot, an unchanged entry is renewed only when
+ * older than texp / 4.  True if the set or an entry's content changed.
+ */
+static bool
+kp_slots(struct kp_tableblk *own, const uint64_t *old, u_int lo, u_int hi,
+    const struct kp_cand *keep, u_int nk, kp_time_t now,
+    const struct kp_params *p, u_int *writes)
+{
+	bool changed = false, used[KP_TABLE_MAX], placed[KP_TABLE_MAX];
+	uint64_t ne;
+	u_int i, j;
+
+	for (j = 0; j < KP_TABLE_MAX; j++)
+		used[j] = false;
+	for (i = 0; i < nk; i++) {
+		placed[i] = false;
+		for (j = lo; j < hi; j++)
+			if (!used[j] && kp_e_valid(old[j]) &&
+			    kp_e_core(old[j]) == kp_e_core(keep[i].e)) {
+				used[j] = placed[i] = true;
+				ne = keep[i].e;
+				if ((ne & ~0xffffffffULL) != (old[j] & ~0xffffffffULL) ||
+				    kp_older(now, kp_e_time(old[j]), p->texp / 4)) {
+					if ((ne & ~0xffffffffULL) !=
+					    (old[j] & ~0xffffffffULL))
+						changed = true;
+					KP_STORE64(&own->kt_e[j], ne);
+					(*writes)++;
+				}
+				break;
+			}
+	}
+	for (i = 0; i < nk; i++) {
+		if (placed[i])
+			continue;
+		for (j = lo; j < hi && used[j]; j++)
+			;
+		KP_ASSERT(j < hi, ("kp_merge: no free slot"));
+		used[j] = true;
+		KP_STORE64(&own->kt_e[j], keep[i].e);
+		(*writes)++;
+		changed = true;
+	}
+	for (j = lo; j < hi; j++)
+		if (!used[j] && old[j] != 0) {
+			KP_STORE64(&own->kt_e[j], 0);
+			(*writes)++;
+			changed = true;
+		}
+	return (changed);
+}
+
 /*
  * The merge (S2.4) on `core', whose try-flag the caller holds: the
  * neighbours' status as direct observations stamped now, their tables
  * as relays one hop farther with the stamp copied, the own table; per
- * core the freshest; nothing older than texp, nothing about this core,
- * nothing above ladv; the best table_n kept, slot-stable, written only
- * where a slot changed (an unchanged entry is renewed only when older
- * than texp / 4).  True if the table changed.  The interval is reset to
- * imin when it did, doubled up to imax when it did not.
+ * core the freshest; nothing older than texp, nothing about this core.
+ * Cores at or below ladv: the best table_n, ranked.  Cores above it:
+ * the freshest as tombstones in the slots after them, relayed like the
+ * rest, so that the news of a core turning busy travels as far as the
+ * news of it being idle did and a stale relay cannot bring it back
+ * (the simulator's island case lost 84 % of its checks to such
+ * entries).  Slot-stable writes, only where a slot changed.  True if the
+ * table changed.  The interval is reset to imin when it did, doubled up
+ * to imax when it did not.
  */
 bool
 kp_merge(struct kp_topo *t, u_int core, kp_time_t now,
     const struct kp_params *p, struct kp_mres *r)
 {
-	struct kp_cand c[KP_MCAND], keep[KP_TABLE_MAX];
+	struct kp_cand c[KP_MCAND], busy[KP_MCAND];
 	const struct kp_node *n = &t->kt_node[core];
 	struct kp_tableblk *own = &t->kt_core[core]->kc_tb;
 	struct kp_ctl *x = &t->kt_core[core]->kc_ctl;
 	uint64_t old[KP_TABLE_MAX], e, ne;
-	u_int i, j, k, nc = 0, nk, idle, load, nb, tn;
-	bool changed = false, used[KP_TABLE_MAX], placed[KP_TABLE_MAX];
+	u_int i, j, k, nb_, nc = 0, idle, load, nb, tn, nt, w = 0;
+	bool changed;
 
 	tn = p->table_n > KP_TABLE_MAX ? KP_TABLE_MAX : p->table_n;
+	nt = kp_ntomb(p, tn);
 	r->reads = r->writes = r->cand = 0;
 	for (i = 0; i < n->kn_nnb; i++) {
 		nb = n->kn_nb[i];
@@ -419,7 +485,7 @@ kp_merge(struct kp_topo *t, u_int core, kp_time_t now,
 	}
 	for (j = 0; j < KP_TABLE_MAX; j++) {
 		old[j] = e = KP_LOAD64(&own->kt_e[j]);
-		if (kp_e_valid(e) && j < tn) {
+		if (kp_e_valid(e) && j < tn + nt) {
 			c[nc].e = e;
 			c[nc++].dist = kp_dist(t, core, kp_e_core(e));
 		}
@@ -448,52 +514,38 @@ kp_merge(struct kp_topo *t, u_int core, kp_time_t now,
 			c[j].e = 0;
 		}
 	}
-	for (i = k = 0; i < nc; i++)
-		if (c[i].e != 0 && kp_e_load(c[i].e) <= p->ladv_us)
-			c[k++] = c[i];
-	kp_sort(c, k, p);
-	nk = k < tn ? k : tn;
-	for (i = 0; i < nk; i++)
-		keep[i] = c[i];
-
-	/* Slot-stable: a kept core stays in its slot. */
-	for (j = 0; j < KP_TABLE_MAX; j++)
-		used[j] = false;
-	for (i = 0; i < nk; i++) {
-		placed[i] = false;
-		for (j = 0; j < tn; j++)
-			if (!used[j] && kp_e_valid(old[j]) &&
-			    kp_e_core(old[j]) == kp_e_core(keep[i].e)) {
-				used[j] = placed[i] = true;
-				ne = keep[i].e;
-				if ((ne & ~0xffffffffULL) != (old[j] & ~0xffffffffULL) ||
-				    kp_older(now, kp_e_time(old[j]), p->texp / 4)) {
-					if ((ne & ~0xffffffffULL) !=
-					    (old[j] & ~0xffffffffULL))
-						changed = true;
-					KP_STORE64(&own->kt_e[j], ne);
-					r->writes++;
-				}
-				break;
-			}
-	}
-	for (i = 0; i < nk; i++) {
-		if (placed[i])
+	for (i = k = nb_ = 0; i < nc; i++) {
+		if (c[i].e == 0)
 			continue;
-		for (j = 0; j < tn && used[j]; j++)
-			;
-		KP_ASSERT(j < tn, ("kp_merge: no free slot"));
-		used[j] = true;
-		KP_STORE64(&own->kt_e[j], keep[i].e);
-		r->writes++;
-		changed = true;
-	}
-	for (j = 0; j < KP_TABLE_MAX; j++)
-		if (!used[j] && old[j] != 0) {
-			KP_STORE64(&own->kt_e[j], 0);
-			r->writes++;
-			changed = true;
+		if (kp_e_load(c[i].e) <= p->ladv_us)
+			c[k++] = c[i];
+		else if (nt > 0) {
+			/* a tombstone says only "busy at t": constant content */
+			busy[nb_] = c[i];
+			busy[nb_++].e = kp_e_make(kp_e_time(c[i].e),
+			    kp_e_core(c[i].e), KP_E_LOAD_MAX, 0, kp_e_hops(c[i].e));
 		}
+	}
+	kp_sort(c, k, p);
+	/* tombstones: the freshest first */
+	for (i = 1; i < nb_; i++) {
+		struct kp_cand y = busy[i];
+
+		for (j = i; j > 0 && kp_tdiff(kp_e_time(y.e),
+		    kp_e_time(busy[j - 1].e)) > 0; j--)
+			busy[j] = busy[j - 1];
+		busy[j] = y;
+	}
+	changed = kp_slots(own, old, 0, tn, c, k < tn ? k : tn, now, p, &w);
+	if (nt > 0)
+		changed |= kp_slots(own, old, tn, tn + nt, busy,
+		    nb_ < nt ? nb_ : nt, now, p, &w);
+	for (j = tn + nt; j < KP_TABLE_MAX; j++)
+		if (old[j] != 0) {
+			KP_STORE64(&own->kt_e[j], 0);
+			w++;
+		}
+	r->writes = w;
 
 	x->kx_last = now;
 	x->kx_merges++;
@@ -525,15 +577,43 @@ kp_repair(struct kp_topo *t, u_int me, u_int core, kp_time_t now,
 	uint64_t e;
 	u_int j;
 
+	u_int tn = p->table_n > KP_TABLE_MAX ? KP_TABLE_MAX : p->table_n;
+	u_int nt = kp_ntomb(p, tn), k, oldest = KP_TABLE_MAX;
+	uint64_t te;
+
 	if ((p->flags & KP_F_NOREPAIR) != 0 || !KP_TRYFLAG(&kc->kc_ctl))
 		return;
-	for (j = 0; j < KP_TABLE_MAX; j++) {
+	for (j = 0; j < tn; j++) {
 		e = KP_LOAD64(&kc->kc_tb.kt_e[j]);
 		if (!kp_e_valid(e) || kp_e_core(e) != core)
 			continue;
 		KP_STORE64(&kc->kc_tb.kt_e[j], load > p->ladv_us ? 0 :
 		    kp_e_make(now, core, load, idle, 1));
+		/* and a tombstone, in an empty or the oldest slot */
+		for (k = tn; load > p->ladv_us && k < tn + nt; k++) {
+			te = KP_LOAD64(&kc->kc_tb.kt_e[k]);
+			if (!kp_e_valid(te) || kp_e_core(te) == core) {
+				oldest = k;
+				break;
+			}
+			if (oldest == KP_TABLE_MAX || kp_tdiff(kp_e_time(
+			    KP_LOAD64(&kc->kc_tb.kt_e[oldest])), kp_e_time(te)) > 0)
+				oldest = k;
+		}
+		if (oldest < KP_TABLE_MAX)
+			KP_STORE64(&kc->kc_tb.kt_e[oldest],
+			    kp_e_make(now, core, KP_E_LOAD_MAX, 0, 1));
 		kc->kc_ctl.kx_repairs++;
+		/*
+		 * An inconsistency: Trickle's reset.  The next merge comes
+		 * after imin / 4 (with KP_F_REMERGE at once: a merge storm in
+		 * the simulator's island case, 33000 merges/s per core).
+		 */
+		if ((p->flags & KP_F_REMERGE) != 0)
+			kc->kc_ctl.kx_ival = 0;
+		else if ((p->flags & KP_F_NOREMERGE) == 0 &&
+		    kc->kc_ctl.kx_ival > p->imin / 4)
+			kc->kc_ctl.kx_ival = p->imin / 4;
 		break;
 	}
 	KP_CLRFLAG(&kc->kc_ctl);
