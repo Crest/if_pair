@@ -63,6 +63,9 @@ handler rejects values outside its range with EINVAL.
 | `shard.donor_us` (RW) | 0 .. 1000000 | 500 | place=2: the stealable backlog, us, that makes a CPU a donor (a lone item counts the work running ahead of it) |
 | `shard.pull_us` (RW) | 0 .. 1000000 | 500 | place=2: a worker whose backlog is below this at a pass end pulls a batch from a donor; 0: never |
 | `shard.watch_us` (RW) | 0 .. 1000000 | 1000 | place=2: the starved tick's period: a CPU holding stealable work whose worker reached no decision point for this long is flagged a starved donor; 0: off |
+| `shard.spill_idle` (RW) | 0 .. 2 | 0 | place=2: an item for a fixed CPU of a stealable queue that would wait behind another there goes to an idle CPU, if one: 1 near the producer, 2 near the fixed CPU; 0: only the spill of a donor or of a backlog of `donor_us` |
+| `shard.helper_donor` (RW) | 0, 1 | 0 | place=2: a pass that leaves the rest of its stealable list for a helper keeps the CPU a donor of it until the list is empty |
+| `shard.directed` (RW) | 0 .. 2 | 0 | place=2: 1 a wake to steal names the victim and its list in the woken worker's mailbox, which it steals from first, donor or not; 2 also the chain: an idle thief tries the victim of its last batch again before it sleeps, the first miss forgets it |
 | `gossip.h_us`, `gossip.l_us`, `gossip.llocal_us` (RW) | | 2000, 500, 50 | place=1: H, the backlog at which a worker hands off and a fixed CPU's items spill; L, the most a hand-off's target may hold; L_local, the producer's own thread is good below it (SPEC-p6g.md S2.9) |
 | `gossip.handoff_n` (RW) | | 4 | place=1: hand-offs at most per pass end |
 | `wake_delay_us` (RWTUN) | 0 .. 1000000 | 0 (off) | the idle-class wait's deadline, an opt-in (KWQ.md S16): an enqueue from the worker's own CPU makes the worker runnable in the idle class at `cap_prio` instead of preempting the producer, and the worker runs when the producer sleeps or at this deadline, whichever is first.  An item from the worker's CPU waits at most the deadline; an enqueue from another CPU rings the doorbell at either setting |
@@ -195,6 +198,7 @@ belong to the two optional regimes and the urgent exemption (section
 | `steal_tries`, `steals`, `stolen` | BULK: steal attempts made with nothing of its own to do, the ones that moved a batch here, and the items moved (SCHED.md S16) |
 | `steal_wakes` | BULK: wakes from sleep sent to this worker so that it steals (a producer past `steal_wake`, or a stealable pass that left items) |
 | `pulls`, `donor_flags`, `starved` | BULK, place=2: batches pulled from a donor at a pass end; times this CPU became a donor; times the starved tick flagged it |
+| `directed`, `chained` | BULK, place=2: batches taken from the victim a wake named (`shard.directed` 1 or 2); from the victim of the last batch again (`shard.directed=2`) |
 | `handoffs` | BULK, place=1: batches this worker handed off at a pass end |
 
 Examples:

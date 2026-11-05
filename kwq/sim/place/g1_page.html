@@ -101,7 +101,7 @@
           <tr><td>K2</td><td class="wrap">the donor bitmap and a per-CPU hint naming the longest stealable list, written by its owner at decision points</td></tr>
           <tr><td>K3</td><td class="wrap">the idle path: kwq_steal()'s scan of every list in reach replaced by the donor steal; steal wakes as today, the cascade, the pull at the end of a pass, the bound, the lone item</td></tr>
           <tr><td>K4</td><td class="wrap">kwq_pick_any() reads the group lines, then one far group from a per-CPU cursor; it avoids donors; spill for fixed-CPU queues</td></tr>
-          <tr><td>K5</td><td class="wrap">the starved tick: a per-CPU callout(9), armed while the CPU holds stealable work; it runs in softclock, so it covers user real-time and timeshare hogs, not interrupt storms</td></tr>
+          <tr><td>K5</td><td class="wrap">the starved tick: a per-CPU callout(9), armed while the CPU holds stealable work. BULK runs at PI_SOFT, above every user thread, real-time ones included, so what starves it is an interrupt thread or NET-class work at PI_INTR; the tick is a direct callout in the clock interrupt, which those do not stop</td></tr>
           <tr><td>K6</td><td class="wrap">kern.kwq.bulk.place: 0 today's code, 1 P8, flippable under load; ATF cases for each step on the guest (GENERIC-DEBUG), then lab and, with your permission, a07</td></tr>
         </tbody>
       </table></div>
