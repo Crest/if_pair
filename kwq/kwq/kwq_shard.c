@@ -20,7 +20,14 @@
  *   stealable list in a hint line of its own; an idle worker reads the
  *   donor line instead of scanning lists, and steals from the nearest
  *   donor in reach.  A lone item behind running work counts that work
- *   and may be taken by an idle thief (kwq_steal_lone_ok()'s rule).
+ *   and may be taken by an idle thief while its worker is in a pass, or
+ *   from a starved donor: narrower than today's kwq_steal_lone_ok(),
+ *   which also takes it from a worker asleep with its list placed or
+ *   waiting in the idle class.
+ * - directed (default 2): a wake to steal names its victim and list in
+ *   the woken worker's mailbox, and an idle thief tries the victim of its
+ *   last batch again before it sleeps (the chain), both only for lists
+ *   whose items cost at least directed_us (default 10 us).
  * - A steal takes no more than leaves the taker below a donor's backlog,
  *   so a batch is not stolen on again before new arrivals lift its holder;
  *   a worker whose backlog falls below kwq_pull_us pulls from a donor at
@@ -495,7 +502,8 @@ kwq_ring_backlog(struct kwq_worker *kw, struct kwq_cpu *cur, uint64_t *bp, u_int
  * A stealable backlog of kwq_donor_us in two items or more, or a lone item
  * that, with the `ahead' items of the pass starting on `cur' in front of
  * it, waits that long.  The donor line is written at the transitions
- * only, the hint when the longest list changes.  kw_mtx held; true if
+ * only, the hint at every decision point while the CPU is a donor.
+ * kw_mtx held; true if
  * the CPU just became a donor, and the caller wakes a thief once it has
  * dropped its locks (kwq_shard_wake() takes another worker's kw_mtx).
  */
@@ -542,7 +550,7 @@ kwq_donor_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead)
 /*
  * The cost of an item on kc, ns: an average over passes, 1/8 per pass.  A
  * pass whose CPU-time delta ks_pass_end() counts as a ticker glitch
- * (negative or over KS_GLITCH_NS, ../KWQ.md S13; a07's cpu_ticks) says
+ * (negative or over KS_GLITCH_NS, ../SCHED.md S13; a07's cpu_ticks) says
  * nothing of the cost and is left out: a negative one drove the average
  * below zero, which as a uint64_t overflowed the backlog sums.
  */
@@ -558,14 +566,6 @@ kwq_pass_cost(struct kwq_cpu *kc, uint64_t ns, u_int n)
 	kc->kc_cost_ns = old == 0 ? (uint64_t)per : (uint64_t)(old + (per - old) / 8);
 }
 
-/*
- * The donor steal (place=2): the nearest donor in reach, by its hint;
- * the older half of its longest stealable list, at most steal_max, and
- * no more than leaves the taker below a donor's backlog (a puller, room_ns
- * >= 0: below that room).  A lone item only from a starved donor or, for
- * an idle thief (room_ns < 0), behind its running work.  No lock held;
- * true if a batch moved.
- */
 /*
  * One victim's steal, kwq_steal_rm read-locked: from vcpu's list that the
  * word h names (a hint, or a mailbox), the older half at most steal_max,
@@ -1037,7 +1037,7 @@ kwq_shard_sysctl(void)
 	SYSCTL_ADD_COUNTER_U64(ctx, sh, OID_AUTO, "pick_near", CTLFLAG_RD,
 	    &kwq_pk_near, "KWQ_CPU_ANY items placed on an idle CPU of the near groups");
 	SYSCTL_ADD_COUNTER_U64(ctx, sh, OID_AUTO, "pick_far", CTLFLAG_RD,
-	    &kwq_pk_far, "of those, on an idle CPU of a far group (the far probe)");
+	    &kwq_pk_far, "KWQ_CPU_ANY items placed on an idle CPU of a far group (the far probe)");
 	SYSCTL_ADD_COUNTER_U64(ctx, sh, OID_AUTO, "pick_self", CTLFLAG_RD,
 	    &kwq_pk_self, "on the producer's CPU (no idle CPU found, not a donor)");
 	SYSCTL_ADD_COUNTER_U64(ctx, sh, OID_AUTO, "pick_nondonor", CTLFLAG_RD,
@@ -1045,5 +1045,5 @@ kwq_shard_sysctl(void)
 	SYSCTL_ADD_COUNTER_U64(ctx, sh, OID_AUTO, "pick_probe", CTLFLAG_RD,
 	    &kwq_pk_probe, "on the shallowest of the own list and four probes");
 	SYSCTL_ADD_COUNTER_U64(ctx, sh, OID_AUTO, "spills", CTLFLAG_RD,
-	    &kwq_pk_spill, "items for a fixed CPU placed elsewhere, that CPU being a donor");
+	    &kwq_pk_spill, "items for a fixed CPU placed elsewhere, that CPU being a donor or its list holding a donor's backlog");
 }

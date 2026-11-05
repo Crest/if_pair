@@ -519,6 +519,7 @@ checkpoint).
 | K4 | placement under `place=1` with the repair of failed checks and the fallback; probe `kwq:::place(q, from, to, rank, reads)` |
 | K5 | spill for fixed CPUs on stealable queues |
 | K6 | hand-off in place of the idle-path steal, behind the drain fence; probe `kwq:::handoff` |
+| note | the probes `kwq:::merge`, `kwq:::place` and `kwq:::handoff` of K3, K4 and K6 were not built: a hand-off fires `kwq:::steal` with the handing CPU as `arg1`, and the merges and placements are counted (`kern.kwq.bulk.gossip.*`, `kern.kwq.bulk.shard.pick_*`), not probed (OBSERVABILITY.md) |
 | K7 | the knob, flippable under load; `place=1` writes no idle mask and skips the idle-path steal |
 
 P8 under `place=2` (G1), beside the steps above:
@@ -536,15 +537,15 @@ ATF cases (kwq/tests/kwq_test.sh, kwq_test.ko):
 
 | case | checks |
 |---|---|
-| handoff | 2000 items of 100 us onto one CPU of a stealable queue: as many run elsewhere as today's `steal` case (guest: 1506, the ideal 1500); `handoffs_in == handoffs_out` machine-wide |
-| handoffdrain, spilldrain | 100 activate/drain cycles under hand-off and under spill: nothing lost or doubled |
-| place_switch | `place` flipped between 0 and 1 every 10 ms for 10 s under load: nothing lost, no assertion |
-| place_any | one producer with every worker idle: items go to idle cores first and to the sibling last (the placement counters by rank) |
+| handoff (not built) | 2000 items of 100 us onto one CPU of a stealable queue: as many run elsewhere as today's `steal` case (guest: 1506, the ideal 1500); `handoffs_in == handoffs_out` machine-wide |
+| handoffdrain, spilldrain (not built) | 100 activate/drain cycles under hand-off and under spill: nothing lost or doubled; the suite runs stealdrain and stealdrain_discard under `place=1` and `place=2` instead |
+| place_switch | `place` flipped between 0, 1 and 2 every 10 ms while 20000 items of 20 us spread from one CPU: every item once, `steals_in == steals_out` |
+| place_any (not built) | one producer with every worker idle: items go to idle cores first and to the sibling last (the placement counters by rank) |
 | place_stale | 1 s idle, then a burst: no expired entry used (counter `expired_used` stays 0) |
 | torus | the kernel's torus matches the userland builder's for this machine |
 | existing | steal, steal_off, stealdrain, stealdrain_discard and scatter pass under `place=0`, and the ones that apply under `place=1` and `place=2` |
 | island | `place=2`, groups of 1 on the guest: producers on one CPU above its capacity reach CPUs beyond the near groups (the far probe) |
-| starved | `place=2`: a real-time spinner on one CPU for 100 ms while its list holds items: they run elsewhere within a few ticks (the starved tick) |
+| starved | `place=2`: a kernel thread at `PI_NET` (above BULK's `PI_SOFT`; a user real-time thread cannot starve BULK) spins on one CPU for 100 ms while its list holds items: they run elsewhere within a few ticks (the starved tick) |
 
 The guest runs GENERIC-DEBUG: INVARIANTS and WITNESS clean is part of
 W8.

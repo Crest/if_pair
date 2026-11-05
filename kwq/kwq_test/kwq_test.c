@@ -3774,8 +3774,8 @@ kt_run_anyburst(void)
  * spins on the target CPU for spin_ms while a producer on another CPU puts
  * the items on that CPU's list.  The target's BULK worker gets no time;
  * result_maxlat_a_us is the time until every item ran, which under
- * place=2 the starved tick bounds (kwq_shard.c), and result_spin_late
- * says whether the spinner was still running when the last item ran.
+ * place=2 the starved tick bounds (kwq_shard.c), and result_maxlat_b_us
+ * is 1 if the spinner was still running when the last item ran.
  */
 static volatile u_int kt_spin_state;	/* 0 starting, 1 spinning, 2 done */
 
