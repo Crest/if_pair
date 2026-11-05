@@ -461,9 +461,9 @@ bool	kwq_urgent_nudge(struct kwq_cpu *kc, int ring);	/* kc locked, state
 					   urgent item added to an already placed
 					   list */
 bool	kwq_higher_waiting(enum kwq_class cls);	/* hand-back flags, this CPU */
-void	kwq_steal_wake(int cpu, struct kwq_cpu *kc);	/* no locks held: wake a
+void	kwq_steal_wake(int cpu, uint64_t mw);	/* no locks held: wake a
 					   sleeping BULK worker near `cpu' to steal
-					   from it (S16), kc the list if known */
+					   from it (S16), mw its mailbox word or 0 */
 bool	kwq_steal_idle_near(int cpu);	/* a BULK worker near `cpu' sleeps (hint) */
 void	kwq_topo_init(void);
 void	kwq_topo_fini(void);
@@ -480,8 +480,10 @@ void	kwq_idle_set(struct kwq_worker *kw);	/* kw_mtx held, going to sleep */
 void	kwq_idle_clr(struct kwq_worker *kw);	/* kw_mtx held, awake */
 bool	kwq_shard_idle_near(int cpu);	/* a BULK worker in reach sleeps (hint) */
 bool	kwq_bulk_idle_hint(int cpu);	/* cpu's BULK worker sleeps, in the mode's view */
-bool	kwq_shard_wake(int cpu, struct kwq_cpu *kc);	/* wake a sleeper in reach to
-					   steal from cpu (kc, or its hint); no lock held */
+bool	kwq_shard_wake(int cpu, uint64_t mw);	/* wake a sleeper in reach to
+					   steal from cpu (mw, or its hint); no lock held */
+uint64_t kwq_steal_word(struct kwq_cpu *kc);	/* the list held: the mailbox
+					   word of a steal wake from it, or 0 */
 bool	kwq_donor_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead);
 					/* kw_mtx held: true if it just became a donor */
 bool	kwq_donor_helper(struct kwq_worker *kw, struct kwq_cpu *kc);	/* kw_mtx held */

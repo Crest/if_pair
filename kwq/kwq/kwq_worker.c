@@ -805,9 +805,9 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	}
 	kwq_class_prio_restore(kw);
 	if (__predict_false(cut && helper))
-		kwq_steal_wake(kc->kc_cpu, kc);	/* the rest of the list is for it */
+		kwq_steal_wake(kc->kc_cpu, kwq_steal_word(kc));	/* the rest is for it */
 	else if (__predict_false(donor))
-		(void)kwq_shard_wake(kc->kc_cpu, NULL);	/* it just became a donor */
+		(void)kwq_shard_wake(kc->kc_cpu, 0);	/* it just became a donor */
 	if (__predict_false(kw->kw_knobs->cap_permille < 1000)) {
 		if (cap == KS_CAP_RESTORE)
 			kwq_cap_act(kw, cap, wall);
@@ -897,7 +897,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 		wakeup(kc);
 	kwq_kc_unlock(kc);
 	if (__predict_false(donor))
-		(void)kwq_shard_wake(kc->kc_cpu, NULL);
+		(void)kwq_shard_wake(kc->kc_cpu, 0);
 	if (__predict_false(cap != KS_CAP_NONE))
 		kwq_cap_act(kw, cap, wall);
 	else if (__predict_false(kw->kw_knobs->cap_permille >= 1000 &&
@@ -1216,17 +1216,20 @@ kwq_steal_idle_near(int cpu)
  * The steal wake (../SCHED.md S16): an enqueue left a stealable list on
  * `cpu' deeper than steal_wake (and at each doubling after that), so its
  * worker is behind; wake the nearest sleeping BULK worker to steal.  The
- * idle mask is a hint; kw_sleeping under kw_mtx decides.  No lock held.
+ * idle mask is a hint; kw_sleeping under kw_mtx decides.  mw is the
+ * mailbox word (kwq_steal_word(), built while the list was held), 0 if
+ * none.  No lock held, and nothing of the queue is read: a drain and
+ * destroy may have completed since the enqueue.
  */
 void
-kwq_steal_wake(int cpu, struct kwq_cpu *kc)
+kwq_steal_wake(int cpu, uint64_t mw)
 {
 	struct kwq_worker *kw;
 	u_int i, reach;
 	int c;
 
 	if (kwq_bulk_place == KWQ_PLACE_SHARD) {
-		(void)kwq_shard_wake(cpu, kc);	/* the group lines, not the mask */
+		(void)kwq_shard_wake(cpu, mw);	/* the group lines, not the mask */
 		return;
 	}
 	if (kwq_bulk_place == KWQ_PLACE_GOSSIP)

@@ -343,10 +343,10 @@ kwq_shard_idle_near(int cpu)
  * sleeper of its own group nobody to wake while three workers slept.
  */
 bool
-kwq_shard_wake(int cpu, struct kwq_cpu *kc)
+kwq_shard_wake(int cpu, uint64_t mw)
 {
 	struct kwq_worker *kw;
-	uint64_t w = 0, mw;
+	uint64_t w = 0;
 	u_int i, reach;
 	int c, g, lg = -1;
 
@@ -371,8 +371,8 @@ kwq_shard_wake(int cpu, struct kwq_cpu *kc)
 			 * steals from its waker without a donor's backlog.
 			 */
 			if (kwq_directed) {
-				mw = kc != NULL ? kwq_hint_word(kc) :
-				    atomic_load_64(&kwq_hints[cpu].kh_word);
+				if (mw == 0)
+					mw = atomic_load_64(&kwq_hints[cpu].kh_word);
 				if (mw != 0) {
 					kw->kw_mb_cpu = cpu;
 					kw->kw_mb_word = mw;
@@ -399,6 +399,19 @@ kwq_hint_word(struct kwq_cpu *kc)
 	if (us > 0xffff)
 		us = 0xffff;
 	return (KH_MAKE(q->kwq_steal_slot, us, q->kwq_steal_id));
+}
+
+/*
+ * The mailbox word for a steal wake from kc's list: its hint word under
+ * place=2 with shard.directed, else 0.  The list is held (its lock, or a
+ * pass on it), so kc's queue is alive.
+ */
+uint64_t
+kwq_steal_word(struct kwq_cpu *kc)
+{
+	if (kwq_bulk_place != KWQ_PLACE_SHARD || kwq_directed == 0)
+		return (0);
+	return (kwq_hint_word(kc));
 }
 
 static void
@@ -915,7 +928,7 @@ kwq_watch_fire(void *arg)
 	kwq_watch_arm(kw);
 	mtx_unlock_spin(&kw->kw_mtx);
 	if (wake)
-		(void)kwq_shard_wake(kw->kw_cpu, NULL);	/* the hint just set */
+		(void)kwq_shard_wake(kw->kw_cpu, 0);	/* the hint just set */
 }
 
 void

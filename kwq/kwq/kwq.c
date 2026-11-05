@@ -630,8 +630,9 @@ static inline int
 kwq_enqueue_one(struct kwq *q, int cpu, struct kwq_item *it, bool urgent)
 {
 	struct kwq_cpu *kc;
+	uint64_t mw;
 	u_int depth;
-	bool woke __unused;	/* SDT argument */
+	bool sw, woke __unused;	/* SDT argument */
 
 	KASSERT(it->kwi_link.stqe_next == NULL,
 	    ("kwq_enqueue: item %p already linked", it));
@@ -656,11 +657,19 @@ kwq_enqueue_one(struct kwq *q, int cpu, struct kwq_item *it, bool urgent)
 	kwq_list_append(kc, it, false);
 	depth = ++kc->kc_depth;
 	woke = kwq_kc_added(kc, 1, urgent ? KWQ_RING_ITEM : KWQ_RING_PLAIN);
+	/*
+	 * The steal wake is decided, and its mailbox word built, under the
+	 * list lock: after the unlock a drain and destroy of q may complete
+	 * (the items just added run elsewhere), so nothing of q is read past
+	 * it.
+	 */
+	sw = __predict_false(q->kwq_flags & KWQ_F_STEALABLE) &&
+	    kwq_steal_crossed(depth - 1, depth);
+	mw = sw ? kwq_steal_word(kc) : 0;
 	kwq_kc_unlock(kc);
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);
-	if (__predict_false(q->kwq_flags & KWQ_F_STEALABLE) &&
-	    kwq_steal_crossed(depth - 1, depth))
-		kwq_steal_wake(cpu, kc);
+	if (__predict_false(sw))
+		kwq_steal_wake(cpu, mw);
 	return (0);
 }
 
@@ -681,8 +690,9 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
     struct kwq_item *tail, int n)
 {
 	struct kwq_cpu *kc;
+	uint64_t mw;
 	u_int depth;
-	bool woke __unused;	/* SDT argument */
+	bool sw, woke __unused;	/* SDT argument */
 
 	KASSERT(n > 0 && head != NULL && tail != NULL,
 	    ("kwq_enqueue_list: bad list %p %p %d", head, tail, n));
@@ -712,11 +722,13 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 	kc->kc_depth += n;
 	depth = kc->kc_depth;
 	woke = kwq_kc_added(kc, n, KWQ_RING_PLAIN);
+	sw = __predict_false(q->kwq_flags & KWQ_F_STEALABLE) &&
+	    kwq_steal_crossed(depth - n, depth);	/* under the lock, as above */
+	mw = sw ? kwq_steal_word(kc) : 0;
 	kwq_kc_unlock(kc);
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);	/* once per call */
-	if (__predict_false(q->kwq_flags & KWQ_F_STEALABLE) &&
-	    kwq_steal_crossed(depth - n, depth))
-		kwq_steal_wake(cpu, kc);
+	if (__predict_false(sw))
+		kwq_steal_wake(cpu, mw);
 	return (0);
 }
 
