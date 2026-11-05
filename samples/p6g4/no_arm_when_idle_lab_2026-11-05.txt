@@ -1,0 +1,26 @@
+no_arm_when_idle on lab, 2026-11-05, stage 8536cc6 (kwq-bulk)
+
+The case counts CPU 1's timer interrupts (vmstat -i, cpu1:timer) over
+2 s idle, runs a NET burst (kt_class KWQ_NET, KWQ_F_DISCARD, not
+stealable: no BULK placement code runs), then counts 2 s of silence, and
+fails when after > idle + idle/4 + 20.
+
+g2suite, place=default: failed, after 36 against idle 10.
+
+Alone, three runs at the defaults:
+  idle 8, after 4: passed
+  idle 23, after 67: failed
+  idle 7, after 6: passed
+
+Alternating place=0 and the default (place=2), four rounds:
+  round 1  place=0: idle 8,  after 23  passed   default: idle 6,  after 5   passed
+  round 2  place=0: idle 17, after 6   passed   default: idle 26, after 25  passed
+  round 3  place=0: idle 47, after 5   passed   default: idle 5,  after 55  failed
+  round 4  place=0: idle 23, after 39  passed   default: idle 4,  after 20  passed
+
+No kwq module loaded, ten consecutive 2 s windows of cpu1:timer:
+  26 8 7 7 6 15 43 45 92 7
+
+lab, crest's desktop, takes bursts of 20 to 90 timer interrupts per 2 s
+on CPU 1 with no kwq loaded; a burst in one window and not the other
+decides the case, in either placement mode.
