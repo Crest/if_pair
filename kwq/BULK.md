@@ -6,7 +6,8 @@ request: implement the BULK class, write a dummy client that benchmarks
 crypto as a test case, copy GEOM ELI as kwq-geli and port it to kwq,
 test it with md(4), and measure the impact on the system's
 responsiveness and of several busy queues on one CPU, on the guest,
-then lab and a07.  The design as built is SCHED.md S16; the port is
+then lab and a07.  The design as built is SCHED.md S16, and S17 for
+the placement that replaced its idle path (section 8, P6g); the port is
 ../kwq-geli (its README.md); what the measurements mean for GELI's
 place among the classes is KWQ.md S14.1.  Raw rows are in
 ../samples/p6_*.tsv.
@@ -352,7 +353,7 @@ Past two providers per CPU kwq-geli falls behind, and with the 1 MiB
 writes far behind: its kernel CPU per MiB grows from 1.2 to 3.0 ms
 between 16 and 128 providers where GELI's stays near 1.6, its
 throughput drops to 55 % of GELI's, and a fork+exec beside the
-writers waits 49 to 58 ms.  Not traced; section 8.
+writers waits 49 to 58 ms.  Not traced; section 9.
 
 The SSD model, four devices, the device the limit (MB/s and requests/s
 equal for gnop alone, GELI and kwq-geli: 2096 MB/s sequential, 376 k
@@ -372,14 +373,134 @@ is 20 % less with kwq-geli for sequential reads, 43 % for writes and
 50 % for random reads, and its wakeups a third to a sixth of GELI's.
 The model's p99 is its own tick, 1.1 ms, for all three.
 
-## 8. Open
+## 8. Placement: P6g (2026-11-05)
+
+The steal attempt of S16's idle path reads every stealable list in
+reach before every sleep: with 128 kwq-geli providers on lab's 16 CPUs
+it cost two thirds of the small-read rate (section 7; SPEC-p6g.md S0).
+PLAN P6g designed placement and stealing anew (SPEC-p6g.md), simulated
+the candidates in kwq/sim/place against today's code and an oracle
+(gate G1, report https://claude.ai/artifact/U246kQmWvgBj6TYDJYyDYz),
+and on crest's decision (D9) built two of them into the kernel behind
+`kern.kwq.bulk.place`: 1 the gossip scheme, 2 P8, S16's placement with
+the idle mask in group lines, a donor line in place of the scan, the
+starved tick, and since P6g.3 the mailbox and the chain (SCHED.md
+S17).  Both were measured against today's code on one boot of lab and
+of a07 (gate G2, report https://claude.ai/artifact/Jz2qDdxhD1qvUefHqXp9tY;
+scripts, rows and the report's datasets in ../samples/p6g3).  Medians
+of three repetitions unless stated.
+
+The kernel criteria (SPEC-p6g.md S1): K1, 128 providers' small reads
+within 3 % of no stealing, CPU per read within 5 %; K2, 128 providers'
+bulk writes at least 98 % of today's; K3, 16 providers on lab and 64 on
+a07, reads and writes at least 98 % of today's; K4, kwq_crypto with one
+and with four stealable queues fed on CPU 1 (16 requests of 64 KiB in
+flight each), at least 90 % of today's rate; K5, the probes beside the
+load within today's range.
+
+| scheme | lab | a07 |
+|---|---|---|
+| gossip (place=1) | K2 (0.943), K4 (0.10, 0.10) fail | K1 (0.942), K2 (0.9795), K3 (reads 0.909), K4 (0.07, 0.50) fail |
+| P8 | K4 (0.09, 0.50) fails | K4 (0.28, 1.53) fails |
+| P8, spill_idle=1 | all pass | K4 (0.45, 2.31) fails |
+| P8 with the chain (`directed=2`) | all pass: K1 0.984 (CPU 1.019), K2 0.989, K3 1.085 and 0.993, K4 1.00 and 0.98, K5 fork+exec p99 6.3 ms (today 7.1) | all pass: K1 1.015 (CPU 0.984), K2 1.002, K3 1.048 and 0.999, K4 0.98 and 1.70, K5 fork+exec p99 16.8 ms (today 15.4) |
+
+K4's pairs are one queue and four; lab's K2 for the chain is the
+interleaved A/B below.  At 128 providers (K1, K2):
+
+| | lab today | lab no stealing | lab gossip | lab P8 | a07 today | a07 no stealing | a07 gossip | a07 P8 |
+|---|---|---|---|---|---|---|---|---|
+| 4 KiB reads/s | 542 k | 1.56 M | 1.57 M | 1.53 M | 891 k | 886 k | 835 k | 928 k |
+| kernel CPU per read, us | 28.5 | 9.5 | 9.4 | 9.8 | 139.6 | 140.2 | 146.4 | 133.7 |
+| 1 MiB writes, MB/s | 5333 | 5191 | 5028 | 5277 | 7326 | 7354 | 7176 | 7367 |
+
+P8 removes what the scan cost on lab and is level with or better than
+today elsewhere; gossip's hand-off waits for a backlog of H (2 ms),
+which a closed loop of a few requests never holds, and its tables are
+a guess about cores the producer has not heard from (SPEC-p6g.md S2).
+
+**The chain.**  K4's one queue fed on CPU 1 ran at 9 % of today on lab
+and 28 % on a07 under P8: 16 requests in flight hold less than a
+donor's 500 us, so nothing was stolen until a wake.  The mailbox (a
+wake names its victim, `directed=1`) lifted lab to 91 %, but a07 stayed
+at 56 % whatever `donor_us` (500, 2000 and 5000 alike), with p50 79 us
+against today's 39: every item waited one service time.  A lone item
+behind running work never makes its CPU a donor, so a thief that
+finished its batch found no donor and slept, and the next item waited
+for the next wake; S16's scan chains its thieves instead.  The chain
+(an idle thief retries the victim of its last batch, 777b372):
+
+| kwq_crypto, of today | lab, 1 queue | lab, 4 queues | a07, 1 queue | a07, 4 queues |
+|---|---|---|---|---|
+| today, MB/s | 53549 | 54234 (Jain 0.32) | 27368 | 21237 (Jain 0.42) |
+| P8 | 0.09 | 0.50 | 0.28 | 1.53 |
+| P8, mailbox | 0.91 | 0.90 | 0.56 | 1.63 |
+| P8, chain | 1.00 | 0.98 | 0.98 | 1.70 |
+| gossip | 0.10 | 0.10 | 0.07 | 0.50 |
+
+On lab the chain's single queue needed 165 k wakes per run where the
+mailbox alone needed 1.99 M (today 142 k), and P8 spreads four queues
+evenly (Jain 1.00) where today's lets one of them take the machine.
+`spill_idle` (an item that would wait goes to an idle CPU), tried
+before the chain, halved a07's single queue beside it (0.46) and was
+removed (D14), with `helper_donor`.
+
+**Interleaved A/B rounds.**  kwq.ko loaded once, the knob settings in
+turn in blocks of three runs of today's stage and three of P8's (lab4,
+a07d, a07e under ../samples/p6g3):
+
+| round | metric | today | P8 | P8, chain | P8, chain, `directed_us=10` |
+|---|---|---|---|---|---|
+| lab | 1 MiB writes at 128, MB/s | 5409 (12 runs) | 0.987 | 0.989 | |
+| a07, 1 | ssd randread, IOPS | 1.15 M (12) | 1.067 | 1.003 | |
+| a07, 2 | same | 1.24 M (18) | 0.817 | 0.667 | 0.884 |
+
+Lab's K2 for the chain, 0.979 in its own round, is the edge of a
+spread the A/B places at 0.989: the chain leaves P8's writes where they
+were, about 1 % below today's.  a07's ssd randread (16 SSD models,
+section 7) is not resolved: every configuration's runs fall at about
+0.6 M or 1.3 M IOPS, and P8 without the chain came to between 0.82 and
+1.15 of today in three rounds.  The chain is not the cause of any
+difference there: in round 2 it took 0 to 2 batches per block of
+randread and the mailbox 229 to 641, against about a million steals of
+today's stage (a07e/ssdab2_counters.txt); the lists' median item cost
+was 7.5 to 8.5 us and their p90 under 10 (a07e/cost_*.txt), below the
+gate.  Six runs per setting cannot resolve ten per cent;
+crest took it as level with today (D15).
+
+**Found on the way.**  The steal wake built the mailbox word from the
+queue after the enqueue had dropped the list lock, a window in which a
+drain and destroy may complete; the word is now built under the lock
+(b40b3a6; the thief's side was safe, the word naming its queue by slot
+and id under `kwq_steal_rm`).  The item cost's average took a07's
+glitched CPU-time deltas: some lists' cost reached 2^63 ns, overflowing
+the donor rule's backlog sums (a07e/cost_*.txt); it now leaves
+glitches out (946967d).
+
+**G2** (D12-D15, 77e80dc): P8 with the chain (`directed=2`,
+`directed_us=10`) is the default on a machine of one NUMA domain,
+today's code on more until a machine of several packages is measured
+(the simulator's two-socket model saw P8 collapse near saturation);
+`spill_idle` and `helper_donor` are gone; gossip stays for the hybrid
+H4 (P8 within a package, gossip's hand-off across), which needs a
+two-socket machine.
+
+## 9. Open
 
 - kwq-geli past two providers per CPU (section 7): with 64 and 128
   providers of 1 MiB writes on lab's 16 CPUs its kernel CPU per MiB
   is nearly twice GELI's and fork+exec beside it 50 ms.  Candidates,
   none measured: the share limit yielding to the md(4) threads,
   stealing among 128 backlogged queues, the pass's per-sector budget
-  checks suspending bios, the idle-worker scan of `KWQ_CPU_ANY`.
+  checks suspending bios, the idle-worker scan of `KWQ_CPU_ANY`.  P8
+  (section 8) removed the small reads' share of it (the idle path's
+  scan), not the writes': at 128 providers P8's writes are level with
+  today's.
+- Placement on a machine of two or more packages (section 8, D12):
+  today's code stays there until one is measured, with P8 and the
+  hybrid H4.
+- a07's ssd randread under P8 against today (section 8), unresolved at
+  six runs per setting.
 - lab's one-CPU case got worse between 01a87c3 and 9186555 (section 4:
   the timer's p99 301 to 542 us, kwq-geli's MB/s beside the spin loop
   13 % lower); which of the changes between them, not traced.

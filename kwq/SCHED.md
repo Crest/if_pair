@@ -2180,9 +2180,11 @@ except the donor line, which is written at donor transitions only.
   whose word carries an item cost of at least that many microseconds;
   cheaper lists keep the donor rule, since moving a cheap lone item
   costs the thief about what running it saves.  10 lies between the
-  two item classes measured, 64 KiB crypto requests (19 us on lab, 39
-  on a07) and kwq-geli's 4 KiB reads (7.5 to 8.3 us on a07, decision
-  D13); a judgment, not a derived bound.
+  two item classes measured, 64 KiB crypto requests (a p50 under
+  today's code of 19 us on lab and 39 on a07, about their service time)
+  and kwq-geli's 4 KiB reads (on a07 a median of 7.5 to 8.5 us
+  over the lists, the p90 under 10; decision D13); a judgment, not a
+  derived bound.
 
 **Gossip (place=1, `kwq_gossip.c` with `kwq_place.c`).**  SPEC-p6g.md
 S2 is the design.  The cores form a torus built from `smp_topo()`
