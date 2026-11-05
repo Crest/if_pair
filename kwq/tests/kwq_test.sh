@@ -4,6 +4,7 @@
 #
 #   kyua test -k /path/to/kwq/tests/Kyuafile
 #   kyua test -k ... -v test_suites.kwq.moddir=/root/kwq   # modules there
+#   kyua test -k ... -v test_suites.kwq.place=2   # BULK placement P8
 #   kyua report
 #
 # Every case needs root and at least 4 CPUs (skipped otherwise), loads
@@ -30,11 +31,26 @@ kwq_mod() {
 	fi
 }
 
+# kwq_kenv name value: a loader tunable for the kwq.ko this case loads
+# (before kwq_setup), undone in kwq_cleanup.
+kwq_kenv() {
+	kldstat -q -m kwq && atf_skip "kwq is loaded already: $1=$2 needs a fresh load"
+	kenv "$1=$2" >/dev/null || atf_fail "kenv $1=$2"
+	echo "$1" >> kenvs
+}
+
 # Load kwq.ko and kwq_test.ko unless loaded; remember what we loaded.
+# The config variable place sets kern.kwq.bulk.place for the load.
 kwq_setup() {
 	[ "$(id -u)" -eq 0 ] || atf_skip "needs root"
 	[ "$(sysctl -n hw.ncpu)" -ge 4 ] || atf_skip "needs at least 4 CPUs"
 	: > loaded
+	local place
+	place=$(atf_config_get place "")
+	if [ -n "$place" ] && ! kldstat -q -m kwq && ! grep -qx kern.kwq.bulk.place kenvs 2>/dev/null; then
+		kenv kern.kwq.bulk.place=$place >/dev/null
+		echo kern.kwq.bulk.place >> kenvs
+	fi
 	for m in kwq kwq_test; do
 		if ! kldstat -q -m $m; then
 			kldload "$(kwq_mod $m)" || atf_skip "cannot load $(kwq_mod $m)"
@@ -54,6 +70,7 @@ kwq_setup() {
 	# the SPEC-p4e knobs, on a test module that has them: so the burst and
 	# interrupt-load cases leave nothing behind for the next case (writing
 	# intr_secs=0 drains the stressor's callout)
+	sysctl -q kern.kwq_test.spin_ms=100 >/dev/null 2>&1 || :
 	sysctl -q kern.kwq_test.prod_gap_us=0 kern.kwq_test.prod_prio=-1 \
 	    kern.kwq_test.burst_items=64 kern.kwq_test.burst_gap_us=500 \
 	    kern.kwq_test.burst_mode=0 kern.kwq_test.intr_secs=0 \
@@ -61,6 +78,10 @@ kwq_setup() {
 }
 
 kwq_cleanup() {
+	if [ -f kenvs ]; then
+		while read -r k; do kenv -u "$k" >/dev/null 2>&1 || :; done < kenvs
+		rm -f kenvs
+	fi
 	[ -f loaded ] || return 0
 	# a scenario still running would make the unload fail: wait for it
 	local n=0
@@ -677,8 +698,15 @@ steal_body() {
 	[ "$(R cpus)" -ge 2 ] || atf_fail "items ran on $(R cpus) CPU(s)"
 	atf_check_equal "$(kwq_bulk_sum steals_in)" "$(kwq_bulk_sum steals_out)"
 	atf_check_equal "$(kwq_bulk_sum stolen_in)" "$(kwq_bulk_sum stolen_out)"
-	[ "$(kwq_bulk_sum stolen_in)" -ge "$(R offcpu)" ] || \
-	    atf_fail "$(R offcpu) items ran off their CPU, $(kwq_bulk_sum stolen_in) moved"
+	# place=2 spills items for a donor's CPU at the enqueue (SPEC-p6g.md K11)
+	local spills=0
+	case "$(sysctl -n kern.kwq.bulk.place)" in
+	1)	spills=$(sysctl -n kern.kwq.bulk.gossip.spills) ;;
+	2)	spills=$(sysctl -n kern.kwq.bulk.shard.spills) ;;
+	esac
+	echo "  place=$(sysctl -n kern.kwq.bulk.place) spills=$spills"
+	[ $(( $(kwq_bulk_sum stolen_in) + spills )) -ge "$(R offcpu)" ] || \
+	    atf_fail "$(R offcpu) items ran off their CPU, $(kwq_bulk_sum stolen_in) moved, $spills spilled"
 }
 steal_cleanup() { kwq_cleanup; }
 
@@ -751,6 +779,117 @@ stealdrain_discard_body() {
 }
 stealdrain_discard_cleanup() { kwq_cleanup; }
 
+# ---------------------------------------------------------------- P6g BULK placement
+
+atf_test_case place_switch cleanup
+place_switch_head() {
+	atf_set descr "kern.kwq.bulk.place flipped between 0, 1 and 2 every 10 ms while 20000 items of 20 us spread from one CPU: every item once, steals_in == steals_out"
+	atf_set require.user root
+}
+place_switch_body() {
+	kwq_setup
+	kwq_knob kern.kwq.bulk.place 0
+	( i=0; while [ ! -f stop ]; do sysctl -q kern.kwq.bulk.place=$((i % 3)) >/dev/null; i=$((i + 1)); sleep 0.01; done; echo $i > flips ) &
+	kwq_run steal cpu=1 items=20000 cost_us=20 limit=100000
+	touch stop; wait
+	kwq_done steal
+	echo "  flips=$(cat flips) offcpu=$(R offcpu) steals_in=$(kwq_bulk_sum steals_in) steals_out=$(kwq_bulk_sum steals_out)"
+	atf_check_equal 0 "$(R dups)"
+	atf_check_equal "$(R in)" "$(( $(R out) + $(R rejected) ))"
+	atf_check_equal "$(kwq_bulk_sum steals_in)" "$(kwq_bulk_sum steals_out)"
+	atf_check_equal "$(kwq_bulk_sum stolen_in)" "$(kwq_bulk_sum stolen_out)"
+	[ "$(cat flips)" -ge 10 ] || atf_fail "only $(cat flips) flips"
+}
+place_switch_cleanup() { kwq_knobs_restore; kwq_cleanup; }
+
+atf_test_case place_stale cleanup
+place_stale_head() {
+	atf_set descr "place=1: after 1 s idle, a burst of KWQ_CPU_ANY items from one CPU places from tables without using an expired entry (W7), every item once"
+	atf_set require.user root
+}
+place_stale_body() {
+	kwq_setup
+	kwq_knob kern.kwq.bulk.place 1
+	kwq_run anyburst cpu=0 items=200 cost_us=100 limit=100000
+	kwq_done anyburst
+	sleep 1
+	kwq_run anyburst cpu=0 items=500 cost_us=100 limit=100000
+	kwq_done anyburst
+	echo "  cpus=$(R cpus) offcpu=$(R offcpu) $(sysctl kern.kwq.bulk.gossip | egrep 'place_|expired|merges' | tr '\n' ' ')"
+	atf_check_equal 0 "$(R dups)"
+	atf_check_equal "$(R in)" "$(( $(R out) + $(R rejected) ))"
+	atf_check_equal 0 "$(sysctl -n kern.kwq.bulk.gossip.expired_used)"
+	[ "$(R cpus)" -ge 2 ] || atf_fail "the burst ran on $(R cpus) CPU(s)"
+}
+place_stale_cleanup() { kwq_knobs_restore; kwq_cleanup; }
+
+atf_test_case torus cleanup
+torus_head() {
+	atf_set descr "kern.kwq.bulk.gossip.torus: every present CPU in exactly one core, every core with a neighbour unless alone, R x C covering the cores"
+	atf_set require.user root
+}
+torus_body() {
+	kwq_setup
+	sysctl -n kern.kwq.bulk.gossip.torus > torus
+	cat torus
+	local ncores rows cols cpus
+	read ncores _ rows _ cols < torus
+	[ "$(( rows * cols ))" -ge "$ncores" ] || atf_fail "$rows x $cols < $ncores cores"
+	cpus=$(sed 1d torus | sed 's/.*cpus \([0-9 ]*\) l3.*/\1/' | tr ' ' '\n' | grep -c .)
+	atf_check_equal "$(sysctl -n hw.ncpu)" "$cpus"
+	[ "$(sed 1d torus | sed 's/.*cpus \([0-9 ]*\) l3.*/\1/' | tr ' ' '\n' | grep . | sort -n | uniq -d | wc -l)" -eq 0 ] || \
+	    atf_fail "a CPU in two cores"
+	[ "$ncores" -eq 1 ] || [ "$(sed 1d torus | grep -vc ' nb [0-9]')" -eq 0 ] || \
+	    atf_fail "a core without neighbours"
+}
+torus_cleanup() { kwq_cleanup; }
+
+atf_test_case island cleanup
+island_head() {
+	atf_set descr "place=2, groups of one CPU: KWQ_CPU_ANY items of 100 us from one CPU beyond its near groups' capacity reach the far group (the far probe), every item once"
+	atf_set require.user root
+}
+island_body() {
+	kwq_kenv kern.kwq.bulk.place 2
+	kwq_kenv kern.kwq.bulk.group 1
+	kwq_setup
+	atf_check_equal 2 "$(sysctl -n kern.kwq.bulk.place)"
+	atf_check_equal 1 "$(sysctl -n kern.kwq.bulk.shard.group)"
+	kwq_run anyburst cpu=0 items=3000 cost_us=100 limit=100000
+	kwq_done anyburst
+	echo "  cpus=$(R cpus) offcpu=$(R offcpu) us=$(R maxlat_a_us) $(sysctl kern.kwq.bulk.shard | grep pick_ | tr '\n' ' ')"
+	atf_check_equal 0 "$(R dups)"
+	atf_check_equal "$(R in)" "$(( $(R out) + $(R rejected) ))"
+	[ "$(sysctl -n kern.kwq.bulk.shard.pick_far)" -gt 0 ] || atf_fail "no item placed by the far probe"
+	atf_check_equal "$(sysctl -n hw.ncpu)" "$(R cpus)"
+	# every CPU takes a share: a sleeper the donor's wakes do not reach
+	# (groups of one CPU, the first kernel build) ran 6 items of 3000
+	local c n
+	for c in $(jot - 0 $(( $(sysctl -n hw.ncpu) - 1 ))); do
+		n=$(sysctl -n kern.kwq.bulk.queue.kts.cpu.$c.items 2>/dev/null) || continue
+		[ "$n" -ge $(( $(R in) / 8 )) ] || atf_fail "CPU $c ran $n of $(R in) items"
+	done
+}
+island_cleanup() { kwq_cleanup; }
+
+atf_test_case starved cleanup
+starved_head() {
+	atf_set descr "place=2: a kernel thread at PI_NET spins 100 ms on CPU 1 while 200 items of 100 us arrive on its list: they run elsewhere well within the spin (the starved tick), every item once"
+	atf_set require.user root
+}
+starved_body() {
+	kwq_kenv kern.kwq.bulk.place 2
+	kwq_setup
+	kwq_run starved cpu=1 items=200 cost_us=100 spin_ms=100 limit=100000
+	kwq_done starved
+	echo "  us=$(R maxlat_a_us) spinning_at_end=$(R maxlat_b_us) offcpu=$(R offcpu) starved=$(sysctl -n kern.kwq.bulk.cpu.1.starved) spills=$(sysctl -n kern.kwq.bulk.shard.spills)"
+	atf_check_equal 0 "$(R dups)"
+	atf_check_equal "$(R in)" "$(( $(R out) + $(R rejected) ))"
+	atf_check_equal 1 "$(R maxlat_b_us)"
+	[ "$(R maxlat_a_us)" -lt 50000 ] || atf_fail "the items took $(R maxlat_a_us) us, the spin 100000"
+}
+starved_cleanup() { kwq_cleanup; }
+
 atf_init_test_cases() {
 	atf_add_test_case lifecycle
 	atf_add_test_case fifo
@@ -783,4 +922,9 @@ atf_init_test_cases() {
 	atf_add_test_case scatter
 	atf_add_test_case stealdrain
 	atf_add_test_case stealdrain_discard
+	atf_add_test_case place_switch
+	atf_add_test_case place_stale
+	atf_add_test_case torus
+	atf_add_test_case island
+	atf_add_test_case starved
 }

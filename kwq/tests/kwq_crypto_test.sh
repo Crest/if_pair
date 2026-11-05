@@ -17,10 +17,18 @@ kc_mod() {
 	fi
 }
 
+# The config variable place sets kern.kwq.bulk.place for the load, as in
+# kwq_test.sh.
 kc_setup() {
 	[ "$(id -u)" -eq 0 ] || atf_skip "needs root"
 	[ "$(sysctl -n hw.ncpu)" -ge 4 ] || atf_skip "needs at least 4 CPUs"
 	: > loaded
+	local place
+	place=$(atf_config_get place "")
+	if [ -n "$place" ] && ! kldstat -q -m kwq; then
+		kenv kern.kwq.bulk.place=$place >/dev/null
+		echo kern.kwq.bulk.place >> kenvs
+	fi
 	for m in kwq kwq_crypto; do
 		if ! kldstat -q -m $m; then
 			kldload "$(kc_mod $m)" || atf_skip "cannot load $(kc_mod $m)"
@@ -40,6 +48,10 @@ kc_setup() {
 
 kc_cleanup() {
 	local m n
+	if [ -f kenvs ]; then
+		while read -r m; do kenv -u "$m" >/dev/null 2>&1 || :; done < kenvs
+		rm -f kenvs
+	fi
 	[ -f loaded ] || return 0
 	n=0
 	while [ "$(sysctl -n kern.kwq_crypto.result_state 2>/dev/null)" = running ] && \

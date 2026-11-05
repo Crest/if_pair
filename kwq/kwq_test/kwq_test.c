@@ -14,6 +14,7 @@
  *                                             # P4e: burst (SPEC-p4e 2.1, 2.4)
  *                                             # P6: steal scatter stealdrain
  *                                             #     stealdrain_discard (BULK)
+ *                                             # P6g: anyburst starved
  *   sysctl kern.kwq_test.intr_cpu=1 kern.kwq_test.intr_us=100 \
  *          kern.kwq_test.intr_work_ns=20000 kern.kwq_test.intr_secs=10
  *                                             # interrupt load on CPU 1 beside
@@ -165,7 +166,7 @@ SYSCTL_STRING(_kern_kwq_test, OID_AUTO, scenario, CTLFLAG_RW, kt_scenario,
     sizeof(kt_scenario), "lifecycle fifo notify reject discard sleep | "
     "fairness latency gaming overrun yield cost scale fanin tq_baseline switch_baseline pingpong pingpong_tq clocks burst | ifpair | "
     "mixorder mixpattern mixbudget mixstarve mixrearm mixcancel mixrequeue mixdrain mixdrain_discard | "
-    "steal scatter stealdrain stealdrain_discard");
+    "steal scatter stealdrain stealdrain_discard | anyburst starved");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, items, CTLFLAG_RW, &kt_items, 0,
     "items per repetition (P0), pool size per flood (P1b)");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, reps, CTLFLAG_RW, &kt_reps, 0,
@@ -202,6 +203,9 @@ kt_prod_bind(int cpu)
 }
 SYSCTL_INT(_kern_kwq_test, OID_AUTO, allow_panic, CTLFLAG_RW, &kt_allow_panic,
     0, "allow scenarios that are expected to panic");
+static u_int	kt_spin_ms = 100;	/* P6g starved: the spinner's time */
+SYSCTL_UINT(_kern_kwq_test, OID_AUTO, spin_ms, CTLFLAG_RW, &kt_spin_ms, 0,
+    "starved: how long a kernel thread at PI_NET spins on the target CPU, ms");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, secs, CTLFLAG_RW, &kt_secs, 0,
     "duration of a P1b scenario");
 SYSCTL_UINT(_kern_kwq_test, OID_AUTO, weight_a, CTLFLAG_RW, &kt_weight_a, 0, "");
@@ -3672,6 +3676,152 @@ kt_run_steal(void)
 	kt_bind(-1);
 }
 
+/*
+ * The P6g scenarios' common part: a stealable BULK queue of kt_items items
+ * of cost_us each, enqueued onto `cpu' (or KWQ_CPU_ANY) from the calling
+ * thread as fast as the limit admits; waits until every admitted item ran
+ * and fills the results as kt_run_steal() does.  Returns the time from
+ * the first enqueue to the last item run.
+ */
+static sbintime_t
+kt_bulk_flood(int tcpu, int cpu)
+{
+	struct kwq_params p;
+	struct titem *ti;
+	uint64_t in = 0, rejected = 0;
+	sbintime_t t0;
+	u_int i;
+	int c, error, deadline;
+
+	memset(&p, 0, sizeof(p));
+	p.limit = kt_limit;
+	p.domain = -1;
+	kt_cpu_hits = malloc(sizeof(*kt_cpu_hits) * (mp_maxid + 1), M_KWQ_TEST,
+	    M_WAITOK | M_ZERO);
+	kt_bitems = malloc(sizeof(*kt_bitems) * kt_items, M_KWQ_TEST,
+	    M_WAITOK | M_ZERO);
+	kt_bq = kwq_create("kts", KWQ_BULK, KWQ_F_STEALABLE, &p, kt_item_handler,
+	    NULL);
+	if (kt_bq == NULL) {
+		kt_fail("kwq_create(kts) failed");
+		return (0);
+	}
+	kt_nofifo = true;
+	kt_coop = true;
+	kt_dups = 0;
+	kt_rep_tag = 1;
+	t0 = sbinuptime();
+	for (i = 0; i < kt_items; i++) {
+		ti = &kt_bitems[i];
+		ti->ti_magic = TITEM_MAGIC;
+		ti->ti_cpu = tcpu;
+		ti->ti_seq = i + 1;
+		KWQ_ITEM_INIT(&ti->ti_item);
+		in++;
+		error = kwq_enqueue(kt_bq, cpu, &ti->ti_item);
+		if (error == ENOBUFS)
+			rejected++;
+		else if (error != 0) {
+			kt_fail("enqueue error %d", error);
+			break;
+		}
+	}
+	deadline = ticks + 60 * hz;
+	while (atomic_load_64(&kt_handled) + rejected < in &&
+	    ticks - deadline < 0)
+		pause("ktfld", 1);
+	t0 = sbinuptime() - t0;
+	kt_r_in = in;
+	kt_r_out = kt_handled;
+	kt_r_rejected = rejected;
+	kt_r_dups = kt_dups;
+	kt_r_wcpu = tcpu;
+	CPU_FOREACH(c) {
+		if (kt_cpu_hits[c] != 0)
+			kt_r_cpus++;
+		if (c != tcpu)
+			kt_r_offcpu += kt_cpu_hits[c];
+	}
+	if (kt_state[0] != 'f' && kt_handled + rejected != in)
+		kt_fail("in %ju != run %ju + rejected %ju after 60 s",
+		    (uintmax_t)in, (uintmax_t)kt_handled, (uintmax_t)rejected);
+	else if (kt_dups != 0)
+		kt_fail("%ju items run twice", (uintmax_t)kt_dups);
+	kt_nofifo = false;
+	kt_coop = false;
+	return (t0);
+}
+
+/*
+ * anyburst (../SPEC-p6g.md S4, ATF island): KWQ_CPU_ANY items from a
+ * producer bound to the target CPU: its neighbourhood fills, and under
+ * place=2 with groups of one CPU (kern.kwq.bulk.group=1) the far probe
+ * reaches the CPUs beyond the near groups.  result_maxlat_a_us is the
+ * time until every item ran.
+ */
+static void
+kt_run_anyburst(void)
+{
+	int tcpu = kt_bulk_target();
+
+	kt_bind(tcpu);
+	kt_r_maxlat_a_us = kt_sbt2us(kt_bulk_flood(tcpu, KWQ_CPU_ANY));
+	kt_bind(-1);
+}
+
+/*
+ * starved (ATF starved): a kernel thread at PI_NET, above BULK's PI_SOFT,
+ * spins on the target CPU for spin_ms while a producer on another CPU puts
+ * the items on that CPU's list.  The target's BULK worker gets no time;
+ * result_maxlat_a_us is the time until every item ran, which under
+ * place=2 the starved tick bounds (kwq_shard.c), and result_spin_late
+ * says whether the spinner was still running when the last item ran.
+ */
+static volatile u_int kt_spin_state;	/* 0 starting, 1 spinning, 2 done */
+
+static void
+kt_spinner(void *arg)
+{
+	int cpu = (int)(intptr_t)arg;
+	sbintime_t end;
+
+	thread_lock(curthread);
+	sched_prio(curthread, PI_NET);
+	sched_bind(curthread, cpu);
+	thread_unlock(curthread);
+	atomic_store_rel_int(&kt_spin_state, 1);
+	end = sbinuptime() + (sbintime_t)kt_spin_ms * SBT_1MS;
+	while (sbinuptime() < end)
+		cpu_spinwait();
+	atomic_store_rel_int(&kt_spin_state, 2);
+	kthread_exit();
+}
+
+static void
+kt_run_starved(void)
+{
+	struct thread *td;
+	int tcpu = kt_bulk_target(), error, n;
+
+	kt_bind(kt_other_cpu(tcpu));
+	kt_spin_state = 0;
+	error = kthread_add(kt_spinner, (void *)(intptr_t)tcpu, NULL, &td, 0, 0,
+	    "kt_spin/%d", tcpu);
+	if (error != 0) {
+		kt_fail("kthread_add(kt_spin): %d", error);
+		kt_bind(-1);
+		return;
+	}
+	for (n = 0; atomic_load_acq_int(&kt_spin_state) == 0 && n < 10 * hz; n++)
+		pause("ktspn", 1);
+	kt_r_maxlat_a_us = kt_sbt2us(kt_bulk_flood(tcpu, tcpu));
+	kt_r_maxlat_b_us = atomic_load_acq_int(&kt_spin_state) == 1;	/* still spinning */
+	while (atomic_load_acq_int(&kt_spin_state) != 2)
+		pause("ktspn", 1);
+	pause("ktspn", hz / 10);	/* the spinner out of kthread_exit()'s path */
+	kt_bind(-1);
+}
+
 static void
 kt_scatter_handler(struct kwq *q, struct kwq_item *head, int n,
     void *ctx __unused)
@@ -3916,6 +4066,10 @@ kt_thread(void *arg __unused)
 		kt_run_stealdrain(0);
 	else if (strcmp(kt_scenario, "stealdrain_discard") == 0)
 		kt_run_stealdrain(KWQ_F_DISCARD);
+	else if (strcmp(kt_scenario, "anyburst") == 0)
+		kt_run_anyburst();
+	else if (strcmp(kt_scenario, "starved") == 0)
+		kt_run_starved();
 	else
 		kt_fail("unknown scenario %s", kt_scenario);
 
