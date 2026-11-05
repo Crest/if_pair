@@ -1339,6 +1339,35 @@ Phases
       and leaves the machine more, costs half the encryption's CPU in
       the SSD model, but past two providers per CPU falls behind (1 MiB
       writes at 128: 5.4 against 9.8 GB/s, fork+exec 49 ms; open).
+      Cause, traced 2026-11-04 (bench steal_lab, prof2_lab): the
+      idle path's steal attempt, (CPUs in reach) x (stealable queues)
+      list depths read before every sleep and after every wake; with
+      stealing off 1.58M against 550k small reads.  P6g replaces it.
+
+[STARTED 2026-11-05] P6g  BULK placement by load gossip on a torus of cores
+    (SPEC-p6g.md; branch kwq-bulk)
+    crest, 2026-11-04: "Write a plan to implement this scheme, and test
+    it thoroughly.  Simulate how quickly and accurately it allows CPUs
+    to place work with a good CPU in a wide spread of possible
+    workloads. [...] I want good average case performance, but
+    acceptable worst case behavior is even more important."  The
+    scheme (crest's): a load figure per CPU, the cores on a 2D torus
+    with four neighbours each, a table per core of timestamped (core,
+    load) entries for nearly idle cores, refreshed from the
+    neighbours' tables; producers place KWQ_CPU_ANY from their own
+    core's table, an overloaded worker hands work off, idle workers
+    sleep without searching.  Accepted 2026-11-05 with decisions
+    D1-D7 as proposed in SPEC-p6g.md S9; D8 (a07) asked at P6g.3.
+    Named P6g, not P6b: P6a-P6f above are P6's own steps.
+    P6g.0 SMT order and the kernel's SMT yield on lab (K0): kwq.ko
+        built with KWQ_SIBLING_LAST=1 against today's order;
+        kwq_crypto's cpustep for two queues on siblings or on cores;
+        kern.kwq.topo dumps the order.
+    P6g.1 placesim (kwq/sim/place) running kwq_place.c, the scenario
+        matrix S1-S18, bounds B1-B5, validation V1-V3; gate G1.
+    P6g.2 Kernel behind kern.kwq.bulk.place (K1-K7), ATF on the guest.
+    P6g.3 A/B on lab, then a07 with crest's permission; gate G2.
+    P6g.4 Documentation and the post-merge doc review.
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
     P7a Design and simulate first (the P1a pattern; nothing in the kernel
