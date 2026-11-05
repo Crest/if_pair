@@ -525,7 +525,8 @@ kwq_gossip_sysctl(void)
 	    "hand-offs at most per pass end");
 	for (i = 0; i <= KP_STEP_FALLBACK; i++) {
 		snprintf(name, sizeof(name), "place_%s", steps[i]);
-		SYSCTL_ADD_COUNTER_U64(ctx, g, OID_AUTO, strdup(name, M_KWQ),
+		/* sysctl_add_oid() copies the name (M_SYSCTLOID) */
+		SYSCTL_ADD_COUNTER_U64(ctx, g, OID_AUTO, name,
 		    CTLFLAG_RD, &kwq_gp_step[i], "KWQ_CPU_ANY placements by this step (S2.5)");
 	}
 	SYSCTL_ADD_COUNTER_U64(ctx, g, OID_AUTO, "spills", CTLFLAG_RD, &kwq_gp_spill,
