@@ -1,0 +1,152 @@
+steal place=2: done dups=0 offcpu=19385
+anyburst place=2: done dups=0 offcpu=20000
+steal place=0: done dups=0 offcpu=19310
+anyburst place=0: done dups=0 offcpu=19605
+steal place=1: done dups=0 offcpu=18677
+anyburst place=1: done dups=0 offcpu=19168
+starved place=2: done dups=0 offcpu=200
+crypto: 22296.11 MB/s p50 47 p99 127 max 665 us jain 1000 cpus 24
+steal how=1 kcq0 items=8
+steal how=1 kts items=200
+steal how=2 kts items=2184
+steal how=3 kts items=3182
+steal how=4 kts items=8154
+steal how=2 kcq0 items=55146
+steal how=5 kts items=56545
+steal how=0 kts items=92652
+steal how=3 kcq0 items=627601
+steal how=1, items left on the victim:
+           value  ------------- Distribution ------------- count    
+              -1 |                                         0        
+               0 |@@@@@@@@                                 1        
+               1 |                                         0        
+               2 |                                         0        
+               4 |                                         0        
+               8 |@@@@@@@@@@@@@@@@                         2        
+              16 |                                         0        
+              32 |                                         0        
+              64 |@@@@@@@@                                 1        
+             128 |@@@@@@@@                                 1        
+             256 |                                         0        
+
+steal how=2, items left on the victim:
+           value  ------------- Distribution ------------- count    
+              -1 |                                         0        
+               0 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@       46298    
+               1 |@@@@@@                                   8212     
+               2 |                                         274      
+               4 |                                         112      
+               8 |                                         37       
+              16 |                                         0        
+              32 |                                         7        
+              64 |                                         0        
+             128 |                                         0        
+             256 |                                         0        
+             512 |                                         0        
+            1024 |                                         0        
+            2048 |                                         0        
+            4096 |                                         0        
+            8192 |                                         4        
+           16384 |                                         0        
+
+steal how=3, items left on the victim:
+           value  ------------- Distribution ------------- count    
+              -1 |                                         0        
+               0 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@        510474   
+               1 |@@@@@@@                                  104649   
+               2 |                                         824      
+               4 |                                         53       
+               8 |                                         219      
+              16 |                                         0        
+
+steal how=0, items left on the victim:
+           value  ------------- Distribution ------------- count    
+              -1 |                                         0        
+               0 |@@@@@@@@@@@@@                            4447     
+               1 |@@@@@@@@@@                               3683     
+               2 |@@@@@@                                   2284     
+               4 |@@@@                                     1581     
+               8 |@@@                                      940      
+              16 |@@                                       587      
+              32 |                                         49       
+              64 |                                         9        
+             128 |                                         18       
+             256 |                                         31       
+             512 |                                         66       
+            1024 |                                         136      
+            2048 |                                         64       
+            4096 |                                         65       
+            8192 |                                         127      
+           16384 |                                         42       
+           32768 |                                         0        
+
+steal how=5, items left on the victim:
+           value  ------------- Distribution ------------- count    
+              16 |                                         0        
+              32 |@@@@@@@@@@@@@@@@@@                       442      
+              64 |@                                        36       
+             128 |@                                        21       
+             256 |                                         10       
+             512 |@                                        21       
+            1024 |@                                        30       
+            2048 |@@                                       60       
+            4096 |@@@@@                                    119      
+            8192 |@@@@@@@                                  170      
+           16384 |@@                                       53       
+           32768 |                                         0        
+
+steal how=4, items left on the victim:
+           value  ------------- Distribution ------------- count    
+              -1 |                                         0        
+               0 |                                         1        
+               1 |                                         6        
+               2 |                                         6        
+               4 |                                         9        
+               8 |                                         16       
+              16 |                                         24       
+              32 |                                         30       
+              64 |                                         4        
+             128 |                                         12       
+             256 |                                         19       
+             512 |@                                        41       
+            1024 |@@                                       100      
+            2048 |@@@@                                     257      
+            4096 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@             1753     
+            8192 |@@@                                      193      
+           16384 |                                         0        
+
+steal-wake why=3 woken=0 mailbox=0 n=1
+steal-wake why=3 woken=1 mailbox=0 n=1
+steal-wake why=2 woken=1 mailbox=1 n=7
+steal-wake why=2 woken=0 mailbox=0 n=8
+steal-wake why=0 woken=1 mailbox=0 n=42
+steal-wake why=1 woken=0 mailbox=0 n=5516
+steal-wake why=1 woken=1 mailbox=0 n=5948
+steal-wake why=1 woken=1 mailbox=1 n=17379
+steal-wake why=0 woken=0 mailbox=0 n=23381
+steal-wake why=0 woken=1 mailbox=1 n=98208
+steal-miss how=4 why=3 n=13
+steal-miss how=1 why=2 n=521
+steal-miss how=4 why=2 n=1493
+steal-miss how=3 why=3 n=1961
+steal-miss how=2 why=3 n=3176
+steal-miss how=0 why=0 n=6121
+steal-miss how=3 why=2 n=53000
+steal-miss how=2 why=2 n=57474
+steal-miss how=1 why=0 n=145885
+steal-miss how=4 why=0 n=744894
+donor on=1 starved=1 n=2
+donor on=1 starved=0 n=15
+donor on=0 starved=0 n=17
+place step=3 spill=1 n=1
+place step=19 spill=0 n=95
+place step=22 spill=0 n=132
+place step=2 spill=1 n=362
+place step=17 spill=0 n=1679
+place step=20 spill=0 n=2194
+place step=1 spill=1 n=8474
+place step=21 spill=0 n=15900
+place step=0 spill=0 n=20000
+place step=1 spill=0 n=20000
+chained batches (KWQ_STEAL_CHAIN from kwq.d): 616219
+
