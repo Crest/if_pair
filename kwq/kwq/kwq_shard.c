@@ -63,6 +63,8 @@ static u_int kwq_shard_probe = 2;	/* near groups read besides the own one */
 static u_int kwq_donor_us = 500;	/* a donor's backlog */
 static u_int kwq_pull_us = 500;		/* a worker below it pulls at pass end */
 static u_int kwq_watch_us = 1000;	/* the starved tick; 0: off */
+static u_int kwq_spill_idle = 0;	/* spill a waiting item to an idle CPU near */
+static u_int kwq_helper_donor = 0;	/* a list cut for a helper is a donor's */
 
 #define	KWQ_NEAR_MAX	5		/* the own group and at most 4 more */
 #define	KWQ_GRP_MAX	64		/* bits of a group's line */
@@ -470,6 +472,14 @@ kwq_donor_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead)
 		d = b + (uint64_t)ahead * cur->kc_cost_ns >= lim;
 	else
 		d = bd >= 2 && b >= lim;
+	/*
+	 * helper_donor: a pass that left its list for a helper keeps the CPU
+	 * a donor while the list holds items, so a helper that arrives after
+	 * the pass still finds it (kwq_donor_helper()).
+	 */
+	if (kw->kw_helper_donor && bd == 0)
+		kw->kw_helper_donor = false;
+	d = d || kw->kw_helper_donor;
 	if (d)
 		kwq_hint_set(kw->kw_cpu, best);
 	if (d == kw->kw_donor)
@@ -484,6 +494,30 @@ kwq_donor_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead)
 		kwq_watch_arm(kw);
 	}
 	return (d);
+}
+
+/*
+ * helper_donor (a knob, default off): a pass that took one item and left
+ * the rest of a stealable list for a helper (the pass cap) makes its CPU
+ * a donor of that list until the list is empty, whatever its backlog: the
+ * helper it wakes steals from donors only.  kw_mtx held; true if the CPU
+ * just became a donor.
+ */
+bool
+kwq_donor_helper(struct kwq_worker *kw, struct kwq_cpu *kc)
+{
+	mtx_assert(&kw->kw_mtx, MA_OWNED);
+	if (!kwq_helper_donor || kwq_bulk_place != KWQ_PLACE_SHARD ||
+	    kc->kc_q->kwq_steal_slot < 0)
+		return (false);
+	kw->kw_helper_donor = true;
+	kwq_hint_set(kw->kw_cpu, kc);
+	if (kw->kw_donor)
+		return (false);
+	CPU_SET_ATOMIC(kw->kw_cpu, &kwq_donors.ds_set);
+	kw->kw_donor = true;
+	kw->kw_donor_n++;
+	return (true);
 }
 
 /* The cost of an item on kc, ns: an average over passes, 1/8 per pass. */
@@ -615,20 +649,20 @@ kwq_shard_pull(struct kwq_worker *kw)
  * none; then the own CPU unless it is a donor, the nearest CPU in reach
  * that is not, and today's shallowest of the own list and four probes.
  */
-int
-kwq_pick_shard(struct kwq *q)
+/* The nearest idle CPU of the near groups with q's list empty there, or -1. */
+static int
+kwq_pick_near(struct kwq *q, int me, int *nnp)
 {
-	uint64_t w[KWQ_NEAR_MAX], fw;
-	u_int i, nord, reach, depth, bestdepth, gs = kwq_shard_group;
-	int me, c, g, k, nn, best, fg, tries, b, j;
+	uint64_t w[KWQ_NEAR_MAX];
+	u_int i, nord;
+	int c, g, k, nn;
 
-	me = curcpu;
 	nn = 1 + (int)kwq_shard_probe;
 	if (nn > kwq_grp_nnear[me])
 		nn = kwq_grp_nnear[me];
+	*nnp = nn;
 	for (k = 0; k < nn; k++)
 		w[k] = atomic_load_64(&kwq_grps[kwq_grp_near[me][k]].kg_idle);
-	reach = kwq_topo_reach(me);
 	nord = kwq_topo_ring[me][KWQ_TOPO_RINGS - 1];
 	for (i = 0; i < nord; i++) {
 		c = kwq_topo_order[me][i];
@@ -637,10 +671,35 @@ kwq_pick_shard(struct kwq *q)
 			;
 		if (k == nn)
 			break;		/* beyond the near groups */
-		if ((w[k] & kwq_grp_bit(c)) != 0 && q->kwq_pcpu[c]->kc_depth == 0) {
-			counter_u64_add(kwq_pk_near, 1);
+		if ((w[k] & kwq_grp_bit(c)) != 0 && q->kwq_pcpu[c]->kc_depth == 0)
 			return (c);
-		}
+	}
+	return (-1);
+}
+
+/* spill_idle's search: an idle CPU near the producer, or -1. */
+static int
+kwq_pick_idle(struct kwq *q)
+{
+	int nn, c = kwq_pick_near(q, curcpu, &nn);
+
+	if (c >= 0)
+		counter_u64_add(kwq_pk_near, 1);
+	return (c);
+}
+
+int
+kwq_pick_shard(struct kwq *q)
+{
+	uint64_t fw;
+	u_int i, reach, depth, bestdepth, gs = kwq_shard_group;
+	int me, c, k, nn, best, fg, tries, b, j;
+
+	me = curcpu;
+	reach = kwq_topo_reach(me);
+	if ((c = kwq_pick_near(q, me, &nn)) >= 0) {
+		counter_u64_add(kwq_pk_near, 1);
+		return (c);
 	}
 	if (kwq_ngrps > nn) {
 		fg = DPCPU_GET(kwq_far_g) - 1;
@@ -702,12 +761,28 @@ int
 kwq_shard_spill(struct kwq *q, int cpu)
 {
 	struct kwq_cpu *kc = q->kwq_pcpu[cpu];
+	int c;
 
-	if (!kwq_steal_on || (!kwq_is_donor(cpu) &&
-	    (uint64_t)kc->kc_depth * kc->kc_cost_ns < (uint64_t)kwq_donor_us * 1000))
+	if (!kwq_steal_on)
 		return (cpu);
-	counter_u64_add(kwq_pk_spill, 1);
-	return (kwq_pick_shard(q));
+	if (kwq_is_donor(cpu) ||
+	    (uint64_t)kc->kc_depth * kc->kc_cost_ns >= (uint64_t)kwq_donor_us * 1000) {
+		counter_u64_add(kwq_pk_spill, 1);
+		return (kwq_pick_shard(q));
+	}
+	/*
+	 * spill_idle: an item that would wait behind another on its CPU goes
+	 * to an idle CPU near the producer instead, if there is one, as
+	 * today's steal at a list of two moves it a little later (one
+	 * closed-loop queue of kwq_crypto: a donor's backlog of 500 us held
+	 * half of its 16 requests in the fixed CPU's queue).
+	 */
+	if (kwq_spill_idle && kc->kc_depth > 0 &&
+	    (c = kwq_pick_idle(q)) >= 0) {
+		counter_u64_add(kwq_pk_spill, 1);
+		return (c);
+	}
+	return (cpu);
 }
 
 /*
@@ -884,6 +959,14 @@ kwq_shard_sysctl(void)
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_pull_us, 1000000,
 	    kwq_sysctl_shard_knob, "IU",
 	    "a worker whose backlog is below this at a pass end pulls from a donor, us; 0: never");
+	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "spill_idle",
+	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_spill_idle, 1,
+	    kwq_sysctl_shard_knob, "IU",
+	    "1: an item for a fixed CPU of a stealable queue that would wait behind another there goes to an idle CPU near the producer, if one (default 0)");
+	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "helper_donor",
+	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_helper_donor, 1,
+	    kwq_sysctl_shard_knob, "IU",
+	    "1: a pass that leaves its stealable list for a helper keeps the CPU a donor of it until the list is empty (default 0)");
 	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "watch_us",
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_watch_us, 1000000,
 	    kwq_sysctl_shard_knob, "IU",

@@ -751,6 +751,8 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	if (__predict_false(kwq_bulk_place == KWQ_PLACE_SHARD) &&
 	    (q->kwq_flags & KWQ_F_STEALABLE) != 0) {
 		mtx_lock_spin(&kw->kw_mtx);
+		if (cut && helper)
+			(void)kwq_donor_helper(kw, kc);	/* the rest is the helper's */
 		donor = kwq_donor_point(kw, kc, n);
 		mtx_unlock_spin(&kw->kw_mtx);
 	} else if (__predict_false(kwq_bulk_place == KWQ_PLACE_GOSSIP) &&

@@ -302,6 +302,7 @@ struct kwq_worker {
 	 */
 	u_char			kw_idle_at;
 	bool			kw_donor;
+	bool			kw_helper_donor;	/* a donor for the helper it woke */
 	volatile bool		kw_starved;
 	bool			kw_watch_armed;
 	uint64_t		kw_backlog_ns;
@@ -467,6 +468,7 @@ bool	kwq_bulk_idle_hint(int cpu);	/* cpu's BULK worker sleeps, in the mode's vie
 bool	kwq_shard_wake(int cpu);	/* wake a sleeper of cpu's group; no lock held */
 bool	kwq_donor_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead);
 					/* kw_mtx held: true if it just became a donor */
+bool	kwq_donor_helper(struct kwq_worker *kw, struct kwq_cpu *kc);	/* kw_mtx held */
 bool	kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns);	/* no lock held */
 void	kwq_shard_pull(struct kwq_worker *kw);	/* after a pass, no lock held */
 int	kwq_pick_shard(struct kwq *q);	/* KWQ_CPU_ANY under place=2 */
