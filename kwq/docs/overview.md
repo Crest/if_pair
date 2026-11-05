@@ -82,7 +82,9 @@ that never sleeps (packet input, 200 us quantum); BULK is lower-priority
 work that never sleeps (crypto, compression, 1 ms quantum), and the one
 class whose work may move between CPUs: an idle BULK worker steals from
 a busy CPU's `KWQ_F_STEALABLE` queue, and `kwq_scatter()` fans a list
-out with one completion (SCHED.md S16); BLOCKING is
+out with one completion (SCHED.md S16; how idle workers and producers
+find each other is `kern.kwq.bulk.place`, P8 by default on a machine
+of one NUMA domain, S17); BLOCKING is
 for work that may sleep and is not available yet.  The class is a
 property of the work, so the arms race in which every driver picks the
 top priority cannot start.

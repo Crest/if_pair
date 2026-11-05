@@ -124,7 +124,7 @@ enum kwq_class { KWQ_NET = 0, KWQ_BULK = 1, KWQ_BLOCKING = 2 };
 
 | constant | value | meaning |
 |---|---|---|
-| `KWQ_CPU_ANY` | -1 | BULK only: the nearest CPU in cache-topology order whose BULK worker sleeps with this queue's list empty, else the caller's CPU if its list is empty, else the shallowest of the caller's and the next four lists in topology order.  Bounded on purpose (`steal_scope`, `steal_scan`): scanning a whole 128-CPU machine would read 128 cold lines per enqueue |
+| `KWQ_CPU_ANY` | -1 | BULK only: the nearest CPU in cache-topology order whose BULK worker sleeps with this queue's list empty, then by `kern.kwq.bulk.place`.  Under 2 (P8, the default on one NUMA domain) the search covers the caller's group of CPUs and two near ones, then one far group's idle line, then the caller's CPU unless it is a donor, the nearest CPU that is not, and the shallowest of the caller's and the next four lists; under 0 (today's code, the default on more domains) the caller's CPU if its list is empty, then the shallowest of four; under 1 the gossip scheme's table (SCHED.md S16, S17).  Bounded on purpose (`steal_scope`, `steal_scan`): scanning a whole 128-CPU machine would read 128 cold lines per enqueue |
 | `KWQ_NAMELEN` | 32 | buffer size; a name is 1 to 31 characters |
 | `KWQ_LIMIT_NONE` | `UINT_MAX` | unbounded; the effective bound is `INT_MAX` so a batch's `n` fits an `int` |
 
@@ -638,6 +638,15 @@ module is preloaded.  Out-of-range values are refused with `EINVAL`.
 | `steal_batch` | RWTUN | 1 .. 4096 | bulk: 16 | items a pass of a stealable queue takes at most; one while a BULK worker near it sleeps, which it then wakes for the rest |
 | `steal_wake` | RWTUN | 0 .. 4096 | bulk: 2 | an enqueue that leaves a stealable list this deep, or at a doubling of it, wakes the nearest sleeping BULK worker; 0: never |
 | `nstealable` | RD | - | - | bulk: stealable queues in existence |
+| `place` | RWTUN | 0, 1, 2 | bulk: 2 on one NUMA domain, else 0 | BULK placement and stealing, flippable under load (SCHED.md S17): 0 today's code (S16); 1 the gossip scheme, the hand-off at a pass end in place of stealing; 2 P8, the idle mask in group lines, a donor line in place of the idle path's scan, the starved tick, the mailbox and the chain |
+| `shard.probe` | RW | 0 .. 4 | 2 | place=2: groups a producer reads besides its own before the far probe |
+| `shard.donor_us` | RW | 0 .. 1000000 | 500 | place=2: the stealable backlog, us, that makes a CPU a donor |
+| `shard.pull_us` | RW | 0 .. 1000000 | 500 | place=2: a worker below this backlog at a pass end pulls from a donor; 0: never |
+| `shard.watch_us` | RW | 0 .. 1000000 | 1000 | place=2: the starved tick's period; 0: off |
+| `shard.directed` | RW | 0 .. 2 | 2 | place=2: 1 a wake to steal names its victim in the woken worker's mailbox; 2 also the chain, an idle thief retries the victim of its last batch |
+| `shard.directed_us` | RW | 0 .. 65535 | 10 | place=2: the mailbox and the chain only for lists whose items cost at least this many us; 0: every list |
+| `shard.group`, `shard.ngroups` | RD | - | 16 (loader tunable `kern.kwq.bulk.group`, 1 .. 64) | CPUs per idle line, and the lines |
+| `gossip.h_us`, `gossip.l_us`, `gossip.llocal_us`, `gossip.handoff_n` | RW | - | 2000, 500, 50, 4 | place=1: the hand-off and spill backlog H, the most a hand-off's target may hold, the producer's own thread's bound, hand-offs per pass end (SPEC-p6g.md S2.9) |
 | `priority` | RDTUN | 0 .. 55 (net, bulk), 0 .. 223 (blocking), net <= bulk <= blocking | 1 (net), 2 (bulk), 56 (blocking) | the class's worker priority, settable only before the module loads (loader.conf or kenv(1)); a setting outside the range or out of order resets all three to the defaults with a console message.  Every knob exists for `blocking` too, although the class has no workers |
 
 Service-wide (`kern.kwq.`): `clock` (RD) names the scheduler's tick source
@@ -775,6 +784,9 @@ co-located receiver got (WAKE.md S12.1).
 | `steals` | bulk: of those, the ones that moved a batch to this CPU |
 | `stolen` | bulk: items in those batches |
 | `steal_wakes` | bulk: wakes sent to this worker so that it steals |
+| `pulls`, `donor_flags`, `starved` | bulk, place=2: batches pulled from a donor at a pass end; times this CPU became a donor; times the starved tick flagged it |
+| `directed`, `chained` | bulk, place=2: batches taken from the victim a wake named; from the victim of the last batch again |
+| `handoffs` | bulk, place=1: batches this worker handed off at a pass end |
 
 ### Per-queue nodes, `kern.kwq.<class>.queue.<queue>.`
 
@@ -814,6 +826,7 @@ co-located receiver got (WAKE.md S12.1).
 | `steals_in`, `stolen_in` | bulk: batches and items this CPU's worker took from other CPUs' lists of the queue |
 | `steals_out`, `stolen_out` | bulk: batches and items other CPUs' workers took from this list.  Summed over the CPUs, in equals out |
 | `scattered` | bulk: items `kwq_scatter()` put on this list |
+| `cost_ns` | bulk, place=2: an item's cost on this list, ns, averaged over passes (1/8 per pass), glitched passes left out |
 
 Counters are 64-bit and never reset except through `reset`.  A non-zero
 `glitches` means this machine's `cpu_ticks()` is not monotonic and every
@@ -848,7 +861,7 @@ default build produces.
 | `doorbell` | a (queue, CPU) placed with its worker, or an urgent nudge that woke the worker | untranslated: `arg0` class, `arg1` cpu, `arg2` worker state when rung: 0 awake (a wait in the idle class it ends included), 2 asleep and woken, 4 asleep and made runnable in the idle class (`KWQ_DB_LOWPRI`), 6 asleep with the tick armed: placed, not woken (`KWQ_DB_TICKED`); 1 (polling) is defined and never fires |
 | `tick` | a tick-regime sleep ended by its timeout (`tick_us` > 0, KWQ.md S16), as counted in `ticks` | untranslated: `arg0` class, `arg1` cpu, `arg2` elements served since the worker's previous sleep (the previous tick's round, or at an episode's first tick the round that entered the regime) |
 | `wake` | a worker waiting in the idle class promoted to the class priority (`wake_delay_us` > 0) | untranslated: `arg0` class, `arg1` cpu, `arg2` reason (`KWQ_WAKE_DEADLINE` 2, `KWQ_WAKE_URGENT` 4: an urgent ring or nudge, an enqueue from another CPU, the share limit's deadline, an unload; `KWQ_WAKE_SELF` 5: the worker got the CPU), `arg3` ns since the wait began |
-| `steal` | a batch moved between two CPUs' lists of a stealable queue | `arg1` from cpu, `arg2` to cpu, `arg3` items |
+| `steal` | a batch moved between two CPUs' lists of a stealable queue: today's steal, P8's donor steal, mailbox, chain and pull, and gossip's hand-off (`arg1` the handing CPU) | `arg1` from cpu, `arg2` to cpu, `arg3` items |
 | `worker-block`, `worker-spawn`, `worker-exit` | defined, never fire yet (P7) | untranslated: `arg0` cpu, `arg1` workers, `arg2` runnable |
 
 `round-end`, `yield`, `cap`, `idle`, `doorbell`, `tick` and `wake` are
@@ -926,6 +939,7 @@ or installed so the dependency resolves.
 | `KWQ_BLOCKING` | refused at create with a log line; no workers of that class exist (P7) |
 | `KWQ_F_RESERVE`, `nreserve != 0` | asserted at create, not cleanly refused (P7) |
 | cache-topology `KWQ_CPU_ANY`, an idle worker first (P6) | implemented on branch kwq-bulk |
+| BULK placement `kern.kwq.bulk.place`: P8 with the chain, the default on one NUMA domain, and gossip (P6g, SCHED.md S17) | implemented on branch kwq-bulk; the `place_switch`, `place_stale`, `torus`, `island` and `starved` cases; measured on lab and a07 (BULK.md S8) |
 | grace rule in service, `GRACE_SERVICE` one ring's worth (replaces `GRACE_ROUNDS`) | implemented |
 | tick regime (`tick_us`), its counters and the `tick` probe | implemented, off by default |
 | idle-class wait for same-CPU producers (`wake_delay_us`), its counters and the `wake` probe; it takes precedence over the tick regime for a same-CPU producer | implemented, off by default |

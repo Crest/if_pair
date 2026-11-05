@@ -187,7 +187,7 @@ re-arming safe.
 |---|---|---|
 | work belongs to a flow, connection or interface queue | `kwq_cpu_for_hash(hash)` | same hash always lands on the same CPU, so order is kept; the same mapping TCP uses for per-CPU timers, so a connection's worker and its timers share a CPU |
 | work was produced by an interrupt on a known CPU and has no other affinity | that CPU's id | the data is already in that CPU's cache |
-| work is independent of all other work (parallel chunks) | `KWQ_CPU_ANY` (BULK queues only) | the nearest CPU whose BULK worker sleeps with an empty list, so the item starts at once and the producer keeps running; else the caller's CPU if its list is empty, else the shallowest of four nearby (SCHED.md S16) |
+| work is independent of all other work (parallel chunks) | `KWQ_CPU_ANY` (BULK queues only) | the nearest CPU whose BULK worker sleeps with an empty list, so the item starts at once and the producer keeps running; where it goes when none does depends on `kern.kwq.bulk.place` (SCHED.md S16, S17) |
 | the item has no usable hash (a packet too short to parse, an unknown family) but its peers do | a fixed CPU chosen once per queue at create time | what the real client does: one unhashable stream stays on one list instead of following whichever CPU its producer runs on |
 | nothing of the above and order does not matter | `curcpu` | cheapest, cache-warm |
 
@@ -558,7 +558,13 @@ spreads a producer's items over sleeping workers as it submits them;
 stealing moves what is left when one CPU falls behind, its worker
 taking one item per pass while a helper sleeps nearby and waking it
 for the rest.  kwq-geli's MAC-heavy provider fed on one CPU of the
-guest ran at 103 MB/s with stealing and 38 without.
+guest ran at 103 MB/s with stealing and 38 without.  Under P8, the
+default on a machine of one NUMA domain, a thief that finished its
+batch tries the same victim again before it sleeps (the chain,
+SCHED.md S17), which a closed loop of a few large requests needs:
+kwq_crypto's one queue fed on one CPU, 16 requests of 64 KiB in
+flight, ran at 100 and 98 % of today's rate on lab and a07 with it
+and at 9 and 28 % without (BULK.md S8).
 
 **Recommended:** an item may be longer than the share limit's period
 (1 ms): the limit charges it, carrying the excess into the next period
