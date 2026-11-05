@@ -677,11 +677,17 @@ kwq_pick_near(struct kwq *q, int me, int *nnp)
 	return (-1);
 }
 
-/* spill_idle's search: an idle CPU near the producer, or -1. */
+/*
+ * spill_idle's search: an idle CPU near the producer (1) or near the fixed
+ * CPU the item was for (2), or -1.  Near the producer, one closed-loop
+ * queue on a07 spread its 16 requests over all 128 CPUs at 44 % of
+ * today's rate: the producer is the CPU that completed the last request,
+ * so the working set drifted; today's thieves stay near the fixed CPU.
+ */
 static int
-kwq_pick_idle(struct kwq *q)
+kwq_pick_idle(struct kwq *q, int cpu)
 {
-	int nn, c = kwq_pick_near(q, curcpu, &nn);
+	int nn, c = kwq_pick_near(q, kwq_spill_idle == 2 ? cpu : curcpu, &nn);
 
 	if (c >= 0)
 		counter_u64_add(kwq_pk_near, 1);
@@ -778,7 +784,7 @@ kwq_shard_spill(struct kwq *q, int cpu)
 	 * half of its 16 requests in the fixed CPU's queue).
 	 */
 	if (kwq_spill_idle && kc->kc_depth > 0 &&
-	    (c = kwq_pick_idle(q)) >= 0) {
+	    (c = kwq_pick_idle(q, cpu)) >= 0) {
 		counter_u64_add(kwq_pk_spill, 1);
 		return (c);
 	}
@@ -960,9 +966,9 @@ kwq_shard_sysctl(void)
 	    kwq_sysctl_shard_knob, "IU",
 	    "a worker whose backlog is below this at a pass end pulls from a donor, us; 0: never");
 	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "spill_idle",
-	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_spill_idle, 1,
+	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_spill_idle, 2,
 	    kwq_sysctl_shard_knob, "IU",
-	    "1: an item for a fixed CPU of a stealable queue that would wait behind another there goes to an idle CPU near the producer, if one (default 0)");
+	    "an item for a fixed CPU of a stealable queue that would wait behind another there goes to an idle CPU, if one: 1 near the producer, 2 near the fixed CPU; 0 (default): not");
 	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "helper_donor",
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_helper_donor, 1,
 	    kwq_sysctl_shard_knob, "IU",
