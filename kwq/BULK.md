@@ -435,8 +435,9 @@ average bio is encrypted in three pieces between hand-overs and other
 providers' bios (106 k requeued remainders for 56 k bios at 128
 providers, 50 k for 139 k at 16).  Each piece runs cold: per MiB the
 same `aesni_crypt_xts` takes 0.54 kernel samples against 0.22 at 16
-providers, `memmove_erms` 1.07 against 0.40, `fpu_kern_leave` 0.22
-against 0.04, where stock GELI's workers, at PUSER under ULE's slices,
+providers, `memmove_erms` 1.07 against 0.40 (though not by the
+pieces: a write's copy is never cut, section 7.2), `fpu_kern_leave`
+0.22 against 0.04, where stock GELI's workers, at PUSER under ULE's slices,
 encrypt a bio in one piece (0.25 and 0.57 at 128).  The handler time
 per bio went from 0.75 to 1.88 ms.  At this load the limit does not
 even serve its purpose: the CPU it lends goes mostly to md(4), and the
@@ -444,6 +445,59 @@ spin loop beside the writers gets 0.09 of its CPU with the limit and
 0.20 without.  With the limit off 13 % of the gap remains (1.85 against
 1.61 ms per MiB), not traced; the quantum's own cuts (27 % of the
 passes at 16 providers) are the next suspect.
+
+### 7.2 Overruns: a write's first piece (2026-11-05)
+
+An overrun (SCHED.md S4.3) is a pass longer than its budget by more
+than one quantum x weight, 1 ms for kwq-geli's queues.  The trace of
+section 7.1 counted 1.9 k and 2.6 k of them; `overrun.d`
+(samples/p6g5) sized them on lab, P8 at the defaults, geli_bench
+scale, one run:
+
+| | 16 providers | 128 providers |
+|---|---|---|
+| passes | 226,844 | 184,281 |
+| overruns | 2,822 (1.2 %) | 2,666 (1.4 %) |
+| their budget | 256-1023 us in 92 % | 256-1023 us in 76 % |
+| beyond it | 1-2 ms in 83 %, at most 4-8 ms | 1-2 ms in 86 %, at most 4-8 ms |
+| items per overrun pass | 1, cut and requeued, in every one | the same |
+| longest stretch between budget checks, overrun passes | 1-4 ms | 1-4 ms |
+| any stretch between budget checks | 8-63 us in 93 % | 8-127 us in 93 % |
+| DRR parks (rounds skipped) | 1,561 | 1,536 |
+| deficit at the park | 64 us-2 ms in 87 %, at most 4-8 ms | 64 us-2 ms in 81 %, at most 4-8 ms |
+| park to the queue's next pass | 1-16 us | median 4-8 ms, at most 65-131 ms |
+
+kwq's charge (CPU time) agrees with dtrace's `vtimestamp` and with
+wall time in these passes, so they are work, not preemption or a
+ticker fault.  The scheduler does nothing to them beyond its ordinary
+accounting: the counter and the `overrun` probe are diagnostics, the
+pass is charged to the queue's deficit like any other, and a queue
+still at or below 0 after the round's refill of 1 ms skips the round.
+The debt is clamped at `penalty_rounds` x Q x w, 32 ms, which no park
+came near, and it survives the queue going idle (KWQ_DEBT: the next
+doorbell goes to the ring, without the boost).  At 16 providers a park
+cost nothing: the same queue's next pass came 1-16 us later, so no
+other queue was waiting.  At 128 the parked
+queue waited a median 4-8 ms, which includes the share limit's
+hand-overs and the other queues' passes that an unparked queue waits
+for too; the park's own part is not separated.
+
+The stretch is the first piece of a write.  `g_eli_crypto_run()`
+allocates the 1 MiB output buffer (`g_eli_alloc_data()`, malloc(9)'s
+large path) and copies the plaintext into it before its sector loop,
+whose first budget check comes at sector 16.  Under the load both are
+slow: of the workers' samples more than 300 us after a pass's last
+budget check (about 9 % of all CPU time at 16 providers, 18 % at 128),
+47 % and 11 % spin on a lock under `kmem_malloc_domainset()`
+(`lock_delay()`), and 37 % and 73 % are the copy (`memmove_erms`).
+Stock GELI runs the same allocation and copy, in threads ULE slices.
+Fixes, none tried, all in kwq-geli: copy 16 sectors at a time inside
+the loop, before they are encrypted (the stretch shrinks to 16 sectors
+and the cipher reads the copy from cache); or drop the copy, with the
+bio's data as crypto(9)'s input and the new buffer as its output
+(`CSP_F_SEPARATE_OUTPUT`, `crypto_use_output_buf()`), as GELI's own
+comment there proposes; and for the allocation, a cache of MAXPHYS
+buffers in place of malloc(9)'s large path.
 
 ## 8. Placement: P6g (2026-11-05)
 
@@ -609,6 +663,10 @@ two-socket machine.
   exported scheduler KPI such as "is anything runnable on this CPU
   below priority p" (`sched_runnable()` says only "something").  The
   rest, 13 %, is not traced.
+- kwq-geli's write overruns (section 7.2): a write's first piece
+  allocates and copies 1 MiB before its first budget check, 1-4 ms
+  under load, 1.2-1.4 % of the passes on lab; the fixes listed there
+  are untried.
 - Placement on a machine of two or more packages (section 8, D12):
   today's code stays there until one is measured, with P8 and the
   hybrid H4.
