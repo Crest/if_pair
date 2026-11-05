@@ -805,9 +805,9 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	}
 	kwq_class_prio_restore(kw);
 	if (__predict_false(cut && helper))
-		kwq_steal_wake(kc->kc_cpu);	/* the rest of the list is for it */
+		kwq_steal_wake(kc->kc_cpu, kc);	/* the rest of the list is for it */
 	else if (__predict_false(donor))
-		(void)kwq_shard_wake(kc->kc_cpu);	/* it just became a donor */
+		(void)kwq_shard_wake(kc->kc_cpu, NULL);	/* it just became a donor */
 	if (__predict_false(kw->kw_knobs->cap_permille < 1000)) {
 		if (cap == KS_CAP_RESTORE)
 			kwq_cap_act(kw, cap, wall);
@@ -897,7 +897,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 		wakeup(kc);
 	kwq_kc_unlock(kc);
 	if (__predict_false(donor))
-		(void)kwq_shard_wake(kc->kc_cpu);
+		(void)kwq_shard_wake(kc->kc_cpu, NULL);
 	if (__predict_false(cap != KS_CAP_NONE))
 		kwq_cap_act(kw, cap, wall);
 	else if (__predict_false(kw->kw_knobs->cap_permille >= 1000 &&
@@ -1219,14 +1219,14 @@ kwq_steal_idle_near(int cpu)
  * idle mask is a hint; kw_sleeping under kw_mtx decides.  No lock held.
  */
 void
-kwq_steal_wake(int cpu)
+kwq_steal_wake(int cpu, struct kwq_cpu *kc)
 {
 	struct kwq_worker *kw;
 	u_int i, reach;
 	int c;
 
 	if (kwq_bulk_place == KWQ_PLACE_SHARD) {
-		(void)kwq_shard_wake(cpu);	/* the group lines, not the mask */
+		(void)kwq_shard_wake(cpu, kc);	/* the group lines, not the mask */
 		return;
 	}
 	if (kwq_bulk_place == KWQ_PLACE_GOSSIP)
@@ -1295,10 +1295,15 @@ kwq_worker_main(void *arg)
 			if (!tried && kw->kw_class == KWQ_BULK &&
 			    kwq_nstealable != 0 && kwq_steal_on &&
 			    kwq_bulk_place != KWQ_PLACE_GOSSIP) {
+				int mcpu = kw->kw_mb_cpu;	/* the mailbox, emptied */
+				uint64_t mword = kw->kw_mb_word;
+
+				kw->kw_mb_cpu = -1;
+				kw->kw_mb_word = 0;
 				mtx_unlock_spin(&kw->kw_mtx);
 				tried = true;
 				if (kwq_bulk_place == KWQ_PLACE_SHARD)
-					(void)kwq_steal_donor(kw, -1);
+					(void)kwq_steal_donor(kw, -1, mcpu, mword);
 				else
 					(void)kwq_steal(kw);
 				continue;
@@ -1536,6 +1541,7 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 		KW_U64(kw_donor_n, "donor_flags", "place=2: times this CPU became a donor (a stealable backlog of donor_us)");
 		KW_U64(kw_starved_n, "starved", "place=2: times the starved tick found this worker without a decision point and flagged it");
 		KW_U64(kw_handoffs, "handoffs", "place=1: batches this worker handed off at a pass end (SPEC-p6g.md S2.7)");
+		KW_U64(kw_directed, "directed", "place=2, shard.directed: batches taken from the victim the waking wake named");
 	}
 #undef KW_U64
 	SYSCTL_ADD_UINT(&kwq_worker_sysctl_ctx, ch, OID_AUTO, "nactive",
@@ -1570,6 +1576,7 @@ kwq_workers_start(struct sysctl_oid_list **cpu_oids)
 			callout_init(&kw->kw_turg_co, 1);
 			callout_init(&kw->kw_watch_co, 1);
 			callout_init(&kw->kw_pub_co, 1);
+			kw->kw_mb_cpu = -1;
 			ks_worker_init(kw, &kwq_knobs[cls], 0);
 			kw->kw_class = cls;
 			kw->kw_cpu = cpu;

@@ -65,6 +65,7 @@ static u_int kwq_pull_us = 500;		/* a worker below it pulls at pass end */
 static u_int kwq_watch_us = 1000;	/* the starved tick; 0: off */
 static u_int kwq_spill_idle = 0;	/* spill a waiting item to an idle CPU near */
 static u_int kwq_helper_donor = 0;	/* a list cut for a helper is a donor's */
+static u_int kwq_directed = 0;		/* the wake names the victim (the mailbox) */
 
 #define	KWQ_NEAR_MAX	5		/* the own group and at most 4 more */
 #define	KWQ_GRP_MAX	64		/* bits of a group's line */
@@ -103,6 +104,8 @@ DPCPU_DEFINE_STATIC(int, kwq_far_g);	/* the far probe's group + 1; 0: unset */
 SYSCTL_DECL(_kern_kwq_bulk);
 static struct sysctl_ctx_list kwq_shard_ctx;
 static void kwq_shard_sysctl(void);
+
+static uint64_t kwq_hint_word(struct kwq_cpu *kc);
 
 /* placement outcomes, by where the item went */
 static counter_u64_t kwq_pk_near, kwq_pk_far, kwq_pk_self, kwq_pk_nondonor,
@@ -340,10 +343,10 @@ kwq_shard_idle_near(int cpu)
  * sleeper of its own group nobody to wake while three workers slept.
  */
 bool
-kwq_shard_wake(int cpu)
+kwq_shard_wake(int cpu, struct kwq_cpu *kc)
 {
 	struct kwq_worker *kw;
-	uint64_t w = 0;
+	uint64_t w = 0, mw;
 	u_int i, reach;
 	int c, g, lg = -1;
 
@@ -362,6 +365,19 @@ kwq_shard_wake(int cpu)
 		if (kw->kw_sleeping && !kw->kw_exit) {
 			kw->kw_sleeping = false;
 			kw->kw_steal_wakes++;
+			/*
+			 * directed: the mailbox names the victim and its list,
+			 * in the line this wake writes anyway, so the thief
+			 * steals from its waker without a donor's backlog.
+			 */
+			if (kwq_directed) {
+				mw = kc != NULL ? kwq_hint_word(kc) :
+				    atomic_load_64(&kwq_hints[cpu].kh_word);
+				if (mw != 0) {
+					kw->kw_mb_cpu = cpu;
+					kw->kw_mb_word = mw;
+				}
+			}
 			wakeup_one(kw->kw_chan);
 			mtx_unlock_spin(&kw->kw_mtx);
 			return (true);
@@ -371,18 +387,27 @@ kwq_shard_wake(int cpu)
 	return (false);
 }
 
-static void
-kwq_hint_set(int cpu, struct kwq_cpu *kc)
+/* A list as a hint's word: its slot, its item's cost in us, its queue's id; 0 if none. */
+static uint64_t
+kwq_hint_word(struct kwq_cpu *kc)
 {
 	struct kwq *q = kc->kc_q;
 	uint64_t us = kc->kc_cost_ns / 1000;
 
 	if (q->kwq_steal_slot < 0)
-		return;
+		return (0);
 	if (us > 0xffff)
 		us = 0xffff;
-	atomic_store_64(&kwq_hints[cpu].kh_word,
-	    KH_MAKE(q->kwq_steal_slot, us, q->kwq_steal_id));
+	return (KH_MAKE(q->kwq_steal_slot, us, q->kwq_steal_id));
+}
+
+static void
+kwq_hint_set(int cpu, struct kwq_cpu *kc)
+{
+	uint64_t w = kwq_hint_word(kc);
+
+	if (w != 0)
+		atomic_store_64(&kwq_hints[cpu].kh_word, w);
 }
 
 /*
@@ -541,89 +566,118 @@ kwq_pass_cost(struct kwq_cpu *kc, uint64_t ns, u_int n)
  * an idle thief (room_ns < 0), behind its running work.  No lock held;
  * true if a batch moved.
  */
-bool
-kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns)
+/*
+ * One victim's steal, kwq_steal_rm read-locked: from vcpu's list that the
+ * word h names (a hint, or a mailbox), the older half at most steal_max,
+ * the bound, a lone item only from a starved victim or, for an idle thief,
+ * behind the victim's running work.  True if a batch moved.
+ */
+static bool
+kwq_steal_from(struct kwq_worker *kw, int vcpu, uint64_t h, int64_t room_ns)
 {
-	struct rm_priotracker tr;
 	struct kwq *q;
 	struct kwq_cpu *vkc, *kc;
 	struct kwq_worker *vkw;
 	struct kwq_item *head, *tail;
-	uint64_t h, cost, room;
-	u_int i, reach, n, take, k, lim;
-	int vcpu, slot;
-	bool moved = false, lone;
+	uint64_t cost, room;
+	u_int n, take, k, lim;
+	int slot;
+	bool lone;
+
+	slot = KH_SLOT(h);
+	if (vcpu == kw->kw_cpu || slot < 0 || slot >= KWQ_STEAL_SLOTS)
+		return (false);
+	q = kwq_steal_tab[slot];
+	if (q == NULL || q->kwq_steal_id != KH_ID(h))
+		return (false);
+	vkc = q->kwq_pcpu[vcpu];
+	vkw = kwq_workers[KWQ_BULK][vcpu];
+	lone = vkw->kw_starved || (room_ns < 0 && vkw->kw_cur != NULL);
+	n = vkc->kc_depth;		/* unlocked: a hint */
+	if (n == 0 || (n == 1 && !lone))
+		return (false);
+	kwq_kc_lock(vkc);
+	n = vkc->kc_depth;
+	if (n == 0 || (n == 1 && !lone) || !q->kwq_active) {
+		kwq_kc_unlock(vkc);
+		return (false);
+	}
+	take = vkw->kw_starved ? n : (n + 1) / 2;
+	if (take > kwq_steal_max)
+		take = kwq_steal_max;
+	cost = (uint64_t)KH_US(h) * 1000;
+	if (cost > 0) {
+		room = room_ns >= 0 ? (uint64_t)room_ns : (uint64_t)kwq_donor_us * 1000;
+		lim = room / cost > 2 ? (u_int)(room / cost) - 1 : 1;
+		if (take > lim)
+			take = lim;
+	}
+	head = STAILQ_FIRST(&vkc->kc_list);
+	tail = head;
+	for (k = 1; k < take; k++)
+		tail = tail->kwi_link.stqe_next;
+	KASSERT(KWQ_TAGBIT(tail->kwi_link.stqe_next) == 0,
+	    ("kwq_steal_from: %s: a notifier on a stealable list", q->kwq_name));
+	vkc->kc_list.stqh_first = tail->kwi_link.stqe_next;
+	if (vkc->kc_list.stqh_first == NULL)
+		vkc->kc_list.stqh_last = &vkc->kc_list.stqh_first;
+	tail->kwi_link.stqe_next = NULL;
+	vkc->kc_depth -= take;
+	vkc->kc_steals_out++;
+	vkc->kc_stolen_out += take;
+	kwq_list_check(vkc, "donor steal victim");
+	kwq_kc_unlock(vkc);
+
+	kc = q->kwq_pcpu[kw->kw_cpu];
+	kwq_kc_lock(kc);
+	kwq_list_concat(kc, head, tail);
+	kc->kc_depth += take;
+	kc->kc_steals_in++;
+	kc->kc_stolen_in += take;
+	if (kc->kc_cost_ns == 0)
+		kc->kc_cost_ns = cost;
+	kwq_list_check(kc, "donor steal stealer");
+	(void)kwq_kc_place(kc, take);
+	kwq_kc_unlock(kc);
+	SDT_PROBE4(kwq, , , steal, q, vcpu, kw->kw_cpu, (int)take);
+	kw->kw_steals++;
+	kw->kw_stolen += take;
+	return (true);
+}
+
+/*
+ * The donor steal (place=2): first the victim the mailbox names (mcpu,
+ * mword; directed), then the nearest donor in reach by its hint.  No lock
+ * held; true if a batch moved.
+ */
+bool
+kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns, int mcpu, uint64_t mword)
+{
+	struct rm_priotracker tr;
+	u_int i, reach;
+	int vcpu;
+	bool moved = false;
 
 	reach = kwq_topo_reach(kw->kw_cpu);
+	if (mcpu >= 0 && mword != 0) {
+		kw->kw_steal_tries++;
+		rm_rlock(&kwq_steal_rm, &tr);
+		moved = kwq_steal_from(kw, mcpu, mword, room_ns);
+		rm_runlock(&kwq_steal_rm, &tr);
+		if (moved) {
+			kw->kw_directed++;
+			return (true);
+		}
+	}
 	if (reach == 0 || CPU_EMPTY(&kwq_donors.ds_set))
 		return (false);
 	kw->kw_steal_tries++;
 	rm_rlock(&kwq_steal_rm, &tr);
 	for (i = 0; i < reach && !moved; i++) {
 		vcpu = kwq_topo_order[kw->kw_cpu][i];
-		if (!kwq_is_donor(vcpu))
-			continue;
-		h = atomic_load_64(&kwq_hints[vcpu].kh_word);
-		slot = KH_SLOT(h);
-		if (slot < 0 || slot >= KWQ_STEAL_SLOTS)
-			continue;
-		q = kwq_steal_tab[slot];
-		if (q == NULL || q->kwq_steal_id != KH_ID(h))
-			continue;
-		vkc = q->kwq_pcpu[vcpu];
-		vkw = kwq_workers[KWQ_BULK][vcpu];
-		lone = vkw->kw_starved || (room_ns < 0 && vkw->kw_cur != NULL);
-		n = vkc->kc_depth;		/* unlocked: a hint */
-		if (n == 0 || (n == 1 && !lone))
-			continue;
-		kwq_kc_lock(vkc);
-		n = vkc->kc_depth;
-		if (n == 0 || (n == 1 && !lone) || !q->kwq_active) {
-			kwq_kc_unlock(vkc);
-			continue;
-		}
-		take = vkw->kw_starved ? n : (n + 1) / 2;
-		if (take > kwq_steal_max)
-			take = kwq_steal_max;
-		cost = (uint64_t)KH_US(h) * 1000;
-		if (cost > 0) {
-			room = room_ns >= 0 ? (uint64_t)room_ns : (uint64_t)kwq_donor_us * 1000;
-			lim = room / cost > 2 ? (u_int)(room / cost) - 1 : 1;
-			if (take > lim)
-				take = lim;
-		}
-		head = STAILQ_FIRST(&vkc->kc_list);
-		tail = head;
-		for (k = 1; k < take; k++)
-			tail = tail->kwi_link.stqe_next;
-		KASSERT(KWQ_TAGBIT(tail->kwi_link.stqe_next) == 0,
-		    ("kwq_steal_donor: %s: a notifier on a stealable list",
-		    q->kwq_name));
-		vkc->kc_list.stqh_first = tail->kwi_link.stqe_next;
-		if (vkc->kc_list.stqh_first == NULL)
-			vkc->kc_list.stqh_last = &vkc->kc_list.stqh_first;
-		tail->kwi_link.stqe_next = NULL;
-		vkc->kc_depth -= take;
-		vkc->kc_steals_out++;
-		vkc->kc_stolen_out += take;
-		kwq_list_check(vkc, "donor steal victim");
-		kwq_kc_unlock(vkc);
-
-		kc = q->kwq_pcpu[kw->kw_cpu];
-		kwq_kc_lock(kc);
-		kwq_list_concat(kc, head, tail);
-		kc->kc_depth += take;
-		kc->kc_steals_in++;
-		kc->kc_stolen_in += take;
-		if (kc->kc_cost_ns == 0)
-			kc->kc_cost_ns = cost;
-		kwq_list_check(kc, "donor steal stealer");
-		(void)kwq_kc_place(kc, take);
-		kwq_kc_unlock(kc);
-		SDT_PROBE4(kwq, , , steal, q, vcpu, kw->kw_cpu, (int)take);
-		kw->kw_steals++;
-		kw->kw_stolen += take;
-		moved = true;
+		if (kwq_is_donor(vcpu))
+			moved = kwq_steal_from(kw, vcpu,
+			    atomic_load_64(&kwq_hints[vcpu].kh_word), room_ns);
 	}
 	rm_runlock(&kwq_steal_rm, &tr);
 	return (moved);
@@ -637,7 +691,7 @@ kwq_shard_pull(struct kwq_worker *kw)
 
 	if (kw->kw_backlog_ns >= l || kwq_nstealable == 0 || !kwq_steal_on)
 		return;
-	if (kwq_steal_donor(kw, (int64_t)(l - kw->kw_backlog_ns)))
+	if (kwq_steal_donor(kw, (int64_t)(l - kw->kw_backlog_ns), -1, 0))
 		kw->kw_pulls++;
 }
 
@@ -833,7 +887,7 @@ kwq_watch_fire(void *arg)
 	kwq_watch_arm(kw);
 	mtx_unlock_spin(&kw->kw_mtx);
 	if (wake)
-		(void)kwq_shard_wake(kw->kw_cpu);
+		(void)kwq_shard_wake(kw->kw_cpu, NULL);	/* the hint just set */
 }
 
 void
@@ -973,6 +1027,10 @@ kwq_shard_sysctl(void)
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_helper_donor, 1,
 	    kwq_sysctl_shard_knob, "IU",
 	    "1: a pass that leaves its stealable list for a helper keeps the CPU a donor of it until the list is empty (default 0)");
+	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "directed",
+	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_directed, 1,
+	    kwq_sysctl_shard_knob, "IU",
+	    "1: a wake to steal names the victim and its list in the woken worker's mailbox, which it steals from first, donor or not (default 0)");
 	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "watch_us",
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_watch_us, 1000000,
 	    kwq_sysctl_shard_knob, "IU",

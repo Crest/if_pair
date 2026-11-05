@@ -199,6 +199,13 @@ struct kwq_worker {
 						   inside passes (SCHED.md S4.6) */
 	uint64_t		kw_served_rem;	/* ns of it short of the next microsecond */
 	void			*kw_chan;	/* wait channel (kwq_worker.c) */
+	/*
+	 * The directed steal's mailbox (place=2, kern.kwq.bulk.shard.directed):
+	 * whoever wakes this worker to steal names the CPU and the list (a
+	 * donor hint's word), under kw_mtx, in the line the wake writes anyway.
+	 */
+	int			kw_mb_cpu;	/* -1: empty */
+	uint64_t		kw_mb_word;
 
 	/*
 	 * Block 1..: private to the worker (ks_* run under kw_mtx anyway),
@@ -308,7 +315,7 @@ struct kwq_worker {
 	uint64_t		kw_backlog_ns;
 	uint64_t		kw_dec_n, kw_watch_n;
 	struct callout		kw_watch_co;
-	uint64_t		kw_pulls, kw_donor_n, kw_starved_n;
+	uint64_t		kw_pulls, kw_donor_n, kw_starved_n, kw_directed;
 	/*
 	 * The gossip scheme (place=1, kwq_gossip.c): the load figure's state,
 	 * the backlog at the last decision point (step 0's own load), the
@@ -447,8 +454,9 @@ bool	kwq_urgent_nudge(struct kwq_cpu *kc, int ring);	/* kc locked, state
 					   urgent item added to an already placed
 					   list */
 bool	kwq_higher_waiting(enum kwq_class cls);	/* hand-back flags, this CPU */
-void	kwq_steal_wake(int cpu);	/* no locks held: wake a sleeping BULK worker
-					   near `cpu' to steal from it (S16) */
+void	kwq_steal_wake(int cpu, struct kwq_cpu *kc);	/* no locks held: wake a
+					   sleeping BULK worker near `cpu' to steal
+					   from it (S16), kc the list if known */
 bool	kwq_steal_idle_near(int cpu);	/* a BULK worker near `cpu' sleeps (hint) */
 void	kwq_topo_init(void);
 void	kwq_topo_fini(void);
@@ -465,11 +473,13 @@ void	kwq_idle_set(struct kwq_worker *kw);	/* kw_mtx held, going to sleep */
 void	kwq_idle_clr(struct kwq_worker *kw);	/* kw_mtx held, awake */
 bool	kwq_shard_idle_near(int cpu);	/* a BULK worker in reach sleeps (hint) */
 bool	kwq_bulk_idle_hint(int cpu);	/* cpu's BULK worker sleeps, in the mode's view */
-bool	kwq_shard_wake(int cpu);	/* wake a sleeper of cpu's group; no lock held */
+bool	kwq_shard_wake(int cpu, struct kwq_cpu *kc);	/* wake a sleeper in reach to
+					   steal from cpu (kc, or its hint); no lock held */
 bool	kwq_donor_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead);
 					/* kw_mtx held: true if it just became a donor */
 bool	kwq_donor_helper(struct kwq_worker *kw, struct kwq_cpu *kc);	/* kw_mtx held */
-bool	kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns);	/* no lock held */
+bool	kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns, int mcpu,
+	    uint64_t mword);	/* no lock held; mcpu/mword: the mailbox, or -1/0 */
 void	kwq_shard_pull(struct kwq_worker *kw);	/* after a pass, no lock held */
 int	kwq_pick_shard(struct kwq *q);	/* KWQ_CPU_ANY under place=2 */
 int	kwq_shard_spill(struct kwq *q, int cpu);	/* a fixed CPU, or where it spills */

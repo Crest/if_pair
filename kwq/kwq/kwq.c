@@ -660,7 +660,7 @@ kwq_enqueue_one(struct kwq *q, int cpu, struct kwq_item *it, bool urgent)
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);
 	if (__predict_false(q->kwq_flags & KWQ_F_STEALABLE) &&
 	    kwq_steal_crossed(depth - 1, depth))
-		kwq_steal_wake(cpu);
+		kwq_steal_wake(cpu, kc);
 	return (0);
 }
 
@@ -716,7 +716,7 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);	/* once per call */
 	if (__predict_false(q->kwq_flags & KWQ_F_STEALABLE) &&
 	    kwq_steal_crossed(depth - n, depth))
-		kwq_steal_wake(cpu);
+		kwq_steal_wake(cpu, kc);
 	return (0);
 }
 
