@@ -162,9 +162,10 @@ defined in GLOSSARY.md.
     uint64_t    kwq_budget_left(struct kwq *q);       /* handler only, ns;
                                                           P0: a constant, P1: SCHED.md */
     int         kwq_cpu_for_hash(uint32_t hash);       /* hash -> online CPU */
-    #define KWQ_CPU_ANY      (-1)   /* BULK only: an idle worker near the
-                                       caller first, then by
-                                       kern.kwq.bulk.place (S3) */
+    #define KWQ_CPU_ANY      (-1)   /* BULK only: a CPU chosen by
+                                       kern.kwq.bulk.place, an idle worker
+                                       near the caller first under 0 and
+                                       2 (S3) */
     struct kwq_group { u_int kg_left, kg_n; void (*kg_done)(void *); void *kg_arg; };
                                     /* client-owned completion of a scatter */
     int         kwq_scatter(struct kwq *q, struct kwq_group *g,
@@ -251,18 +252,23 @@ worker's spin mutex from the producer's CPU (S17).
   system data structures" made a panic rather than documented).
 - `cpu` is the CPU whose worker should run the item: the client's
   steering decision (flow hash, receive queue, or `curcpu` for "here").
-  `KWQ_CPU_ANY` lets BULK pick where the item starts soonest, first the
-  nearest CPU in cache-topology order whose BULK worker sleeps with the
-  queue's list empty there.  The rest depends on
-  `kern.kwq.bulk.place`.  Under 2 (P8, the default on a machine of one
-  NUMA domain, SCHED.md S17) that search covers the caller's group of
-  CPUs and two near ones, then one far group's idle line; failing that
+  `KWQ_CPU_ANY` lets BULK pick where the item starts soonest, by
+  `kern.kwq.bulk.place`.  Under 2 and 0 the first choice is the nearest
+  CPU in cache-topology order whose BULK worker sleeps with the queue's
+  list empty there.  Under 2 (P8, the default on a machine of one NUMA
+  domain, SCHED.md S17) that search covers the caller's group of CPUs
+  and two near ones, then one far group's idle line; failing that
   the caller's own CPU unless it is a donor (holds a donor's backlog),
   the nearest CPU that is not, and the shallowest of the caller's and the next
   four lists in topology order.  Under 0 (today's code, the default on
   more than one domain, SCHED.md S16) the caller's own CPU if its list
-  is empty, then the shallowest of four.  Under 1 the gossip scheme's
-  table decides (SCHED.md S17).  P0 probed four CPUs of the NUMA domain
+  is empty, then the shallowest of four.  Under 1 gossip's `kp_place()`
+  decides (SCHED.md S17): a BULK handler resubmitting keeps its item on
+  its own CPU while that CPU's load is below L_local (unless a large
+  item shares its core with a busy sibling while the table knows an
+  idle core near), and an item
+  cheaper than `csmall_ns` tries the SMT sibling and the own CPU before
+  an idle core from the table.  P0 probed four CPUs of the NUMA domain
   by id, a bounded probe since 2026-09-29.  It is invalid for NET
   (ordering).  An offline or non-existent CPU maps to the caller's
   CPU.
@@ -452,7 +458,7 @@ four ways to pick, in descending order of how often they are right:
    by migrating threads it silently splits the flow across CPUs; the
    2026-08-25 steering analysis in ../NOTES.md is the cautionary case.
 4. **`KWQ_CPU_ANY`** (BULK only): a CPU near the caller where the item
-   starts soonest, an idle worker first (S3; P0 by queue depth within
+   starts soonest, under `place` 0 and 2 an idle worker first (S3; P0 by queue depth within
    the NUMA domain, the cache topology since P6, placement by
    `kern.kwq.bulk.place` since P6g), for unordered CPU-heavy work such
    as bulk crypto; the item may then also be stolen.  Invalid for NET,

@@ -1393,10 +1393,17 @@ Phases
         (gossip with lazy idle lines) dropped by its numbers (533c351);
         H4 (P8 within a package, gossip across) needs a two-socket
         machine, which none of the three here is.
-    P6g.4 [DOCS DONE 2026-11-05] SCHED.md S17 (S16 the place=0 path),
+    P6g.4 [DONE 2026-11-05] SCHED.md S17 (S16 the place=0 path),
         KWQ.md S3 and the GELI row, OBSERVABILITY.md, BULK.md S8,
         docs/ and README; the 2026-11-04 steal_lab and prof2_lab
-        samples in ../samples.  The post-merge doc review is next.
+        samples in ../samples.  The doc review against the code (26
+        findings) is fixed in the docs and comments; it also found the
+        mailbox outside its wake's cache line, fixed in 8536cc6 with
+        two CTASSERTs.  On crest's request 8536cc6 renames the starved
+        tick the starvation watchdog and makes stealing visible to
+        dtrace: kwq:::steal's path and what it left, steal-wake,
+        steal-miss, donor and place (OBSERVABILITY.md); checked on the
+        guest's GENERIC-DEBUG, lab and a07.
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
     P7a Design and simulate first (the P1a pattern; nothing in the kernel

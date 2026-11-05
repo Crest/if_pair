@@ -384,13 +384,18 @@ the candidates in kwq/sim/place against today's code and an oracle
 and on crest's decision (D9) built two of them into the kernel behind
 `kern.kwq.bulk.place`: 1 the gossip scheme, 2 P8, S16's placement with
 the idle mask in group lines, a donor line in place of the scan, the
-starved tick, and since P6g.3 the mailbox and the chain (SCHED.md
+starvation watchdog, and since P6g.3 the mailbox and the chain (SCHED.md
 S17).  Both were measured against today's code on one boot of lab and
 of a07 (gate G2, report https://claude.ai/artifact/Jz2qDdxhD1qvUefHqXp9tY;
 scripts, rows and the report's datasets in ../samples/p6g3).  Medians
-of three repetitions unless stated.
+of three repetitions unless stated; the kwq_crypto table pools every
+round's runs of a configuration, 6 to 21 (today 18 on lab and 21 on
+a07, P8 9, the mailbox 6 on lab and 9 on a07, the chain and gossip 6).
 
-The kernel criteria (SPEC-p6g.md S1): K1, 128 providers' small reads
+The kernel criteria (SPEC-p6g.md S1), with the thresholds the G2
+report judges them by (../samples/p6g3/g2_report.py; S1 says "no worse
+than today" for K2 and K3 and names further K4 loads): K1, 128
+providers' small reads
 within 3 % of no stealing, CPU per read within 5 %; K2, 128 providers'
 bulk writes at least 98 % of today's; K3, 16 providers on lab and 64 on
 a07, reads and writes at least 98 % of today's; K4, kwq_crypto with one
@@ -458,12 +463,14 @@ a07d, a07e under ../samples/p6g3):
 Lab's K2 for the chain, 0.979 in its own round, is the edge of a
 spread the A/B places at 0.989: the chain leaves P8's writes where they
 were, about 1 % below today's.  a07's ssd randread (16 SSD models,
-section 7) is not resolved: every configuration's runs fall at about
-0.6 M or 1.3 M IOPS, and P8 without the chain came to between 0.82 and
-1.15 of today in three rounds.  The chain is not the cause of any
+section 7) is not resolved: within one configuration the runs spread
+from 0.50 M to 1.39 M IOPS (round 2; in round 1 today's from 0.90 M to
+1.39 M, P8's one slow run at 0.71 M), and P8 without the chain came to
+between 0.82 and 1.15 of today in three rounds.  The chain is not the cause of any
 difference there: in round 2 it took 0 to 2 batches per block of
-randread and the mailbox 229 to 641, against about a million steals of
-today's stage (a07e/ssdab2_counters.txt); the lists' median item cost
+randread and the mailbox 229 to 641, while each block's steals came to
+1.12 M to 1.38 M, today's stage and P8's together, which the file does
+not separate (a07e/ssdab2_counters.txt); the lists' median item cost
 was 7.5 to 8.5 us and their p90 under 10 (a07e/cost_*.txt), below the
 gate.  Six runs per setting cannot resolve ten per cent;
 crest took it as level with today (D15).

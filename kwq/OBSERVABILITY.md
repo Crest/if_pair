@@ -39,7 +39,9 @@ whole tree at a glance:
 
 ## 2. Tunables
 
-All per class.  RWTUN nodes are also read from `loader.conf` when the
+All per class, except BULK's `steal*`, `place`, `shard.*` and
+`gossip.*`, which exist under `kern.kwq.bulk` only.  RWTUN nodes are
+also read from `loader.conf` when the
 module is preloaded; RW nodes take effect at the next round.  Every
 handler rejects values outside its range with EINVAL.
 
@@ -56,16 +58,16 @@ handler rejects values outside its range with EINVAL.
 | `tick_us` (RWTUN) | 0 .. 100000 | 0 (off) | the tick regime's bound L, an opt-in (KWQ.md S16): while the worker's producer is dense (three consecutive sleeps shorter than L) its sleep has a timeout of L and precision L/8, a producer that places a list counts `doorbells_skipped` instead of waking the worker, and the timeout serves what accumulated; it leaves on a tick that served one element or none.  An item that arrives while the regime is on waits at most L plus the pass in progress, so every co-scheduled small flow pays L; 20 to 50 us where it is worth having, off everywhere else |
 | `tick_urgent_us` (RWTUN) | 0 .. 100000 | 0 (at once) | inside the tick regime, an urgent item (`kwq_enqueue_urgent()`) that finds the worker asleep wakes it this much later instead of at once, so the urgent items within the bound share one wake (`tick_urgent_deferred`, `tick_urgent_wakes`); a bound at or above `tick_us` is the tick's own and arms nothing.  Outside the regime, and for a notifier, a drain or a cancel, an urgent ring wakes at once at any setting (KWQ.md S16) |
 | `steal` (RWTUN) | 0, 1 | bulk: 1 | BULK only: a worker with nothing of its own takes batches of `KWQ_F_STEALABLE` queues from other CPUs before it sleeps, and producers wake sleeping workers to do so; 0 turns stealing off and a stealable pass takes its whole list again (SCHED.md S16) |
-| `steal_scope` (RWTUN) | 0 .. 8 | bulk: 8 | rings of the cache topology that stealing, the steal wake, `kwq_scatter()` and `KWQ_CPU_ANY` look at, nearest first; 0 keeps every item on its CPU |
-| `steal_scan` (RWTUN) | 1 .. 4096 | bulk: 16 | other CPUs probed at most per attempt, wake, scatter or pick |
+| `steal_scope` (RWTUN) | 0 .. 8 | bulk: 8 | rings of the cache topology that a steal, the steal wake, `kwq_scatter()` and, under `place=0`, the `KWQ_CPU_ANY` pick look at, nearest first; 0: none, and under `place=0` every item stays on its CPU.  P8's pick reads its group lines and the far probe, gossip's its tables, neither this reach |
+| `steal_scan` (RWTUN) | 1 .. 4096 | bulk: 16 | other CPUs probed at most per steal attempt, wake, scatter or, under `place=0`, pick |
 | `steal_max` (RWTUN) | 1 .. 4096 | bulk: 64 | items one steal takes at most, otherwise half the victim's live list |
 | `steal_batch` (RWTUN) | 1 .. 4096 | bulk: 16 | items a pass of a stealable queue takes at most; one while a BULK worker near it sleeps, which the pass wakes for the rest |
 | `steal_wake` (RWTUN) | 0 .. 4096 | bulk: 2 | an enqueue that leaves a stealable list this deep, or at a doubling of it, wakes the nearest sleeping BULK worker; 0: never |
-| `place` (RWTUN) | 0, 1, 2 | 2 on a machine of one NUMA domain, else 0 (SPEC-p6g.md D12) | BULK placement (SPEC-p6g.md S2.8), flippable under load: 0 `kwq_pick_any()`, the one idle mask and the idle-path steal scan (SCHED.md S16); 1 the gossip scheme, tables of nearly idle cores on a torus and the hand-off at a pass end in place of stealing (`kern.kwq.bulk.gossip.*`); 2 P8, the idle mask in lines of 16 CPUs, the donor line, the starved tick, the mailbox and the chain (`kern.kwq.bulk.shard.*`, SCHED.md S17).  Under 1 and 2 an item for a fixed CPU of a stealable queue spills to where `KWQ_CPU_ANY` would put it when that CPU is behind.  `steal=0` turns the steals, hand-offs and spills of every mode off.  A flip wakes the sleeping BULK workers so each registers as idle where the new mode reads it |
+| `place` (RWTUN) | 0, 1, 2 | 2 on a machine of one NUMA domain, else 0 (SPEC-p6g.md D12) | BULK placement (SPEC-p6g.md S2.8), flippable under load: 0 `kwq_pick_any()`, the one idle mask and the idle-path steal scan (SCHED.md S16); 1 the gossip scheme, tables of nearly idle cores on a torus and the hand-off at a pass end in place of stealing (`kern.kwq.bulk.gossip.*`); 2 P8, the idle mask in lines of 16 CPUs, the donor line, the starvation watchdog, the mailbox and the chain (`kern.kwq.bulk.shard.*`, SCHED.md S17).  Under 1 and 2 an item for a fixed CPU of a stealable queue spills to where `KWQ_CPU_ANY` would put it when that CPU is behind.  `steal=0` turns the steals, hand-offs and spills of every mode off.  A flip wakes the sleeping BULK workers so each registers as idle where the new mode reads it |
 | `shard.probe` (RW) | 0 .. 4 | 2 | place=2: groups a producer reads besides its own before the far probe |
 | `shard.donor_us` (RW) | 0 .. 1000000 | 500 | place=2: the stealable backlog, us, that makes a CPU a donor (a lone item counts the work running ahead of it) |
 | `shard.pull_us` (RW) | 0 .. 1000000 | 500 | place=2: a worker whose backlog is below this at a pass end pulls a batch from a donor; 0: never |
-| `shard.watch_us` (RW) | 0 .. 1000000 | 1000 | place=2: the starved tick's period: a CPU holding stealable work whose worker reached no decision point for this long is flagged a starved donor; 0: off |
+| `shard.watch_us` (RW) | 0 .. 1000000 | 1000 | place=2: the starvation watchdog's period: a CPU holding stealable work whose worker reached no decision point for this long is flagged a starved donor; 0: off |
 | `shard.directed` (RW) | 0 .. 2 | 2 | place=2: 1 a wake to steal names the victim and its list in the woken worker's mailbox, which it steals from first, donor or not; 2 also the chain: an idle thief tries the victim of its last batch again before it sleeps, the first miss forgets it |
 | `shard.directed_us` (RW) | 0 .. 65535 | 10 | place=2, with `directed`: the mailbox and the chain only for lists whose items cost at least this many us (the word's cost); lists of cheaper items keep the donor rule; 0: every list |
 | `gossip.h_us`, `gossip.l_us`, `gossip.llocal_us` (RW) | | 2000, 500, 50 | place=1: H, the backlog at which a worker hands off and a fixed CPU's items spill; L, the most a hand-off's target may hold; L_local, the producer's own thread is good below it (SPEC-p6g.md S2.9) |
@@ -136,19 +138,18 @@ specified in KWQ.md S16 and are in the merged module, off by default.
     kern.kwq.bulk.shard.idle
                             each line's idle bits in hex, then the donor CPUs
     kern.kwq.bulk.shard.pick_near, .pick_far, .pick_self, .pick_nondonor,
-    .pick_probe, .spills    where place=2 put KWQ_CPU_ANY items: an idle CPU of the
-                            near groups, or of a far group (the far probe), the
-                            producer's CPU, the nearest non-donor, the shallowest of
-                            four probes; fixed-CPU items spilled at a donor or a
-                            donor's backlog.  The sysctl descriptions of pick_far
-                            ("of those") and spills ("that CPU being a donor") say
-                            less than the code: pick_far is not a part of pick_near
+    .pick_probe, .spills    where place=2 put KWQ_CPU_ANY items and spilled ones: an
+                            idle CPU of the near groups, or of a far group (the far
+                            probe), the producer's CPU, the nearest non-donor, the
+                            shallowest of four probes; spills counts the fixed-CPU
+                            items spilled at a donor or a donor's backlog, which
+                            the pick_* counters count again by their step
     kern.kwq.bulk.gossip.torus
                             place=1: "N cores, R x C", then per core its CPUs, L3,
                             package and neighbours
     kern.kwq.bulk.gossip.place_self, _idle_near, _sibling, _local, _table,
-    _neighbours, _fallback  KWQ_CPU_ANY placements by the step that chose them
-                            (SPEC-p6g.md S2.5)
+    _neighbours, _fallback  KWQ_CPU_ANY placements, spilled items included, by the
+                            step that chose them (SPEC-p6g.md S2.5)
     kern.kwq.bulk.gossip.spills, .handoffs, .handed, .merges, .expired_used
                             fixed-CPU items spilled; batches and items handed off;
                             merges run; placements that used an expired entry (0)
@@ -200,9 +201,9 @@ belong to the two optional regimes and the urgent exemption (section
 | `nnew` | entries on the new list right now, waiting for a boosted pass (a gauge) |
 | `budget_calls` | `kwq_budget_left()` calls by handlers on this worker |
 | `budget_reads` | of those, the ones that read the clock |
-| `steal_tries`, `steals`, `stolen` | BULK: steal attempts made with nothing of its own to do, the ones that moved a batch here, and the items moved (SCHED.md S16) |
-| `steal_wakes` | BULK: wakes from sleep sent to this worker so that it steals (a producer past `steal_wake`, or a stealable pass that left items; under place=2 also a CPU that became a donor and the starved tick) |
-| `pulls`, `donor_flags`, `starved` | BULK, place=2: batches pulled from a donor at a pass end; times this CPU became a donor; times the starved tick flagged it |
+| `steal_tries`, `steals`, `stolen` | BULK: steal attempts, with nothing of its own to do and under place=2 the pulls at a pass end (a mailbox or chain victim tried first counts one more); the ones that moved a batch here; the items moved (SCHED.md S16, S17) |
+| `steal_wakes` | BULK: wakes from sleep sent to this worker so that it steals (a producer past `steal_wake`, or a stealable pass that left items; under place=2 also a CPU that became a donor and the starvation watchdog) |
+| `pulls`, `donor_flags`, `starved` | BULK, place=2: batches pulled from a donor at a pass end; times this CPU became a donor, the starvation watchdog's flag included; times the starvation watchdog flagged it |
 | `directed`, `chained` | BULK, place=2: batches taken from the victim a wake named (`shard.directed` 1 or 2); from the victim of the last batch again (`shard.directed=2`) |
 | `handoffs` | BULK, place=1: batches this worker handed off at a pass end |
 
@@ -298,7 +299,7 @@ Per CPU, `kern.kwq.<class>.queue.<queue>.cpu.<N>.`:
 | `steals_in`, `stolen_in` | BULK: batches and items this CPU's worker took from other CPUs' lists of the queue |
 | `steals_out`, `stolen_out` | BULK: batches and items other CPUs' workers took from this list; summed over the CPUs, in equals out |
 | `scattered` | BULK: items `kwq_scatter()` put on this list |
-| `cost_ns` | BULK, place=2: an item's cost on this list, ns, averaged over passes (1/8 per pass); what the list's hint and the mailbox word carry |
+| `cost_ns` | BULK: an item's cost on this list, ns, averaged over passes (1/8 per pass), kept under place=2 for stealable queues and under place=1 for every BULK queue; what P8's hint and mailbox words carry and gossip's load figure reads |
 
 Examples:
 
@@ -350,7 +351,11 @@ definition is available".
 | `doorbell` (no `args[0]`) | a (queue, CPU) went from idle to placed with the worker, or an urgent nudge woke the worker | `arg0` class, `arg1` cpu, `arg2` the worker's state when rung: 0 awake (a wait in the idle class it ends included), 2 asleep (a `wakeup_one()` follows), 4 asleep and made runnable in the idle class (`wake_delay_us`), 6 asleep in the tick regime: placed, not woken; 1 (polling) is defined and never fires |
 | `tick` (no `args[0]`) | a tick-regime sleep ended by its timeout (`tick_us` > 0, KWQ.md S16), as counted in `ticks` | `arg0` class, `arg1` cpu, `arg2` elements served since the worker's previous sleep (the previous tick's round, or at an episode's first tick the round that entered the regime) |
 | `wake` (no `args[0]`) | a worker waiting in the idle class was promoted to the class priority (`wake_delay_us` > 0) | `arg0` class, `arg1` cpu, `arg2` reason: 2 deadline, 4 urgent (an urgent ring or nudge, an enqueue from another CPU, the share limit's deadline, an unload), 5 self (the worker got the CPU), `arg3` ns since the wait began |
-| `steal` | a batch moved from one CPU's list of a stealable BULK queue to another's (P6, SCHED.md S16): today's steal, P8's donor steal, mailbox, chain and pull, and gossip's hand-off (`arg1` the handing CPU) (SCHED.md S17).  The `place`, `merge` and `handoff` probes SPEC-p6g.md planned are not implemented | `arg1` from cpu, `arg2` to cpu, `arg3` items |
+| `steal` | a batch moved from one CPU's list of a stealable BULK queue to another's (SCHED.md S16, S17), by any path | `arg1` from cpu (gossip's hand-off: the handing CPU), `arg2` to cpu, `arg3` items, `arg4` how: 0 `KWQ_STEAL_SCAN` (place=0's scan), 1 `DONOR` (an idle thief from a donor), 2 `MAILBOX` (the victim its wake named), 3 `CHAIN` (the victim of its last batch), 4 `PULL` (a pull at a pass end), 5 `HANDOFF` (place=1); `arg5` the items left on the list it came from |
+| `steal-wake` (no `args[0]`) | a sleeping BULK worker woken so that it steals, under place 0 and 2 (place=1 has no steal wake) | `arg0` the CPU to steal from, `arg1` the woken CPU, -1 if no worker in reach slept, `arg2` why: 0 `KWQ_SWAKE_ENQUEUE` (an enqueue crossed `steal_wake` or a doubling), 1 `HELPER` (a pass took one item and left the rest), 2 `DONOR` (the CPU just became a donor), 3 `WATCHDOG` (the starvation watchdog flagged it), `arg3` 1 if the wake filled the woken worker's mailbox |
+| `steal-miss` (no `args[0]`) | a steal attempt that moved nothing | `arg0` the thief's cpu, `arg1` how (as `steal`'s `arg4`), `arg2` the victim cpu, -1 if none was found, `arg3` why: 0 `KWQ_SMISS_NONE` (the scan found nothing, or no donor in reach), 1 `STALE` (the word names no live queue), 2 `EMPTY`, 3 `LONE` (one item, which the rule leaves to its worker), 4 `INACTIVE` (the queue drains) |
+| `donor` (no `args[0]`) | place=2: a CPU's donor or starved state changed, at a decision point, the starvation watchdog or a flip of `place` | `arg0` cpu, `arg1` 1 donor, `arg2` 1 starved (the watchdog's flag), `arg3` the stealable backlog ns (0 at a flip) |
+| `place` | an item for `KWQ_CPU_ANY` placed, or a fixed CPU's item spilled, under any `place` | `arg1` the producer's cpu, `arg2` the chosen cpu, `arg3` the step: 0 `KWQ_PICK_TODAY` (place=0), 1 `NEAR`, 2 `FAR`, 3 `SELF`, 4 `NONDONOR`, 5 `PROBE` (place=2), 16 + `kp_place()`'s step (place=1: 16 self, 17 idle near, 18 sibling, 19 local, 20 table, 21 neighbours, 22 fallback), `arg4` 1 for a spill |
 | `worker-block`, `worker-spawn`, `worker-exit` | defined for P7, never fire yet | |
 
 One-liners, all verified against the test module:
@@ -370,6 +375,27 @@ One-liners, all verified against the test module:
 
     # who is dropping, and who feeds the queue that drops
     dtrace -n 'kwq:::reject { @[args[0]->kwq_name, arg1, arg2] = count(); }'
+
+    # BULK stealing: items moved per path, and whether the thieves chain
+    dtrace -L /path/to/kwq/kwq -n 'kwq:::steal { @[args[0]->kwq_name, arg4] = sum(arg3); }'
+    dtrace -L /path/to/kwq/kwq -n 'kwq:::steal /arg4 == KWQ_STEAL_CHAIN/ { @[arg1, arg2] = count(); }'
+
+    # wakes to steal that found nobody asleep in reach, by reason
+    dtrace -n 'kwq:::steal-wake /arg1 == -1/ { @[arg0, arg2] = count(); }'
+
+    # why P8 thieves come back empty, and from whom
+    dtrace -n 'kwq:::steal-miss { @[arg1, arg3] = count(); }'
+
+    # how long CPUs stay donors (ns), and which ones starve
+    dtrace -n 'kwq:::donor /arg1/ { t[arg0] = timestamp; } kwq:::donor /!arg1 && t[arg0]/ { @ = quantize(timestamp - t[arg0]); t[arg0] = 0; } kwq:::donor /arg2/ { @s[arg0] = count(); }'
+
+    # where KWQ_CPU_ANY lands, by step, and how far from its producer
+    dtrace -n 'kwq:::place { @[arg3, arg4] = count(); @d[arg1 == arg2 ? "own CPU" : "moved"] = count(); }'
+
+The `KWQ_STEAL_*`, `KWQ_SWAKE_*`, `KWQ_SMISS_*` and `KWQ_PICK_*` codes
+are D inlines in kwq.d (kwq_sdt.h defines them for the kernel), so a
+script that loads kwq.d can name them.  Gossip's merges are counted
+(`gossip.merges`), not probed.
     dtrace -n 'fbt::kwq_enqueue:return /arg1 != 0/ { @[stack()] = count(); }'
 
     # is the worker giving the CPU away, and why

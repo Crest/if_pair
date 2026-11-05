@@ -15,7 +15,9 @@ plan; S11 alternatives rejected; S12 open questions; S13 numeric
 robustness (every quantity, its width, its wrap behaviour); S14
 pathological corner cases and what the algorithm does about each; S15
 cost model: what the bookkeeping costs per item, pass and round, and
-how that compares with scheduling kernel threads.
+how that compares with scheduling kernel threads; S16 BULK stealing,
+scatter and `KWQ_CPU_ANY` under `place=0`; S17 BULK placement under P8
+and gossip.
 
 ## 1. Prior art
 
@@ -1936,10 +1938,15 @@ choice waits for a real client's measured fan-in (PLAN P4.0).
 ## 16. BULK: stealing, scatter and KWQ_CPU_ANY (P6, 2026-11-03)
 
 This is the path under `kern.kwq.bulk.place=0`, today's code, the
-default on a machine of more than one NUMA domain; S17 replaces its
+default on a machine of more than one NUMA domain.  S17 replaces its
 idle mask, its idle-path scan and its `KWQ_CPU_ANY` pick under
-`place=2` (P8, the default on one NUMA domain) and `place=1` (gossip),
-and keeps the rest of this section.
+`place=2` (P8, the default on one NUMA domain) and `place=1` (gossip).
+Under `place=2` the pass cap, the steal wake's trigger, the drain fence
+and the per-CPU charging stay as this section has them, while the steal
+itself changes: P8 takes from donors, within a bound, and its lone-item
+rule is narrower.  Under `place=1` there is no idle-path steal and no
+steal wake: the pass cap asks gossip's table for an idle core, cuts the
+pass to one item and leaves the rest to the hand-off.
 
 Everything in S4-S6 is per (class, CPU): one worker, its ring, its
 deficits.  BULK work has no ordering to keep across CPUs, so the class
@@ -2067,7 +2074,7 @@ puts its idle bit where the new mode reads it):
 |---|---|---|
 | 0 | S16: `kwq_pick_any()`, the one idle mask, the idle-path scan | on more than one NUMA domain |
 | 1 | gossip: tables of nearly idle cores on a torus, the hand-off at a pass end in place of stealing (SPEC-p6g.md S2) | never; kept as the base of the hybrid H4 (SPEC-p6g.md S5a, D15) |
-| 2 | P8: S16's placement and steal with the mask in group lines, a donor line instead of the scan, the starved tick, the mailbox and the chain | on one NUMA domain |
+| 2 | P8: S16's placement and steal with the mask in group lines, a donor line instead of the scan, the starvation watchdog, the mailbox and the chain | on one NUMA domain |
 
 The default is decision D12: P8 on one package, today's code on more
 until a machine of several packages is measured, since the simulator's
@@ -2077,11 +2084,14 @@ from caches and NUMA nodes), so `kwq_shard_init()` takes one NUMA
 domain (`vm_ndomains`) for one package; a two-socket machine with its
 memory interleaved shows one domain.  The loader tunable, applied when
 the knob registers, wins.  Under every mode `steal=0` turns stealing,
-hand-offs and spills off; S16's pass cap, steal wake trigger, drain
-fence and per-CPU charging stay as they are.
+hand-offs and spills off; the drain fence and the per-CPU charging
+stay as S16 has them, and under `place=2` the pass cap and the steal
+wake's trigger too.
 
-**P8 (place=2, `kwq_shard.c`).**  Every word added has one writer CPU,
-except the donor line, which is written at donor transitions only.
+**P8 (place=2, `kwq_shard.c`).**  Who writes the words added: a
+group's idle line its own CPUs, the donor line a CPU at its donor
+transitions, a CPU's hint that CPU, a worker's mailbox whoever wakes
+it.
 
 - *Group idle lines.*  S16's mask cut into one cache line per group of
   `kern.kwq.bulk.group` (16, a loader tunable, 1 to 64) CPUs, the
@@ -2105,15 +2115,18 @@ except the donor line, which is written at donor transitions only.
   (`pick_nondonor`), and S16's shallowest of the own list and four
   probes (`pick_probe`).  Unlike S16 the caller's own list need not be
   empty: its backlog is what the donor rule watches.
-- *The donor line and the hints.*  At each decision point, a pass's
-  start, its end and the worker's sleep, the worker walks its new list
+- *The donor line and the hints.*  At each decision point, the start
+  and the end of a pass of a stealable queue and the worker's sleep,
+  the worker walks its new list
   and its ring (at most 16 and 32 entries) and sums the stealable
   backlog, depth times the list's item cost, over the stealable lists.
   The CPU is a donor when that backlog reaches `shard.donor_us` (500)
-  in two items or more, or when a lone item, with the items of the pass
-  starting ahead of it, waits that long.  A donor sets its bit in one
+  and its longest stealable list holds two items or more, or when a
+  lone item, with the items of the pass starting ahead of it, waits
+  that long.  A donor sets its bit in one
   shared cpuset at the transition and names its longest stealable list
-  in a hint line of its own: a word of the queue's slot in
+  in a hint line of its own, rewritten at each decision point while it
+  is a donor: a word of the queue's slot in
   `kwq_steal_tab`, an item's cost in microseconds (16 bits, clamped)
   and the queue's id.  Becoming a donor wakes the nearest sleeper.
   The item cost is `cost_ns`, an average over passes, 1/8 per pass,
@@ -2121,8 +2134,9 @@ except the donor line, which is written at donor transitions only.
   a negative one had driven the average below zero on a07, which as an
   unsigned value overflowed the backlog sums.
 - *The donor steal.*  The idle path's attempt (S16's, once before the
-  worker sleeps) first tries the victim the mailbox names and the
-  chain's victim (below), then reads the donor line instead of the
+  worker sleeps) first tries the victim the mailbox names or, with the
+  mailbox empty, the chain's victim (below), then reads the donor line
+  instead of the
   lists and steals from the nearest donor in reach, from the list its
   hint names; an empty line costs one read.  The word is checked
   against the slot table under the read side of `kwq_steal_rm`, so a
@@ -2140,29 +2154,33 @@ except the donor line, which is written at donor transitions only.
 - *The spill.*  An item for a fixed CPU of a stealable queue goes where
   `KWQ_CPU_ANY` would when that CPU is a donor or its list holds a
   donor's backlog (`spills`).
-- *The starved tick.*  A CPU whose BULK worker gets no time reaches no
-  decision point and cannot flag itself.  A per-CPU callout, armed by
-  a doorbell of a stealable list and when the CPU becomes a donor,
-  fires every `shard.watch_us` (1000 us) while the CPU holds stealable
-  work; if the worker reached no decision point since it was armed, the
-  CPU is flagged a starved donor, whose lone items may be stolen too,
-  and a thief is woken (`starved`).  It is a direct callout
+- *The starvation watchdog.*  A CPU whose BULK worker gets no time
+  reaches no decision point and cannot flag itself.  A per-CPU callout,
+  armed by a doorbell of a stealable list and when the CPU becomes a
+  donor, fires every `shard.watch_us` (1000 us) while the CPU holds
+  stealable work; if the worker reached no decision point since it was
+  armed, the CPU is flagged a starved donor, whose whole list may be
+  stolen, lone items too, and a thief is woken (`starved`; the donor
+  flag counts in `donor_flags`).  A worker busy for that long with
+  passes of BULK queues that are not stealable counts as starved too:
+  its stealable list waits as long.  It is a direct callout
   (`C_DIRECT_EXEC`), run in the clock interrupt: BULK runs at
   `PI_SOFT`, above every user thread, so what starves it is an
   interrupt thread or NET work at `PI_INTR` (or a thread at its own
-  priority), and those do not stop the tick.  The ATF `starved` case
+  priority), and those do not stop the watchdog.  The ATF `starved` case
   spins a kernel thread at `PI_NET` on one CPU for 100 ms while items
   arrive there.
 - *The mailbox (`shard.directed` 1).*  A wake to steal names its victim
   and list in the woken worker's mailbox, two words in the first line
-  of the worker, which the wake writes anyway, under the sleeper's
-  `kw_mtx`; the woken worker empties it at its idle point and steals
+  of the worker, which the wake writes anyway (`kw_mtx`, `kw_sleeping`;
+  `kw_mb_cpu` in the gap after the flags, `kw_mb_word` in the line's
+  last word, two CTASSERTs keep it so), under the sleeper's `kw_mtx`; the woken worker empties it at its idle point and steals
   from that victim first, donor or not (`directed`).  Every waker that
   wakes a sleeper to steal fills it: the producer's depth-crossing wake
   (its word built under the producer's list lock, so nothing of the
   queue is read once the enqueue has dropped it), the pass start's
-  helper wake, a donor transition and the starved tick (the CPU's
-  hint).  One slot, not a set: each wake addresses one sleeper, and a
+  helper wake, a donor transition and the starvation watchdog (the
+  CPU's hint).  One slot, not a set: each wake addresses one sleeper, and a
   slot carries the list's identity, which a bitmap of victims would not.
 - *The chain (`shard.directed` 2, the default).*  A lone item behind
   running work never makes its CPU a donor, so a thief that finished
@@ -2192,8 +2210,9 @@ S2 is the design.  The cores form a torus built from `smp_topo()`
 other cores' loads and a control block, each in a line of its own.  A
 BULK worker publishes its load figure at its decision points, a
 sleeping worker's fall after a hold, by a callout; the tables are merged
-by the worker at a pass end and at a wake after a long sleep, and by a
-producer before it places.  `KWQ_CPU_ANY` takes `kp_place()`'s steps
+by the worker at a pass end and by a producer before it places (the
+merge at a wake after a long sleep that SPEC-p6g.md K3 planned was not
+built).  `KWQ_CPU_ANY` takes `kp_place()`'s steps
 (S2.5): a BULK handler resubmitting keeps its item while its own load
 is below L_local (`gossip.llocal_us`, 50 us); then an idle core from the
 table, the SMT sibling and the producer's own CPU below L_local, small
@@ -2213,10 +2232,17 @@ and every table is a guess about cores the producer has not heard from.
 the placement counters under `kern.kwq.bulk.shard` and
 `kern.kwq.bulk.gossip`, per BULK worker `pulls`, `donor_flags`,
 `starved`, `directed`, `chained` and `handoffs`, per list `cost_ns`.
-`kwq:::steal(q, from, to, n)` fires for every batch P8 moves and for
-every hand-off (`from` the handing CPU); the `kwq:::place`,
-`kwq:::merge` and `kwq:::handoff` probes SPEC-p6g.md K3-K6 planned are
-not implemented.  ATF: `place_switch` (the knob flipped among 0, 1 and
+The probes follow a batch from its trigger to its move, under every
+mode: `kwq:::steal-wake` (a sleeper woken to steal, and why, or -1 when
+none in reach slept), `kwq:::steal` (a batch moved, `arg4` the path:
+S16's scan, P8's donor steal, mailbox, chain and pull, gossip's
+hand-off; `arg5` the items left behind), `kwq:::steal-miss` (an attempt
+that moved nothing, and why), `kwq:::donor` (P8's donor and starved
+states) and `kwq:::place` (where `KWQ_CPU_ANY` or a spill put an item,
+and by which step).  kwq.d defines the codes as D inlines
+(`KWQ_STEAL_CHAIN` and the rest).  Gossip's merges are counted, not
+probed: SPEC-p6g.md K3's `kwq:::merge` waits for the hybrid H4.  ATF:
+`place_switch` (the knob flipped among 0, 1 and
 2 every 10 ms under load), `place_stale` (no expired table entry used
 after a second's quiet), `torus`, `island` (groups of one CPU: items
 reach the far group) and `starved`.  The measurements and gates G1 and

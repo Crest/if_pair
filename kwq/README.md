@@ -68,9 +68,9 @@ if_pair Makefile in the parent directory.
                   OBSERVABILITY.md S9); run_p1b.sh, the performance
                   runner; crypto_bench.sh, kwq_crypto against its
                   thread baseline
-    examples/     (P8) compilable usage examples (deferred.c, scatter.c,
+    examples/     (PLAN P8) compilable usage examples (deferred.c, scatter.c,
                   pair_client.c)
-    man/          (P8) kwq.9, dtrace_kwq.4
+    man/          (PLAN P8) kwq.9, dtrace_kwq.4
 
 The BULK class's proof client, GELI ported to BULK queues and tested on
 md(4), is ../kwq-geli (branch kwq-bulk, PLAN.txt P6).

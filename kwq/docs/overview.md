@@ -81,7 +81,9 @@ handler may sleep, and the default quantum.  NET is interrupt-class work
 that never sleeps (packet input, 200 us quantum); BULK is lower-priority
 work that never sleeps (crypto, compression, 1 ms quantum), and the one
 class whose work may move between CPUs: an idle BULK worker steals from
-a busy CPU's `KWQ_F_STEALABLE` queue, and `kwq_scatter()` fans a list
+a busy CPU's `KWQ_F_STEALABLE` queue (under the gossip scheme, `place=1`,
+the busy worker hands a batch to an idle core instead), and
+`kwq_scatter()` fans a list
 out with one completion (SCHED.md S16; how idle workers and producers
 find each other is `kern.kwq.bulk.place`, P8 by default on a machine
 of one NUMA domain, S17); BLOCKING is
