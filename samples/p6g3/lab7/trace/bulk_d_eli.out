@@ -1,0 +1,72 @@
+dur_ms 16 small 11000
+dur_ms 128 small 11002
+dur_ms 16 bulk 11005
+dur_ms 128 bulk 11039
+off_geli setup 6048
+off_geli 128 bulk 1588292
+off_geli 16 bulk 2061526
+off_geli 128 small 81012433
+off_geli 16 small 84584463
+kernel samples, 16 bulk: 174285
+kernel samples, 128 bulk: 174786
+p16 kernel`aesni_set_deckey 375
+p16 kernel`vm_page_unwire_managed 385
+p16 kernel`uma_zfree_arg 386
+p16 kernel`_key_expansion_256b 407
+p16 kernel`crypto_done 415
+p16 kernel`pctrie_iter_insert_lookup 418
+p16 kernel`vm_page_set_dirty 429
+p16 kernel`vm_page_valid 451
+p16 kernel`_key_expansion_128 457
+p16 kernel`pmap_extract_and_hold 485
+p16 kernel`vm_page_acquire_unlocked 499
+p16 kernel`pmap_map_io_transient 532
+p16 geom_eli.ko`g_eli_crypto_run 540
+p16 kernel`aesni_cipher_crypt 593
+p16 kernel`mdstart_swap 665
+p16 kernel`uiomove_fromphys 788
+p16 kernel`aesni_set_enckey 790
+p16 kernel`pctrie_insert_node 838
+p16 kernel`pmap_invalidate_range_curcpu_cb 1043
+p16 kernel`pmap_enter 1215
+p16 kernel`memset_erms 1475
+p16 kernel`pctrie_iter_lookup 1621
+p16 kernel`fpu_kern_enter 2177
+p16 kernel`pctrie_lookup_unlocked 3223
+p16 kernel`fpurestore_xrstor3264 4585
+p16 kernel`fpu_kern_leave 5956
+p16 kernel`spinlock_exit 12565
+p16 kernel`lock_delay 30012
+p16 kernel`aesni_crypt_xts 30927
+p16 kernel`memmove_erms 59543
+p128 kernel`crypto_done 339
+p128 kernel`vm_page_unwire_managed 347
+p128 kernel`vm_page_reference 352
+p128 kernel`_key_expansion_128 365
+p128 kernel`pctrie_iter_insert_lookup 419
+p128 kernel`vm_page_set_dirty 454
+p128 kernel`vm_page_valid 487
+p128 geom_eli.ko`g_eli_crypto_run 492
+p128 kernel`aesni_cipher_crypt 519
+p128 kernel`vm_page_acquire_unlocked 539
+p128 kernel`pmap_extract_and_hold 569
+p128 kernel`vm_page_unhold_pages 577
+p128 kernel`pctrie_insert_node 605
+p128 kernel`mdstart_swap 611
+p128 kernel`aesni_set_enckey 633
+p128 kernel`pmap_map_io_transient 726
+p128 kernel`vm_page_wire_mapped 737
+p128 kernel`uiomove_fromphys 781
+p128 kernel`pmap_invalidate_range_curcpu_cb 864
+p128 kernel`pmap_enter 996
+p128 kernel`memset_erms 1163
+p128 kernel`pctrie_iter_lookup 1484
+p128 kernel`fpu_kern_enter 1803
+p128 kernel`pctrie_lookup_unlocked 3051
+p128 kernel`fpurestore_xrstor3264 3424
+p128 kernel`fpu_kern_leave 6780
+p128 kernel`spinlock_exit 21849
+p128 kernel`lock_delay 26351
+p128 kernel`aesni_crypt_xts 26462
+p128 kernel`memmove_erms 59623
+

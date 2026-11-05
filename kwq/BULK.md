@@ -373,6 +373,78 @@ is 20 % less with kwq-geli for sequential reads, 43 % for writes and
 50 % for random reads, and its wakeups a third to a sixth of GELI's.
 The model's p99 is its own tick, 1.1 ms, for all three.
 
+### 7.1 With P8, against stock GELI on one boot (2026-11-05)
+
+crest's question of 2026-11-05: how the new placement compares with
+stock GELI's n x m threads.  geli_bench interleaved stock GELI, kwq-geli
+under today's placement and under P8 at the G2 defaults (b70e3db), three
+repetitions, medians (../samples/p6g3/lab7, a07g).  4 KiB reads at
+random offsets and 1 MiB sequential writes, one request in flight per
+provider; CPU per request from the machine's sys share:
+
+| lab, 16 CPUs | 4 | 16 | 32 | 64 | 128 |
+|---|---|---|---|---|---|
+| reads/s, stock GELI / today / P8 | 530 k / 804 k / 818 k | 701 k / 1.51 M / 1.65 M | 675 k / 1.40 M / 1.64 M | 658 k / 1.05 M / 1.54 M | 659 k / 542 k / 1.52 M |
+| CPU per read, us, stock GELI / P8 | 22.6 / 3.8 | 22.1 / 8.3 | 23.0 / 9.0 | 23.6 / 9.7 | 23.6 / 9.8 |
+| writes, MB/s, stock GELI / today / P8 | 10133 / 11607 / 11630 | 13074 / 13473 / 13363 | 10056 / 8240 / 8122 | 9788 / 5912 / 5790 | 9659 / 5452 / 5383 |
+| CPU per MiB written, ms, stock GELI / P8 | 0.42 / 0.34 | 1.21 / 1.17 | 1.52 / 1.93 | 1.56 / 2.68 | 1.64 / 2.87 |
+
+| a07, 128 CPUs | 4 | 16 | 64 | 128 |
+|---|---|---|---|---|
+| reads/s, stock GELI / P8 | 68 k / 288 k | 90 k / 1.06 M | 73 k / 1.45 M | 63 k / 945 k |
+| CPU per read, us, stock GELI / P8 | 1809 / 13.9 | 1391 / 15.0 | 1702 / 45.9 | 1990 / 131 |
+| writes, MB/s, stock GELI / P8 | 3391 / 3568 | 6420 / 6310 | 7040 / 7040 | 7425 / 7372 |
+| a spin loop's share beside the reads, stock GELI / P8 | 0.45 / 1.00 | 0.15 / 1.00 | 0.08 / 1.00 | 0.06 / 0.97 |
+
+P8 reads faster than stock GELI at every provider count on both
+machines, 1.5 to 2.4 times on lab and 4 to 20 times on a07, where every
+request wakes all 128 workers of its provider and stock GELI's CPU per
+read is 1.4 to 2 ms.  One provider per CPU (tput and resp): lab level
+(reads 22.2 to 22.4 GB/s, writes 8.4 to 8.6 for all three; under the
+writers fork+exec p99 6.7 ms under P8 against 7.7, the spin loop 0.78
+against 0.70); a07 reads 38.6 against 31.1 GB/s, writes level, fork+exec
+p99 19.6 against 66.7 ms, the spin loop 0.60 against 0.30.  a07's SSD
+model: sequential loads level at a fifth of stock GELI's CPU, random
+reads 1.34 M against 68 k, level with gnop alone (1.37 M).
+
+The writes are the exception, on lab only: level up to one provider
+per CPU, then kwq-geli falls behind, to 56 % of stock GELI at 128, its
+CPU per MiB rising where stock GELI's stays near 1.6 ms; P8 changes
+nothing there (within 2 % of today's).  a07 never has more providers
+than CPUs here and shows no gap.
+
+**Why (lab, 128 providers; ../samples/p6g3/lab7/trace).**  A trace of
+both stages at 16 and 128 providers (bulk.d: kwq probes per phase and a
+kernel profile at 997 Hz) and an A/B of the candidates:
+
+| 128 providers, 1 MiB writes | MB/s | CPU per MiB, ms | write p99, ms | spin loop beside |
+|---|---|---|---|---|
+| stock GELI | 9804 | 1.61 | 66.6 | 0.21 |
+| P8 | 5326 | 2.90 | 133.2 | 0.09 |
+| P8, queues not stealable | 5223 | 2.96 | 108.0 | 0.10 |
+| P8, every bio on its caller's CPU | 5447 | 2.84 | 153.1 | 0.09 |
+| P8, share limit off (`cap_permille` 1000) | 8527 | 1.85 | 72.4 | 0.20 |
+
+Stealing and placement are not it; the share limit is most of it.
+With md(4)'s threads and the load's own runnable on every CPU, BULK's
+limit binds in nearly every 1 ms period (89 k hand-overs in 11 s at 128
+providers, 4.6 k at 16), and its allowance per period, 500 us, is less
+than one 1 MiB bio's encryption (about 0.75 ms on lab).  The passes
+start clamped, kwq-geli's per-sector budget check cuts the bio, and the
+average bio is encrypted in three pieces between hand-overs and other
+providers' bios (106 k requeued remainders for 56 k bios at 128
+providers, 50 k for 139 k at 16).  Each piece runs cold: per MiB the
+same `aesni_crypt_xts` takes 0.54 kernel samples against 0.22 at 16
+providers, `memmove_erms` 1.07 against 0.40, `fpu_kern_leave` 0.22
+against 0.04, where stock GELI's workers, at PUSER under ULE's slices,
+encrypt a bio in one piece (0.25 and 0.57 at 128).  The handler time
+per bio went from 0.75 to 1.88 ms.  At this load the limit does not
+even serve its purpose: the CPU it lends goes mostly to md(4), and the
+spin loop beside the writers gets 0.09 of its CPU with the limit and
+0.20 without.  With the limit off 13 % of the gap remains (1.85 against
+1.61 ms per MiB), not traced; the quantum's own cuts (27 % of the
+passes at 16 providers) are the next suspect.
+
 ## 8. Placement: P6g (2026-11-05)
 
 The steal attempt of S16's idle path reads every stealable list in
@@ -523,15 +595,20 @@ two-socket machine.
 
 ## 9. Open
 
-- kwq-geli past two providers per CPU (section 7): with 64 and 128
-  providers of 1 MiB writes on lab's 16 CPUs its kernel CPU per MiB
-  is nearly twice GELI's and fork+exec beside it 50 ms.  Candidates,
-  none measured: the share limit yielding to the md(4) threads,
-  stealing among 128 backlogged queues, the pass's per-sector budget
-  checks suspending bios, the idle-worker scan of `KWQ_CPU_ANY`.  P8
-  (section 8) removed the small reads' share of it (the idle path's
-  scan), not the writes': at 128 providers P8's writes are level with
-  today's.
+- kwq-geli's writes past one provider per CPU (sections 7, 7.1): on
+  lab at 128 providers 56 % of stock GELI's rate.  Traced on
+  2026-11-05 (section 7.1): the share limit's 500 us allowance per
+  1 ms period is shorter than one 1 MiB bio, so with md(4)'s threads
+  runnable the bios are encrypted in cold pieces; with the limit off
+  the writes reach 87 % of stock GELI's.  Candidates for a fix, none
+  tried: a longer `cap_period_us` for BULK (an allowance above an item,
+  at the price of a coarser bound for the threads it protects); a
+  share-limit cut that kwq-geli honours between bios only, which
+  needs `kwq_budget_left()` to tell it from a quantum cut; a limit
+  that counts only the competitors it is for, which would need an
+  exported scheduler KPI such as "is anything runnable on this CPU
+  below priority p" (`sched_runnable()` says only "something").  The
+  rest, 13 %, is not traced.
 - Placement on a machine of two or more packages (section 8, D12):
   today's code stays there until one is measured, with P8 and the
   hybrid H4.

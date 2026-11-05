@@ -1,0 +1,17 @@
+16:46:25 stages: eli kwq kwqshard kwqnosteal kwqlocal; tests: scale; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 3
+16:46:25 rep 1 eli scale
+16:46:58 rep 1 kwq scale
+16:47:31 rep 1 kwqshard scale
+16:48:04 rep 1 kwqnosteal scale
+16:48:38 rep 1 kwqlocal scale
+16:49:11 rep 2 eli scale
+16:49:44 rep 2 kwq scale
+16:50:17 rep 2 kwqshard scale
+16:50:51 rep 2 kwqnosteal scale
+16:51:24 rep 2 kwqlocal scale
+16:51:57 rep 3 eli scale
+16:52:30 rep 3 kwq scale
+16:53:03 rep 3 kwqshard scale
+16:53:37 rep 3 kwqnosteal scale
+16:54:10 rep 3 kwqlocal scale
+16:54:43 done: /home/crest/if_pair-scratch/p6g5/out/trace/scale_ab128.tsv
