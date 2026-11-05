@@ -111,6 +111,10 @@ def criteria():
     def w4(m, o, t):
         return m.get("herd_p999", 0) <= 8, m.get("herd_p999", 0), 8
 
+    def w4o(m, o, t):
+        b = max(8, o.get("herd_p999", 0))
+        return m.get("herd_p999", 0) <= b, m.get("herd_p999", 0), b
+
     def w5(m, o, t):
         return m.get("moved2p_frac", 0) <= 0.01, m.get("moved2p_frac", 0), 0.01
 
@@ -152,6 +156,7 @@ def criteria():
         ("W3a", "discovery p99 <= 2 ms", every, w3),
         ("W3b", "discovery max <= h x Imax", every, w3h),
         ("W4", "herding p99.9 <= 8", every, w4),
+        ("W4o", "herding p99.9 <= max(8, the oracle's)", every, w4o),
         ("W5a", "<= 1 % of items moved twice or more", every, w5),
         ("W5b", "no item moved 4 times or more", every, w5x),
         ("W5c", "steady overload: <= 1 hand-off/s per core", steady_over, w5h),

@@ -156,7 +156,7 @@ def ablations(abl, base, pol):
 def sweeps(sw, base, pol):
     cell = collections.defaultdict(lambda: collections.defaultdict(list))
     for (v, t, p, s), m in sw.items():
-        g = re.match(r"^(.*)\+([a-z_]+)=([0-9.]+)$", v)
+        g = re.match(r"^(.*)\+([a-z_]+)=(-?[0-9.]+)$", v)
         if not g or "wait_all_mean_us" not in m:
             continue
         b, k, val = g.group(1), g.group(2), float(g.group(3))
@@ -273,6 +273,9 @@ FINDINGS = [
     ("The idle mask under contention", "every worker writes one line at each sleep and wake: 2-10 us of line wait per placement on a07, waits up to 0.5 ms", "P8: one line per 16 CPUs", "1b08c2b"),
     ("P8 without spill, pinned producers", "12.5 ms mean wait on a07", "spill at a donor, steal wakes, early pull, avoid donors", "4c16dd9"),
     ("P8 steals re-stolen", "an island moved 22000 items four times or more", "a steal stays below a donor's backlog", "b813fde"),
+    ("P8's reach on a07 (worst-case set)", "an island at 72 cores' worth of load reached 48 CPUs: 3.7 ms mean wait, 3.2M refusals, 18.6M of 24M items/s while 80 CPUs slept", "without an idle worker near, one far group's line per placement", "f04df4f"),
+    ("A starved CPU never flagged itself (worst-case set)", "a core whose BULK share fell to 0 for 100 ms held its items for 95 ms: no decision point, no donor flag", "a per-CPU tick flags a starved donor, lone items stealable", "f04df4f"),
+    ("A producer-raised donor flag", "fixed the p99.9 of the collapse but not its maximum (68 ms), and nothing once the tick was in", "dropped", "f04df4f"),
 ]
 
 
