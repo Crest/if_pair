@@ -102,6 +102,7 @@ struct cfg {
 	double	donor_us;	/* a donor's backlog, us (spill at it too) */
 	int	donor_bound;	/* a steal takes no more than stays below donor_us */
 	double	watch_us;	/* P8: the starved-worker tick, us (0: none) */
+	int	donor_lone;	/* P8: a lone item behind running work is a backlog */
 	int	oneq;		/* all open producers share one queue */
 	int	extraq;		/* stealable queues without producers */
 	int	verbose;
@@ -126,6 +127,7 @@ cfg_default(void)
 	C.donor_us = 500;
 	C.donor_bound = 1;	/* L: the matrix sweep of 200, 500 and 2000 us */
 	C.watch_us = 1000;
+	C.donor_lone = 1;
 	C.probe_groups = 2;
 	C.far_probe = 1;
 	C.far_us = 0;	/* any backlog: the screen of 0 and 20 us, 2026-11-05 */
@@ -1584,7 +1586,21 @@ donor_point(int c)
 			bq = q;
 		}
 	}
-	d = bd >= 2 && b / share >= C.donor_us * US;
+	/*
+	 * donor_lone: a lone item waits behind the pass's batch and the item
+	 * running; with that work it is a backlog too, for idle thieves
+	 * (today's kwq_steal_lone_ok(): inside a pass).  Longer lists count
+	 * their own work only: with the work ahead, short lists of a
+	 * saturated machine hopped from CPU to CPU (S15).
+	 */
+	if (C.donor_lone && bd == 1 && (p->bn > 0 || p->bj == J_ITEM)) {
+		double rem = p->bj == J_ITEM ? p->brem - (p->ws == W_RUN ?
+		    p->brate * (now - p->last_t) : 0) : 0;
+
+		b += p->bwork + (rem > 0 ? rem : 0);
+		d = b / share >= C.donor_us * US;
+	} else
+		d = bd >= 2 && b / share >= C.donor_us * US;
 	if (d && bq != p->dq) {
 		cost += line_write(c, L_DHINT + c);
 		p->dq = bq;
@@ -1679,7 +1695,14 @@ steal_donor(int c, double *costp)
 			continue;
 		l = QL(q, v);
 		cost += line_write(c, LISTLINE(q, v)) + C.c_atomic;
-		if (l->depth < (cpus[v].starved ? 1u : 2u))
+		/*
+		 * A lone item: from a starved donor, or (donor_lone) behind
+		 * the donor's running work, for an idle thief only; a puller
+		 * is busy itself, and in saturation pullers passed a lone item
+		 * from tail to tail (crypto q8x4: 144 items moved 4 times).
+		 */
+		if (l->depth < (cpus[v].starved || (C.donor_lone && room_us < 0 &&
+		    (cpus[v].bn > 0 || cpus[v].bj == J_ITEM)) ? 1u : 2u))
 			continue;
 		take = cpus[v].starved ? l->depth : (l->depth + 1) / 2;
 		if (take > C.steal_max)
@@ -3185,6 +3208,7 @@ parse(int argc, char **argv)
 		else if (KEY("donor_us")) C.donor_us = d;
 		else if (KEY("donor_bound")) C.donor_bound = (int)d;
 		else if (KEY("watch_us")) C.watch_us = d;
+		else if (KEY("donor_lone")) C.donor_lone = (int)d;
 		else if (KEY("probe_groups")) C.probe_groups = (int)d;
 		else if (KEY("far_probe")) C.far_probe = (int)d;
 		else if (KEY("far_us")) C.far_us = d;
