@@ -94,7 +94,7 @@ Average case, every steady scenario, every topology:
 
 | | criterion |
 |---|---|
-| A1 | mean wait at most 1.2 x the oracle's, and no worse than today's kwq (P1) in any steady scenario |
+| A1 | mean wait at most max(1.2 x the oracle's, the oracle's + 10 us) (A1f, G1), and no worse than today's kwq (P1) in any steady scenario (A1t).  As first written, 1.2 x the oracle's failed every policy at waits of a few microseconds |
 | A2 | at least 95 % of placements good (M2) |
 | A3 | at most 2 remote line reads per placement on average; merges cost at most 0.2 % of a busy CPU |
 
@@ -105,8 +105,8 @@ Worst case, every scenario, every seed (p99.9 and max over the run):
 | W1 | wait p99.9 at most 2 x the oracle's p99.9 + 1 ms; max wait at most 3 x the oracle's max + 2 ms.  Under overload (rho >= 1), where waits grow for every policy: throughput at least 97 % of the oracle's, Jain's index across queues at least 0.95 |
 | W2 | idle-while-waiting (M3) at most 2 % of the machine's capacity in steady states; after a step change, back below 2 % within 10 ms on 16 CPUs and 25 ms on 128, at p99 over seeds |
 | W3 | a core that goes idle next to a backlog is used within 2 ms at p99; one h torus hops away within 2h + 1 ms at p99, and within h x Imax at max (M4) |
-| W4 | at most 8 items from distinct sources land on one core within one status-update window, at p99.9 (M6) |
-| W5 | at most 1 % of items move more than once, none more than 3 times; under uniform overload at most 1 hand-off per second per core (M7) |
+| W4 | at most max(8, the oracle's) items from distinct sources land on one core within one status-update window, at p99.9 (M6; W4o, G1: the oracle itself met the bound of 8 in 886 of 1460 runs, as M6 counts an idle core taking items one after another).  P6g.3 counts pile-ups in the kernel: items landing behind another source's queued item |
+| W5 | in steady scenarios (G1: every stealing policy spreads a flash crowd in log2 halvings), at most 1 % of items move more than once, none more than 3 times; under uniform overload at most 1 hand-off per second per core (M7) |
 | W6 | under uniform overload the scheme costs at most 0.5 % of CPU more than placement without stealing (P2) |
 | W7 | after any idle period, no placement uses an expired entry, and at least 80 % of the placements in the first 10 ms are good |
 | W8 | kernel: no item lost or doubled, no assertion or WITNESS report on the GENERIC-DEBUG guest, the knob safe to flip under load |
@@ -307,7 +307,8 @@ probe `kwq:::handoff(q, from, to, n)`.
 
 `kern.kwq.bulk.place`: 0 is today's code (`kwq_pick_any()`, the idle
 mask, stealing); 1 is this scheme, without the idle mask and without
-the idle-path steal.  It can be flipped at run time under load, for A/B
+the idle-path steal; 2 is P8 (section 3.3), the sharded idle mask and
+the donor line (G1: both go into the kernel, section 4).  It can be flipped at run time under load, for A/B
 runs on one boot.  P6g.0 adds no knob of its own: it runs a build with
 the sibling last in the ring order against a build without.
 
@@ -496,6 +497,13 @@ A report to crest, with a push notification:
 crest decides: on to the kernel, revise, or fall back to P4 group
 words.
 
+Outcome (2026-11-05, decisions D9-D13): the report
+(https://claude.ai/artifact/U246kQmWvgBj6TYDJYyDYz, kwq-bulk cbabcd3)
+recommended P8.  crest chose to implement both P8 and the gossip
+scheme in the kernel and compare them on kwq-geli; with the kernel's
+numbers in, a study of the design space for a hybrid that gossips
+unless a more expensive scheme is needed (section 5a).
+
 ## 4. P6g.2: the kernel
 
 The steps.  Each builds, passes the ATF suite on the guest, and is
@@ -513,6 +521,16 @@ checkpoint).
 | K6 | hand-off in place of the idle-path steal, behind the drain fence; probe `kwq:::handoff` |
 | K7 | the knob, flippable under load; `place=1` writes no idle mask and skips the idle-path steal |
 
+P8 under `place=2` (G1), beside the steps above:
+
+| step | what |
+|---|---|
+| K8 | `kwq_bulk_idle`, one cpuset, cut into one line per group of 16 CPUs in topology order, each written by its own CPUs; the group size a loader tunable, so the 4-CPU guest can run groups of 1 and exercise the far probe |
+| K9 | the donor bitmap and a per-CPU hint naming the longest stealable list, written by the owner at its decision points |
+| K10 | the idle path: the donor steal in place of `kwq_steal()`'s scan; the steal wakes as today, the pull at the end of a pass, the bound, the lone item; no cascade wake (D11) |
+| K11 | `kwq_pick_any()` over the group lines, then one far group from a per-CPU cursor; donors avoided; spill for fixed-CPU queues at a donor |
+| K12 | the starved tick: a per-CPU callout(9), armed while the CPU holds stealable work, flagging a worker that reached no decision point since a starved donor |
+
 ATF cases (kwq/tests/kwq_test.sh, kwq_test.ko):
 
 | case | checks |
@@ -523,7 +541,9 @@ ATF cases (kwq/tests/kwq_test.sh, kwq_test.ko):
 | place_any | one producer with every worker idle: items go to idle cores first and to the sibling last (the placement counters by rank) |
 | place_stale | 1 s idle, then a burst: no expired entry used (counter `expired_used` stays 0) |
 | torus | the kernel's torus matches the userland builder's for this machine |
-| existing | steal, steal_off, stealdrain, stealdrain_discard and scatter pass under `place=0`, and the ones that apply under `place=1` |
+| existing | steal, steal_off, stealdrain, stealdrain_discard and scatter pass under `place=0`, and the ones that apply under `place=1` and `place=2` |
+| island | `place=2`, groups of 1 on the guest: producers on one CPU above its capacity reach CPUs beyond the near groups (the far probe) |
+| starved | `place=2`: a real-time spinner on one CPU for 100 ms while its list holds items: they run elsewhere within a few ticks (the starved tick) |
 
 The guest runs GENERIC-DEBUG: INVARIANTS and WITNESS clean is part of
 W8.
@@ -534,8 +554,8 @@ Order: the guest (correctness, direction only), then lab, then a07,
 which waits for crest's permission (decision D8).  The rules:
 
 - Stages run interleaved on one boot: `place=0` (today),
-  `place=0 steal=0` (no stealing), `place=1`, and stock GELI where it
-  applies.
+  `place=0 steal=0` (no stealing), `place=1` (gossip), `place=2` (P8),
+  and stock GELI where it applies.
 - At least three repetitions; medians and ranges.
 - Unpinned, default MSRs; pinning only for the SMT diagnostic.
 - Uptime before and after; every setting logged and undone; one battery
@@ -561,8 +581,18 @@ G1's worst cases are rerun before any conclusion.  hwpmc's line-transfer
 counters on lab for `place=0` against `place=1` are a diagnostic; the
 events are chosen on the box.
 
-Gate G2: the default of `place`.  1 if K1-K5 hold; 0 is kept for one
-round of A/B either way (decision D3).
+Gate G2: the default of `place`.  The better of 1 and 2 if K1-K5 hold;
+0 is kept for one round of A/B either way (decision D3).
+
+## 5a. The hybrid (after P6g.3)
+
+With the kernel's numbers for both schemes in: the design space for a
+hybrid that gossips (a local table, no shared line on the item path)
+unless a more expensive scheme is needed, as where the simulator found
+gossip weak (an island on a flat 128-CPU machine, stale tables at
+returning load) and P8 strong.  What triggers the costlier path, what
+it costs when idle, and its bounds; candidates simulated in placesim
+and judged by section 1 before any kernel code (decision D9).
 
 ## 6. P6g.4: documentation
 
@@ -606,7 +636,7 @@ blocker.
 | the merge at wake interferes with the tick regime's accounting (KWQ.md S16) | the merge runs outside the round the regime judges; checked by the existing tick counters' identities |
 | flipping the knob under load races with hand-offs in flight | the drain fence covers batches in transit; `place_switch` tests it |
 
-## 9. Decisions (taken 2026-11-05)
+## 9. Decisions (taken 2026-11-05; D9-D11 at G1)
 
 | | decision | taken |
 |---|---|---|
@@ -618,3 +648,6 @@ blocker.
 | D6 | the last-target hint per (queue, producer CPU) | a simulator ablation; into the kernel only if it wins |
 | D7 | the per-queue "overloaded until" word | out: no client in the tree drops on refusal |
 | D8 | permission for a07 at P6g.3 (scale, ssd and the new loads, about an hour) | asked when P6g.3 gets there |
+| D9 | G1: which placement goes into the kernel | both P8 (`place=2`) and the gossip scheme (`place=1`), compared on kwq-geli; then the hybrid study of section 5a |
+| D10 | G1: criteria | A1f for A1, W4o for W4, W5 for steady loads only, the model's known gaps accepted (section 3.8); W2b kept as written; further changes may be proposed |
+| D11 | G1: P8's cascade wake | left out of the kernel (no run changed by much in the ablations) |

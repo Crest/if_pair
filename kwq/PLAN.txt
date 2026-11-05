@@ -1363,10 +1363,20 @@ Phases
         built with KWQ_SIBLING_LAST=1 against today's order;
         kwq_crypto's cpustep for two queues on siblings or on cores;
         kern.kwq.topo dumps the order.
-    P6g.1 placesim (kwq/sim/place) running kwq_place.c, the scenario
-        matrix S1-S18, bounds B1-B5, validation V1-V3; gate G1.
-    P6g.2 Kernel behind kern.kwq.bulk.place (K1-K7), ATF on the guest.
+    P6g.1 [DONE 2026-11-05] placesim (kwq/sim/place) running
+        kwq_place.c, the scenario matrix S1-S18, validation V1-V4;
+        policies today, gossip (P5), donor (P7) and shard (P8, the
+        idle mask in 16-CPU lines plus crest's donor flag).  The
+        100-seed worst cases found P8's fixed reach and a starved CPU
+        that never became a donor (f04df4f), the lone item (01ec314).
+        Gate G1 (report artifact U246kQmWvgBj6TYDJYyDYz, cbabcd3):
+        crest chose both P8 and gossip for the kernel, compared on
+        kwq-geli, then a hybrid study (S5a); A1f, W4o, W5 steady only,
+        model gaps accepted, no cascade wake (D9-D11).
+    P6g.2 Kernel behind kern.kwq.bulk.place: 1 gossip (K1-K7), 2 P8
+        (K8-K12); ATF on the guest.
     P6g.3 A/B on lab, then a07 with crest's permission; gate G2.
+    P6g.3a The hybrid's design space, simulated (SPEC-p6g.md S5a).
     P6g.4 Documentation and the post-merge doc review.
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
