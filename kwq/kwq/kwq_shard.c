@@ -65,7 +65,7 @@ static u_int kwq_pull_us = 500;		/* a worker below it pulls at pass end */
 static u_int kwq_watch_us = 1000;	/* the starved tick; 0: off */
 static u_int kwq_spill_idle = 0;	/* spill a waiting item to an idle CPU near */
 static u_int kwq_helper_donor = 0;	/* a list cut for a helper is a donor's */
-static u_int kwq_directed = 0;		/* the wake names the victim (the mailbox) */
+static u_int kwq_directed = 0;		/* the wake names the victim (the mailbox); 2: the chain */
 
 #define	KWQ_NEAR_MAX	5		/* the own group and at most 4 more */
 #define	KWQ_GRP_MAX	64		/* bits of a group's line */
@@ -649,25 +649,48 @@ kwq_steal_from(struct kwq_worker *kw, int vcpu, uint64_t h, int64_t room_ns)
  * The donor steal (place=2): first the victim the mailbox names (mcpu,
  * mword; directed), then the nearest donor in reach by its hint.  No lock
  * held; true if a batch moved.
+ *
+ * directed=2 adds the chain: an idle thief with an empty mailbox tries the
+ * victim and list of its last batch again, so the thieves of a shallow
+ * list run from item to item as today's scan lets them, not one wake per
+ * item (a lone item behind running work never makes its CPU a donor).  The
+ * first miss forgets the victim.  The word is checked against the slot
+ * table as a hint is, so a victim's queue destroyed meanwhile is a miss.
  */
 bool
 kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns, int mcpu, uint64_t mword)
 {
 	struct rm_priotracker tr;
+	uint64_t h = 0;
 	u_int i, reach;
-	int vcpu;
-	bool moved = false;
+	int vcpu = -1;
+	bool chain = false, moved = false;
 
 	reach = kwq_topo_reach(kw->kw_cpu);
+	if (mcpu < 0 && room_ns < 0 && kwq_directed >= 2 &&
+	    kw->kw_chain_cpu >= 0) {
+		mcpu = kw->kw_chain_cpu;
+		mword = kw->kw_chain_word;
+		chain = true;
+	}
 	if (mcpu >= 0 && mword != 0) {
 		kw->kw_steal_tries++;
 		rm_rlock(&kwq_steal_rm, &tr);
 		moved = kwq_steal_from(kw, mcpu, mword, room_ns);
 		rm_runlock(&kwq_steal_rm, &tr);
 		if (moved) {
-			kw->kw_directed++;
+			if (chain)
+				kw->kw_chained++;
+			else
+				kw->kw_directed++;
+			if (kwq_directed >= 2) {
+				kw->kw_chain_cpu = mcpu;
+				kw->kw_chain_word = mword;
+			}
 			return (true);
 		}
+		if (chain)
+			kw->kw_chain_cpu = -1;
 	}
 	if (reach == 0 || CPU_EMPTY(&kwq_donors.ds_set))
 		return (false);
@@ -675,11 +698,16 @@ kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns, int mcpu, uint64_t mword
 	rm_rlock(&kwq_steal_rm, &tr);
 	for (i = 0; i < reach && !moved; i++) {
 		vcpu = kwq_topo_order[kw->kw_cpu][i];
-		if (kwq_is_donor(vcpu))
-			moved = kwq_steal_from(kw, vcpu,
-			    atomic_load_64(&kwq_hints[vcpu].kh_word), room_ns);
+		if (kwq_is_donor(vcpu)) {
+			h = atomic_load_64(&kwq_hints[vcpu].kh_word);
+			moved = kwq_steal_from(kw, vcpu, h, room_ns);
+		}
 	}
 	rm_runlock(&kwq_steal_rm, &tr);
+	if (moved && kwq_directed >= 2) {
+		kw->kw_chain_cpu = vcpu;
+		kw->kw_chain_word = h;
+	}
 	return (moved);
 }
 
@@ -1028,9 +1056,9 @@ kwq_shard_sysctl(void)
 	    kwq_sysctl_shard_knob, "IU",
 	    "1: a pass that leaves its stealable list for a helper keeps the CPU a donor of it until the list is empty (default 0)");
 	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "directed",
-	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_directed, 1,
+	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_directed, 2,
 	    kwq_sysctl_shard_knob, "IU",
-	    "1: a wake to steal names the victim and its list in the woken worker's mailbox, which it steals from first, donor or not (default 0)");
+	    "1: a wake to steal names the victim and its list in the woken worker's mailbox, which it steals from first, donor or not; 2: and an idle thief tries the victim of its last batch again (the chain); 0 (default): neither");
 	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "watch_us",
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_watch_us, 1000000,
 	    kwq_sysctl_shard_knob, "IU",

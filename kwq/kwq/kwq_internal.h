@@ -317,6 +317,13 @@ struct kwq_worker {
 	struct callout		kw_watch_co;
 	uint64_t		kw_pulls, kw_donor_n, kw_starved_n, kw_directed;
 	/*
+	 * directed=2: the victim and list of the last batch moved, which the
+	 * idle thief tries first (kwq_steal_donor()); the worker's own.
+	 */
+	int			kw_chain_cpu;	/* -1: none */
+	uint64_t		kw_chain_word;
+	uint64_t		kw_chained;
+	/*
 	 * The gossip scheme (place=1, kwq_gossip.c): the load figure's state,
 	 * the backlog at the last decision point (step 0's own load), the
 	 * callout that publishes a sleeper's fall after the hold, hand-offs.

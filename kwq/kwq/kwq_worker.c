@@ -1542,6 +1542,7 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 		KW_U64(kw_starved_n, "starved", "place=2: times the starved tick found this worker without a decision point and flagged it");
 		KW_U64(kw_handoffs, "handoffs", "place=1: batches this worker handed off at a pass end (SPEC-p6g.md S2.7)");
 		KW_U64(kw_directed, "directed", "place=2, shard.directed: batches taken from the victim the waking wake named");
+		KW_U64(kw_chained, "chained", "place=2, shard.directed=2: batches taken from the victim of the last batch again");
 	}
 #undef KW_U64
 	SYSCTL_ADD_UINT(&kwq_worker_sysctl_ctx, ch, OID_AUTO, "nactive",
@@ -1577,6 +1578,7 @@ kwq_workers_start(struct sysctl_oid_list **cpu_oids)
 			callout_init(&kw->kw_watch_co, 1);
 			callout_init(&kw->kw_pub_co, 1);
 			kw->kw_mb_cpu = -1;
+			kw->kw_chain_cpu = -1;
 			ks_worker_init(kw, &kwq_knobs[cls], 0);
 			kw->kw_class = cls;
 			kw->kw_cpu = cpu;
