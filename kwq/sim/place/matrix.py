@@ -143,6 +143,8 @@ ABLATIONS = ["noself=1", "nosmt=1", "nocheck=1", "norand=1", "symhyst=1", "fixiv
              "nosplit=1", "norepair=1", "handoff=0", "spill=0", "table=2", "table=8",
              "shape=1", "shape=2", "checks=1", "noremerge=1", "remerge=1", "tomb=1",
              "busyterm=1", "handoff_n=1"]
+ABLATIONS8 = ["spill=0", "donor_pull=0", "donor_cascade=0", "donor_wakes=0", "donor_avoid=0",
+              "donor_bound=0", "probe_groups=0"]
 ABLATE_ON = r"^(S1-uniform-rho0\.7|S2-crypto-q2|S3-island-k(1|4|9)-x4|S4-idleisland-k4|S6-|S7-return-gap1000-x1\.5|S11-flash|S12-collapse-s0-10ms|S14-smt0\.55|S15-full-rho1\.2|S16-fixed-l0)"
 
 
@@ -197,6 +199,26 @@ def runs(setname, seeds):
             for t, p, s in itertools.product([x for x in topos if x in ("lab", "a07")], (0, 1, 5, 8),
                                              range(101, 101 + seeds)):
                 out.append((name, t, p, s, f"topo={t} policy={p} seed={s} {dur(t)} {expand(t, args)}"))
+    elif setname == "ablate8":
+        # P8's parts, one at a time, on the scenarios that exercise them
+        for name, topos, args in main:
+            if not re.match(ABLATE_ON, name):
+                continue
+            for t, a, s in itertools.product([x for x in topos if x in ("lab", "a07", "t4")],
+                                             ABLATIONS8, range(1, seeds + 1)):
+                out.append((f"{name}+{a}", t, 8, s, f"topo={t} policy=8 seed={s} {dur(t)} {expand(t, args)} {a}"))
+    elif setname == "sweep8":
+        sweeps = {"donor_us": (200, 1000, 2000), "group": (4, 8, 32, 64), "probe_groups": (0, 1, 4),
+                  "steal_max": (16, 256), "steal_scan": (8, 32, 128)}
+        base = [m for m in main if re.match(r"^(S1-uniform-rho0\.7-(small|mix)|S3-island-k(4|9)-x4-small|"
+                                             r"S4-idleisland-k4-small|S7-return-gap1000-x1\.5|"
+                                             r"S11-flash-fixed-100us|S15-full-rho1\.2|S16-fixed-l0)$", m[0])]
+        for name, topos, args in base:
+            for k, vals in sweeps.items():
+                for val, t, s in itertools.product(vals, [x for x in topos if x in ("lab", "a07", "t4")],
+                                                  range(1, seeds + 1)):
+                    out.append((f"{name}+{k}={val}", t, 8, s,
+                                f"topo={t} policy=8 seed={s} {dur(t)} {expand(t, args)} {k}={val}"))
     elif setname == "fuzz":
         rng = random.Random(17)
         for s in range(1, seeds + 1):
