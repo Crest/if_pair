@@ -3,3 +3,4 @@ kp_test
 pp
 *.tsv
 out/
+__pycache__/

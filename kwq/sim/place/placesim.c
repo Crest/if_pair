@@ -38,7 +38,8 @@
  * flagged a backlog of H or more in one donor line, crest's first idea),
  * 8 shard (7 with the idle mask cut into lines of `group' CPUs, each
  * written by its own CPUs only; a producer reads its own group's line
- * and up to probe_groups more).
+ * and up to probe_groups more, then far_probe groups' lines further
+ * out; a per-CPU tick flags a starved worker a donor).
  */
 
 #include <sys/types.h>
@@ -95,9 +96,12 @@ struct cfg {
 	int	expcost;	/* exponential item costs (V1) */
 	int	contend;	/* line serialization (default on) */
 	int	group, probe_groups;	/* P8 */
+	int	far_probe;	/* P8: far groups read per placement, at most */
+	double	far_us;		/* P8: from a producer with this backlog, us (<0: a donor) */
 	int	donor_cascade, donor_pull, donor_wakes, donor_avoid;	/* P7/P8 */
 	double	donor_us;	/* a donor's backlog, us (spill at it too) */
 	int	donor_bound;	/* a steal takes no more than stays below donor_us */
+	double	watch_us;	/* P8: the starved-worker tick, us (0: none) */
 	int	oneq;		/* all open producers share one queue */
 	int	extraq;		/* stealable queues without producers */
 	int	verbose;
@@ -121,7 +125,10 @@ cfg_default(void)
 	C.donor_cascade = C.donor_pull = C.donor_wakes = C.donor_avoid = 1;
 	C.donor_us = 500;
 	C.donor_bound = 1;	/* L: the matrix sweep of 200, 500 and 2000 us */
+	C.watch_us = 1000;
 	C.probe_groups = 2;
+	C.far_probe = 1;
+	C.far_us = 0;	/* any backlog: the screen of 0 and 20 us, 2026-11-05 */
 	C.c_hit = 2; C.c_sib = 20; C.c_l3 = 40; C.c_pkg = 100; C.c_far = 200;
 	C.c_atomic = 10; C.scan_entry = 4;	/* V3: 17.9 us per scan of 2048 lists */
 	C.place_ns = 30; C.merge_ns = 200; C.timer_ns = 150;
@@ -176,7 +183,7 @@ static uint64_t gs;		/* the run's own stream */
 /* Events: a binary heap */
 
 enum { EV_DONE_B, EV_DONE_O, EV_WAKE, EV_PUBLISH, EV_ARRIVE, EV_ISSUE,
-    EV_RETRY, EV_PHASE, EV_SAMPLE, EV_CAP, EV_END };
+    EV_RETRY, EV_PHASE, EV_SAMPLE, EV_CAP, EV_WATCH, EV_END };
 
 struct ev {
 	double		t;
@@ -807,6 +814,10 @@ struct cpu {
 	/* P7 */
 	bool		donor;
 	int		dq;		/* the donor's longest stealable queue */
+	int		far_g;		/* P8: the far probe's group, -1 before the first */
+	uint64_t	dec_n, watch_n;	/* P8: decision points, and at the tick's arming */
+	bool		watch_armed;
+	bool		starved;	/* P8: flagged by the tick; lone items stealable */
 	/* last handoff, M7 */
 	uint64_t	handoffs_in, handoffs_out;
 };
@@ -1204,9 +1215,51 @@ idle_line(int c)
 }
 
 /*
+ * P8, a donor without an idle worker in the near groups: up to far_probe
+ * more groups' lines, from a cursor that stays on a group while it has
+ * an idle worker and moves on when it has none.  An island whose
+ * overflow exceeds its neighbourhood so still reaches the idle rest of
+ * the machine, at one line per placement and only while it overflows.
+ * Each producer starts at its own group and bit, so producers spread.
+ */
+static int
+pick_far(int q, int me, const int *seen, int ns)
+{
+	struct cpu *p = &cpus[me];
+	int gsz = C.group > 0 ? C.group : 16, ng = (maxid + gsz - 1) / gsz;
+	int k, j, i, c, tries = 0;
+
+	if (p->far_g < 0)
+		p->far_g = (shard_of(me) + 1 + me) % ng;
+	for (k = 0; k < C.far_probe && tries < ng; k++) {
+		for (; tries < ng; tries++, p->far_g = (p->far_g + 1) % ng) {
+			for (i = 0; i < ns && seen[i] != p->far_g; i++)
+				;
+			if (i == ns)
+				break;
+		}
+		if (tries == ng)
+			break;
+		cur_cost += line_read(me, L_SHARD + p->far_g);
+		for (j = 0; j < gsz; j++) {
+			c = p->far_g * gsz + (me + j) % gsz;
+			if (c >= maxid || !cpu_present[c] || !cpus[c].inmask)
+				continue;
+			cur_cost += line_read(me, LISTLINE(q, c));
+			if (QL(q, c)->depth == 0)
+				return (c);
+		}
+		tries++;
+		p->far_g = (p->far_g + 1) % ng;
+	}
+	return (NONE);
+}
+
+/*
  * P8: the nearest idle worker with this queue empty, in the own group's
  * line, then in up to probe_groups other groups' lines (the nearest by
- * topology order); else kwq_pick_any()'s own CPU and probes.
+ * topology order); else, for a donor, pick_far(); else kwq_pick_any()'s
+ * own CPU and probes.
  */
 static int
 pick_shard(int q, int me)
@@ -1234,6 +1287,10 @@ pick_shard(int q, int me)
 		if (QL(q, c)->depth == 0)
 			return (c);
 	}
+	if (C.far_probe > 0 && (C.far_us < 0 ? cpus[me].donor : cpus[me].qwork /
+	    (cpus[me].share_e > 1.0 / 16 ? cpus[me].share_e : 1.0 / 16) >= C.far_us * US) &&
+	    (c = pick_far(q, me, seen, ns)) != NONE)
+		return (c);
 	cur_cost += line_read(me, LISTLINE(q, me));
 	bd = QL(q, me)->depth;
 	if (C.donor_avoid)
@@ -1514,6 +1571,8 @@ donor_point(int c)
 	int k, q, bq = NONE;
 	bool d;
 
+	p->dec_n++;
+	p->starved = false;
 	for (k = 0; k < p->rn; k++) {
 		q = p->ring[(p->rhead + k) % nq];
 		l = QL(q, c);
@@ -1537,6 +1596,61 @@ donor_point(int c)
 			steal_wake(c, c, &cost);
 	}
 	charge_bulk(c, cost);
+}
+
+/*
+ * P8: a per-CPU tick, armed while the CPU holds stealable work.  At
+ * softclock priority it runs when the worker gets no time; a worker
+ * that reached no decision point since the tick was armed is starved,
+ * and the tick flags it a donor (lone items included) and wakes a
+ * thief, every tick until the worker runs again (S12).
+ */
+static void
+watch_arm(int c)
+{
+	struct cpu *p = &cpus[c];
+
+	if (C.policy != P_SHARD || C.watch_us <= 0 || p->watch_armed)
+		return;
+	p->watch_armed = true;
+	p->watch_n = p->dec_n;
+	ev_push(now + C.watch_us * US, EV_WATCH, c, 0);
+}
+
+static void
+watch_fire(int c)
+{
+	struct cpu *p = &cpus[c];
+	struct qlist *l;
+	double cost = C.timer_ns;
+	u_int bd = 0;
+	int k, q, bq = NONE;
+
+	p->watch_armed = false;
+	for (k = 0; k < p->rn; k++) {
+		q = p->ring[(p->rhead + k) % nq];
+		l = QL(q, c);
+		if (Q[q].stealable && l->depth > bd) {
+			bd = l->depth;
+			bq = q;
+		}
+	}
+	if (bq == NONE) {
+		charge_other(c, cost);
+		return;
+	}
+	if (p->dec_n == p->watch_n) {
+		if (!p->donor || p->dq != bq) {
+			cost += line_write(c, L_DHINT + c);
+			p->dq = bq;
+		}
+		if (!p->donor)
+			cost += line_write(c, L_DONOR) + C.c_atomic;
+		p->donor = p->starved = true;
+		steal_wake(c, c, &cost);
+	}
+	charge_other(c, cost);
+	watch_arm(c);
 }
 
 /* P7's idle path: the donors in reach, nearest first; one line each. */
@@ -1565,9 +1679,9 @@ steal_donor(int c, double *costp)
 			continue;
 		l = QL(q, v);
 		cost += line_write(c, LISTLINE(q, v)) + C.c_atomic;
-		if (l->depth < 2)
+		if (l->depth < (cpus[v].starved ? 1u : 2u))
 			continue;
-		take = (l->depth + 1) / 2;
+		take = cpus[v].starved ? l->depth : (l->depth + 1) / 2;
 		if (take > C.steal_max)
 			take = C.steal_max;
 		/*
@@ -2343,6 +2457,8 @@ enqueue_item(int32_t it, int from, int fixed, bool self)
 	cpus[t].qwork += x->cost;
 	if (!l->active)
 		ring_add(t, q);
+	if (Q[q].stealable)
+		watch_arm(t);
 	if ((C.policy == P_TODAY || ((C.policy == P_DONOR || C.policy == P_SHARD) &&
 	    C.donor_wakes)) && Q[q].stealable && steal_crossed(l->depth - 1, l->depth))
 		steal_wake(t, from, &cur_cost);
@@ -3068,7 +3184,10 @@ parse(int argc, char **argv)
 		else if (KEY("donor_avoid")) C.donor_avoid = (int)d;
 		else if (KEY("donor_us")) C.donor_us = d;
 		else if (KEY("donor_bound")) C.donor_bound = (int)d;
+		else if (KEY("watch_us")) C.watch_us = d;
 		else if (KEY("probe_groups")) C.probe_groups = (int)d;
+		else if (KEY("far_probe")) C.far_probe = (int)d;
+		else if (KEY("far_us")) C.far_us = d;
 		else if (KEY("spill")) C.spill = (int)d;
 		else if (KEY("imin_us")) C.kp.imin = KP_US2T(d);
 		else if (KEY("imax_us")) C.kp.imax = KP_US2T(d);
@@ -3160,6 +3279,7 @@ main(int argc, char **argv)
 			p->capx = C.cap;
 		p->share_e = 1;
 		p->dq = NONE;
+		p->far_g = -1;
 		p->rng = (uint32_t)(C.seed * 2654435761u + (uint32_t)c * 40503u + 1);
 		p->ws = W_SLEEP;
 		p->sleep_t = -10 * SEC;
@@ -3258,6 +3378,9 @@ main(int argc, char **argv)
 		case EV_CAP:
 			if (e.b == cpus[e.a].capseq)
 				RESCHED(e.a);
+			break;
+		case EV_WATCH:
+			watch_fire(e.a);
 			break;
 		case EV_SAMPLE:
 			if (warm())
