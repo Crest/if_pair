@@ -1199,6 +1199,7 @@ kwq_sysctl_register(struct kwq *q)
 			KC_U64(kc_steals_out, "steals_out", "batches other CPUs' workers took from this list");
 			KC_U64(kc_stolen_out, "stolen_out", "items in those batches");
 			KC_U64(kc_scattered, "scattered", "items kwq_scatter() put on this list");
+			KC_U64(kc_cost_ns, "cost_ns", "place=2: an item's cost on this list, ns, averaged over passes (1/8 per pass): the hint's cost");
 		}
 #undef KC_U64
 	}

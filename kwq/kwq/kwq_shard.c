@@ -66,6 +66,7 @@ static u_int kwq_watch_us = 1000;	/* the starved tick; 0: off */
 static u_int kwq_spill_idle = 0;	/* spill a waiting item to an idle CPU near */
 static u_int kwq_helper_donor = 0;	/* a list cut for a helper is a donor's */
 static u_int kwq_directed = 0;		/* the wake names the victim (the mailbox); 2: the chain */
+static u_int kwq_directed_us = 0;	/* directed only for items at least this costly; 0: all */
 
 #define	KWQ_NEAR_MAX	5		/* the own group and at most 4 more */
 #define	KWQ_GRP_MAX	64		/* bits of a group's line */
@@ -373,6 +374,8 @@ kwq_shard_wake(int cpu, uint64_t mw)
 			if (kwq_directed) {
 				if (mw == 0)
 					mw = atomic_load_64(&kwq_hints[cpu].kh_word);
+				if (mw != 0 && KH_US(mw) < kwq_directed_us)
+					mw = 0;		/* cheap items: the donor rule */
 				if (mw != 0) {
 					kw->kw_mb_cpu = cpu;
 					kw->kw_mb_word = mw;
@@ -669,6 +672,10 @@ kwq_steal_from(struct kwq_worker *kw, int vcpu, uint64_t h, int64_t room_ns)
  * item (a lone item behind running work never makes its CPU a donor).  The
  * first miss forgets the victim.  The word is checked against the slot
  * table as a hint is, so a victim's queue destroyed meanwhile is a miss.
+ * shard.directed_us limits the mailbox and the chain to lists whose items
+ * cost at least that much (the word's cost): moving a cheap lone item
+ * costs the thief about what running it saves, so those lists keep the
+ * donor rule.
  */
 bool
 kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns, int mcpu, uint64_t mword)
@@ -696,10 +703,11 @@ kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns, int mcpu, uint64_t mword
 				kw->kw_chained++;
 			else
 				kw->kw_directed++;
-			if (kwq_directed >= 2) {
+			if (kwq_directed >= 2 && KH_US(mword) >= kwq_directed_us) {
 				kw->kw_chain_cpu = mcpu;
 				kw->kw_chain_word = mword;
-			}
+			} else
+				kw->kw_chain_cpu = -1;
 			return (true);
 		}
 		if (chain)
@@ -717,7 +725,7 @@ kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns, int mcpu, uint64_t mword
 		}
 	}
 	rm_runlock(&kwq_steal_rm, &tr);
-	if (moved && kwq_directed >= 2) {
+	if (moved && kwq_directed >= 2 && KH_US(h) >= kwq_directed_us) {
 		kw->kw_chain_cpu = vcpu;
 		kw->kw_chain_word = h;
 	}
@@ -1072,6 +1080,10 @@ kwq_shard_sysctl(void)
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_directed, 2,
 	    kwq_sysctl_shard_knob, "IU",
 	    "1: a wake to steal names the victim and its list in the woken worker's mailbox, which it steals from first, donor or not; 2: and an idle thief tries the victim of its last batch again (the chain); 0 (default): neither");
+	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "directed_us",
+	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_directed_us, 0xffff,
+	    kwq_sysctl_shard_knob, "IU",
+	    "directed: the mailbox and the chain only for lists whose items cost at least this many us (their hint's cost); 0 (default): every list");
 	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "watch_us",
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_watch_us, 1000000,
 	    kwq_sysctl_shard_knob, "IU",

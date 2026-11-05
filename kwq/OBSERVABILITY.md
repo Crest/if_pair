@@ -65,6 +65,7 @@ handler rejects values outside its range with EINVAL.
 | `shard.watch_us` (RW) | 0 .. 1000000 | 1000 | place=2: the starved tick's period: a CPU holding stealable work whose worker reached no decision point for this long is flagged a starved donor; 0: off |
 | `shard.spill_idle` (RW) | 0 .. 2 | 0 | place=2: an item for a fixed CPU of a stealable queue that would wait behind another there goes to an idle CPU, if one: 1 near the producer, 2 near the fixed CPU; 0: only the spill of a donor or of a backlog of `donor_us` |
 | `shard.helper_donor` (RW) | 0, 1 | 0 | place=2: a pass that leaves the rest of its stealable list for a helper keeps the CPU a donor of it until the list is empty |
+| `shard.directed_us` (RW) | 0 .. 65535 | 0 | place=2, with `directed`: the mailbox and the chain only for lists whose items cost at least this many us (the word's cost); lists of cheaper items keep the donor rule; 0: every list |
 | `shard.directed` (RW) | 0 .. 2 | 0 | place=2: 1 a wake to steal names the victim and its list in the woken worker's mailbox, which it steals from first, donor or not; 2 also the chain: an idle thief tries the victim of its last batch again before it sleeps, the first miss forgets it |
 | `gossip.h_us`, `gossip.l_us`, `gossip.llocal_us` (RW) | | 2000, 500, 50 | place=1: H, the backlog at which a worker hands off and a fixed CPU's items spill; L, the most a hand-off's target may hold; L_local, the producer's own thread is good below it (SPEC-p6g.md S2.9) |
 | `gossip.handoff_n` (RW) | | 4 | place=1: hand-offs at most per pass end |
@@ -293,6 +294,7 @@ Per CPU, `kern.kwq.<class>.queue.<queue>.cpu.<N>.`:
 | `steals_in`, `stolen_in` | BULK: batches and items this CPU's worker took from other CPUs' lists of the queue |
 | `steals_out`, `stolen_out` | BULK: batches and items other CPUs' workers took from this list; summed over the CPUs, in equals out |
 | `scattered` | BULK: items `kwq_scatter()` put on this list |
+| `cost_ns` | BULK, place=2: an item's cost on this list, ns, averaged over passes (1/8 per pass); what the list's hint and the mailbox word carry |
 
 Examples:
 
