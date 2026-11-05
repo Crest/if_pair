@@ -1,0 +1,8 @@
+2026-11-05T18:43:39Z round: start, uptime  6:43PM  up 11:12, 0 users, load averages: 0.21, 0.05, 0.42, processes      182
+2026-11-05T18:43:39Z round: loaded kwq.ko at its defaults: place=2 directed=2 directed_us=10 quantum_us=5000 cap_period_us=10000 cap_permille=500
+2026-11-05T19:13:47Z round: geli_bench scale exit 0, processes      180
+2026-11-05T19:46:56Z round: geli_bench tput resp onecpu exit 0
+2026-11-05T19:50:50Z round: geli_bench tput at 32 KiB sectors exit 0
+2026-11-05T19:58:10Z round: geli_bench ssd exit 0
+2026-11-05T19:58:10Z round: unloaded kwq
+2026-11-05T19:58:10Z round: end, modules 0, md        0, geli on md 0, processes      180, uptime  7:58PM  up 12:26, 0 users, load averages: 171.53, 230.30, 306.71

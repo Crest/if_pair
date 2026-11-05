@@ -1,0 +1,11 @@
+18:43:41 stages: eli kwqshard kwqshard1; tests: scale; P 128, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 3
+18:43:41 rep 1 eli scale
+18:48:49 rep 1 kwqshard scale
+18:51:16 rep 1 kwqshard1 scale
+18:53:42 rep 2 eli scale
+18:58:48 rep 2 kwqshard scale
+19:01:12 rep 2 kwqshard1 scale
+19:03:40 rep 3 eli scale
+19:08:50 rep 3 kwqshard scale
+19:11:17 rep 3 kwqshard1 scale
+19:13:44 done: /home/crest/if_pair-scratch/p6g6/out/scale.tsv

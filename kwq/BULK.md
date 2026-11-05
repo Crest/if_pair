@@ -36,7 +36,8 @@ comment differs).  Before
 the review lab passed 31/31 and 11/11 (01a87c3).  lab's syslog over the
 whole run, every case and benchmark stage unloading its modules, has
 no leak warning, no UMA zone freed non-empty, no panic and no WITNESS
-line.  a07's first run, at f9120cb, had the same results once
+line (P6g.2's gossip counters later brought one, 128 bytes of `M_KWQ`
+per unload from fe1c50f, fixed in ae3e453).  a07's first run, at f9120cb, had the same results once
 three cases were run again by themselves: a07's kyua crashed in
 `yield` and in `providers` ("PID already in all_exec_data"), and the
 crashed case's cleanup, still running, unloaded geom_kwqeli under
@@ -498,6 +499,135 @@ bio's data as crypto(9)'s input and the new buffer as its output
 (`CSP_F_SEPARATE_OUTPUT`, `crypto_use_output_buf()`), as GELI's own
 comment there proposes; and for the allocation, a cache of MAXPHYS
 buffers in place of malloc(9)'s large path.
+
+### 7.3 BULK's 5 ms quantum and 10 ms share-limit period (2026-11-05)
+
+2e142b1 raised BULK's `quantum_us` from 1000 to 5000 and its
+`cap_period_us` from 1000 to 10000, an allowance of 5 ms per period at
+`cap_permille` 500, so that a pass holds a 1 MiB item with slack for
+any well-behaved client (SCHED.md S8).  One boot of each machine at
+f6ca113, stock GELI (n providers x m bound workers) against P8 at the
+new defaults and at the old values (geli_bench's `kwqshard1`), three
+repetitions interleaved, medians (../samples/p6g6/lab, a07).  "Cuts"
+are kwq-geli's requeued remainders per 1 MiB bio handed over, from the
+BULK queues' `requeued` and `items` counters: 0 means every bio ran
+whole in one pass.
+
+| lab, 16 CPUs, scale | 4 | 16 | 32 | 64 | 128 |
+|---|---|---|---|---|---|
+| cuts per 1 MiB write, new / old | 0.00 / 0.00 | 0.08 / 0.56 | 0.81 / 1.70 | 0.83 / 1.87 | 0.85 / 1.89 |
+| 1 MiB writes, MB/s, stock GELI / new / old | 10220 / 11631 / 11733 | 13272 / 13419 / 13461 | 10094 / 8837 / 8269 | 9812 / 6234 / 5768 | 9774 / 6053 / 5336 |
+| CPU per MiB written, ms, stock GELI / new / old | 0.44 / 0.36 / 0.36 | 1.25 / 1.23 / 1.22 | 1.59 / 1.85 / 1.99 | 1.69 / 2.59 / 2.82 | 1.70 / 2.66 / 3.03 |
+| write p99, ms, stock GELI / new / old | 0.6 / 0.4 / 0.4 | 2.9 / 3.0 / 3.0 | 7.9 / 8.5 / 8.8 | 31.2 / 29.1 / 47.7 | 66.6 / 101.7 / 140.5 |
+| timer p99 beside the writes, us, stock GELI / new / old | 10 / 10 / 10 | 315 / 188 / 188 | 2407 / 2538 / 1640 | 3001 / 7041 / 2680 | 3319 / 7368 / 2940 |
+| fork+exec p99 beside the writes, ms, stock GELI / new / old | 0.8 / 0.8 / 0.7 | 16.3 / 7.8 / 7.6 | 409 / 122 / 103 | 966 / 181 / 126 | 34 / 184 / 149 |
+| 4 KiB reads/s, k, stock GELI / new / old | 533 / 824 / 820 | 706 / 1637 / 1641 | 683 / 1666 / 1644 | 666 / 1541 / 1532 | 663 / 1531 / 1529 |
+
+| a07, 128 CPUs, scale | 4 | 16 | 64 | 128 |
+|---|---|---|---|---|
+| cuts per 1 MiB write, new / old | 0.00 / 0.00 | 0.01 / 0.80 | 0.38 / 1.18 | 0.64 / 1.23 |
+| 1 MiB writes, MB/s, stock GELI / new / old | 3284 / 3482 / 3495 | 6429 / 6403 / 6393 | 6999 / 6997 / 6995 | 7330 / 7293 / 7290 |
+| 4 KiB reads/s, k, stock GELI / new / old | 67 / 289 / 305 | 85 / 1091 / 1080 | 69 / 1354 / 1352 | 63 / 944 / 904 |
+| fork+exec p99 beside the writes, ms, stock GELI / new / old | 1.7 / 1.1 / 1.1 | 1.9 / 1.2 / 1.2 | 2.1 / 1.3 / 1.2 | 40.6 / 16.9 / 21.5 |
+
+| one provider per CPU (tput, resp) and four on one CPU (onecpu) | lab: stock GELI / new / old | a07: stock GELI / new / old |
+|---|---|---|
+| cuts per 1 MiB write, new / old | 0.05 / 0.59 | 0.59 / 1.17 |
+| cuts per 1 MiB read, new / old | 0.04 / 0.20 | 0.11 / 0.91 |
+| write MB/s | 8416 / 8413 / 8386 | 7134 / 7236 / 7231 |
+| read MB/s | 21476 / 21943 / 22082 | 31318 / 37972 / 38088 |
+| the same at 32 KiB sectors, write / read MB/s | 8439 / 8350 / 8367, 21310 / 21572 / 21955 | 7075 / 7080 / 7036, 31658 / 38405 / 38684 |
+| resp: spin loop pinned beside the writers, share | 0.25 / 0.37 / 0.49 | 0.01 / 0.07 / 0.07 |
+| resp: fork+exec p99, ms | 8.5 / 7.1 / 7.5 | 46.2 / 18.2 / 28.8 |
+| onecpu: timer p99 on the loaded CPU, us | 37766 / 4925 / 547 | 107821 / 4993 / 833 |
+| onecpu: timer max, us | 40470 / 5092 / 862 | 108554 / 6761 / 1078 |
+| onecpu: spin loop's share, Jain over the providers | 0.09, 1.000 / 0.54, 1.000 / 0.55, 1.000 | 0.09, 1.000 / 0.54, 0.999 / 0.55, 1.000 |
+
+a07's SSD model (16 devices): seqread and seqwrite level for all four
+stages (8383-8387 MB/s, stock GELI's seqwrite 7435), randread 1.35 M/s
+new, 1.32 M/s old, 62 k/s stock GELI; no cuts.
+
+Up to one provider per CPU a 1 MiB bio now runs whole: 0.00 to 0.11
+cuts per bio, on both machines and at 4 and 32 KiB sectors, where the
+old values cut 0.2 to 0.9 at 4 KiB sectors (at 32 KiB sectors kwq-geli
+checks its budget only every 16 sectors, 512 KiB, so the old values cut
+there too only 0.02 to 0.14).  a07's tput writes, 0.59, are the
+exception: at 128 providers on 128 CPUs every CPU is contended.  Past
+one provider per CPU the cuts fall to a third to a half but stay, 0.4
+to 0.85 per bio: with every period contended
+the allowance is shared by all of the worker's queues, and the bio
+that meets the period's end is cut; at 1 to 4 ms per bio under that
+load (section 7.2) 5 ms hold one to three of them (inferred, not
+traced).  Throughput moves only where the old values cut: lab's writes
+at 32 to 128 providers gain 7 to 13 % (8837, 6234, 6053 MB/s against
+8269, 5768, 5336) at 7 to 12 % less CPU per MiB, still 62 to 88 % of
+stock GELI's; the write p99 at 128 providers falls from 141 to 102 ms
+(stock GELI 67).  The other throughput rows are level within a few
+percent; the latency rows follow.
+
+The price is the bound the share limit gives the other threads on a
+saturated CPU, as SCHED.md S8 says: a thread that shares a CPU with a
+busy BULK worker now waits up to the allowance, 5 ms, at a time.
+onecpu's timer, pinned to the loaded CPU, has its p99 at 4.9 and
+5.0 ms on lab and a07 (0.55 and 0.83 ms with the old values; stock
+GELI's bound workers 38 and 108 ms), while the spin loop's share stays
+an equal one (0.54) and the providers' shares stay fair (Jain 1.000).
+The same shows where lab's CPUs are all contended: the timer's p99
+beside the writes at 64 and 128 providers 7.0 and 7.4 ms against 2.7
+and 2.9 (stock GELI 3.0 and 3.3), fork+exec 181 and 184 ms against 126
+and 149, and resp's pinned spin loop 0.37 of its CPU against 0.49.
+
+### 7.4 Time per GELI block (2026-11-05)
+
+AES-XTS-256, the configuration GELI is used in (`geli onetime -e
+AES-XTS -l 256`, no authentication), one CPU, three repetitions,
+medians (../samples/p6g6/blocks_*.txt, geliblocks_*.txt).
+
+The crypto alone: kwq_crypto with one crypto(9) operation per block as
+GELI issues them, each carrying its key (`rekey`, 3978704) so the
+driver expands the key schedule per block as under GELI, on one BULK
+queue on CPU 1 with 16 requests in flight, the data hot in the cache.
+The key setup is 0.03 us of each on lab and 0.17 us on a07.
+
+| per block, encrypt / decrypt | lab (Ryzen 7 5800X, aesni) | a07 (Ampere Altra, armv8crypto) | guest (Xeon D-1518, debug kernel) |
+|---|---|---|---|
+| 4 KiB | 0.82 / 0.82 us | 2.39 / 2.57 us | 3.08 / 3.07 us |
+| 32 KiB | 4.47 / 4.48 us | 15.9 / 17.6 us | 18.4 / 18.3 us |
+| 1 MiB of 4 KiB blocks | 200 / 199 us | 587 / 636 us | 748 / 746 us |
+| 1 MiB of 32 KiB blocks | 142 / 142 us | 508 / 560 us | 589 / 585 us |
+| 1 MiB as one block | 133 / 133 us | 497 / 549 us | 563 / 563 us |
+
+Inside GELI: the worker's CPU time per block (ps), stock GELI with one
+worker (`kern.geom.eli.threads=1`) pinned to CPU 1 and kwq-geli with
+every bio on CPU 1's BULK worker, iolat from the other CPUs, 16 in
+flight, on a 1 GiB swap-backed md(4).  This adds GELI's own work per
+bio (queueing, wakeups, a write's buffer and copy) and data that
+another CPU last touched:
+
+| per block, stock GELI / kwq-geli | lab, encrypt (write) | lab, decrypt (read) | a07, encrypt (write) | a07, decrypt (read) |
+|---|---|---|---|---|
+| 4 KiB, in 4 KiB bios | 1.26 / 1.27 us | 1.07 / 1.08 us | 4.41 / 4.96 us | 7.01 / 7.06 us |
+| 4 KiB, in 1 MiB bios | 1.00 / 0.99 us | 0.79 / 0.80 us | 3.26 / 3.28 us | 3.02 / 3.04 us |
+| 32 KiB, in 32 KiB bios | 5.70 / 5.73 us | 5.97 / 6.02 us | 21.4 / 22.1 us | 38.5 / 40.2 us |
+| 32 KiB, in 1 MiB bios | 6.16 / 6.09 us | 5.89 / 6.43 us | 23.5 / 23.7 us | 22.0 / 22.2 us |
+| a 1 MiB bio of 4 KiB blocks | 0.26 / 0.25 ms | 0.20 / 0.20 ms | 0.84 / 0.84 ms | 0.77 / 0.78 ms |
+| a 1 MiB bio of 32 KiB blocks | 0.20 / 0.20 ms | 0.19 / 0.21 ms | 0.75 / 0.76 ms | 0.70 / 0.71 ms |
+
+Stock GELI and kwq-geli cost the same per block, within 5 % but for
+a07's 4 KiB writes (12 %) and lab's 32 KiB reads in 1 MiB bios (9 %):
+the crypto and GELI's code around it are the
+same, and what separates the two is where and when the work runs.
+Encryption and decryption cost the same on lab; on a07 decryption is
+8 to 11 % slower.  lab is three to four times faster per byte.  32 KiB
+blocks cost per byte about 30 % less than 4 KiB ones on lab and 15 %
+on a07; inside GELI, in 1 MiB bios, they save 23 % of lab's writes,
+nothing of lab's reads and 9 to 11 % on a07.  a07's
+small reads pay the most beside the crypto: 7.0 us per 4 KiB read and
+38.5 us per 32 KiB read against 3.0 and 22.0 us per block in 1 MiB
+bios; probably the decrypted data arriving from md(4)'s copy on
+another CPU, not traced.  For the BULK defaults of section 7.3: a
+1 MiB bio is at most 0.26 ms of CPU on lab and 0.84 ms on a07, quiet;
+the 5 ms allowance is 19 and 6 times that.
 
 ## 8. Placement: P6g (2026-11-05)
 

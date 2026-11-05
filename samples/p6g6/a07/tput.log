@@ -1,0 +1,32 @@
+19:13:47 stages: eli kwqshard kwqshard1; tests: tput resp onecpu; P 128, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 3
+19:13:47 rep 1 idle probes
+19:14:08 rep 1 eli tput
+19:14:27 rep 1 eli resp
+19:15:19 rep 1 eli onecpu
+19:18:24 rep 1 kwqshard tput
+19:18:53 rep 1 kwqshard resp
+19:21:16 rep 1 kwqshard onecpu
+19:21:34 rep 1 kwqshard1 tput
+19:22:00 rep 1 kwqshard1 resp
+19:24:29 rep 1 kwqshard1 onecpu
+19:24:47 rep 2 idle probes
+19:25:08 rep 2 eli tput
+19:25:30 rep 2 eli resp
+19:26:24 rep 2 eli onecpu
+19:29:27 rep 2 kwqshard tput
+19:29:55 rep 2 kwqshard resp
+19:32:22 rep 2 kwqshard onecpu
+19:32:40 rep 2 kwqshard1 tput
+19:33:07 rep 2 kwqshard1 resp
+19:35:28 rep 2 kwqshard1 onecpu
+19:35:46 rep 3 idle probes
+19:36:08 rep 3 eli tput
+19:36:30 rep 3 eli resp
+19:37:23 rep 3 eli onecpu
+19:40:27 rep 3 kwqshard tput
+19:40:55 rep 3 kwqshard resp
+19:43:26 rep 3 kwqshard onecpu
+19:43:44 rep 3 kwqshard1 tput
+19:44:12 rep 3 kwqshard1 resp
+19:46:35 rep 3 kwqshard1 onecpu
+19:46:53 done: /home/crest/if_pair-scratch/p6g6/out/tput.tsv
