@@ -35,6 +35,34 @@ The plan has four stages, each ending at a gate reviewed with crest:
 | The SMT sibling is the first ring of the topology order, so the first choice of placement and stealing | lab, userland, pinned: AES-256-XTS 8.9 GB/s on one thread, 9.8 on two siblings together, 17.6 on two cores; 1 MiB memcpy 43, 26 and 69 GB/s |
 | Stealing paid only where the producer fixed the CPU | kwq_test `steal` (2000 items onto one CPU); a MAC-heavy provider fed on one CPU: 103 against 38 MB/s.  With `KWQ_CPU_ANY` it changed nothing at 16 providers (lab) and 64 (a07), and cost two thirds of the small-read rate at 128 |
 
+## 0a. P6g.0 results (lab, 2026-11-05, c00fe2b)
+
+Medians of three repetitions, A today's order, B the sibling last
+(samples/p6g0_lab_2026-11-05.txt, script samples/p6g0_lab.sh):
+
+| measurement | result |
+|---|---|
+| kernel SMT yield, kwq_crypto AES-XTS, not stealable | one thread 5.16 GB/s (4 KiB) and 5.48 (1 MiB); two siblings 6.39 and 6.66 (+24 %, +22 %); two cores 10.19 and 10.88.  A thread beside a busy sibling runs at 0.61 of its speed, not the 0.55 of userland openssl |
+| line transfer (userland ping-pong, pinned) | one way 24 ns between siblings, 31-38 ns between cores of the L3; a write read back by another core 18 ns (sibling) and 39-46 ns (core) |
+| K0, KWQ_CPU_ANY, 2 queues x 4 in flight, 1 MiB | A 41.9 GB/s, B 33.5 (-20 %).  A's sibling-first pick makes a request alternate between the two threads of one core: the worker that completes it resubmits to its sleeping sibling, so each core runs one request at a time and keeps it in its L2.  B sends it to the first idle thread of another core, which may have a busy sibling.  The ideal, 8 requests on 8 cores without moves, is 8 x 5.48 = 43.8 |
+| K0, 4 or 8 queues x 4 in flight (every thread busy); 4 queues fed on CPU 2 (stealing) | A = B within 0.5 % |
+| K0, 16 kwq-geli providers on md(4) | 4 KiB reads 1.505M against 1.513M IOPS, B 3.7 % more BULK CPU; 1 MiB writes 13.18 against 13.14 GB/s |
+
+Consequences:
+
+- **D4: the sibling-last order is not a fix** for today's code; the
+  order stays.
+- **The simulator** takes 0.61 as the crypto SMT factor, the line costs
+  above for lab, and a cost for an item that runs on another core than
+  the one that produced it (its data in that core's L2), calibrated so
+  that P1 with A's and B's orders reproduces the -20 % (check V4, S3.6).
+- **The placement order gains a step 0** (S2.5): a producer that is the
+  CPU's own BULK worker, resubmitting from its handler, places on its
+  own CPU when its own backlog is below L_local.  Today's sibling-first
+  pick gets this case nearly right by accident; step 1 alone would move
+  the request to another core.  The simulator runs it with and without
+  step 0 (ablation).
+
 ## 1. Goals and acceptance criteria
 
 Goals:
@@ -194,6 +222,10 @@ Who merges, never on a timer:
 The producer reads its own core's table, a local line.  Choices are
 randomized among equal ranks, from a per-CPU generator.
 
+0. **The own CPU, when the producer is its BULK worker** (a handler
+   resubmitting work) and its backlog without this item is below
+   L_local: the item runs at the next pass, without a wake, in a warm
+   cache (P6g.0, section 0a).
 1. **An idle core in the table** within the near distance D_near (same
    L3): check its status block (1 read) and place on its idle thread.
 2. **Else the idle sibling**, from the own core's status block (local).
@@ -312,12 +344,14 @@ for would be a read-only `sched_load(int cpu)` hint.
 | topology | cores, SMT threads, L3 groups, sockets, absent CPUs; the T1-T5 machines of 3.5 |
 | line costs | a remote line read or write costs by distance: same core 0, same L3, other L3, other socket.  Each line has a version and each reader remembers the version it saw, so the simulator counts real transfers and invalidations, not accesses.  lab's same-L3 cost calibrated (3.8); the others are stated assumptions |
 | workers | one per thread: per-queue FIFO lists and DRR with a 1 ms quantum; `kwq_sched.c` itself per simulated CPU if its environment allows many instances, else a simplified DRR, checked against kwqsim's invariants |
-| speed | an item's service time is its cost divided by the thread's speed: the SMT factor (sibling busy: 0.55 for crypto, 0.30 for copies, swept 0.3-0.9) times BULK's share (competing threads under the share limit: 0.5; interrupt storms: 0 to 1 per scenario) |
+| speed | an item's service time is its cost divided by the thread's speed: the SMT factor (sibling busy: 0.61 for crypto in the kernel, P6g.0; 0.30 for copies; swept 0.3-0.9) times BULK's share (competing threads under the share limit: 0.5; interrupt storms: 0 to 1 per scenario) |
 | sleep and wake | a worker sleeps when empty; wake latency drawn from a distribution, shallow after short sleeps and deeper after long ones (calibrated, 3.8) |
 | producers | per producer thread: open (Poisson, on/off bursts, periodic), closed (N in flight with think time, GEOM-like providers); `KWQ_CPU_ANY` or a fixed CPU; reads completing on other CPUs than they were issued on (md(4)'s threads) |
 | item costs | 4 KiB (3 us), 1 MiB (300 us), mixtures, Pareto (alpha 1.5) cut at the pass budget, as kwq-geli resumes a bio |
 | scheme costs | every remote read, write, merge, check and hand-off is charged as CPU time to the thread doing it, so overhead shows as lost throughput |
 | limits | the per-(queue, CPU) limit of 4096 with refusal and a producer's retry (GEOM's ENOMEM pacing) |
+| locality | an item run on another core than its producer's pays a move cost, the time to pull its data from L3 (up to the L2's size), calibrated by V4 |
+| other work | each request's non-BULK work (GEOM, md(4), the system calls of the load generator: 6.6 us per 4 KiB read on lab) runs as other threads' time on a CPU, sharing it with the BULK worker under the share limit; the next request of a closed-loop provider is issued from there |
 
 ### 3.3 Policies compared on the same traces
 
@@ -397,6 +431,7 @@ keeps its seed so it can be replayed.
 | V1 | the oracle on Poisson arrivals and exponential costs matches M/M/c's mean wait (Erlang C); random placement matches M/M/1 |
 | V2 | conservation: items in = items out, no running item moved, `handoffs_in == handoffs_out`; DRR checked as in kwqsim |
 | V3 | the measured kernel cases: P1 against P2 at 128 providers must show the measured direction and size (CPU per small read 2.9 x with stealing; bulk within 5 %), and no difference at 16 providers.  If the model cannot reproduce these, its cost model is wrong and its predictions do not count |
+| V4 | P6g.0's K0: P1 with today's order against the sibling last, 2 queues x 4 in flight of 1 MiB on lab: A 41.9, B 33.5 GB/s (-20 %); no difference with every thread busy.  It calibrates the move cost; the 4- and 8-queue cases then check it |
 
 ### 3.7 Output
 
@@ -549,7 +584,7 @@ blocker.
 | D1 | the acceptance criteria of section 1 | adopted as proposed; adjusted only with crest after the first simulator runs |
 | D2 | under `place=1`, does the hand-off replace stealing entirely, or does a gated idle-path steal stay as a fallback? | the hand-off replaces it; today's code stays under `place=0` |
 | D3 | after G2: `place=1` the default if K1-K5 hold, with `place=0` kept for one round of A/B? | yes |
-| D4 | K0 (the sibling last for today's code): a separate quick fix, or only an input to the simulator? | decided on P6g.0's numbers |
+| D4 | K0 (the sibling last for today's code): a separate quick fix, or only an input to the simulator? | no fix: B loses 20 % with 8 requests on 16 threads and is level elsewhere (section 0a); an input to the simulator |
 | D5 | the synthetic multi-socket topology T4, with no machine to validate it | in, its results marked unvalidated |
 | D6 | the last-target hint per (queue, producer CPU) | a simulator ablation; into the kernel only if it wins |
 | D7 | the per-queue "overloaded until" word | out: no client in the tree drops on refusal |

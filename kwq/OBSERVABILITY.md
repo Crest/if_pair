@@ -116,7 +116,7 @@ specified in KWQ.md S16 and are in the merged module, off by default.
                             kernel's ticker, the fallback); SCHED.md S15.2
     kern.kwq.clock_fast     loader tunable, default 1: 0 keeps cpu_ticks() (A/B runs)
     kern.kwq.topo           each CPU's search order for KWQ_CPU_ANY and stealing, one
-                            line per CPU, rings separated by "|": "0: 1 | 2 15 3 14 ..."
+                            line per CPU, rings separated by "|": "0: 1 | 15 2 14 3 ..."
                             on lab (SMT sibling first), "0: 1 127 2 126 ..." on a07
 
 ## 4. Per-worker counters: `kern.kwq.<class>.cpu.<N>.`

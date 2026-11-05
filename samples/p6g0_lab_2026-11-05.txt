@@ -1,0 +1,60 @@
+pp 2 3 25.0 18.2
+pp 2 4 35.9 44.0
+pp 2 10 37.7 45.8
+pp 2 15 37.8 43.7
+pp 0 1 23.9 18.2
+pp 0 8 30.8 38.6
+build=A rep=1 case=yield_one_4096 state=done mbps=5160.0 p99_us= cpus=1 both=0 busy_ms=5026
+build=A rep=1 case=yield_sib_4096 state=done mbps=6462.8 p99_us= cpus=2 both=1 busy_ms=10482
+build=A rep=1 case=yield_core_4096 state=done mbps=10185.6 p99_us= cpus=2 both=0 busy_ms=9879
+build=A rep=1 case=yield_one_1048576 state=done mbps=5481.7 p99_us= cpus=1 both=0 busy_ms=5313
+build=A rep=1 case=yield_sib_1048576 state=done mbps=6630.0 p99_us= cpus=2 both=1 busy_ms=10476
+build=A rep=1 case=yield_core_1048576 state=done mbps=10882.4 p99_us= cpus=2 both=0 busy_ms=10076
+build=A rep=2 case=yield_one_4096 state=done mbps=5162.8 p99_us= cpus=1 both=0 busy_ms=4953
+build=A rep=2 case=yield_sib_4096 state=done mbps=6336.9 p99_us= cpus=2 both=1 busy_ms=10414
+build=A rep=2 case=yield_core_4096 state=done mbps=10189.9 p99_us= cpus=2 both=0 busy_ms=9879
+build=A rep=2 case=yield_one_1048576 state=done mbps=5471.1 p99_us= cpus=1 both=0 busy_ms=5070
+build=A rep=2 case=yield_sib_1048576 state=done mbps=6663.3 p99_us= cpus=2 both=1 busy_ms=10626
+build=A rep=2 case=yield_core_1048576 state=done mbps=10875.5 p99_us= cpus=2 both=0 busy_ms=10427
+build=A rep=3 case=yield_one_4096 state=done mbps=5144.7 p99_us= cpus=1 both=0 busy_ms=4939
+build=A rep=3 case=yield_sib_4096 state=done mbps=6390.4 p99_us= cpus=2 both=1 busy_ms=9876
+build=A rep=3 case=yield_core_4096 state=done mbps=10196.7 p99_us= cpus=2 both=0 busy_ms=10296
+build=A rep=3 case=yield_one_1048576 state=done mbps=5475.3 p99_us= cpus=1 both=0 busy_ms=5313
+build=A rep=3 case=yield_sib_1048576 state=done mbps=6662.3 p99_us= cpus=2 both=1 busy_ms=10626
+build=A rep=3 case=yield_core_1048576 state=done mbps=10884.1 p99_us= cpus=2 both=0 busy_ms=10372
+build=A rep=1 case=any_2 state=done mbps=41880.9 p99_us= cpus=16 both=8 busy_ms=39902
+build=A rep=1 case=any_4 state=done mbps=51298.9 p99_us= cpus=16 both=8 busy_ms=79917
+build=A rep=1 case=any_8 state=done mbps=53538.7 p99_us= cpus=16 both=8 busy_ms=79900
+build=A rep=1 case=one4 state=done mbps=51501.8 p99_us= cpus=16 both=8 busy_ms=79835
+build=A rep=1 case=geli16_small ops=12028283 mbps=6158.4 iops=1503522 dev_min_mbps=382.8 dev_max_mbps=386.9 jain=1.0000 lat_p50_us=9.9 lat_p90_us=14.5 lat_p99_us=20.2 lat_p999_us=25.9 lat_max_us=2981.9 cpus=16 both=8 busy_ms=23350
+build=A rep=1 case=geli16_bulk ops=100436 mbps=13163.1 iops=12553 dev_min_mbps=800.0 dev_max_mbps=844.3 jain=0.9997 lat_p50_us=1130.5 lat_p90_us=1753.1 lat_p99_us=2916.4 lat_p999_us=4030.5 lat_max_us=6357.0 cpus=16 both=8 busy_ms=77554
+build=B rep=1 case=any_2 state=done mbps=33522.2 p99_us= cpus=16 both=8 busy_ms=39901
+build=B rep=1 case=any_4 state=done mbps=51384.7 p99_us= cpus=16 both=8 busy_ms=79923
+build=B rep=1 case=any_8 state=done mbps=53415.3 p99_us= cpus=16 both=8 busy_ms=79912
+build=B rep=1 case=one4 state=done mbps=51587.0 p99_us= cpus=16 both=8 busy_ms=80333
+build=B rep=1 case=geli16_small ops=12111559 mbps=6201.1 iops=1513932 dev_min_mbps=384.9 dev_max_mbps=389.6 jain=1.0000 lat_p50_us=9.9 lat_p90_us=14.2 lat_p99_us=19.7 lat_p999_us=25.3 lat_max_us=1040.4 cpus=16 both=8 busy_ms=24300
+build=B rep=1 case=geli16_bulk ops=100589 mbps=13182.8 iops=12572 dev_min_mbps=809.0 dev_max_mbps=842.7 jain=0.9998 lat_p50_us=1130.5 lat_p90_us=1753.1 lat_p99_us=2916.4 lat_p999_us=4030.5 lat_max_us=6488.1 cpus=16 both=8 busy_ms=77149
+build=B rep=2 case=any_2 state=done mbps=33417.4 p99_us= cpus=16 both=8 busy_ms=39898
+build=B rep=2 case=any_4 state=done mbps=51237.4 p99_us= cpus=16 both=8 busy_ms=79905
+build=B rep=2 case=any_8 state=done mbps=53097.8 p99_us= cpus=16 both=8 busy_ms=80614
+build=B rep=2 case=one4 state=done mbps=51479.6 p99_us= cpus=16 both=8 busy_ms=79810
+build=B rep=2 case=geli16_small ops=12107194 mbps=6198.8 iops=1513386 dev_min_mbps=384.4 dev_max_mbps=389.8 jain=1.0000 lat_p50_us=9.9 lat_p90_us=14.2 lat_p99_us=19.7 lat_p999_us=25.9 lat_max_us=1458.2 cpus=16 both=8 busy_ms=24360
+build=B rep=2 case=geli16_bulk ops=100248 mbps=13138.2 iops=12530 dev_min_mbps=802.2 dev_max_mbps=838.6 jain=0.9998 lat_p50_us=1130.5 lat_p90_us=1753.1 lat_p99_us=2916.4 lat_p999_us=4259.8 lat_max_us=7405.6 cpus=16 both=8 busy_ms=76905
+build=A rep=2 case=any_2 state=done mbps=41781.8 p99_us= cpus=16 both=8 busy_ms=39905
+build=A rep=2 case=any_4 state=done mbps=51308.7 p99_us= cpus=16 both=8 busy_ms=79916
+build=A rep=2 case=any_8 state=done mbps=53163.1 p99_us= cpus=16 both=8 busy_ms=79878
+build=A rep=2 case=one4 state=done mbps=51472.2 p99_us= cpus=16 both=8 busy_ms=79782
+build=A rep=2 case=geli16_small ops=12040421 mbps=6164.6 iops=1505040 dev_min_mbps=383.2 dev_max_mbps=387.3 jain=1.0000 lat_p50_us=9.9 lat_p90_us=14.5 lat_p99_us=19.7 lat_p999_us=25.9 lat_max_us=1458.2 cpus=16 both=8 busy_ms=23441
+build=A rep=2 case=geli16_bulk ops=100535 mbps=13175.7 iops=12565 dev_min_mbps=803.5 dev_max_mbps=846.8 jain=0.9997 lat_p50_us=1130.5 lat_p90_us=1785.9 lat_p99_us=2981.9 lat_p999_us=4096.0 lat_max_us=6750.2 cpus=16 both=8 busy_ms=76897
+build=A rep=3 case=any_2 state=done mbps=41855.6 p99_us= cpus=16 both=8 busy_ms=39940
+build=A rep=3 case=any_4 state=done mbps=51428.4 p99_us= cpus=16 both=8 busy_ms=79887
+build=A rep=3 case=any_8 state=done mbps=53479.5 p99_us= cpus=16 both=8 busy_ms=79895
+build=A rep=3 case=one4 state=done mbps=51573.7 p99_us= cpus=16 both=8 busy_ms=79854
+build=A rep=3 case=geli16_small ops=12088088 mbps=6189.0 iops=1510998 dev_min_mbps=384.6 dev_max_mbps=388.7 jain=1.0000 lat_p50_us=9.9 lat_p90_us=14.5 lat_p99_us=19.7 lat_p999_us=25.9 lat_max_us=1458.2 cpus=16 both=8 busy_ms=23522
+build=A rep=3 case=geli16_bulk ops=100536 mbps=13176.1 iops=12566 dev_min_mbps=809.7 dev_max_mbps=844.0 jain=0.9998 lat_p50_us=1130.5 lat_p90_us=1753.1 lat_p99_us=2916.4 lat_p999_us=4161.5 lat_max_us=6619.1 cpus=16 both=8 busy_ms=77142
+build=B rep=3 case=any_2 state=done mbps=33528.0 p99_us= cpus=16 both=8 busy_ms=39900
+build=B rep=3 case=any_4 state=done mbps=51400.4 p99_us= cpus=16 both=8 busy_ms=79901
+build=B rep=3 case=any_8 state=done mbps=53259.3 p99_us= cpus=16 both=8 busy_ms=79845
+build=B rep=3 case=one4 state=done mbps=51584.4 p99_us= cpus=16 both=8 busy_ms=79833
+build=B rep=3 case=geli16_small ops=12091059 mbps=6190.6 iops=1511369 dev_min_mbps=384.1 dev_max_mbps=389.4 jain=1.0000 lat_p50_us=9.9 lat_p90_us=14.5 lat_p99_us=19.7 lat_p999_us=25.3 lat_max_us=1851.4 cpus=16 both=8 busy_ms=24312
+build=B rep=3 case=geli16_bulk ops=100205 mbps=13132.6 iops=12524 dev_min_mbps=800.9 dev_max_mbps=838.8 jain=0.9998 lat_p50_us=1130.5 lat_p90_us=1818.6 lat_p99_us=3047.4 lat_p999_us=4390.9 lat_max_us=7536.6 cpus=16 both=8 busy_ms=76894
