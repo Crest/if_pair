@@ -594,6 +594,20 @@ returning load) and P8 strong.  What triggers the costlier path, what
 it costs when idle, and its bounds; candidates simulated in placesim
 and judged by section 1 before any kernel code (decision D9).
 
+Candidates to start from (written while P6g.3 ran, before its numbers):
+
+| | the costlier path | its trigger | what it costs while not needed |
+|---|---|---|---|
+| H1 lazy idle line | P8's group lines (near groups, far probe) | gossip's pick found no idle core (step TABLE or later) | nothing on short sleeps: a worker sets its bit only when its fall is published, by the callout gossip arms for the hold anyway (100 us), and clears it at the wake that follows; so the shared line moves at most once per hold per CPU, where P8 writes it at every sleep and wake |
+| H2 donor fallback | P8's donor line and the donor steal in the idle path | a backlog of `donor_us` that no hand-off took within an interval (no table candidate at or below L) | a read of the donor line by a worker going to sleep, cached while no CPU changes its state |
+| H3 starved tick | P8's tick | as in P8: stealable work and no decision point for 1 ms | the tick only while the CPU holds stealable work |
+| H4 package split | P8 within a package, gossip's hand-off across packages | a backlog no CPU of the package can take | gossip's merges at Imax while nothing crosses |
+
+The questions for each: the line transfers per placement and per sleep
+(A3, M8), the island and idle-island worst cases (S3, S4) against P8,
+the overload recovery (S15) against gossip, and whether the trigger
+itself herds or oscillates (W4, W5).
+
 ## 6. P6g.4: documentation
 
 - SCHED.md: a new section for placement by gossip; S16 marked as the

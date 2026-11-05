@@ -862,12 +862,14 @@ island_body() {
 	atf_check_equal "$(R in)" "$(( $(R out) + $(R rejected) ))"
 	[ "$(sysctl -n kern.kwq.bulk.shard.pick_far)" -gt 0 ] || atf_fail "no item placed by the far probe"
 	atf_check_equal "$(sysctl -n hw.ncpu)" "$(R cpus)"
-	# every CPU takes a share: a sleeper the donor's wakes do not reach
-	# (groups of one CPU, the first kernel build) ran 6 items of 3000
-	local c n
-	for c in $(jot - 0 $(( $(sysctl -n hw.ncpu) - 1 ))); do
+	# every CPU takes a quarter of a fair share at least: a sleeper the
+	# donor's wakes did not reach (groups of one CPU, the first kernel
+	# build) ran 6 items of 3000 on the guest's four
+	local c n ncpu
+	ncpu=$(sysctl -n hw.ncpu)
+	for c in $(jot - 0 $(( ncpu - 1 ))); do
 		n=$(sysctl -n kern.kwq.bulk.queue.kts.cpu.$c.items 2>/dev/null) || continue
-		[ "$n" -ge $(( $(R in) / 8 )) ] || atf_fail "CPU $c ran $n of $(R in) items"
+		[ "$n" -ge $(( $(R in) / (4 * ncpu) )) ] || atf_fail "CPU $c ran $n of $(R in) items"
 	done
 }
 island_cleanup() { kwq_cleanup; }

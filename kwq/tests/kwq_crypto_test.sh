@@ -96,7 +96,14 @@ verify_body() {
 	atf_check_equal 0 "$(C errors)"
 	kc_run mode=kwq verify=1 stealable=1 cpu=1
 	atf_check_equal 0 "$(C errors)"
-	[ "$(C cpus)" -ge 2 ] || atf_fail "stealable queue fed on one CPU ran on $(C cpus)"
+	# Today's steal takes a list of two (SCHED.md S16); under
+	# kern.kwq.bulk.place 1 and 2 a backlog below the hand-off's H or a
+	# donor's backlog stays on its CPU (lab: 16 in flight of AES-NI)
+	if [ "$(sysctl -n kern.kwq.bulk.place 2>/dev/null || echo 0)" = 0 ]; then
+		[ "$(C cpus)" -ge 2 ] || atf_fail "stealable queue fed on one CPU ran on $(C cpus)"
+	else
+		echo "  place=$(sysctl -n kern.kwq.bulk.place): ran on $(C cpus) CPU(s)"
+	fi
 	kc_run mode=scatter verify=1 bytes=262144 chunk=16384 depth=4 cpu=-1 stealable=0
 	atf_check_equal 0 "$(C errors)"
 	kc_run mode=thread verify=1 bytes=65536 depth=16
