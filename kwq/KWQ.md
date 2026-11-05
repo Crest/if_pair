@@ -163,8 +163,8 @@ defined in GLOSSARY.md.
                                                           P0: a constant, P1: SCHED.md */
     int         kwq_cpu_for_hash(uint32_t hash);       /* hash -> online CPU */
     #define KWQ_CPU_ANY      (-1)   /* BULK only: an idle worker near the
-                                       caller, else the caller's CPU, else the
-                                       shallowest list near it (S3) */
+                                       caller first, then by
+                                       kern.kwq.bulk.place (S3) */
     struct kwq_group { u_int kg_left, kg_n; void (*kg_done)(void *); void *kg_arg; };
                                     /* client-owned completion of a scatter */
     int         kwq_scatter(struct kwq *q, struct kwq_group *g,
@@ -251,14 +251,21 @@ worker's spin mutex from the producer's CPU (S17).
   system data structures" made a panic rather than documented).
 - `cpu` is the CPU whose worker should run the item: the client's
   steering decision (flow hash, receive queue, or `curcpu` for "here").
-  `KWQ_CPU_ANY` lets BULK pick where the item starts soonest: the
+  `KWQ_CPU_ANY` lets BULK pick where the item starts soonest, first the
   nearest CPU in cache-topology order whose BULK worker sleeps with the
-  queue's list empty there, else the caller's own CPU if its list is
-  empty, else the shallowest of the caller's and the next four lists in
-  topology order (P6, SCHED.md S16; P0 probed four CPUs of the NUMA
-  domain by id, a bounded probe since 2026-09-29); it
-  is invalid for NET (ordering).  An offline or
-  non-existent CPU maps to the caller's CPU.
+  queue's list empty there.  The rest depends on
+  `kern.kwq.bulk.place`.  Under 2 (P8, the default on a machine of one
+  NUMA domain, SCHED.md S17) that search covers the caller's group of
+  CPUs and two near ones, then one far group's idle line; failing that
+  the caller's own CPU unless it is a donor (holds a donor's backlog),
+  the nearest CPU that is not, and the shallowest of the caller's and the next
+  four lists in topology order.  Under 0 (today's code, the default on
+  more than one domain, SCHED.md S16) the caller's own CPU if its list
+  is empty, then the shallowest of four.  Under 1 the gossip scheme's
+  table decides (SCHED.md S17).  P0 probed four CPUs of the NUMA domain
+  by id, a bounded probe since 2026-09-29.  It is invalid for NET
+  (ordering).  An offline or non-existent CPU maps to the caller's
+  CPU.
 - Never sleeps, never allocates, never calls the handler.  Safe from any
   context that may take a sleep mutex: threads, ithreads, callouts,
   other handlers.  From an interrupt filter, or while holding a spin
@@ -342,7 +349,7 @@ Classification of the clients discussed so far:
 | if_wg crypto (BULK) | packets to encrypt/decrypt | open on RX; TX inherits the socket's flow control but is dropped, not held, on overload | flow control | drop (wg already drops on its ring limits) |
 | if_wg delivery (NET, CPU keyed by peer) | decrypted packets | open | flow control | drop |
 | iflib RX/TX tasks | one notifier per hardware queue, `kwq_notify()` from the filter (`KWQ_F_SPIN`) | idempotent | not applicable, notifiers are limit-exempt | cannot happen |
-| GELI (BLOCKING, notifier) | one notifier per (provider, CPU); bios stay in GELI's list | closed, carried by notifiers | not applicable | cannot happen |
+| kwq-geli (BULK, P6) | one bio per item in a stealable queue per provider, `KWQ_CPU_ANY` by default (S14.1); the notifier plan for stock GELI on BLOCKING (S14) was not built | closed: GEOM's issuers wait for their bios | a CPU's list at its limit | `ENOMEM` to GEOM, whose `g_io_deliver()` issues the bio again |
 | netisr `NETISR_POLICY_SOURCE` protocols with a single source | mbufs | closed-ish (one producer, self-paced) | flow control | drop |
 | callout- or event-driven maintenance (link state, statistics, refill) | one notifier per device or object, `kwq_notify()` | idempotent | not applicable | cannot happen |
 | a driver's per-request completions (one bio, one command each) | one item per outstanding request | closed | `KWQ_LIMIT_NONE`; `maxdepth` is the health signal | cannot happen |
@@ -444,11 +451,12 @@ four ways to pick, in descending order of how often they are right:
    maintenance) or when the producer is bound.  For ordered flows produced
    by migrating threads it silently splits the flow across CPUs; the
    2026-08-25 steering analysis in ../NOTES.md is the cautionary case.
-4. **`KWQ_CPU_ANY`** (BULK only): the least loaded CPU near the caller
-   (P0 by queue depth within the NUMA domain, cache domain in P6), for
-   unordered CPU-heavy work such as bulk crypto; the item may then also
-   be stolen.  Invalid for NET, which must name its
-   CPU.
+4. **`KWQ_CPU_ANY`** (BULK only): a CPU near the caller where the item
+   starts soonest, an idle worker first (S3; P0 by queue depth within
+   the NUMA domain, the cache topology since P6, placement by
+   `kern.kwq.bulk.place` since P6g), for unordered CPU-heavy work such
+   as bulk crypto; the item may then also be stolen.  Invalid for NET,
+   which must name its CPU.
 
 An offline or nonexistent CPU number is mapped to the caller's CPU
 rather than rejected.  Clients with their own affinity policy (GELI's
@@ -1357,6 +1365,7 @@ Per class: `kern.kwq.<class>.`
 | `steal_batch` | uint | RWTUN | bulk only, 16 | items a pass of a stealable queue takes at most; one while a BULK worker near it sleeps (P6) |
 | `steal_wake` | uint | RWTUN | bulk only, 2 | an enqueue that leaves a stealable list this deep, or at a doubling of it, wakes the nearest sleeping BULK worker; 0: never (P6) |
 | `nstealable` | uint | RD | bulk only | `KWQ_F_STEALABLE` queues in existence (P6) |
+| `place` | uint | RWTUN | bulk only, 2 on one NUMA domain, else 0 | BULK placement and stealing (P6g, SCHED.md S17): 0 today's code (S16), 1 the gossip scheme, 2 P8; flippable under load; P8's knobs and counters under `kern.kwq.bulk.shard`, gossip's under `kern.kwq.bulk.gossip` (OBSERVABILITY.md) |
 | `nworkers` | int | RD | ncpu (blocking: current) | worker threads in the class (P7) |
 | `max_workers` | int | RW | blocking only, 4 x ncpu | ceiling for worker replacement (P7) |
 | `idle_timeout_s` | int | RW | blocking only, 30 | reap an idle replacement worker after this long (P7) |
@@ -2877,3 +2886,8 @@ decision deferred until real clients show what fan-in they produce.
   the work queued when the queue's pass begins; a shorter backlog is
   served whole and the rest of the share goes unused (kwq_crypto's
   `weight` case on lab, BULK.md S5).
+- 2026-11-05 (P6g): `KWQ_CPU_ANY` in S3, point 4 of the steering
+  strategies and the client table's GELI row follow the code:
+  placement by `kern.kwq.bulk.place` (P8 the default on one NUMA
+  domain, SCHED.md S17; BULK.md S8), and kwq-geli's BULK queue in place
+  of the notifier plan; the class table gains `place`.
