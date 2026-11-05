@@ -1,0 +1,10 @@
+block 1 wakes 1161 steals 1452368 directed 39 chained 0
+block 2 wakes 412 steals 1270710 directed 18 chained 0
+block 3 wakes 2487 steals 1382157 directed 73 chained 0
+block 4 wakes 1239 steals 1036925 directed 72 chained 0
+block 5 wakes 313 steals 769524 directed 24 chained 0
+block 6 wakes 470 steals 990812 directed 13 chained 0
+block 7 wakes 421 steals 451370 directed 24 chained 0
+block 8 wakes 189 steals 1458085 directed 3 chained 0
+block 9 wakes 434 steals 1250651 directed 12 chained 0
+block 10 wakes 661 steals 1163130 directed 26 chained 0

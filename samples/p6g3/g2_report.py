@@ -56,7 +56,8 @@ def scale():
                            ("lab", "lab2/scale_spill50.tsv", "spill_idle=1 donor_us=50"),
                            ("a07", "a07b/scale_spill500.tsv", "spill_idle=1 donor_us=500"),
                            ("a07", "a07b/scale_spill50.tsv", "spill_idle=1 donor_us=50"),
-                           ("lab", "lab4/scale_chain.tsv", "directed=2"), ("a07", "a07d/scale_chain.tsv", "directed=2")):
+                           ("lab", "lab4/scale_chain.tsv", "directed=2"), ("a07", "a07d/scale_chain.tsv", "directed=2"),
+                           ("lab", "lab6/scale_final.tsv", "G2 defaults"), ("a07", "a07f/scale_final.tsv", "G2 defaults")):
         f = os.path.join(HERE, sub)
         if not os.path.exists(f):
             continue
@@ -83,7 +84,8 @@ def tput():
                          ("lab", "lab2/tput_spill50.tsv", "spill_idle=1 donor_us=50"),
                          ("a07", "a07b/tput_spill500.tsv", "spill_idle=1 donor_us=500"),
                          ("a07", "a07b/tput_spill50.tsv", "spill_idle=1 donor_us=50"),
-                         ("lab", "lab4/tput_chain.tsv", "directed=2"), ("a07", "a07d/tput_chain.tsv", "directed=2")):
+                         ("lab", "lab4/tput_chain.tsv", "directed=2"), ("a07", "a07d/tput_chain.tsv", "directed=2"),
+                         ("lab", "lab6/tput_final.tsv", "G2 defaults"), ("a07", "a07f/tput_final.tsv", "G2 defaults")):
         if not os.path.exists(os.path.join(HERE, f)):
             continue
         rp = rows5(os.path.join(HERE, f))
@@ -100,7 +102,7 @@ def tput():
 
 def ssd():
     out = []
-    for f, tag in (("a07/ssd_a07.tsv", "defaults"), ("a07d/ssd_chain.tsv", "directed=2")):
+    for f, tag in (("a07/ssd_a07.tsv", "defaults"), ("a07d/ssd_chain.tsv", "directed=2"), ("a07f/ssd_final.tsv", "G2 defaults")):
         if not os.path.exists(os.path.join(HERE, f)):
             continue
         rp = rows5(os.path.join(HERE, f))
@@ -123,9 +125,9 @@ def crypto():
     pat = re.compile(r"([0-9.]+) MB/s p50 ([0-9]+) p99 ([0-9]+).*jain ([0-9]+) cpus ([0-9]+)")
     names = {"0": "today", "1": "gossip", "2": "p8"}	# round 2's names, default code in both
     for mach, files in (("lab", ["lab/crypto_lab.tsv", "lab2/k4_lab.tsv", "lab2/k4b_lab.tsv", "lab3/k4c_lab.tsv",
-                                 "lab4/k4e_lab.tsv", "lab5/k4f_lab.tsv"]),
+                                 "lab4/k4e_lab.tsv", "lab5/k4f_lab.tsv", "lab6/k4_final.tsv"]),
                         ("a07", ["a07/crypto_a07.tsv", "a07b/k4_a07.tsv", "a07b/k4b_a07.tsv", "a07c/k4c_a07.tsv",
-                                 "a07c/k4d_a07.tsv", "a07d/k4e_a07.tsv", "a07e/k4f_a07.tsv"])):
+                                 "a07c/k4d_a07.tsv", "a07d/k4e_a07.tsv", "a07e/k4f_a07.tsv", "a07f/k4_final.tsv"])):
         cell = collections.defaultdict(list)
         for f in files:
             p = os.path.join(HERE, f)
@@ -142,6 +144,8 @@ def crypto():
                     cfg, nq = names[c[1]], c[0]
                 else:				# config, nq, rep
                     cfg, nq = c[0], c[1]
+                    if f.endswith("k4_final.tsv") and cfg == "p8":
+                        cfg = "p8_g2"		# the G2 defaults, apart from P8 alone
                 cell[(cfg, int(nq))].append(tuple(float(x) for x in m.groups()))
         today = {nq: statistics.median(x[0] for x in xs) for (cfg, nq), xs in cell.items() if cfg == "today"}
         for (cfg, nq), xs in sorted(cell.items()):
@@ -166,7 +170,9 @@ def abtests():
               ("a07", "a07, 1", "a07d/ssdab/ssdab_*.tsv", "ssd", ("randread_iops", "randread_sys"),
                {"d0": "P8", "d2": "P8 + chain"}),
               ("a07", "a07, 2", "a07e/ssdab2_*.tsv", "ssd", ("randread_iops", "randread_sys"),
-               {"d0_u0": "P8", "d2_u0": "P8 + chain", "d2_u10": "P8 + chain, directed_us 10"}))
+               {"d0_u0": "P8", "d2_u0": "P8 + chain", "d2_u10": "P8 + chain, directed_us 10"}),
+              ("a07", "a07, 3", "a07f/ssdab_final_*.tsv", "ssd", ("randread_iops", "randread_sys"),
+               {"final": "P8, G2 defaults"}))
     for mach, rnd, pat, test, metrics, cfgs in rounds:
         v = collections.defaultdict(list)
         for f in sorted(glob.glob(os.path.join(HERE, pat))):
@@ -219,14 +225,18 @@ def criteria(sc, tp, cr, ab):
                 return r
         return None
     schemes = [("gossip", "gossip", "defaults"), ("P8", "P8", "defaults"),
-               ("P8 + spill_idle", "P8", "spill_idle=1 donor_us=500"), ("P8 + chain", "P8", "directed=2")]
+               ("P8 + spill_idle", "P8", "spill_idle=1 donor_us=500"), ("P8 + chain", "P8", "directed=2"),
+               ("P8, G2 defaults", "P8", "G2 defaults")]
     out = []
     for mach, n3 in (("lab", 16), ("a07", 64)):
         for name, stage, knobs in schemes:
             def sc_(n, st, k=knobs):
                 return cell(sc, machine=mach, n=n, stage=st, knobs=k)
             row = {"machine": mach, "scheme": name}
-            ns, s8, td = sc_(128, "no stealing", "defaults"), sc_(128, stage), sc_(128, "today", knobs)
+            # no stealing of the same round where the round ran it (the
+            # chain's and the final one), else the first round's
+            ns = sc_(128, "no stealing", knobs) or sc_(128, "no stealing", "defaults")
+            s8, td = sc_(128, stage), sc_(128, "today", knobs)
             if ns and s8:
                 k1 = s8["small_iops"] >= 0.97 * ns["small_iops"] and \
                     s8["cpu_us_per_read"] <= 1.05 * ns["cpu_us_per_read"]
@@ -247,7 +257,8 @@ def criteria(sc, tp, cr, ab):
                 r1, r2 = a["small_iops"] / t3["small_iops"], a["bulk_mbps"] / t3["bulk_mbps"]
                 row["K3"] = "pass" if r1 >= 0.98 and r2 >= 0.98 else "fail"
                 row["K3_v"] = f"N={n3}: reads {r1:.3f}, writes {r2:.3f} of today"
-            ccfg = {"gossip": "gossip", "P8": "p8", "P8 + spill_idle": "p8_spill", "P8 + chain": "p8_chain"}[name]
+            ccfg = {"gossip": "gossip", "P8": "p8", "P8 + spill_idle": "p8_spill", "P8 + chain": "p8_chain",
+                    "P8, G2 defaults": "p8_g2"}[name]
             c1, c4 = cell(cr, machine=mach, config=ccfg, queues=1), cell(cr, machine=mach, config=ccfg, queues=4)
             if c1 and c4:
                 row["K4"] = "pass" if c1["of_today"] >= 0.9 and c4["of_today"] >= 0.9 else "fail"

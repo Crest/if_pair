@@ -475,6 +475,35 @@ was 7.5 to 8.5 us and their p90 under 10 (a07e/cost_*.txt), below the
 gate.  Six runs per setting cannot resolve ten per cent;
 crest took it as level with today (D15).
 
+The code as it stands, measured at its defaults (b70e3db: place=2,
+directed=2, directed_us=10, the glitch fix and the mailbox's line)
+against today's code and no stealing in the same round, on lab and a07
+(../samples/p6g3/lab6, a07f; the criteria tab's "P8, G2 defaults"):
+
+| | lab | a07 |
+|---|---|---|
+| K1, 128 providers' reads, of no stealing; CPU per read | 0.977; 1.026 | 1.108; 0.898 |
+| K2, 128 providers' writes, of today | 0.988 | 1.005 |
+| K3, reads and writes, of today (lab 16, a07 64 providers) | 1.089, 1.000 | 0.993, 1.001 |
+| K4, kwq_crypto 1 and 4 queues, of today | 0.994, 0.984 | 1.003, 1.680 (Jain 1.00, today 0.42) |
+| K5, fork+exec p99 under load, ms (today) | 6.7 (7.0) | 21.0 (12.9) |
+
+All five hold on both machines.  K1 on lab has the least margin (0.977
+against 0.97), as in every round before.  K5 holds by its rule (within
+today's range), but on a07 P8's median fork+exec p99 under load was
+above today's in four of five rounds (30.4 against 17.7, 33.6 against
+22.3, 16.8 against 15.4, 21.0 against 12.9 ms; 17.7 against 26.9 the
+other way), the ranges overlapping widely (today 11 to 38 ms, P8 9 to
+40); the timer's lateness and the spin loop's share are level or better
+under P8.  a07's randread with thirty runs of each, in ten interleaved
+blocks: medians 0.98 M (today) and 1.03 M (P8), runs 0.47 M to 1.39 M
+under both, a rank test finds no shift (p 0.94), and fourteen of P8's
+runs and eleven of today's reach the fast mode near 1.3 M.  The modes
+decide a median of thirty (its ratio's bootstrap 95 % interval runs
+from 0.70 to 1.51), so the test bounds no difference smaller than
+that; the chain took no batch in any block (the gate), the mailbox 3
+to 73 per block (a07f/ssdab_final_counters.txt).
+
 **Found on the way.**  The steal wake built the mailbox word from the
 queue after the enqueue had dropped the list lock, a window in which a
 drain and destroy may complete; the word is now built under the lock
@@ -506,8 +535,14 @@ two-socket machine.
 - Placement on a machine of two or more packages (section 8, D12):
   today's code stays there until one is measured, with P8 and the
   hybrid H4.
-- a07's ssd randread under P8 against today (section 8), unresolved at
-  six runs per setting.
+- a07's ssd randread under P8 against today (section 8): no shift in
+  thirty runs each, but bimodal for both, so a median bounds nothing
+  below about 30 %; the modes come with today's placement as well, so
+  they are not the placement's; their cause is not traced (formerly:
+  unresolved at six runs per setting).
+- K5 on a07: P8's median fork+exec p99 beside the load above today's
+  in four of five rounds, within the run-to-run range each time (section
+  8); not traced.
 - lab's one-CPU case got worse between 01a87c3 and 9186555 (section 4:
   the timer's p99 301 to 542 us, kwq-geli's MB/s beside the spin loop
   13 % lower); which of the changes between them, not traced.
