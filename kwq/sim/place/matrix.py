@@ -234,7 +234,10 @@ def runs(setname, seeds):
                 f"h_us={rng.choice((1000, 2000, 4000))}", f"table={rng.choice((2, 4, 8))}",
                 f"shape={rng.choice((0, 1, 2))}", f"smt_bulk={rng.choice((0.3, 0.61, 0.9))}",
                 f"absent={rng.choice((0, 0, 5, 7))}", f"wl_long_us={rng.choice((2, 9, 40))}"], 4))
-            if t.startswith("odd") and "S3-island-k32" in name:
+            # S3's k=32 does not fit the odd machines; an idle island must leave a sea
+            m = re.search(r"^S4-idleisland-k([0-9]+)-", name)
+            if t.startswith("odd") and ("S3-island-k32" in name or
+                                        (m and int(m.group(1)) >= SHAPE[t][0])):
                 continue
             for p in (5, 8):
                 out.append((f"S17-fuzz-{s}:{name}", t, p, 1000 + s,

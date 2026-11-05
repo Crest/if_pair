@@ -3183,6 +3183,7 @@ parse(int argc, char **argv)
 		else if (KEY("move_us")) C.move_ns = d * US;
 		else if (KEY("steal_scan")) C.steal_scan = (u_int)d;
 		else if (KEY("steal_batch")) C.steal_batch = (u_int)d;
+		else if (KEY("steal_max")) C.steal_max = (u_int)d;
 		else if (KEY("sib_last")) C.topo_sib_last = (int)d;
 		else if (KEY("shape")) C.shape = (u_int)d;
 		else if (KEY("noself")) C.selfstep = !(int)d;

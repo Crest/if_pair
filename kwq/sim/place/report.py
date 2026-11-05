@@ -276,6 +276,9 @@ FINDINGS = [
     ("P8's reach on a07 (worst-case set)", "an island at 72 cores' worth of load reached 48 CPUs: 3.7 ms mean wait, 3.2M refusals, 18.6M of 24M items/s while 80 CPUs slept", "without an idle worker near, one far group's line per placement", "f04df4f"),
     ("A starved CPU never flagged itself (worst-case set)", "a core whose BULK share fell to 0 for 100 ms held its items for 95 ms: no decision point, no donor flag", "a per-CPU tick flags a starved donor, lone items stealable", "f04df4f"),
     ("A producer-raised donor flag", "fixed the p99.9 of the collapse but not its maximum (68 ms), and nothing once the tick was in", "dropped", "f04df4f"),
+    ("P8 left lone items behind running work", "W2a met in 328 of 555 steady runs against today's 486: a 300 us item behind a running one waited while CPUs idled (a07: 14.8 us mean, 25 % idle-while-waiting)", "a lone item counts the work ahead of it, for idle thieves only: W2a 414, A1f 441 against 383", "01ec314"),
+    ("Lower donor thresholds, the work ahead for every list", "donor_us 100 and 200: W2a unchanged, more items moved twice; the work ahead for every list: short lists of a saturated machine hopped (40 items moved 4 times), and pullers passed lone items on (144)", "dropped", "01ec314"),
+    ("Herding against the oracle", "the oracle fails W4 in 39 % of the main runs: M6 counts an idle core taking items one after another", "W4o, judged against the oracle's herding; a pile-up count proposed for P6g.3", "a39e42a"),
 ]
 
 
