@@ -1,0 +1,86 @@
+ 6:35PM  up 1 day, 21:49, 0 users, load averages: 0.09, 0.13, 0.14
+defaults: bulk quantum_us=5000 cap_period_us=10000 cap_permille=500; net 200/1000; blocking 5000/1000
+kwq suite: 39/39 passed (0 broken, 0 failed, 0 skipped)
+kwq-geli suite: 14/14 passed (0 broken, 0 failed, 0 skipped)
+tput resp onecpu exit 0:      219 rows
+scale exit 0:      474 rows
+tput 32 KiB sectors exit 0:       63 rows
+eli	1	tput	write_mbps	1864.0
+eli	1	tput	read_mbps	2757.7
+eli	1	resp	load_mbps	1735.1
+eli	1	onecpu	timer_mbps	901.7
+eli	1	onecpu	spin_mbps	898.0
+kwqshard	1	tput	write_mbps	1887.5
+kwqshard	1	tput	kwq_cap_cuts	8
+kwqshard	1	tput	kwq_items	387
+kwqshard	1	tput	kwq_requeued	43
+kwqshard	1	tput	kwq_overruns	0
+kwqshard	1	tput	read_mbps	2286.5
+kwqshard	1	tput	kwq_read_cap_cuts	38
+kwqshard	1	tput	kwq_read_items	323
+kwqshard	1	tput	kwq_read_requeued	67
+kwqshard	1	tput	kwq_read_overruns	0
+kwqshard	1	resp	load_mbps	1702.2
+kwqshard	1	resp	kwq_cap_cuts	1217
+kwqshard	1	resp	kwq_items	28160
+kwqshard	1	resp	kwq_requeued	3331
+kwqshard	1	resp	kwq_overruns	2
+kwqshard	1	onecpu	timer_mbps	864.6
+kwqshard	1	onecpu	spin_mbps	448.6
+kwqshard1	1	tput	write_mbps	1792.2
+kwqshard1	1	tput	kwq_cap_cuts	6
+kwqshard1	1	tput	kwq_items	603
+kwqshard1	1	tput	kwq_requeued	259
+kwqshard1	1	tput	kwq_overruns	1
+kwqshard1	1	tput	read_mbps	2148.0
+kwqshard1	1	tput	kwq_read_cap_cuts	24
+kwqshard1	1	tput	kwq_read_items	517
+kwqshard1	1	tput	kwq_read_requeued	261
+kwqshard1	1	tput	kwq_read_overruns	0
+kwqshard1	1	resp	load_mbps	1654.0
+kwqshard1	1	resp	kwq_cap_cuts	2057
+kwqshard1	1	resp	kwq_items	42815
+kwqshard1	1	resp	kwq_requeued	18564
+kwqshard1	1	resp	kwq_overruns	58
+kwqshard1	1	onecpu	timer_mbps	842.8
+kwqshard1	1	onecpu	spin_mbps	435.0
+eli	1	scale4	bulk_mbps	2076.3
+eli	1	scale4	bulk_dev_min_mbps	511.4
+eli	1	scale4	bulk_dev_max_mbps	523.8
+eli	1	scale4	small_mbps	225.1
+eli	1	scale4	small_dev_min_mbps	54.6
+eli	1	scale4	small_dev_max_mbps	57.5
+eli	1	scale16	bulk_mbps	2033.5
+eli	1	scale16	bulk_dev_min_mbps	74.0
+eli	1	scale16	bulk_dev_max_mbps	194.3
+eli	1	scale16	small_mbps	224.3
+eli	1	scale16	small_dev_min_mbps	13.0
+eli	1	scale16	small_dev_max_mbps	15.1
+kwqshard	1	scale4	kwq_bulk_items	22811
+kwqshard	1	scale4	kwq_bulk_requeued	5091
+kwqshard	1	scale4	bulk_mbps	2054.0
+kwqshard	1	scale4	bulk_dev_min_mbps	510.1
+kwqshard	1	scale4	bulk_dev_max_mbps	514.8
+kwqshard	1	scale4	small_mbps	275.8
+kwqshard	1	scale4	small_dev_min_mbps	68.6
+kwqshard	1	scale4	small_dev_max_mbps	69.6
+kwqshard	1	scale16	kwq_bulk_items	30070
+2026-11-05T18:41:57Z geli_bench: set kern.geom.kwqeli.stealable=1
+2026-11-05T18:41:57Z geli_bench: set kern.kwq.bulk.place=2
+2026-11-05T18:41:57Z geli_bench: set kern.kwq.bulk.quantum_us=1000
+2026-11-05T18:41:57Z geli_bench: set kern.kwq.bulk.cap_period_us=1000
+2026-11-05T18:41:59Z geli_bench: destroyed md0
+2026-11-05T18:41:59Z geli_bench: destroyed md1
+2026-11-05T18:41:59Z geli_bench: destroyed md2
+2026-11-05T18:41:59Z geli_bench: destroyed md3
+2026-11-05T18:41:59Z geli_bench: restored kern.geom.kwqeli.cpu=-1 kern.geom.kwqeli.stealable=1 kern.kwq.bulk.place=2 kern.kwq.bulk.quantum_us=5000 kern.kwq.bulk.cap_period_us=10000 
+2026-11-05T18:41:59Z geli_bench: unloaded geom_kwqeli
+2026-11-05T18:41:59Z geli_bench: unloaded kwq
+2026-11-05T18:41:59Z geli_bench: unloaded geom_eli
+modules: 0, md:        0
+kwq: refusing queue name "a.b": 1..31 characters from [A-Za-z0-9_-] only
+kwq: refusing queue name "a/b": 1..31 characters from [A-Za-z0-9_-] only
+kwq: refusing queue name "a b": 1..31 characters from [A-Za-z0-9_-] only
+kwq: refusing queue name "x%25y": 1..31 characters from [A-Za-z0-9_-] only
+kwq: refusing queue name "cpu.0": 1..31 characters from [A-Za-z0-9_-] only
+ 6:41PM  up 1 day, 21:56, 0 users, load averages: 8.44, 4.44, 2.04

@@ -19,6 +19,9 @@
 #   kwqshard    the same under P8, the sharded idle mask and the donor
 #               line (kern.kwq.bulk.place=2); kwq, kwqlocal and
 #               kwqnosteal run today's placement (place=0)
+#   kwqshard1   kwqshard with BULK's quantum_us and cap_period_us at
+#               1000, the defaults before 2026-11-05 (../../kwq/SCHED.md
+#               S8); every other kwq stage runs the module's
 #   nop         no encryption: the load on the gnop providers themselves
 #               (ssd only; the other tests skip it)
 # Tests (TESTS, default "tput resp onecpu"):
@@ -73,7 +76,8 @@
 #           scale (10 ms ticks at hz=100: a tenth of the rate).  Stage nop
 #           measures the model itself.  Rows as for scale's loads, per
 #           load of SSD_LOADS (seqread seqwrite randread; also randwrite)
-# Knobs: REPS (3), SECS (10), MB (256, at most MDSIZE), MDSIZE (MB of each
+# Knobs: REPS (3), SECS (10), MB (256, at most MDSIZE), ELI_SECSIZE (4096:
+# the providers' sector size, 32768 as on NVMe), MDSIZE (MB of each
 # md, 512; swap-backed, so only what is written takes memory, unwired),
 # PASS_MB (32: the load's writers rewrite this much per dd), P, PCPU (1),
 # ONECPU_N (4), SCALE_NS ("1 2 4 8 16 32 64"), SCALE_MDSIZE (32), IDLE_S
@@ -92,7 +96,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 : "${MODDIR:?MODDIR: the directory with kwq.ko, geom_kwqeli.ko, geom_kwqeli.so}"
 : "${OUT_TSV:=geli_bench.tsv}"
 : "${REPS:=3}" "${SECS:=10}" "${MB:=256}" "${MDSIZE:=512}"
-: "${PCPU:=1}" "${ONECPU_N:=4}" "${TESTS:=tput resp onecpu}" "${PASS_MB:=32}"
+: "${ELI_SECSIZE:=4096}" "${PCPU:=1}" "${ONECPU_N:=4}" "${TESTS:=tput resp onecpu}" "${PASS_MB:=32}"
 : "${WORK:=/tmp/geli_bench.$$}"
 : "${SETTINGS_LOG:=/dev/null}"
 NCPU=$(sysctl -n hw.ncpu)
@@ -113,6 +117,12 @@ knob() {	# NAME VALUE: set, remembering the old value once
 	grep -q "^$1=" "$WORK/knobs" || echo "$1=$(sysctl -n "$1")" >> "$WORK/knobs"
 	sysctl -q "$1=$2" >/dev/null || { echo "sysctl $1=$2 failed" >&2; exit 1; }
 	note "set $1=$2"
+}
+unknob() {	# NAME: back to the value knob() remembered, if it set one
+	v=$(sed -n "s/^$1=//p" "$WORK/knobs")
+	[ -n "$v" ] && [ "$(sysctl -n "$1")" != "$v" ] || return 0
+	sysctl -q "$1=$v" >/dev/null || { echo "sysctl $1=$v failed" >&2; exit 1; }
+	note "set $1=$v (back)"
 }
 load() {	# FILE-or-NAME MODULE
 	kldstat -q -m "$2" && return 0
@@ -232,8 +242,8 @@ attach_on() {	# PROVIDER...
 	for m in "$@"; do
 		case $STAGE in
 		nop) devs="$devs $m" ;;
-		eli) geli onetime -e AES-XTS -l 256 -s 4096 "$m" || exit 1; devs="$devs $m.eli" ;;
-		*) $GK onetime -e AES-XTS -l 256 -s 4096 "$m" || exit 1; devs="$devs $m.kweli" ;;
+		eli) geli onetime -e AES-XTS -l 256 -s "$ELI_SECSIZE" "$m" || exit 1; devs="$devs $m.eli" ;;
+		*) $GK onetime -e AES-XTS -l 256 -s "$ELI_SECSIZE" "$m" || exit 1; devs="$devs $m.kweli" ;;
 		esac
 	done
 	echo "$devs"
@@ -250,28 +260,42 @@ stage_setup() {	# the stage's modules and knobs
 	kwq) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 1 ;;
 	kwqlocal) knob kern.geom.kwqeli.cpu -2; knob kern.geom.kwqeli.stealable 1 ;;
 	kwqnosteal) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 0 ;;
-	kwqgossip|kwqshard) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 1 ;;
+	kwqgossip|kwqshard|kwqshard1) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 1 ;;
 	esac
 	# BULK placement (kwq.ko of P6g.2 and later): stages on one boot each set theirs
 	case $STAGE in
 	nop|eli) ;;
 	kwqgossip) knob kern.kwq.bulk.place 1 ;;
-	kwqshard) knob kern.kwq.bulk.place 2 ;;
+	kwqshard|kwqshard1) knob kern.kwq.bulk.place 2 ;;
 	*) sysctl -q kern.kwq.bulk.place >/dev/null 2>&1 && knob kern.kwq.bulk.place 0 ;;
+	esac
+	# BULK's quantum and share-limit period: kwqshard1's of before 2026-11-05
+	case $STAGE in
+	nop|eli) ;;
+	kwqshard1) knob kern.kwq.bulk.quantum_us 1000; knob kern.kwq.bulk.cap_period_us 1000 ;;
+	*) unknob kern.kwq.bulk.quantum_us; unknob kern.kwq.bulk.cap_period_us ;;
 	esac
 }
 
-kwq_rows() {	# TEST before-file after-file: kwq's BULK counters over the test
-	[ "$STAGE" = eli ] && return 0
-	paste "$2" "$3" | awk 'BEGIN { split("kwq_steals kwq_cap_demotions kwq_passes kwq_handoffs kwq_pulls", nm, " ") }
-	    { print nm[NR], $2 - $1 }' |
+kwq_rows() {	# TEST before-file after-file [PREFIX]: kwq's BULK counters over the test
+	case $STAGE in eli|nop) return 0 ;; esac
+	paste "$2" "$3" | awk -v p="${4:-}" 'BEGIN { split("steals cap_demotions passes handoffs pulls cap_cuts items requeued overruns", nm, " ") }
+	    { print "kwq_" p nm[NR], $2 - $1 }' |
 	while read -r k v; do row "$1" "$k" "$v"; done
 }
-kwq_snap() {	# steals, cap_demotions, passes summed over the BULK workers
+# Summed over the BULK workers: steals, cap_demotions, passes, handoffs,
+# pulls, cap_cuts; over the BULK queues' per-CPU lists: items (handed to
+# the handler, a requeued bio again), requeued, overruns.  The queues'
+# nodes are many (a07 at 128 providers: 16 k lists), so the snapshots
+# are taken outside the windows of the CPU shares.
+kwq_snap() {
 	sysctl -a kern.kwq.bulk.cpu 2>/dev/null | awk -F': ' '
 	    /\.steals: / { s += $2 } /\.cap_demotions: / { c += $2 } /\.passes: / { p += $2 }
-	    /\.handoffs: / { h += $2 } /\.pulls: / { u += $2 }
-	    END { print s + 0; print c + 0; print p + 0; print h + 0; print u + 0 }'
+	    /\.handoffs: / { h += $2 } /\.pulls: / { u += $2 } /\.cap_cuts: / { x += $2 }
+	    END { print s + 0; print c + 0; print p + 0; print h + 0; print u + 0; print x + 0 }'
+	sysctl kern.kwq.bulk.queue 2>/dev/null | awk -F': ' '
+	    /\.items: / { i += $2 } /\.requeued: / { r += $2 } /\.overruns: / { o += $2 }
+	    END { print i + 0; print r + 0; print o + 0 }'
 }
 
 # The load: rewrite PASS_MB of the provider until $WORK/stop appears;
@@ -298,7 +322,7 @@ rates() {	# PREFIX DEV...: total, slowest and fastest provider's MB/s, Jain
 
 t_tput() {
 	devs=$(attach "$P")
-	c0=$(cp_sys); kwq_snap > "$WORK/k0"; s0=$(swtch); t0=$(now_ns)
+	kwq_snap > "$WORK/k0"; c0=$(cp_sys); s0=$(swtch); t0=$(now_ns)
 	for d in $devs; do dd if=/dev/zero of="/dev/$d" bs=1m count="$MB" 2> "$WORK/l.$d" & done
 	wait
 	t1=$(now_ns); s1=$(swtch); c1=$(cp_sys); kwq_snap > "$WORK/k1"
@@ -307,13 +331,14 @@ t_tput() {
 	row tput write_sys "$(share "$c0" "$c1")"
 	rates write $devs | grep -v "^write_mbps" | while read -r k v; do row tput "$k" "$v"; done
 	kwq_rows tput "$WORK/k0" "$WORK/k1"
-	c0=$(cp_sys); s0=$(swtch); t0=$(now_ns)
+	kwq_snap > "$WORK/k0"; c0=$(cp_sys); s0=$(swtch); t0=$(now_ns)
 	for d in $devs; do dd if="/dev/$d" of=/dev/null bs=1m count="$MB" 2>/dev/null & done
 	wait
-	t1=$(now_ns); s1=$(swtch); c1=$(cp_sys)
+	t1=$(now_ns); s1=$(swtch); c1=$(cp_sys); kwq_snap > "$WORK/k1"
 	row tput read_cs_s "$(cs_rate "$s0" "$s1" "$((t1 - t0))")"
 	row tput read_mbps "$(awk -v n="$P" -v mb="$MB" -v dt="$((t1 - t0))" 'BEGIN { printf("%.1f", n * mb * 1048576 / 1e6 / (dt / 1e9)) }')"
 	row tput read_sys "$(share "$c0" "$c1")"
+	kwq_rows tput "$WORK/k0" "$WORK/k1" read_
 	detach_all
 }
 
@@ -351,7 +376,7 @@ t_resp() {
 	devs=$(attach "$P")
 	load_start $devs
 	sleep 1
-	c0=$(cp_sys); kwq_snap > "$WORK/k0"
+	kwq_snap > "$WORK/k0"; c0=$(cp_sys)
 	probes resp
 	c1=$(cp_sys); kwq_snap > "$WORK/k1"
 	load_stop
@@ -438,13 +463,14 @@ probes_sys() {	# TEST PREFIX: the unpinned probes: the machine as its users see 
 # names are its own: probe() sets t and pfx.
 io_load() {	# TEST PREFIX IOLAT-OPTIONS DEV...
 	lt=$1; lp=$2; lo=$3; shift 3
-	w0=$(wk_snap); c0=$(cp_sys); s0=$(swtch); t0=$(now_ns)
+	kwq_snap > "$WORK/k0"; w0=$(wk_snap); c0=$(cp_sys); s0=$(swtch); t0=$(now_ns)
 	$IOLAT $lo -t $((2 * PROBE_S + 5)) $(for d in "$@"; do echo "/dev/$d"; done) > "$WORK/io" 2> "$WORK/io.err" &
 	ipid=$!
 	sleep 0.5
 	probes_sys "$lt" "$lp"
 	wait $ipid || { echo "$lt $lp: iolat failed: $(cat "$WORK/io.err")" >&2; exit 1; }
-	t1=$(now_ns); s1=$(swtch); c1=$(cp_sys); w1=$(wk_snap)
+	t1=$(now_ns); s1=$(swtch); c1=$(cp_sys); w1=$(wk_snap); kwq_snap > "$WORK/k1"
+	kwq_rows "$lt" "$WORK/k0" "$WORK/k1" "${lp}_"
 	ops=$(tr ' ' '\n' < "$WORK/io" | awk -F= '$1 == "ops" { print $2 }')
 	tr ' ' '\n' < "$WORK/io" | awk -F= -v p="$lp" 'NF == 2 && $1 != "ops" { print p "_" $1, $2 }' |
 	while read -r k v; do row "$lt" "$k" "$v"; done
