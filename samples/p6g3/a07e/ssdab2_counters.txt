@@ -1,0 +1,6 @@
+d0_u0_1 wakes 411 steals 1124787 directed 0 chained 0
+d2_u0_2 wakes 943 steals 1161368 directed 641 chained 2
+d2_u10_3 wakes 774 steals 1373147 directed 45 chained 0
+d0_u0_4 wakes 7902 steals 1358797 directed 0 chained 0
+d2_u0_5 wakes 371 steals 1272295 directed 229 chained 0
+d2_u10_6 wakes 928 steals 1383399 directed 59 chained 0

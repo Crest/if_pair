@@ -1,0 +1,269 @@
+<meta name="dash-one-writer">
+<style>
+  .g2 { font-family: var(--font-anthropic-sans); display: flex; flex-direction: column; gap: var(--cds-gap-lg); }
+  .g2 h1 { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); margin: 0; text-wrap: balance; }
+  .g2 h2 { font-size: var(--cds-font-size-heading); font-weight: var(--cds-font-weight-medium); margin: 0; }
+  .g2 p { margin: 0; max-width: 72ch; line-height: 1.5; }
+  .g2 .note { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); }
+  .g2 .tabs { display: flex; flex-wrap: wrap; gap: var(--cds-gap-xs); border-bottom: 1px solid var(--color-border-line); }
+  .g2 .tabs button { font: inherit; background: none; border: 0; border-bottom: 2px solid transparent; padding: var(--cds-pad-xs) var(--cds-pad-sm); color: var(--color-fg-muted); cursor: pointer; }
+  .g2 .tabs button[aria-selected="true"] { color: var(--color-fg); border-bottom-color: var(--color-fg); }
+  .g2 .tabs button:focus-visible { outline: 2px solid var(--cds-chart-reference); outline-offset: 2px; }
+  .g2 section { display: flex; flex-direction: column; gap: var(--cds-gap-md); }
+  .g2 .card { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-lg); display: flex; flex-direction: column; gap: var(--cds-gap-sm); min-width: 0; }
+  .g2 .options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: var(--cds-gap-md); }
+  .g2 .options .card h2 { font-size: var(--cds-font-size-body); }
+  .g2 .tw { overflow-x: auto; max-height: 36rem; overflow-y: auto; }
+  .g2 table { border-collapse: collapse; font-size: var(--cds-font-size-caption); font-variant-numeric: tabular-nums; width: 100%; }
+  .g2 th, .g2 td { padding: var(--cds-pad-xs) var(--cds-pad-sm); text-align: right; white-space: nowrap; border-bottom: 1px solid var(--color-border-line); }
+  .g2 th { position: sticky; top: 0; background: var(--color-panel); font-weight: var(--cds-font-weight-medium); color: var(--color-fg-muted); }
+  .g2 th:first-child, .g2 td:first-child, .g2 .tl, .g2 td.tl { text-align: left; }
+  .g2 td.wrap { white-space: normal; min-width: 14rem; text-align: left; }
+  .g2 td.ok { color: var(--color-ok); }
+  .g2 td.warn { color: var(--color-warn); }
+  .g2 td.bad { color: var(--color-bad); }
+  .g2 [data-dash-source-state=refreshing] { opacity: .5; transition: opacity var(--cds-dur-slow); }
+  .g2 ol, .g2 ul { margin: 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: var(--cds-gap-xs); max-width: 75ch; line-height: 1.5; }
+</style>
+
+<div class="g2">
+  <header style="display:flex;flex-direction:column;gap:var(--cds-gap-sm)">
+    <h1 id="top">P6g gate G2: the default of kern.kwq.bulk.place</h1>
+    <p>Both schemes of gate G1 are in the kernel behind one knob and were measured on lab (one package, SMT) and a07 (128 cores, one package) against today's code. P8 holds or beats today on kwq-geli on both machines. For a closed-loop queue on one CPU it needed the chain: an idle thief that retries the victim of its last batch before it sleeps. With it, P8 meets all five kernel criteria on both machines. Gossip falls behind on a07 and on that queue. The decision is crest's.</p>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Report sections">
+    <button role="tab" aria-selected="true" data-tab="decide">Decision</button>
+    <button role="tab" aria-selected="false" data-tab="criteria">Criteria K1-K5</button>
+    <button role="tab" aria-selected="false" data-tab="geli">kwq-geli</button>
+    <button role="tab" aria-selected="false" data-tab="pinned">One queue, one CPU</button>
+    <button role="tab" aria-selected="false" data-tab="kwqtest">kwq_test</button>
+    <button role="tab" aria-selected="false" data-tab="hybrid">Hybrid study</button>
+    <button role="tab" aria-selected="false" data-tab="twosocket">Two sockets</button>
+    <button role="tab" aria-selected="false" data-tab="found">What it found</button>
+  </nav>
+
+  <section id="decide" data-page="decide">
+    <div class="options">
+      <div class="card">
+        <h2>A. P8 with the chain the default on machines of one package (recommended)</h2>
+        <p>kern.kwq.bulk.place=2 with shard.directed=2 and shard.directed_us=10 where smp_topo() shows one package; spill_idle and helper_donor stay off. Today's code (place=0) stays for one round of A/B (decision D3). Machines of two or more packages keep place=0 until one is measured: the simulator's two-socket model shows P8 collapsing near saturation, and no machine here has two sockets.</p>
+      </div>
+      <div class="card">
+        <h2>B. P8 with the chain the default everywhere</h2>
+        <p>The same without the package rule: simpler, and it trusts that the two-socket model is wrong where it was never checked.</p>
+      </div>
+      <div class="card">
+        <h2>C. Today's code stays the default</h2>
+        <p>P8 and gossip stay opt-in until a two-socket machine is measured and a07's ssd randread case is resolved with many more runs.</p>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Decisions for crest</h2>
+      <ol>
+        <li>The default of place: A, B or C.</li>
+        <li>P8's shard.directed: 2 with directed_us=10 (recommended: the mailbox and the chain only for lists whose items cost at least that much, which the 64 KiB crypto items do and the 4 KiB GELI reads do not); 2 with directed_us=0 (every list); or 1 (the mailbox alone, which left a07's one queue far behind today). The gate's value is a judgment between the two item classes measured, not a derived bound.</li>
+        <li>The knobs nothing needs any more, spill_idle and helper_donor (and directed_us if 2 without the gate is chosen): take them out of the code, or keep them off as experiments.</li>
+        <li>Gossip (place=1): keep it in the kernel as the hybrid study's base for machines of several packages (H4), or take it out. It fails K2 and K4 on lab and K1 to K4 on a07.</li>
+        <li>The hybrid: H1 (gossip with lazy idle lines) is dropped by its numbers; H4 (P8 within a package, gossip's hand-off across packages) needs a two-socket machine. Pursue H4, or close the study?</li>
+        <li>a07's ssd randread: every configuration's runs fall in a fast or a slow mode, and P8 without the chain ranged from below today to above it across four rounds, so six runs cannot resolve ten per cent. Accept P8 as level with today there, or measure with many more runs (about forty minutes for thirty runs per setting)?</li>
+      </ol>
+    </div>
+    <div class="card">
+      <h2>What changed since the first measurements</h2>
+      <ul>
+        <li>The chain (777b372): a lone item behind running work never makes its CPU a donor, so a P8 thief slept after each batch and every item of a shallow list waited for a wake. shard.directed=2 retries the last victim; the first miss forgets it.</li>
+        <li>The gate (3c5c2cd): shard.directed_us limits the mailbox and the chain to costly items. Neither the K4 rounds nor randread need it; it confines the new behaviour to where it was measured.</li>
+        <li>Two fixes found on the way: the steal wake no longer reads the queue after the enqueue drops the list lock (b40b3a6), and the pass cost average leaves out ticker glitches, which on a07 had driven some lists' cost past 2^63 ns (946967d).</li>
+        <li>K2 on lab sat at the edge in the chain's own round; the interleaved A/B on the kwq-geli tab settles it: the chain leaves the bulk writes where P8 had them, a little below today's.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="criteria" data-page="criteria" hidden>
+    <div class="card">
+      <h2>The kernel criteria (SPEC-p6g.md S1), per machine</h2>
+      <p class="note">Medians over three repetitions on one boot. K1: 128 providers' small reads within 3 % of no stealing, CPU per read within 5 % of it. K2: 128 providers' bulk writes at least 98 % of today's. K3: 16 providers on lab, 64 on a07, reads and writes at least 98 % of today's. K4: kwq_crypto, one and four stealable queues fed on CPU 1, at least 90 % of today's rate. K5: the probes beside the load within today's range.</p>
+      <div class="tw"><table data-source="kcriteria" data-row-key="key">
+        <thead><tr><th data-field="machine">machine</th><th data-field="scheme" class="tl">scheme</th><th data-field="K1">K1</th><th data-field="K2">K2</th><th data-field="K3">K3</th><th data-field="K4">K4</th><th data-field="K5">K5</th></tr></thead>
+        <tbody data-draw="kcrit"></tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <h2>What each verdict rests on</h2>
+      <div class="tw"><table data-source="kcriteria" data-row-key="key">
+        <thead><tr><th data-field="machine">machine</th><th data-field="scheme" class="tl">scheme</th><th data-field="K1_v" class="tl">K1</th><th data-field="K2_v" class="tl">K2</th><th data-field="K3_v" class="tl">K3</th><th data-field="K4_v" class="tl">K4</th><th data-field="K5_v" class="tl">K5</th></tr></thead>
+        <tbody data-draw="kcritv"></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="geli" data-page="geli" hidden>
+    <div class="card">
+      <h2>geli_bench scale: N providers on md(4), one request in flight each</h2>
+      <p class="note">Small: 4 KiB reads at random offsets; bulk: 1 MiB sequential writes. The probes ran beside the small reads: a 1 kHz timer's lateness, a CPU-bound loop's share, fork+exec. Defaults of each scheme; no stealing is kwq-geli with its queues not stealable.</p>
+      <div class="tw"><table data-source="kscale" data-row-key="key">
+        <thead><tr><th data-field="machine">machine</th><th data-field="n">N</th><th data-field="stage" class="tl">placement</th><th data-field="small_iops">small reads/s</th><th data-field="small_lat_p99_us">p99, us</th><th data-field="cpu_us_per_read">CPU us/read</th><th data-field="bulk_mbps">bulk MB/s</th><th data-field="bulk_lat_p99_us">p99, us</th><th data-field="small_timer_late_p99">timer p99, us</th><th data-field="small_spin_share">spin share</th><th data-field="small_exec_exec_p99">exec p99, us</th></tr></thead>
+        <tbody data-draw="kscale"></tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <h2>The same with P8's knobs</h2>
+      <p class="note">kwq.ko loaded once with the knobs set, today's stage and P8's (and no stealing for directed=2) in one round: shard.spill_idle=1 with donor_us 500 and 50, and shard.directed=2 (the chain). kwq-geli places with KWQ_CPU_ANY, which spill_idle does not touch; the chain changes every P8 steal.</p>
+      <div class="tw"><table data-source="kscale" data-row-key="key">
+        <thead><tr><th data-field="machine">machine</th><th data-field="knobs" class="tl">knobs</th><th data-field="n">N</th><th data-field="stage" class="tl">placement</th><th data-field="small_iops">small reads/s</th><th data-field="cpu_us_per_read">CPU us/read</th><th data-field="bulk_mbps">bulk MB/s</th><th data-field="small_timer_late_p99">timer p99, us</th><th data-field="small_exec_exec_p99">exec p99, us</th></tr></thead>
+        <tbody data-draw="kscale_spill"></tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <h2>Interleaved A/B: P8 with and without the chain</h2>
+      <p class="note">kwq.ko loaded once; the settings in turn in blocks (round 1: shard.directed 0, 2, 0, 2; a07's round 2: directed 0, 2, 2 with directed_us 10, twice), each three runs of today's stage and three of P8's, so every setting has six runs of P8 beside all of today's runs in its round. Lab: geli_bench scale at 128 providers (K2's bulk writes, K1's small reads). a07: ssd randread over 16 SSD models, whose runs fall in two modes, a fast one at a low sys share and a slow one at a high one; round 2 adds the cost gate.</p>
+      <div class="tw"><table data-source="kab" data-row-key="key">
+        <thead><tr><th data-field="round" class="tl">round</th><th data-field="metric" class="tl">metric</th><th data-field="config" class="tl">configuration</th><th data-field="runs">runs</th><th data-field="median">median</th><th data-field="lo">low</th><th data-field="hi">high</th><th data-field="of_today">of today</th></tr></thead>
+        <tbody data-draw="kab"></tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <h2>tput and resp: one provider per CPU</h2>
+      <div class="tw"><table data-source="ktput" data-row-key="key">
+        <thead><tr><th data-field="machine">machine</th><th data-field="knobs" class="tl">knobs</th><th data-field="stage" class="tl">placement</th><th data-field="read_mbps">read MB/s</th><th data-field="write_mbps">write MB/s</th><th data-field="resp_exec_exec_p99">exec p99, us</th><th data-field="resp_exec_exec_p99_lo">low</th><th data-field="resp_exec_exec_p99_hi">high</th><th data-field="resp_timer_late_p99">timer p99, us</th><th data-field="resp_spin_share">spin share</th></tr></thead>
+        <tbody data-draw="ktput"></tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <h2>ssd on a07: 16 gnop(8) SATA SSD models</h2>
+      <div class="tw"><table data-source="kssd" data-row-key="key">
+        <thead><tr><th data-field="knobs" class="tl">knobs</th><th data-field="load" class="tl">load</th><th data-field="stage" class="tl">placement</th><th data-field="iops">IOPS</th><th data-field="mbps">MB/s</th><th data-field="lat_p99_us">p99, us</th><th data-field="sys">sys share</th><th data-field="timer_late_p99">timer p99, us</th></tr></thead>
+        <tbody data-draw="kssd"></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="pinned" data-page="pinned" hidden>
+    <div class="card">
+      <h2>kwq_crypto: stealable queues fed on CPU 1, 16 requests of 64 KiB in flight each</h2>
+      <p class="note">A closed loop: each completion issues the next request to CPU 1. Today's code steals at a list of two; P8 spills and flags a donor at 500 us of backlog, gossip hands off at 2 ms. spill_idle sends an item that would wait on its CPU to an idle CPU, near the producer (1) or near the fixed CPU (2); helper_donor keeps a CPU whose pass left items for a helper a donor; p8_dir is shard.directed=1 (the wake names its victim), with d2000 and d5000 for donor_us; p8_chain is directed=2 (an idle thief also retries its last victim), p8_chain_us10 with directed_us 10; d50 is donor_us 50; gossip_h200 is gossip.h_us 200.</p>
+      <div class="tw"><table data-source="kcrypto" data-row-key="key">
+        <thead><tr><th data-field="machine">machine</th><th data-field="config" class="tl">configuration</th><th data-field="queues">queues</th><th data-field="mbps">MB/s</th><th data-field="mbps_lo">low</th><th data-field="mbps_hi">high</th><th data-field="of_today">of today</th><th data-field="p99_us">p99, us</th><th data-field="jain">Jain</th><th data-field="cpus">CPUs used</th></tr></thead>
+        <tbody data-draw="kcrypto"></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="kwqtest" data-page="kwqtest" hidden>
+    <div class="card">
+      <h2>kwq_test: 20000 items of 20 us from one CPU</h2>
+      <p class="note">steal: every item to CPU 1 of a stealable queue; anyburst: KWQ_CPU_ANY from a producer on CPU 0. The time until every item ran; both are bound by the one producer on a07.</p>
+      <div class="tw"><table data-source="ktest" data-row-key="key">
+        <thead><tr><th data-field="machine">machine</th><th data-field="scenario" class="tl">scenario</th><th data-field="placement" class="tl">placement</th><th data-field="ms">ms</th><th data-field="ms_lo">low</th><th data-field="ms_hi">high</th><th data-field="off_cpu">ran elsewhere</th><th data-field="cpus">CPUs</th><th data-field="dups">run twice</th></tr></thead>
+        <tbody data-draw="ktest"></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="hybrid" data-page="hybrid" hidden>
+    <div class="card">
+      <h2>H1 in the simulator: gossip that asks lazy idle lines when its table has no idle core</h2>
+      <p class="note">The main matrix's first three seeds; runs that met each criterion. A worker sets its bit in P8's group line after lazy_us asleep (0: at once, P8's mask) and producers ask the lines from gossip's step LOCAL on. SPEC-p6g.md S5a lists H2-H4.</p>
+      <div class="tw"><table data-source="hybrid" data-row-key="key">
+        <thead><tr><th data-field="criterion">criterion</th><th data-field="text" class="tl">what it asks</th><th data-field="today">today</th><th data-field="gossip">gossip</th><th data-field="P8">P8</th><th data-field="H1, lazy_us 0">H1, lazy 0</th><th data-field="H1, lazy_us 10">H1, lazy 10 us</th></tr></thead>
+        <tbody data-draw="hybrid"></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="twosocket" data-page="twosocket" hidden>
+    <div class="card">
+      <h2>The simulator's two-socket model (t4) against lab's and a07's</h2>
+      <p class="note">Median mean wait and items per second over five seeds. t4 is synthetic and unvalidated (decision D5): two packages of 32 cores with two threads each. Near saturation P8 there places a third as many items per second with three times the CPU per item; today's code collapses on t4 in other scenarios, and the oracle itself is slow there, so the model may be at fault as much as P8.</p>
+      <div class="tw"><table data-source="t4risk" data-row-key="key">
+        <thead><tr><th data-field="scenario" class="tl">scenario</th><th data-field="topology">topology</th><th data-field="oracle_wait_us">oracle, us</th><th data-field="today_wait_us">today</th><th data-field="gossip_wait_us">gossip</th><th data-field="P8_wait_us">P8</th><th data-field="oracle_mops">oracle, M/s</th><th data-field="today_mops">today</th><th data-field="gossip_mops">gossip</th><th data-field="P8_mops">P8</th></tr></thead>
+        <tbody data-draw="t4risk"></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="found" data-page="found" hidden>
+    <div class="card">
+      <h2>What the kernel phase found</h2>
+      <div class="tw"><table data-source="kfindings" data-row-key="key">
+        <thead><tr><th data-field="finding" class="tl">finding</th><th data-field="effect" class="tl">effect</th><th data-field="fix" class="tl">resolution</th><th data-field="commit">commit</th><th data-field="where">where</th></tr></thead>
+        <tbody data-draw="kfind"></tbody>
+      </table></div>
+    </div>
+  </section>
+</div>
+
+<script>
+  const num = (x) => x == null || Number.isNaN(x) ? '' : x >= 1e5 ? d3.format('.3s')(x) : x >= 100 ? d3.format(',.0f')(x) : x >= 10 ? d3.format('.1f')(x) : d3.format('.2~f')(x);
+  const pct = (x) => x == null ? '' : d3.format('.0%')(x);
+  const f2 = (x) => x == null ? '' : d3.format('.2f')(x);
+
+  // A table body from rows: cols are [field, format, class(row, field) or null]; the key on the row.
+  function fill(tbody, id, cols, keep, sort) {
+    const g = dash.data(id);
+    if (g.status !== 'ok') { tbody.replaceChildren(); return; }
+    let rows = g.data.filter(keep ?? (() => true));
+    if (sort) rows.sort(sort);
+    tbody.replaceChildren(...rows.map((r) => {
+      const tr = document.createElement('tr');
+      tr.dataset.key = r.key;
+      for (const [f, fmt, cls] of cols) {
+        const td = document.createElement('td');
+        td.textContent = fmt ? fmt(r[f], r) : (r[f] ?? '');
+        const c = cls ? cls(r, f) : null;
+        if (c) td.className = c;
+        tr.append(td);
+      }
+      return tr;
+    }));
+  }
+  const verdict = (r, f) => r[f] === 'pass' ? 'ok' : r[f] === 'fail' ? 'bad' : null;
+  const wrap = () => 'wrap';
+  const order = ['no stealing', 'today', 'gossip', 'P8', 'stock GELI', 'no encryption'];
+  const byStage = (a, b) => a.machine.localeCompare(b.machine) * -1 || (a.n ?? 0) - (b.n ?? 0) || order.indexOf(a.stage) - order.indexOf(b.stage);
+
+  dash.draw('kcrit', (tb) => fill(tb, 'kcriteria', [['machine'], ['scheme', null, () => 'tl'],
+    ['K1', null, verdict], ['K2', null, verdict], ['K3', null, verdict], ['K4', null, verdict], ['K5', null, verdict]]));
+  dash.draw('kcritv', (tb) => fill(tb, 'kcriteria', [['machine'], ['scheme', null, () => 'tl'],
+    ['K1_v', null, wrap], ['K2_v', null, wrap], ['K3_v', null, wrap], ['K4_v', null, wrap], ['K5_v', null, wrap]]));
+  dash.draw('kscale', (tb) => fill(tb, 'kscale', [['machine'], ['n'], ['stage', null, () => 'tl'], ['small_iops', d3.format(',.0f')],
+    ['small_lat_p99_us', num], ['cpu_us_per_read', f2], ['bulk_mbps', d3.format(',.0f')], ['bulk_lat_p99_us', num],
+    ['small_timer_late_p99', num], ['small_spin_share', f2], ['small_exec_exec_p99', num]], (r) => r.knobs === 'defaults', byStage));
+  dash.draw('kscale_spill', (tb) => fill(tb, 'kscale', [['machine'], ['knobs', null, () => 'tl'], ['n'], ['stage', null, () => 'tl'],
+    ['small_iops', d3.format(',.0f')], ['cpu_us_per_read', f2], ['bulk_mbps', d3.format(',.0f')], ['small_timer_late_p99', num],
+    ['small_exec_exec_p99', num]], (r) => r.knobs !== 'defaults', (a, b) => byStage(a, b) || a.knobs.localeCompare(b.knobs)));
+  dash.draw('kab', (tb) => fill(tb, 'kab', [['round', null, () => 'tl'], ['metric', null, () => 'tl'], ['config', null, () => 'tl'], ['runs'],
+    ['median', num], ['lo', num], ['hi', num], ['of_today', (x) => x == null ? '' : d3.format('.3f')(x)]]));
+  dash.draw('ktput', (tb) => fill(tb, 'ktput', [['machine'], ['knobs', null, () => 'tl'], ['stage', null, () => 'tl'],
+    ['read_mbps', d3.format(',.0f')], ['write_mbps', d3.format(',.0f')], ['resp_exec_exec_p99', num], ['resp_exec_exec_p99_lo', num],
+    ['resp_exec_exec_p99_hi', num], ['resp_timer_late_p99', num], ['resp_spin_share', f2]]));
+  dash.draw('kssd', (tb) => fill(tb, 'kssd', [['knobs', null, () => 'tl'], ['load', null, () => 'tl'], ['stage', null, () => 'tl'], ['iops', d3.format(',.0f')],
+    ['mbps', d3.format(',.0f')], ['lat_p99_us', num], ['sys', f2], ['timer_late_p99', num]]));
+  dash.draw('kcrypto', (tb) => fill(tb, 'kcrypto', [['machine'], ['config', null, () => 'tl'], ['queues'], ['mbps', d3.format(',.0f')],
+    ['mbps_lo', d3.format(',.0f')], ['mbps_hi', d3.format(',.0f')],
+    ['of_today', pct, (r) => r.config === 'today' || r.of_today == null ? null : r.of_today >= 0.9 ? 'ok' : r.of_today >= 0.6 ? 'warn' : 'bad'],
+    ['p99_us', num], ['jain', f2], ['cpus']],
+    null, (a, b) => b.machine.localeCompare(a.machine) || a.queues - b.queues || a.config.localeCompare(b.config)));
+  dash.draw('ktest', (tb) => fill(tb, 'ktest', [['machine'], ['scenario', null, () => 'tl'], ['placement', null, () => 'tl'],
+    ['ms', f2], ['ms_lo', f2], ['ms_hi', f2], ['off_cpu', d3.format(',')], ['cpus'], ['dups']]));
+  const HY = ['today', 'gossip', 'P8', 'H1, lazy_us 0', 'H1, lazy_us 10'];
+  dash.draw('hybrid', (tb) => fill(tb, 'hybrid', [['criterion'], ['text', null, wrap],
+    ...HY.map((p) => [p, (x, r) => x == null ? '' : `${x}/${r[p + '_runs']}`, (r) => {
+      const s = r[p] / r[p + '_runs'];
+      return Number.isNaN(s) ? null : s >= 0.95 ? 'ok' : s >= 0.8 ? 'warn' : 'bad';
+    }])]));
+  dash.draw('t4risk', (tb) => fill(tb, 't4risk', [['scenario', null, () => 'tl'], ['topology'],
+    ['oracle_wait_us', num], ['today_wait_us', num], ['gossip_wait_us', num], ['P8_wait_us', num],
+    ['oracle_mops', f2], ['today_mops', f2], ['gossip_mops', f2], ['P8_mops', f2]]));
+  dash.draw('kfind', (tb) => fill(tb, 'kfindings', [['finding', null, wrap], ['effect', null, wrap], ['fix', null, wrap], ['commit'], ['where']]));
+
+  // Tabs: one section shown at a time; the link names it.
+  const show = (name) => {
+    document.querySelectorAll('.g2 [data-page]').forEach((s) => { s.hidden = s.dataset.page !== name; });
+    document.querySelectorAll('.g2 .tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
+  };
+  document.querySelectorAll('.g2 .tabs button').forEach((b) => b.addEventListener('click', () => { show(b.dataset.tab); dash.setLink(b.dataset.tab); }));
+  const named = location.hash.slice(1);
+  if ([...document.querySelectorAll('.g2 [data-page]')].some((s) => s.dataset.page === named)) show(named);
+</script>

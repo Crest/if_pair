@@ -1,0 +1,8 @@
+13:41:49 stages: kwq kwqshard; tests: ssd; P 128, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 3
+13:41:49 rep 1 kwq ssd
+13:42:01 rep 1 kwqshard ssd
+13:42:13 rep 2 kwq ssd
+13:42:25 rep 2 kwqshard ssd
+13:42:37 rep 3 kwq ssd
+13:42:49 rep 3 kwqshard ssd
+13:43:00 done: /home/crest/if_pair-scratch/p6g3f/out/ssdab2_d2_u0_5.tsv
