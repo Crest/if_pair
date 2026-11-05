@@ -527,9 +527,9 @@ P8 under `place=2` (G1), beside the steps above:
 |---|---|
 | K8 | `kwq_bulk_idle`, one cpuset, cut into one line per group of 16 CPUs in topology order, each written by its own CPUs; the group size a loader tunable, so the 4-CPU guest can run groups of 1 and exercise the far probe |
 | K9 | the donor bitmap and a per-CPU hint naming the longest stealable list, written by the owner at its decision points |
-| K10 | the idle path: the donor steal in place of `kwq_steal()`'s scan; the steal wakes as today, the pull at the end of a pass, the bound, the lone item; no cascade wake (D11) |
+| K10 | the idle path: the donor steal in place of `kwq_steal()`'s scan; the steal wakes as today, the pull at the end of a pass, the bound, the lone item; no cascade wake (D11).  The steal wake and the pass start's helper test look for a sleeper in reach across the group lines that cover it, as today's code does in its one mask: the simulator's P8 looked in the own group only, which on the guest with groups of one CPU left a donor nobody to wake while three workers slept (6 of 3000 items on the far CPU) |
 | K11 | `kwq_pick_any()` over the group lines, then one far group from a per-CPU cursor; donors avoided; spill for fixed-CPU queues at a donor |
-| K12 | the starved tick: a per-CPU callout(9), armed while the CPU holds stealable work, flagging a worker that reached no decision point since a starved donor |
+| K12 | the starved tick: a per-CPU callout(9), armed while the CPU holds stealable work, flagging a worker that reached no decision point since a starved donor.  A direct callout, in the clock interrupt: BULK runs at `PI_SOFT`, above every user thread, so what starves it is an interrupt thread or NET-class work at `PI_INTR` (or a thread at its own priority), and those do not stop the tick |
 
 ATF cases (kwq/tests/kwq_test.sh, kwq_test.ko):
 

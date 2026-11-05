@@ -14,6 +14,11 @@
 #   kwq         kwq-geli defaults: KWQ_CPU_ANY, stealable queues
 #   kwqlocal    kwq-geli, every bio on the caller's CPU (cpu=-2), stealable
 #   kwqnosteal  kwq-geli, KWQ_CPU_ANY, not stealable
+#   kwqgossip   kwq, KWQ_CPU_ANY, stealable, BULK placement by gossip
+#               (kern.kwq.bulk.place=1, ../../kwq/SPEC-p6g.md S2)
+#   kwqshard    the same under P8, the sharded idle mask and the donor
+#               line (kern.kwq.bulk.place=2); kwq, kwqlocal and
+#               kwqnosteal run today's placement (place=0)
 #   nop         no encryption: the load on the gnop providers themselves
 #               (ssd only; the other tests skip it)
 # Tests (TESTS, default "tput resp onecpu"):
@@ -245,19 +250,28 @@ stage_setup() {	# the stage's modules and knobs
 	kwq) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 1 ;;
 	kwqlocal) knob kern.geom.kwqeli.cpu -2; knob kern.geom.kwqeli.stealable 1 ;;
 	kwqnosteal) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 0 ;;
+	kwqgossip|kwqshard) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 1 ;;
+	esac
+	# BULK placement (kwq.ko of P6g.2 and later): stages on one boot each set theirs
+	case $STAGE in
+	nop|eli) ;;
+	kwqgossip) knob kern.kwq.bulk.place 1 ;;
+	kwqshard) knob kern.kwq.bulk.place 2 ;;
+	*) sysctl -q kern.kwq.bulk.place >/dev/null 2>&1 && knob kern.kwq.bulk.place 0 ;;
 	esac
 }
 
 kwq_rows() {	# TEST before-file after-file: kwq's BULK counters over the test
 	[ "$STAGE" = eli ] && return 0
-	paste "$2" "$3" | awk 'BEGIN { split("kwq_steals kwq_cap_demotions kwq_passes", nm, " ") }
+	paste "$2" "$3" | awk 'BEGIN { split("kwq_steals kwq_cap_demotions kwq_passes kwq_handoffs kwq_pulls", nm, " ") }
 	    { print nm[NR], $2 - $1 }' |
 	while read -r k v; do row "$1" "$k" "$v"; done
 }
 kwq_snap() {	# steals, cap_demotions, passes summed over the BULK workers
 	sysctl -a kern.kwq.bulk.cpu 2>/dev/null | awk -F': ' '
 	    /\.steals: / { s += $2 } /\.cap_demotions: / { c += $2 } /\.passes: / { p += $2 }
-	    END { print s + 0; print c + 0; print p + 0 }'
+	    /\.handoffs: / { h += $2 } /\.pulls: / { u += $2 }
+	    END { print s + 0; print c + 0; print p + 0; print h + 0; print u + 0 }'
 }
 
 # The load: rewrite PASS_MB of the provider until $WORK/stop appears;
