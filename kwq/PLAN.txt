@@ -1373,10 +1373,21 @@ Phases
         crest chose both P8 and gossip for the kernel, compared on
         kwq-geli, then a hybrid study (S5a); A1f, W4o, W5 steady only,
         model gaps accepted, no cascade wake (D9-D11).
-    P6g.2 Kernel behind kern.kwq.bulk.place: 1 gossip (K1-K7), 2 P8
-        (K8-K12); ATF on the guest.
-    P6g.3 A/B on lab, then a07 with crest's permission; gate G2.
-    P6g.3a The hybrid's design space, simulated (SPEC-p6g.md S5a).
+    P6g.2 [DONE 2026-11-05] Kernel behind kern.kwq.bulk.place: 1
+        gossip (K1-K7), 2 P8 (K8-K12); ATF on the guest.
+    P6g.3 [AT GATE G2 2026-11-05] A/B on lab, then a07 (crest's
+        permission, after a guest GENERIC-DEBUG check of each change).
+        P8 failed K4 (a closed-loop queue on one CPU) until the chain,
+        shard.directed=2 (777b372, K13); with it P8 meets K1-K5 on
+        both machines.  Fixes on the way: the steal wake's read after
+        the unlock (b40b3a6), the cost average's ticker glitches on
+        a07 (946967d); the cost gate shard.directed_us (3c5c2cd).
+        a07's ssd randread is bimodal and unresolved at 6 runs.  Report
+        artifact Jz2qDdxhD1qvUefHqXp9tY, data samples/p6g3 (61d66ab);
+        the default of place and the knobs are crest's to decide.
+    P6g.3a The hybrid's design space, simulated (SPEC-p6g.md S5a): H1
+        (gossip with lazy idle lines) dropped by its numbers (533c351);
+        H4 (P8 within a package, gossip across) needs two sockets.
     P6g.4 Documentation and the post-merge doc review.
 
 [TODO] P7  BLOCKING class (design gate, then 3-4 days)
