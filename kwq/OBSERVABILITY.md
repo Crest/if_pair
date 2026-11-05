@@ -58,6 +58,13 @@ handler rejects values outside its range with EINVAL.
 | `steal_max` (RWTUN) | 1 .. 4096 | bulk: 64 | items one steal takes at most, otherwise half the victim's live list |
 | `steal_batch` (RWTUN) | 1 .. 4096 | bulk: 16 | items a pass of a stealable queue takes at most; one while a BULK worker near it sleeps, which the pass wakes for the rest |
 | `steal_wake` (RWTUN) | 0 .. 4096 | bulk: 2 | an enqueue that leaves a stealable list this deep, or at a doubling of it, wakes the nearest sleeping BULK worker; 0: never |
+| `place` (RWTUN) | 0, 1, 2 | bulk: 0 | BULK placement (SPEC-p6g.md S2.8), flippable under load: 0 `kwq_pick_any()`, the one idle mask and the idle-path steal scan (SCHED.md S16); 1 the gossip scheme, tables of nearly idle cores on a torus and the hand-off at a pass end in place of stealing (`kern.kwq.bulk.gossip.*`); 2 P8, the idle mask in lines of 16 CPUs, the donor line and the starved tick (`kern.kwq.bulk.shard.*`).  Under 1 and 2 an item for a fixed CPU of a stealable queue spills to where `KWQ_CPU_ANY` would put it when that CPU is behind.  `steal=0` turns the steals, hand-offs and spills of every mode off.  A flip wakes the sleeping BULK workers so each registers as idle where the new mode reads it |
+| `shard.probe` (RW) | 0 .. 4 | 2 | place=2: groups a producer reads besides its own before the far probe |
+| `shard.donor_us` (RW) | 0 .. 1000000 | 500 | place=2: the stealable backlog, us, that makes a CPU a donor (a lone item counts the work running ahead of it) |
+| `shard.pull_us` (RW) | 0 .. 1000000 | 500 | place=2: a worker whose backlog is below this at a pass end pulls a batch from a donor; 0: never |
+| `shard.watch_us` (RW) | 0 .. 1000000 | 1000 | place=2: the starved tick's period: a CPU holding stealable work whose worker reached no decision point for this long is flagged a starved donor; 0: off |
+| `gossip.h_us`, `gossip.l_us`, `gossip.llocal_us` (RW) | | 2000, 500, 50 | place=1: H, the backlog at which a worker hands off and a fixed CPU's items spill; L, the most a hand-off's target may hold; L_local, the producer's own thread is good below it (SPEC-p6g.md S2.9) |
+| `gossip.handoff_n` (RW) | | 4 | place=1: hand-offs at most per pass end |
 | `wake_delay_us` (RWTUN) | 0 .. 1000000 | 0 (off) | the idle-class wait's deadline, an opt-in (KWQ.md S16): an enqueue from the worker's own CPU makes the worker runnable in the idle class at `cap_prio` instead of preempting the producer, and the worker runs when the producer sleeps or at this deadline, whichever is first.  An item from the worker's CPU waits at most the deadline; an enqueue from another CPU rings the doorbell at either setting |
 
 Examples:
@@ -118,6 +125,25 @@ specified in KWQ.md S16 and are in the merged module, off by default.
     kern.kwq.topo           each CPU's search order for KWQ_CPU_ANY and stealing, one
                             line per CPU, rings separated by "|": "0: 1 | 15 2 14 3 ..."
                             on lab (SMT sibling first), "0: 1 127 2 126 ..." on a07
+    kern.kwq.bulk.shard.group, .ngroups
+                            place=2: CPUs per idle line (loader tunable
+                            kern.kwq.bulk.group, 1-64, default 16) and the lines
+    kern.kwq.bulk.shard.idle
+                            each line's idle bits in hex, then the donor CPUs
+    kern.kwq.bulk.shard.pick_near, .pick_far, .pick_self, .pick_nondonor,
+    .pick_probe, .spills    where place=2 put KWQ_CPU_ANY items: an idle CPU of the
+                            near groups (of those, by the far probe), the producer's
+                            CPU, the nearest non-donor, the shallowest of four probes;
+                            fixed-CPU items spilled at a donor
+    kern.kwq.bulk.gossip.torus
+                            place=1: "N cores, R x C", then per core its CPUs, L3,
+                            package and neighbours
+    kern.kwq.bulk.gossip.place_self, _idle_near, _sibling, _local, _table,
+    _neighbours, _fallback  KWQ_CPU_ANY placements by the step that chose them
+                            (SPEC-p6g.md S2.5)
+    kern.kwq.bulk.gossip.spills, .handoffs, .handed, .merges, .expired_used
+                            fixed-CPU items spilled; batches and items handed off;
+                            merges run; placements that used an expired entry (0)
 
 ## 4. Per-worker counters: `kern.kwq.<class>.cpu.<N>.`
 
@@ -168,6 +194,8 @@ belong to the two optional regimes and the urgent exemption (section
 | `budget_reads` | of those, the ones that read the clock |
 | `steal_tries`, `steals`, `stolen` | BULK: steal attempts made with nothing of its own to do, the ones that moved a batch here, and the items moved (SCHED.md S16) |
 | `steal_wakes` | BULK: wakes from sleep sent to this worker so that it steals (a producer past `steal_wake`, or a stealable pass that left items) |
+| `pulls`, `donor_flags`, `starved` | BULK, place=2: batches pulled from a donor at a pass end; times this CPU became a donor; times the starved tick flagged it |
+| `handoffs` | BULK, place=1: batches this worker handed off at a pass end |
 
 Examples:
 
