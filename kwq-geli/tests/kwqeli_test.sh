@@ -92,6 +92,11 @@ qsum() {
 	sysctl -a "kern.kwq.bulk.queue.kweli-$1.cpu" 2>/dev/null | \
 	    awk -v c="$2" -F': ' '{ n = split($1, p, "."); if (p[n] == c) s += $2 } END { print s + 0 }'
 }
+# qoff md counter cpu: the sum over the CPUs other than cpu
+qoff() {
+	sysctl -a "kern.kwq.bulk.queue.kweli-$1.cpu" 2>/dev/null | \
+	    awk -v c="$2" -v x="$3" -F': ' '{ n = split($1, p, "."); if (p[n] == c && p[n - 1] != x) s += $2 } END { print s + 0 }'
+}
 
 # ---------------------------------------------------------------- cases
 
@@ -242,7 +247,7 @@ enobufs_retry_cleanup() { kwqeli_cleanup; }
 
 atf_test_case steal cleanup
 steal_head() {
-	atf_set descr "every bio of a CPU-heavy (HMAC/SHA256) provider queued to one CPU of a stealable queue: other BULK workers steal a tenth or more and the data is intact"
+	atf_set descr "every bio of a CPU-heavy (HMAC/SHA256) provider queued to one CPU of a stealable queue: a tenth or more runs on other CPUs (stolen, or under kern.kwq.bulk.place 1 and 2 also spilled at the enqueue) and the data is intact"
 	atf_set require.user root
 }
 steal_body() {
@@ -262,10 +267,11 @@ steal_body() {
 		dd if="/dev/$m.kweli" of=data.out bs=1m skip=$((i * 32)) count=32 2>/dev/null
 		cmp -s data.cmp data.out || atf_fail "range $i differs"
 	done
-	echo "steals_in $(qsum "$m" steals_in) stolen_in $(qsum "$m" stolen_in) steals_out $(qsum "$m" steals_out)"
+	echo "steals_in $(qsum "$m" steals_in) stolen_in $(qsum "$m" stolen_in) steals_out $(qsum "$m" steals_out) items_off_cpu1 $(qoff "$m" items 1) place $(sysctl -n kern.kwq.bulk.place 2>/dev/null)"
 	atf_check_equal "$(qsum "$m" steals_in)" "$(qsum "$m" steals_out)"
-	[ $(( $(qsum "$m" stolen_in) * 10 )) -ge "$(qsum "$m" items)" ] || \
-	    atf_fail "$(qsum "$m" stolen_in) of $(qsum "$m" items) bios stolen, wanted a tenth"
+	# what ran elsewhere: stolen batches, and items spilled at the enqueue
+	[ $(( $(qoff "$m" items 1) * 10 )) -ge "$(qsum "$m" items)" ] || \
+	    atf_fail "$(qoff "$m" items 1) of $(qsum "$m" items) bios ran off CPU 1 ($(qsum "$m" stolen_in) stolen), wanted a tenth"
 }
 steal_cleanup() { kwqeli_cleanup; }
 
