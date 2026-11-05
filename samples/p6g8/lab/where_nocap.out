@@ -1,0 +1,2426 @@
+dur_ms	16 small	11000
+dur_ms	32 small	11000
+dur_ms	128 small	11002
+dur_ms	16 bulk	11007
+dur_ms	32 bulk	11011
+dur_ms	128 bulk	11042
+cls	16 small	intr	2
+cls	16 bulk	intr	4
+cls	128 small	intr	6
+cls	128 bulk	intr	7
+cls	32 small	intr	7
+cls	32 bulk	intr	8
+cls	16 small	kernel other	23
+cls	128 small	idle	27
+cls	128 small	kernel other	31
+cls	16 bulk	kernel other	35
+cls	32 small	kernel other	36
+cls	128 bulk	kernel other	49
+cls	32 bulk	kernel other	73
+cls	16 small	other kernel	111
+cls	128 small	other kernel	116
+cls	32 small	other kernel	154
+cls	32 bulk	idle	200
+cls	16 bulk	iolat user	353
+cls	16 bulk	other kernel	412
+cls	128 bulk	idle	452
+cls	32 small	idle	505
+cls	32 bulk	other user	511
+cls	128 bulk	other kernel	517
+cls	32 bulk	iolat user	532
+cls	32 bulk	other kernel	544
+cls	128 bulk	iolat user	614
+cls	16 bulk	idle	773
+cls	128 bulk	other user	903
+cls	128 small	other user	1607
+cls	32 small	other user	1837
+cls	16 bulk	other user	2022
+cls	16 small	other user	2492
+cls	16 bulk	iolat kernel	3481
+cls	32 bulk	iolat kernel	4602
+cls	16 small	idle	5934
+cls	128 small	iolat user	9745
+cls	128 bulk	iolat kernel	10299
+cls	16 small	iolat user	10516
+cls	32 small	iolat user	10722
+cls	128 small	md	32151
+cls	32 small	md	32752
+cls	16 small	md	36073
+cls	16 small	iolat kernel	55387
+cls	128 bulk	md	56671
+cls	32 bulk	md	59196
+cls	128 small	kwq bulk	60405
+cls	16 bulk	md	62278
+cls	32 small	iolat kernel	63754
+cls	16 small	kwq bulk	64950
+cls	32 small	kwq bulk	65721
+cls	128 small	iolat kernel	71416
+cls	16 bulk	kwq bulk	106226
+cls	128 bulk	kwq bulk	106648
+cls	32 bulk	kwq bulk	109998
+passes	32 bulk	90638
+passes	128 bulk	92655
+passes	16 bulk	138646
+passes	128 small	15325860
+passes	32 small	16649516
+passes	16 small	16954374
+items	128 bulk	89189
+items	32 bulk	89676
+items	16 bulk	138519
+items	128 small	15324209
+items	32 small	16649112
+items	16 small	16954248
+requeued	128 small	0
+requeued	16 small	0
+requeued	32 small	0
+requeued	32 bulk	5
+requeued	16 bulk	6
+requeued	128 bulk	8
+fn	128 bulk	intr	kernel`ahci_ch_intr_main	1
+fn	128 bulk	intr	kernel`lock_delay	1
+fn	128 bulk	intr	kernel`pctrie_lookup	1
+fn	128 bulk	iolat kernel	kernel`g_destroy_bio	1
+fn	128 bulk	iolat kernel	kernel`__mtx_unlock_sleep	1
+fn	128 bulk	iolat kernel	kernel`binuptime	1
+fn	128 bulk	iolat kernel	kernel`do_unlock_umutex	1
+fn	128 bulk	iolat kernel	kernel`sched_ule_userret_slowpath	1
+fn	128 bulk	iolat kernel	kernel`pctrie_iter_lookup	1
+fn	128 bulk	iolat kernel	kernel`pctrie_iter_lookup_le	1
+fn	128 bulk	iolat kernel	kernel`turnstile_chain_lock	1
+fn	128 bulk	iolat kernel	kernel`foffset_unlock_uio	1
+fn	128 bulk	iolat kernel	kernel`vm_fault	1
+fn	128 bulk	iolat kernel	kernel`vm_fault_deallocate	1
+fn	128 bulk	iolat kernel	kernel`vm_page_pqbatch_submit	1
+fn	128 bulk	iolat kernel	kernel`vm_pqbatch_process_page	1
+fn	128 bulk	iolat kernel	kernel`pmap_remove_pages	1
+fn	128 bulk	iolat kernel	kwq.ko`kwq_topo_reach	1
+fn	128 bulk	kernel other	kernel`lock_mtx	1
+fn	128 bulk	kernel other	kernel`pctrie_lookup	1
+fn	128 bulk	kernel other	kernel`taskqueue_run_locked	1
+fn	128 bulk	kernel other	kernel`in6_pcblookup_hash_smr	1
+fn	128 bulk	kernel other	kernel`iommu_gas_map	1
+fn	128 bulk	kernel other	kernel`pmap_kextract	1
+fn	128 bulk	kernel other	kernel`memmove_erms	1
+fn	128 bulk	kernel other	kernel`memset_erms	1
+fn	128 bulk	kernel other	zfs.ko`list_head	1
+fn	128 bulk	kernel other	zfs.ko`vdev_geom_io_start	1
+fn	128 bulk	kernel other	zfs.ko`fletcher_4_avx2_native	1
+fn	128 bulk	kernel other	zfs.ko`spa_preferred_class	1
+fn	128 bulk	kernel other	zfs.ko`vdev_mirror_io_done	1
+fn	128 bulk	kwq bulk	kernel`_rm_runlock_debug	1
+fn	128 bulk	kwq bulk	kernel`sched_ule_runnable	1
+fn	128 bulk	kwq bulk	kernel`devstat_start_transaction_bio_t0	1
+fn	128 bulk	kwq bulk	kernel`PHYS_TO_VM_PAGE	1
+fn	128 bulk	kwq bulk	kwq.ko`ks_pass_begin	1
+fn	128 bulk	kwq bulk	kwq.ko`ks_budget_left	1
+fn	128 bulk	kwq bulk	kwq.ko`kwq_kc_unlock	1
+fn	128 bulk	md	kernel`g_destroy_bio	1
+fn	128 bulk	md	kernel`cv_broadcastpri	1
+fn	128 bulk	md	kernel`knlist_mtx_unlock	1
+fn	128 bulk	md	kernel`_thread_lock	1
+fn	128 bulk	md	kernel`devstat_end_transaction_bio_bt	1
+fn	128 bulk	md	kernel`sleepq_lock	1
+fn	128 bulk	md	kernel`kmem_free	1
+fn	128 bulk	other kernel	kernel`em_update_stats_counters	1
+fn	128 bulk	other kernel	kernel`random_fortuna_pre_read	1
+fn	128 bulk	other kernel	kernel`re_miibus_readreg	1
+fn	128 bulk	other kernel	kernel`re_gmii_writereg	1
+fn	128 bulk	other kernel	kernel`xhci_roothub_exec	1
+fn	128 bulk	other kernel	kernel`devfs_find	1
+fn	128 bulk	other kernel	kernel`exec_elf64_imgact	1
+fn	128 bulk	other kernel	kernel`fgetown	1
+fn	128 bulk	other kernel	kernel`fget	1
+fn	128 bulk	other kernel	kernel`finstall_refed	1
+fn	128 bulk	other kernel	kernel`pdescfree	1
+fn	128 bulk	other kernel	kernel`closef	1
+fn	128 bulk	other kernel	kernel`fdcloseexec	1
+fn	128 bulk	other kernel	kernel`finit_vnode	1
+fn	128 bulk	other kernel	kernel`fget_unlocked_seq	1
+fn	128 bulk	other kernel	kernel`fget_unlocked_flags	1
+fn	128 bulk	other kernel	kernel`fget_read	1
+fn	128 bulk	other kernel	kernel`fget_write	1
+fn	128 bulk	other kernel	kernel`prison_proc_unlink	1
+fn	128 bulk	other kernel	kernel`lockmgr_lock_flags	1
+fn	128 bulk	other kernel	kernel`m_free	1
+fn	128 bulk	other kernel	kernel`thread_lock_flags_	1
+fn	128 bulk	other kernel	kernel`_mtx_init	1
+fn	128 bulk	other kernel	kernel`mtx_spin_wait_unlocked	1
+fn	128 bulk	other kernel	kernel`proc_dtor	1
+fn	128 bulk	other kernel	kernel`p_canwait	1
+fn	128 bulk	other kernel	kernel`racct_add_locked	1
+fn	128 bulk	other kernel	kernel`racct_set_locked	1
+fn	128 bulk	other kernel	kernel`racctd	1
+fn	128 bulk	other kernel	kernel`rctl_pcpu_available	1
+fn	128 bulk	other kernel	kernel`rctl_enforce	1
+fn	128 bulk	other kernel	kernel`lim_free	1
+fn	128 bulk	other kernel	kernel`lim_fork	1
+fn	128 bulk	other kernel	kernel`lim_max	1
+fn	128 bulk	other kernel	kernel`chgproccnt	1
+fn	128 bulk	other kernel	kernel`rms_rlock	1
+fn	128 bulk	other kernel	kernel`rms_try_rlock	1
+fn	128 bulk	other kernel	kernel`__rw_rlock_int	1
+fn	128 bulk	other kernel	kernel`sx_init_flags	1
+fn	128 bulk	other kernel	kernel`sx_downgrade_int	1
+fn	128 bulk	other kernel	kernel`sysctl_root	1
+fn	128 bulk	other kernel	kernel`sysctl_new_user	1
+fn	128 bulk	other kernel	kernel`microuptime	1
+fn	128 bulk	other kernel	kernel`pctrie_iter_lookup_le	1
+fn	128 bulk	other kernel	kernel`pctrie_reclaim_resume_cb	1
+fn	128 bulk	other kernel	kernel`rangeset_containing	1
+fn	128 bulk	other kernel	kernel`smr_advance	1
+fn	128 bulk	other kernel	kernel`cap_rights_to_vmprot	1
+fn	128 bulk	other kernel	kernel`sys_ioctl	1
+fn	128 bulk	other kernel	kernel`kern_posix_error	1
+fn	128 bulk	other kernel	kernel`kern_poll_kfds	1
+fn	128 bulk	other kernel	kernel`soclose	1
+fn	128 bulk	other kernel	kernel`kern_sendit	1
+fn	128 bulk	other kernel	kernel`cache_vop_inotify	1
+fn	128 bulk	other kernel	kernel`vop_eopnotsupp	1
+fn	128 bulk	other kernel	kernel`vop_stdstat	1
+fn	128 bulk	other kernel	kernel`vfs_busy	1
+fn	128 bulk	other kernel	kernel`sched_sync	1
+fn	128 bulk	other kernel	kernel`vn_open_cred	1
+fn	128 bulk	other kernel	kernel`_vn_lock	1
+fn	128 bulk	other kernel	kernel`get_advice	1
+fn	128 bulk	other kernel	kernel`in6_lltable_lookup	1
+fn	128 bulk	other kernel	kernel`ip6_output	1
+fn	128 bulk	other kernel	kernel`nd6_llinfo_timer	1
+fn	128 bulk	other kernel	kernel`fe25519_mul	1
+fn	128 bulk	other kernel	kernel`mac_vnode_check_readdir	1
+fn	128 bulk	other kernel	kernel`swap_pager_dealloc	1
+fn	128 bulk	other kernel	kernel`swap_pager_haspage	1
+fn	128 bulk	other kernel	kernel`swp_pager_meta_free	1
+fn	128 bulk	other kernel	kernel`uma_zalloc_smr	1
+fn	128 bulk	other kernel	kernel`cache_alloc_retry	1
+fn	128 bulk	other kernel	kernel`vm_fault_dirty	1
+fn	128 bulk	other kernel	kernel`_vm_map_lock_upgrade	1
+fn	128 bulk	other kernel	kernel`vm_map_entry_unlink	1
+fn	128 bulk	other kernel	kernel`vm_map_entry_delete	1
+fn	128 bulk	other kernel	kernel`vm_map_lookup	1
+fn	128 bulk	other kernel	kernel`kern_mmap	1
+fn	128 bulk	other kernel	kernel`kern_mmap_racct_check	1
+fn	128 bulk	other kernel	kernel`vm_object_pip_add	1
+fn	128 bulk	other kernel	kernel`vm_object_pip_wakeup	1
+fn	128 bulk	other kernel	kernel`vm_object_allocate_anon	1
+fn	128 bulk	other kernel	kernel`vm_object_coalesce	1
+fn	128 bulk	other kernel	kernel`vm_page_tryxbusy	1
+fn	128 bulk	other kernel	kernel`vm_page_pqbatch_submit	1
+fn	128 bulk	other kernel	kernel`vm_pqbatch_process_page	1
+fn	128 bulk	other kernel	kernel`vm_pageout_worker	1
+fn	128 bulk	other kernel	kernel`vm_object_mightbedirty	1
+fn	128 bulk	other kernel	kernel`vm_reserv_free_page	1
+fn	128 bulk	other kernel	kernel`tscp_get_timecount_low	1
+fn	128 bulk	other kernel	kernel`0xffffffff81	1
+fn	128 bulk	other kernel	kernel`set_pcb_flags_fsgsbase	1
+fn	128 bulk	other kernel	kernel`pmap_delayed_invl_start_u	1
+fn	128 bulk	other kernel	kernel`pmap_invalidate_page_curcpu_cb	1
+fn	128 bulk	other kernel	kernel`pmap_pinit_type	1
+fn	128 bulk	other kernel	kernel`pmap_remove1	1
+fn	128 bulk	other kernel	kernel`pmap_enter_quick_locked	1
+fn	128 bulk	other kernel	kernel`_pmap_unwire_ptp	1
+fn	128 bulk	other kernel	kernel`pmap_allocpte_getpdp	1
+fn	128 bulk	other kernel	kernel`trap	1
+fn	128 bulk	other kernel	kernel`cpu_fetch_syscall_args	1
+fn	128 bulk	other kernel	kernel`cpu_set_syscall_retval	1
+fn	128 bulk	other kernel	kernel`VOP_GETATTR_APV	1
+fn	128 bulk	other kernel	zfs.ko`list_head	1
+fn	128 bulk	other kernel	zfs.ko`kmem_cache_alloc	1
+fn	128 bulk	other kernel	zfs.ko`abd_update_linear_stats	1
+fn	128 bulk	other kernel	zfs.ko`abd_alloc_struct_impl	1
+fn	128 bulk	other kernel	zfs.ko`zfs_freebsd_readdir	1
+fn	128 bulk	other kernel	zfs.ko`zfs_freebsd_need_inactive	1
+fn	128 bulk	other kernel	zfs.ko`zfs_readdir	1
+fn	128 bulk	other kernel	zfs.ko`arc_is_encrypted	1
+fn	128 bulk	other kernel	zfs.ko`arc_space_return	1
+fn	128 bulk	other kernel	zfs.ko`arc_buf_access	1
+fn	128 bulk	other kernel	zfs.ko`arc_read	1
+fn	128 bulk	other kernel	zfs.ko`arc_write	1
+fn	128 bulk	other kernel	zfs.ko`bt_grow_leaf	1
+fn	128 bulk	other kernel	zfs.ko`cityhash2	1
+fn	128 bulk	other kernel	zfs.ko`dbuf_cache_multilist_index_func	1
+fn	128 bulk	other kernel	zfs.ko`dbuf_add_ref	1
+fn	128 bulk	other kernel	zfs.ko`dbuf_create	1
+fn	128 bulk	other kernel	zfs.ko`dbuf_sync_list	1
+fn	128 bulk	other kernel	zfs.ko`dmu_buf_hold_array_by_dnode	1
+fn	128 bulk	other kernel	zfs.ko`dnode_hold_impl	1
+fn	128 bulk	other kernel	zfs.ko`dnode_block_freed	1
+fn	128 bulk	other kernel	zfs.ko`dbuf_compare	1
+fn	128 bulk	other kernel	zfs.ko`LZ4_uncompress_unknownOutputSize	1
+fn	128 bulk	other kernel	zfs.ko`metaslab_sync_done	1
+fn	128 bulk	other kernel	zfs.ko`zfs_range_tree_add_impl	1
+fn	128 bulk	other kernel	zfs.ko`zap_attribute_long_alloc	1
+fn	128 bulk	other kernel	zfs.ko`zfs_rangelock_enter_impl	1
+fn	128 bulk	other kernel	zfs.ko`zfs_read	1
+fn	128 bulk	other kernel	zfs.ko`zio_create	1
+fn	128 bulk	other kernel	zfs.ko`zio_ready	1
+fn	128 bulk	other kernel	if_wg.ko`wg_send	1
+fn	128 bulk	other kernel	dtrace.ko`dtrace_state_clean	1
+fn	128 bulk	other kernel	dtrace.ko`dtrace_interrupt_enable	1
+fn	128 small	iolat kernel	kernel`cache_alloc_retry	1
+fn	128 small	iolat kernel	kernel`vm_map_lookup	1
+fn	128 small	iolat kernel	kernel`0xffffffff81	1
+fn	128 small	iolat kernel	kernel`0xffffffff81	1
+fn	128 small	iolat kernel	kernel`0xffffffff81	1
+fn	128 small	iolat kernel	kernel`pagezero_erms	1
+fn	128 small	kernel other	kernel`_epoch_enter_preempt	1
+fn	128 small	kernel other	kernel`rip_inp_match2	1
+fn	128 small	kernel other	kernel`iommu_qi_drain_tlb_flush	1
+fn	128 small	kernel other	kernel`spinlock_exit	1
+fn	128 small	kernel other	zfs.ko`dbuf_write_ready	1
+fn	128 small	kernel other	zfs.ko`zfs_blkptr_verify	1
+fn	128 small	kernel other	zfs.ko`zio_done	1
+fn	128 small	kwq bulk	kernel`_mtx_lock_spin_cookie	1
+fn	128 small	kwq bulk	kernel`cache_free	1
+fn	128 small	md	kernel`critical_exit_preempt	1
+fn	128 small	other kernel	kernel`em_update_stats_counters	1
+fn	128 small	other kernel	kernel`fdalloc	1
+fn	128 small	other kernel	kernel`free	1
+fn	128 small	other kernel	kernel`ast_sig	1
+fn	128 small	other kernel	kernel`sx_downgrade_int	1
+fn	128 small	other kernel	kernel`pctrie_lookup_unlocked	1
+fn	128 small	other kernel	kernel`kvprintf	1
+fn	128 small	other kernel	kernel`uiomove_faultflag	1
+fn	128 small	other kernel	kernel`pipe_read	1
+fn	128 small	other kernel	kernel`cache_fplookup	1
+fn	128 small	other kernel	kernel`vrefact	1
+fn	128 small	other kernel	kernel`vn_close1	1
+fn	128 small	other kernel	kernel`bpf_filter	1
+fn	128 small	other kernel	kernel`sysctl_iflist	1
+fn	128 small	other kernel	kernel`poly1305_update	1
+fn	128 small	other kernel	kernel`vm_fault	1
+fn	128 small	other kernel	kernel`vm_map_findspace	1
+fn	128 small	other kernel	kernel`vmspace_fork	1
+fn	128 small	other kernel	kernel`vm_object_terminate_single_page	1
+fn	128 small	other kernel	kernel`vm_page_alloc_iter	1
+fn	128 small	other kernel	kernel`vm_page_alloc_noobj	1
+fn	128 small	other kernel	kernel`vm_page_pqstate_commit_dequeue	1
+fn	128 small	other kernel	kernel`vm_phys_free_pages	1
+fn	128 small	other kernel	kernel`vm_reserv_free_page	1
+fn	128 small	other kernel	kernel`tscp_get_timecount_low	1
+fn	128 small	other kernel	kernel`smp_targeted_tlb_shootdown_native	1
+fn	128 small	other kernel	kernel`pmap_invalidate_page_curcpu_cb	1
+fn	128 small	other kernel	kernel`pmap_kextract	1
+fn	128 small	other kernel	kernel`pmap_remove1	1
+fn	128 small	other kernel	kernel`pmap_enter	1
+fn	128 small	other kernel	kernel`get_pv_entry	1
+fn	128 small	other kernel	kernel`pmap_copy	1
+fn	128 small	other kernel	kernel`pagezero_erms	1
+fn	128 small	other kernel	kernel`amd64_syscall	1
+fn	128 small	other kernel	kernel`cpu_set_syscall_retval	1
+fn	128 small	other kernel	kernel`VOP_GETATTR_APV	1
+fn	128 small	other kernel	zfs.ko`list_head	1
+fn	128 small	other kernel	zfs.ko`taskq_insert	1
+fn	128 small	other kernel	zfs.ko`dbuf_clear_data	1
+fn	128 small	other kernel	zfs.ko`dbuf_hold_impl	1
+fn	128 small	other kernel	zfs.ko`userquota_updates_task	1
+fn	128 small	other kernel	zfs.ko`dmu_tx_hold_sa	1
+fn	128 small	other kernel	zfs.ko`LZ4_uncompress_unknownOutputSize	1
+fn	128 small	other kernel	zfs.ko`metaslab_sort_by_flushed	1
+fn	128 small	other kernel	zfs.ko`zfs_range_tree_seg64_find_in_buf	1
+fn	128 small	other kernel	zfs.ko`zio_done	1
+fn	128 small	other kernel	dtrace.ko`dtrace_interrupt_enable	1
+fn	128 small	other kernel	kinst.ko`kinst_trampoline_dealloc_locked	1
+fn	16 bulk	intr	kernel`xpt_done_process	1
+fn	16 bulk	intr	kernel`ahci_ch_intr_direct	1
+fn	16 bulk	intr	kernel`g_disk_done	1
+fn	16 bulk	intr	kernel`lock_delay	1
+fn	16 bulk	iolat kernel	kernel`pctrie_iter_lookup	1
+fn	16 bulk	iolat kernel	kernel`sleepq_lock	1
+fn	16 bulk	iolat kernel	kernel`foffset_unlock_uio	1
+fn	16 bulk	iolat kernel	kernel`cache_alloc_retry	1
+fn	16 bulk	iolat kernel	kernel`0xffffffff81	1
+fn	16 bulk	kernel other	kernel`free	1
+fn	16 bulk	kernel other	kernel`mb_ctor_mbuf	1
+fn	16 bulk	kernel other	kernel`_rm_rlock	1
+fn	16 bulk	kernel other	kernel`iflib_rxeof	1
+fn	16 bulk	kernel other	kernel`arpintr	1
+fn	16 bulk	kernel other	kernel`udp_multi_match	1
+fn	16 bulk	kernel other	kernel`ip6_input	1
+fn	16 bulk	kernel other	kernel`iommu_gas_entries_tree_RB_REMOVE	1
+fn	16 bulk	kernel other	kernel`iommu_gas_free_space	1
+fn	16 bulk	kernel other	kernel`amdiommu_get_x86_common	1
+fn	16 bulk	kernel other	kernel`is_fpu_kern_thread	1
+fn	16 bulk	kernel other	kernel`pmap_kextract	1
+fn	16 bulk	kernel other	kernel`memmove_erms	1
+fn	16 bulk	kernel other	kernel`memset_erms	1
+fn	16 bulk	kernel other	zfs.ko`add_reference	1
+fn	16 bulk	kernel other	zfs.ko`zio_write_compress	1
+fn	16 bulk	kwq bulk	kernel`__rw_wunlock_hard	1
+fn	16 bulk	kwq bulk	kwq.ko`ks_pass_begin	1
+fn	16 bulk	kwq bulk	kwq.ko`ks_budget_left	1
+fn	16 bulk	kwq bulk	kwq.ko`kwq_shard_wake	1
+fn	16 bulk	kwq bulk	kwq.ko`kwq_steal_from	1
+fn	16 bulk	md	kernel`g_destroy_bio	1
+fn	16 bulk	md	kernel`cv_broadcastpri	1
+fn	16 bulk	md	kernel`_thread_lock	1
+fn	16 bulk	md	kernel`vmem_try_release	1
+fn	16 bulk	md	kernel`vm_page_iter_init	1
+fn	16 bulk	other kernel	kernel`igb_isc_txd_flush	1
+fn	16 bulk	other kernel	kernel`elf64_load_sections	1
+fn	16 bulk	other kernel	kernel`elf64_load_file	1
+fn	16 bulk	other kernel	kernel`fdcloseexec	1
+fn	16 bulk	other kernel	kernel`fget_unlocked_flags	1
+fn	16 bulk	other kernel	kernel`kern_execve	1
+fn	16 bulk	other kernel	kernel`exec_new_vmspace	1
+fn	16 bulk	other kernel	kernel`exit1	1
+fn	16 bulk	other kernel	kernel`proc_reap	1
+fn	16 bulk	other kernel	kernel`prison_hold	1
+fn	16 bulk	other kernel	kernel`malloc	1
+fn	16 bulk	other kernel	kernel`_mtx_trylock_flags_	1
+fn	16 bulk	other kernel	kernel`racct_add_locked	1
+fn	16 bulk	other kernel	kernel`rctl_throttle_decay	1
+fn	16 bulk	other kernel	kernel`rctl_pcpu_available	1
+fn	16 bulk	other kernel	kernel`rctl_enforce	1
+fn	16 bulk	other kernel	kernel`rms_rlock	1
+fn	16 bulk	other kernel	kernel`rms_runlock	1
+fn	16 bulk	other kernel	kernel`kern_sigaction	1
+fn	16 bulk	other kernel	kernel`microuptime	1
+fn	16 bulk	other kernel	kernel`kern_clock_gettime	1
+fn	16 bulk	other kernel	kernel`umtx_thread_cleanup	1
+fn	16 bulk	other kernel	kernel`pctrie_insert_node	1
+fn	16 bulk	other kernel	kernel`pctrie_reclaim_resume_cb	1
+fn	16 bulk	other kernel	kernel`rangeset_init	1
+fn	16 bulk	other kernel	kernel`rangeset_containing	1
+fn	16 bulk	other kernel	kernel`sleepq_catch_signals	1
+fn	16 bulk	other kernel	kernel`dofileread	1
+fn	16 bulk	other kernel	kernel`sys_ioctl	1
+fn	16 bulk	other kernel	kernel`kern_ioctl	1
+fn	16 bulk	other kernel	kernel`kern_select	1
+fn	16 bulk	other kernel	kernel`selfdfree	1
+fn	16 bulk	other kernel	kernel`kern_recvit	1
+fn	16 bulk	other kernel	kernel`aio_proc_rundown	1
+fn	16 bulk	other kernel	kernel`cache_fplookup_final_modifying	1
+fn	16 bulk	other kernel	kernel`vop_lock	1
+fn	16 bulk	other kernel	kernel`vfs_ref_from_vp	1
+fn	16 bulk	other kernel	kernel`openatfp	1
+fn	16 bulk	other kernel	kernel`vn_mmap	1
+fn	16 bulk	other kernel	kernel`vn_start_write	1
+fn	16 bulk	other kernel	kernel`vn_open_vnode	1
+fn	16 bulk	other kernel	kernel`strcpy	1
+fn	16 bulk	other kernel	kernel`bpf_mtap	1
+fn	16 bulk	other kernel	kernel`ip_fillid	1
+fn	16 bulk	other kernel	kernel`fib6_lookup	1
+fn	16 bulk	other kernel	kernel`ip6_output	1
+fn	16 bulk	other kernel	kernel`fe25519_sq	1
+fn	16 bulk	other kernel	kernel`mac_mbuf_to_label	1
+fn	16 bulk	other kernel	kernel`uma_zalloc_smr	1
+fn	16 bulk	other kernel	kernel`vm_map_process_deferred	1
+fn	16 bulk	other kernel	kernel`_vm_map_lock_upgrade	1
+fn	16 bulk	other kernel	kernel`vm_map_insert1	1
+fn	16 bulk	other kernel	kernel`vm_map_find_locked	1
+fn	16 bulk	other kernel	kernel`vm_map_entry_link	1
+fn	16 bulk	other kernel	kernel`vm_map_lookup	1
+fn	16 bulk	other kernel	kernel`vm_map_entry_clone	1
+fn	16 bulk	other kernel	kernel`vm_mmap_vnode	1
+fn	16 bulk	other kernel	kernel`vm_object_pip_wakeup	1
+fn	16 bulk	other kernel	kernel`vm_object_collapse	1
+fn	16 bulk	other kernel	kernel`vm_object_mightbedirty_	1
+fn	16 bulk	other kernel	kernel`vm_object_terminate_single_page	1
+fn	16 bulk	other kernel	kernel`PHYS_TO_VM_PAGE	1
+fn	16 bulk	other kernel	kernel`vm_page_iter_insert	1
+fn	16 bulk	other kernel	kernel`vm_page_pqstate_commit	1
+fn	16 bulk	other kernel	kernel`vm_page_set_dirty	1
+fn	16 bulk	other kernel	kernel`vm_page_free_prep	1
+fn	16 bulk	other kernel	kernel`vm_reserv_num_alloc_pages	1
+fn	16 bulk	other kernel	kernel`vm_reserv_alloc_page	1
+fn	16 bulk	other kernel	kernel`vm_reserv_rename	1
+fn	16 bulk	other kernel	kernel`random_rdseed_read	1
+fn	16 bulk	other kernel	kernel`tscp_get_timecount_low	1
+fn	16 bulk	other kernel	kernel`0xffffffff81	1
+fn	16 bulk	other kernel	kernel`0xffffffff81	1
+fn	16 bulk	other kernel	kernel`0xffffffff81	1
+fn	16 bulk	other kernel	kernel`0xffffffff81	1
+fn	16 bulk	other kernel	kernel`exec_setregs	1
+fn	16 bulk	other kernel	kernel`fpusave_xsaveopt3264	1
+fn	16 bulk	other kernel	kernel`pmap_delayed_invl_start_u	1
+fn	16 bulk	other kernel	kernel`get_pv_entry	1
+fn	16 bulk	other kernel	kernel`_pmap_unwire_ptp	1
+fn	16 bulk	other kernel	kernel`memcpy_erms	1
+fn	16 bulk	other kernel	kernel`strlen	1
+fn	16 bulk	other kernel	kernel`copyin_smap_erms	1
+fn	16 bulk	other kernel	kernel`amd64_syscall	1
+fn	16 bulk	other kernel	kernel`VOP_LOCK1_APV	1
+fn	16 bulk	other kernel	zfs.ko`list_head	1
+fn	16 bulk	other kernel	zfs.ko`kmem_std_destructor	1
+fn	16 bulk	other kernel	zfs.ko`taskq_insert	1
+fn	16 bulk	other kernel	zfs.ko`abd_update_linear_stats	1
+fn	16 bulk	other kernel	zfs.ko`zfs_ace_fuid_get_flags	1
+fn	16 bulk	other kernel	zfs.ko`zfs_freebsd_readlink	1
+fn	16 bulk	other kernel	zfs.ko`abd_free	1
+fn	16 bulk	other kernel	zfs.ko`buf_cons	1
+fn	16 bulk	other kernel	zfs.ko`zfs_btree_find	1
+fn	16 bulk	other kernel	zfs.ko`dbuf_find	1
+fn	16 bulk	other kernel	zfs.ko`dbuf_rele_and_unlock	1
+fn	16 bulk	other kernel	zfs.ko`dbuf_hold_impl	1
+fn	16 bulk	other kernel	zfs.ko`dbuf_include_in_metadata_cache	1
+fn	16 bulk	other kernel	zfs.ko`dmu_buf_hold_by_dnode	1
+fn	16 bulk	other kernel	zfs.ko`dmu_read_uio_dnode	1
+fn	16 bulk	other kernel	zfs.ko`dmu_object_size_from_db	1
+fn	16 bulk	other kernel	zfs.ko`dnode_hold	1
+fn	16 bulk	other kernel	zfs.ko`LZ4_uncompress_unknownOutputSize	1
+fn	16 bulk	other kernel	zfs.ko`zfs_lz4_decompress	1
+fn	16 bulk	other kernel	zfs.ko`metaslab_rt_find_rangesize32_in_buf	1
+fn	16 bulk	other kernel	zfs.ko`multilist_remove	1
+fn	16 bulk	other kernel	zfs.ko`sa_attr_op	1
+fn	16 bulk	other kernel	zfs.ko`spa_txg_history_set	1
+fn	16 bulk	other kernel	zfs.ko`space_map_write	1
+fn	16 bulk	other kernel	zfs.ko`zap_attribute_long_alloc	1
+fn	16 bulk	other kernel	zfs.ko`zfs_read	1
+fn	16 bulk	other kernel	zfs.ko`zio_create	1
+fn	16 bulk	other kernel	zfs.ko`zio_wait	1
+fn	16 bulk	other kernel	zfs.ko`zio_done	1
+fn	16 bulk	other kernel	zfs.ko`zio_decompress_data	1
+fn	16 bulk	other kernel	if_wg.ko`wg_peer_send_staged	1
+fn	16 bulk	other kernel	dtrace.ko`dtrace_ioctl	1
+fn	16 bulk	other kernel	fasttrap.ko`fasttrap_provider_retire	1
+fn	16 small	intr	kernel`lock_delay	1
+fn	16 small	intr	kernel`spinlock_exit	1
+fn	16 small	iolat kernel	kernel`turnstile_chain_lock	1
+fn	16 small	iolat kernel	kernel`0xffffffff81	1
+fn	16 small	kernel other	kernel`m_adj	1
+fn	16 small	kernel other	kernel`iflib_fl_refill	1
+fn	16 small	kernel other	kernel`sync_algo_cb	1
+fn	16 small	kernel other	kernel`amdiommu_get_x86_common	1
+fn	16 small	kernel other	kernel`memset_erms	1
+fn	16 small	kernel other	zfs.ko`abd_size_alloc_linear	1
+fn	16 small	kernel other	zfs.ko`vdev_mirror_map_init	1
+fn	16 small	md	kernel`turnstile_chain_lock	1
+fn	16 small	md	kernel`bucket_alloc	1
+fn	16 small	other kernel	kernel`exec_elf64_imgact	1
+fn	16 small	other kernel	kernel`brandnote_cb	1
+fn	16 small	other kernel	kernel`fdcopy	1
+fn	16 small	other kernel	kernel`exit1	1
+fn	16 small	other kernel	kernel`proc_to_reap	1
+fn	16 small	other kernel	kernel`lf_free_lock	1
+fn	16 small	other kernel	kernel`free	1
+fn	16 small	other kernel	kernel`rms_rlock	1
+fn	16 small	other kernel	kernel`counter_u64_fetch	1
+fn	16 small	other kernel	kernel`userret	1
+fn	16 small	other kernel	kernel`ast_prep	1
+fn	16 small	other kernel	kernel`kern_poll_kfds	1
+fn	16 small	other kernel	kernel`soo_poll	1
+fn	16 small	other kernel	kernel`vop_unlock	1
+fn	16 small	other kernel	kernel`fe25519_mul	1
+fn	16 small	other kernel	kernel`crypto_scalarmult_curve25519_ref10	1
+fn	16 small	other kernel	kernel`uma_zfree_arg	1
+fn	16 small	other kernel	kernel`vm_fault	1
+fn	16 small	other kernel	kernel`vm_fault_dirty	1
+fn	16 small	other kernel	kernel`vm_map_process_deferred	1
+fn	16 small	other kernel	kernel`vm_map_fixed	1
+fn	16 small	other kernel	kernel`vm_map_delete	1
+fn	16 small	other kernel	kernel`vm_map_protect	1
+fn	16 small	other kernel	kernel`vmspace_fork	1
+fn	16 small	other kernel	kernel`vm_object_terminate	1
+fn	16 small	other kernel	kernel`vm_reserv_populate	1
+fn	16 small	other kernel	kernel`vm_reserv_alloc_page	1
+fn	16 small	other kernel	kernel`vnode_pager_clean_async	1
+fn	16 small	other kernel	kernel`iommu_qi_invalidate_sync	1
+fn	16 small	other kernel	kernel`tscp_get_timecount_low	1
+fn	16 small	other kernel	kernel`0xffffffff81	1
+fn	16 small	other kernel	kernel`pmap_protect	1
+fn	16 small	other kernel	kernel`pmap_copy	1
+fn	16 small	other kernel	kernel`pmap_ts_referenced	1
+fn	16 small	other kernel	kernel`_pmap_unwire_ptp	1
+fn	16 small	other kernel	kernel`memset_erms	1
+fn	16 small	other kernel	zfs.ko`list_head	1
+fn	16 small	other kernel	zfs.ko`zfs_acl_next_ace	1
+fn	16 small	other kernel	zfs.ko`zfs_ace_fuid_size	1
+fn	16 small	other kernel	zfs.ko`arc_read	1
+fn	16 small	other kernel	zfs.ko`zfs_btree_next_helper	1
+fn	16 small	other kernel	zfs.ko`dbuf_dirty	1
+fn	16 small	other kernel	zfs.ko`dbuf_rele_and_unlock	1
+fn	16 small	other kernel	zfs.ko`dbuf_write	1
+fn	16 small	other kernel	zfs.ko`sa_attr_op	1
+fn	16 small	other kernel	zfs.ko`zap_hash	1
+fn	16 small	other kernel	zfs.ko`zio_nowait	1
+fn	32 bulk	intr	kernel`ahci_ch_intr_direct	1
+fn	32 bulk	intr	kernel`ahci_ch_intr_main	1
+fn	32 bulk	intr	kernel`ahci_end_transaction	1
+fn	32 bulk	intr	kernel`pctrie_lookup	1
+fn	32 bulk	intr	kernel`iommu_bus_dmamap_unload	1
+fn	32 bulk	intr	kernel`amdiommu_cmd_advance_tail	1
+fn	32 bulk	iolat kernel	kernel`g_reset_bio	1
+fn	32 bulk	iolat kernel	kernel`g_io_check	1
+fn	32 bulk	iolat kernel	kernel`sched_ule_userret_slowpath	1
+fn	32 bulk	iolat kernel	kernel`pctrie_iter_lookup_le	1
+fn	32 bulk	iolat kernel	kernel`userret	1
+fn	32 bulk	iolat kernel	kernel`turnstile_chain_lock	1
+fn	32 bulk	iolat kernel	kernel`devfs_iosize_max	1
+fn	32 bulk	iolat kernel	kernel`foffset_unlock_uio	1
+fn	32 bulk	iolat kernel	kernel`vm_page_pqbatch_submit	1
+fn	32 bulk	iolat kernel	kernel`vm_reserv_alloc_page	1
+fn	32 bulk	iolat kernel	kernel`pmap_remove_pages	1
+fn	32 bulk	iolat kernel	kernel`trap	1
+fn	32 bulk	iolat kernel	kernel`trap_pfault	1
+fn	32 bulk	kernel other	kernel`cam_iosched_queue_work	1
+fn	32 bulk	kernel other	kernel`ahci_check_collision	1
+fn	32 bulk	kernel other	kernel`g_disk_start	1
+fn	32 bulk	kernel other	kernel`nanouptime	1
+fn	32 bulk	kernel other	kernel`pctrie_lookup	1
+fn	32 bulk	kernel other	kernel`iflib_rxeof	1
+fn	32 bulk	kernel other	kernel`ifmp_ring_enqueue	1
+fn	32 bulk	kernel other	kernel`inp_next	1
+fn	32 bulk	kernel other	kernel`nl_buf_alloc	1
+fn	32 bulk	kernel other	kernel`uma_zfree_arg	1
+fn	32 bulk	kernel other	kernel`vm_page_free_toq	1
+fn	32 bulk	kernel other	kernel`vm_phys_alloc_contig	1
+fn	32 bulk	kernel other	kernel`iommu_gas_entries_tree_RB_REMOVE	1
+fn	32 bulk	kernel other	kernel`amdiommu_map_buf	1
+fn	32 bulk	kernel other	kernel`iommu_qi_invalidate_sync	1
+fn	32 bulk	kernel other	kernel`pagezero_erms	1
+fn	32 bulk	kernel other	zfs.ko`avl_first	1
+fn	32 bulk	kernel other	zfs.ko`avl_is_empty	1
+fn	32 bulk	kernel other	zfs.ko`list_remove	1
+fn	32 bulk	kernel other	zfs.ko`abd_verify	1
+fn	32 bulk	kernel other	zfs.ko`buf_hash_find	1
+fn	32 bulk	kernel other	zfs.ko`arc_write_ready	1
+fn	32 bulk	kernel other	zfs.ko`arc_write_done	1
+fn	32 bulk	kernel other	zfs.ko`zfs_btree_last	1
+fn	32 bulk	kernel other	zfs.ko`dbuf_write_done	1
+fn	32 bulk	kernel other	zfs.ko`metaslab_rt_find_rangesize32_in_buf	1
+fn	32 bulk	kernel other	zfs.ko`bp_get_dsize_sync	1
+fn	32 bulk	kernel other	zfs.ko`vdev_queue_io_done	1
+fn	32 bulk	kernel other	zfs.ko`zio_vdev_io_assess	1
+fn	32 bulk	kernel other	zfs.ko`zio_remove_child	1
+fn	32 bulk	kwq bulk	kernel`_rm_runlock_debug	1
+fn	32 bulk	kwq bulk	kernel`msleep_spin_sbt	1
+fn	32 bulk	kwq bulk	kernel`getbinuptime	1
+fn	32 bulk	kwq bulk	kernel`PHYS_TO_VM_PAGE	1
+fn	32 bulk	kwq bulk	kwq.ko`kwq_doorbell	1
+fn	32 bulk	kwq bulk	kwq.ko`kwq_kc_lock	1
+fn	32 bulk	kwq bulk	geom_kwqeli.ko`g_eli_alloc_data	1
+fn	32 bulk	md	kernel`g_destroy_bio	1
+fn	32 bulk	md	kernel`knlist_mtx_unlock	1
+fn	32 bulk	md	kernel`__rw_wunlock_hard	1
+fn	32 bulk	md	kernel`zone_put_bucket	1
+fn	32 bulk	md	kernel`zone_free_bucket	1
+fn	32 bulk	other kernel	kernel`em_update_stats_counters	1
+fn	32 bulk	other kernel	kernel`random_fortuna_seeded	1
+fn	32 bulk	other kernel	kernel`re_miibus_readreg	1
+fn	32 bulk	other kernel	kernel`devfs_populate_vp	1
+fn	32 bulk	other kernel	kernel`elf64_freebsd_copyout_auxargs	1
+fn	32 bulk	other kernel	kernel`kern_close_range	1
+fn	32 bulk	other kernel	kernel`closef	1
+fn	32 bulk	other kernel	kernel`fget_unlocked_seq	1
+fn	32 bulk	other kernel	kernel`kqueue_scan	1
+fn	32 bulk	other kernel	kernel`kern_execve	1
+fn	32 bulk	other kernel	kernel`exec_new_vmspace	1
+fn	32 bulk	other kernel	kernel`exec_alloc_args	1
+fn	32 bulk	other kernel	kernel`sys__exit	1
+fn	32 bulk	other kernel	kernel`exit1	1
+fn	32 bulk	other kernel	kernel`proc_set_p2_wexit	1
+fn	32 bulk	other kernel	kernel`kern_wait6	1
+fn	32 bulk	other kernel	kernel`proc_to_reap	1
+fn	32 bulk	other kernel	kernel`fork1	1
+fn	32 bulk	other kernel	kernel`do_fork	1
+fn	32 bulk	other kernel	kernel`prison_allow	1
+fn	32 bulk	other kernel	kernel`lockmgr_unlock	1
+fn	32 bulk	other kernel	kernel`malloc	1
+fn	32 bulk	other kernel	kernel`mb_free_ext	1
+fn	32 bulk	other kernel	kernel`mc_get	1
+fn	32 bulk	other kernel	kernel`__mtx_lock_sleep	1
+fn	32 bulk	other kernel	kernel`priv_check_cred_vfs_generation_slow	1
+fn	32 bulk	other kernel	kernel`proc_dtor	1
+fn	32 bulk	other kernel	kernel`racctd	1
+fn	32 bulk	other kernel	kernel`racct_updatepcpu_racct_callback	1
+fn	32 bulk	other kernel	kernel`rctl_throttle_decay	1
+fn	32 bulk	other kernel	kernel`ui_racct_foreach	1
+fn	32 bulk	other kernel	kernel`rms_rlock	1
+fn	32 bulk	other kernel	kernel`_rw_wowned	1
+fn	32 bulk	other kernel	kernel`execsigs	1
+fn	32 bulk	other kernel	kernel`sys_sigfastblock	1
+fn	32 bulk	other kernel	kernel`ast_sig	1
+fn	32 bulk	other kernel	kernel`sysctl_root	1
+fn	32 bulk	other kernel	kernel`getbinuptime	1
+fn	32 bulk	other kernel	kernel`timevalsub	1
+fn	32 bulk	other kernel	kernel`callout_reset_sbt_on	1
+fn	32 bulk	other kernel	kernel`counter_u64_fetch	1
+fn	32 bulk	other kernel	kernel`pctrie_iter_insert_lookup	1
+fn	32 bulk	other kernel	kernel`sleepq_catch_signals	1
+fn	32 bulk	other kernel	kernel`taskqueue_enqueue_flags	1
+fn	32 bulk	other kernel	kernel`userret	1
+fn	32 bulk	other kernel	kernel`cap_rights	1
+fn	32 bulk	other kernel	kernel`doselwakeup	1
+fn	32 bulk	other kernel	kernel`exterr_copyout	1
+fn	32 bulk	other kernel	kernel`soo_poll	1
+fn	32 bulk	other kernel	kernel`semexit_myhook	1
+fn	32 bulk	other kernel	kernel`sousrsend	1
+fn	32 bulk	other kernel	kernel`soreceive_dgram	1
+fn	32 bulk	other kernel	kernel`sogetopt	1
+fn	32 bulk	other kernel	kernel`kern_sendit	1
+fn	32 bulk	other kernel	kernel`uipc_attach	1
+fn	32 bulk	other kernel	kernel`cache_vop_inotify	1
+fn	32 bulk	other kernel	kernel`vop_stdstat	1
+fn	32 bulk	other kernel	kernel`vfs_lookup	1
+fn	32 bulk	other kernel	kernel`vfs_ref_from_vp	1
+fn	32 bulk	other kernel	kernel`vput_final	1
+fn	32 bulk	other kernel	kernel`sys_openat	1
+fn	32 bulk	other kernel	kernel`kern_copy_file_range	1
+fn	32 bulk	other kernel	kernel`vn_close1	1
+fn	32 bulk	other kernel	kernel`vn_read	1
+fn	32 bulk	other kernel	kernel`if_get_counter_default	1
+fn	32 bulk	other kernel	kernel`if_inc_counter	1
+fn	32 bulk	other kernel	kernel`ifhwioctl	1
+fn	32 bulk	other kernel	kernel`lltable_get_ifp	1
+fn	32 bulk	other kernel	kernel`iflib_get_ifp	1
+fn	32 bulk	other kernel	kernel`rn_match	1
+fn	32 bulk	other kernel	kernel`sysctl_iflist	1
+fn	32 bulk	other kernel	kernel`rtsock_msg_buffer	1
+fn	32 bulk	other kernel	kernel`fib6_lookup	1
+fn	32 bulk	other kernel	kernel`poly1305_update	1
+fn	32 bulk	other kernel	kernel`mac_socket_check_poll	1
+fn	32 bulk	other kernel	kernel`mac_socket_check_receive	1
+fn	32 bulk	other kernel	kernel`mac_system_check_sysctl	1
+fn	32 bulk	other kernel	kernel`cache_alloc	1
+fn	32 bulk	other kernel	kernel`vm_domainset_iter_page_init	1
+fn	32 bulk	other kernel	kernel`vm_map_find_locked	1
+fn	32 bulk	other kernel	kernel`vm_map_find_min	1
+fn	32 bulk	other kernel	kernel`vm_map_entry_unlink	1
+fn	32 bulk	other kernel	kernel`vm_map_lookup_clip_start	1
+fn	32 bulk	other kernel	kernel`sys_mmap	1
+fn	32 bulk	other kernel	kernel`kern_mmap	1
+fn	32 bulk	other kernel	kernel`vm_mmap_vnode	1
+fn	32 bulk	other kernel	kernel`kern_mmap_racct_check	1
+fn	32 bulk	other kernel	kernel`vm_object_terminate	1
+fn	32 bulk	other kernel	kernel`vm_page_sunbusy	1
+fn	32 bulk	other kernel	kernel`vm_page_lookup_unlocked	1
+fn	32 bulk	other kernel	kernel`vm_page_valid	1
+fn	32 bulk	other kernel	kernel`vm_pager_allocate	1
+fn	32 bulk	other kernel	kernel`vm_reserv_num_alloc_pages	1
+fn	32 bulk	other kernel	kernel`vm_reserv_remove	1
+fn	32 bulk	other kernel	kernel`vnode_create_vobject_any	1
+fn	32 bulk	other kernel	kernel`amdiommu_get_x86_common	1
+fn	32 bulk	other kernel	kernel`0xffffffff81	1
+fn	32 bulk	other kernel	kernel`0xffffffff81	1
+fn	32 bulk	other kernel	kernel`doreti	1
+fn	32 bulk	other kernel	kernel`fpurestore_xrstor3264	1
+fn	32 bulk	other kernel	kernel`spinlock_enter	1
+fn	32 bulk	other kernel	kernel`pmap_delayed_invl_start_u	1
+fn	32 bulk	other kernel	kernel`pmap_pinit_type	1
+fn	32 bulk	other kernel	kernel`pmap_ts_referenced	1
+fn	32 bulk	other kernel	kernel`_pmap_unwire_ptp	1
+fn	32 bulk	other kernel	kernel`free_pv_chunk_dequeued	1
+fn	32 bulk	other kernel	kernel`pmap_allocpte_nosleep	1
+fn	32 bulk	other kernel	kernel`pmap_allocpte_getpdp	1
+fn	32 bulk	other kernel	kernel`memmove_erms	1
+fn	32 bulk	other kernel	kernel`memset_erms	1
+fn	32 bulk	other kernel	kernel`copyin_smap_erms	1
+fn	32 bulk	other kernel	kernel`VOP_GETWRITEMOUNT_APV	1
+fn	32 bulk	other kernel	zfs.ko`secpolicy_vnode_access2	1
+fn	32 bulk	other kernel	zfs.ko`taskq_insert	1
+fn	32 bulk	other kernel	zfs.ko`zfs_acl_next_ace	1
+fn	32 bulk	other kernel	zfs.ko`zfs_link_create	1
+fn	32 bulk	other kernel	zfs.ko`zfs_freebsd_open	1
+fn	32 bulk	other kernel	zfs.ko`abd_alloc_linear	1
+fn	32 bulk	other kernel	zfs.ko`abd_to_buf	1
+fn	32 bulk	other kernel	zfs.ko`aggsum_add	1
+fn	32 bulk	other kernel	zfs.ko`arc_get_compression	1
+fn	32 bulk	other kernel	zfs.ko`arc_read	1
+fn	32 bulk	other kernel	zfs.ko`add_reference	1
+fn	32 bulk	other kernel	zfs.ko`dbuf_read	1
+fn	32 bulk	other kernel	zfs.ko`dbuf_destroy	1
+fn	32 bulk	other kernel	zfs.ko`dbuf_rele_and_unlock	1
+fn	32 bulk	other kernel	zfs.ko`dbuf_hold	1
+fn	32 bulk	other kernel	zfs.ko`dbuf_include_in_metadata_cache	1
+fn	32 bulk	other kernel	zfs.ko`dmu_read_uio_dnode	1
+fn	32 bulk	other kernel	zfs.ko`dmu_object_size_from_db	1
+fn	32 bulk	other kernel	zfs.ko`dmu_tx_assign	1
+fn	32 bulk	other kernel	zfs.ko`dnode_hold_impl	1
+fn	32 bulk	other kernel	zfs.ko`dnode_add_ref	1
+fn	32 bulk	other kernel	zfs.ko`LZ4_uncompress_unknownOutputSize	1
+fn	32 bulk	other kernel	zfs.ko`zfs_range_tree_add_impl	1
+fn	32 bulk	other kernel	zfs.ko`sa_attr_op	1
+fn	32 bulk	other kernel	zfs.ko`space_map_histogram_add	1
+fn	32 bulk	other kernel	zfs.ko`vdev_count_leaves_impl	1
+fn	32 bulk	other kernel	zfs.ko`zap_leaf_lookup	1
+fn	32 bulk	other kernel	zfs.ko`mze_find_in_buf	1
+fn	32 bulk	other kernel	zfs.ko`zfs_read	1
+fn	32 bulk	other kernel	zfs.ko`zio_buf_free	1
+fn	32 bulk	other kernel	zfs.ko`zio_remove_child	1
+fn	32 bulk	other kernel	dtrace.ko`dtrace_state_clean	1
+fn	32 bulk	other kernel	dtrace.ko`dtrace_interrupt_enable	1
+fn	32 bulk	other kernel	kinst.ko`kinst_trampoline_alloc_locked	1
+fn	32 bulk	other kernel	kinst.ko`kinst_trampoline_dealloc_locked	1
+fn	32 bulk	other kernel	kinst.ko`kinst_thread_dtor	1
+fn	32 bulk	other kernel	fasttrap.ko`fasttrap_provider_retire	1
+fn	32 small	intr	kernel`ahci_ch_intr_direct	1
+fn	32 small	intr	kernel`spinlock_exit	1
+fn	32 small	iolat kernel	kernel`critical_exit_preempt	1
+fn	32 small	iolat kernel	kernel`zone_fetch_bucket	1
+fn	32 small	iolat kernel	kernel`cache_alloc	1
+fn	32 small	iolat kernel	kernel`bucket_alloc	1
+fn	32 small	iolat kernel	kernel`0xffffffff81	1
+fn	32 small	iolat kernel	kernel`0xffffffff81	1
+fn	32 small	kernel other	kernel`uma_zalloc_arg	1
+fn	32 small	kernel other	kernel`amdiommu_get_x86_common	1
+fn	32 small	kernel other	kernel`trap	1
+fn	32 small	kernel other	zfs.ko`dbuf_write_ready	1
+fn	32 small	kernel other	zfs.ko`dbuf_write_done	1
+fn	32 small	kernel other	zfs.ko`metaslab_alloc_dva_range	1
+fn	32 small	kernel other	zfs.ko`spa_writeable	1
+fn	32 small	kernel other	zfs.ko`vdev_queue_to_compare	1
+fn	32 small	kernel other	zfs.ko`zio_ready	1
+fn	32 small	kernel other	zfs.ko`zio_done	1
+fn	32 small	kwq bulk	kernel`_mtx_lock_spin_cookie	1
+fn	32 small	kwq bulk	kernel`turnstile_trywait	1
+fn	32 small	kwq bulk	kernel`bucket_alloc	1
+fn	32 small	md	kernel`__mtx_unlock_sleep	1
+fn	32 small	md	kernel`_thread_lock	1
+fn	32 small	md	kernel`critical_exit_preempt	1
+fn	32 small	md	kernel`turnstile_chain_lock	1
+fn	32 small	other kernel	kernel`em_update_stats_counters	1
+fn	32 small	other kernel	kernel`devfs_allocv	1
+fn	32 small	other kernel	kernel`elf64_check_header	1
+fn	32 small	other kernel	kernel`finstall_refed	1
+fn	32 small	other kernel	kernel`exit1	1
+fn	32 small	other kernel	kernel`free	1
+fn	32 small	other kernel	kernel`mb_free_ext	1
+fn	32 small	other kernel	kernel`proc_ctor	1
+fn	32 small	other kernel	kernel`fill_kinfo_proc	1
+fn	32 small	other kernel	kernel`proc_iterate	1
+fn	32 small	other kernel	kernel`rangelock_lock_int	1
+fn	32 small	other kernel	kernel`__rw_rlock_int	1
+fn	32 small	other kernel	kernel`binuptime	1
+fn	32 small	other kernel	kernel`sys_clock_nanosleep	1
+fn	32 small	other kernel	kernel`__cap_rights_is_set	1
+fn	32 small	other kernel	kernel`pctrie_reclaim_begin_cb	1
+fn	32 small	other kernel	kernel`userret	1
+fn	32 small	other kernel	kernel`sys_write	1
+fn	32 small	other kernel	kernel`soo_poll	1
+fn	32 small	other kernel	kernel`vop_stdgetwritemount	1
+fn	32 small	other kernel	kernel`vop_stdset_text	1
+fn	32 small	other kernel	kernel`vop_stdinotify	1
+fn	32 small	other kernel	kernel`vn_open_cred	1
+fn	32 small	other kernel	kernel`file_v_lock	1
+fn	32 small	other kernel	kernel`mac_vnode_check_readdir	1
+fn	32 small	other kernel	kernel`swap_reserve_by_cred	1
+fn	32 small	other kernel	kernel`vm_fault_trap	1
+fn	32 small	other kernel	kernel`vm_fault	1
+fn	32 small	other kernel	kernel`vm_map_process_deferred	1
+fn	32 small	other kernel	kernel`vm_map_delete	1
+fn	32 small	other kernel	kernel`vm_map_protect	1
+fn	32 small	other kernel	kernel`vm_map_lookup	1
+fn	32 small	other kernel	kernel`vm_map_lookup_done	1
+fn	32 small	other kernel	kernel`vm_map_entry_clone	1
+fn	32 small	other kernel	kernel`kern_mmap	1
+fn	32 small	other kernel	kernel`vm_mmap_vnode	1
+fn	32 small	other kernel	kernel`vm_object_pip_wakeup	1
+fn	32 small	other kernel	kernel`vm_page_free_toq	1
+fn	32 small	other kernel	kernel`vm_page_alloc_domain_iter	1
+fn	32 small	other kernel	kernel`vm_domain_allocate	1
+fn	32 small	other kernel	kernel`vm_page_pqstate_commit_dequeue	1
+fn	32 small	other kernel	kernel`vm_page_free_prep	1
+fn	32 small	other kernel	kernel`vm_reserv_rename	1
+fn	32 small	other kernel	kernel`0xffffffff81	1
+fn	32 small	other kernel	kernel`0xffffffff81	1
+fn	32 small	other kernel	kernel`pmap_kextract	1
+fn	32 small	other kernel	kernel`pmap_remove_pte	1
+fn	32 small	other kernel	kernel`memcpy_erms	1
+fn	32 small	other kernel	kernel`memset_erms	1
+fn	32 small	other kernel	kernel`trap	1
+fn	32 small	other kernel	kernel`amd64_syscall	1
+fn	32 small	other kernel	kernel`VOP_MMAPPED_APV	1
+fn	32 small	other kernel	zfs.ko`zfs_freebsd_getattr	1
+fn	32 small	other kernel	zfs.ko`arc_space_return	1
+fn	32 small	other kernel	zfs.ko`arc_access	1
+fn	32 small	other kernel	zfs.ko`arc_read_done	1
+fn	32 small	other kernel	zfs.ko`decode_embedded_bp_compressed	1
+fn	32 small	other kernel	zfs.ko`sa_build_index	1
+fn	32 small	other kernel	zfs.ko`space_map_write	1
+fn	32 small	other kernel	zfs.ko`zfs_rangelock_exit	1
+fn	32 small	other kernel	zfs.ko`zio_create	1
+fn	32 small	other kernel	zfs.ko`zfs_blkptr_verify	1
+fn	32 small	other kernel	mqueuefs.ko`mq_proc_exit	1
+fn	32 small	other kernel	kinst.ko`kinst_trampoline_alloc_locked	1
+fn	32 small	other kernel	fasttrap.ko`fasttrap_provider_retire	1
+fn	128 bulk	intr	kernel`ahci_ch_intr_direct	2
+fn	128 bulk	intr	kernel`spinlock_exit	2
+fn	128 bulk	iolat kernel	kernel`g_alloc_bio	2
+fn	128 bulk	iolat kernel	kernel`__mtx_lock_flags	2
+fn	128 bulk	iolat kernel	kernel`_thread_lock	2
+fn	128 bulk	iolat kernel	kernel`pctrie_lookup_unlocked	2
+fn	128 bulk	iolat kernel	kernel`vm_fault_allocate	2
+fn	128 bulk	iolat kernel	kernel`vm_map_lookup	2
+fn	128 bulk	iolat kernel	kernel`vm_page_valid	2
+fn	128 bulk	iolat kernel	kernel`pmap_enter	2
+fn	128 bulk	iolat kernel	kernel`trap	2
+fn	128 bulk	kernel other	kernel`free	2
+fn	128 bulk	kernel other	kernel`uma_zalloc_arg	2
+fn	128 bulk	kernel other	kernel`pagezero_erms	2
+fn	128 bulk	kernel other	zfs.ko`vdev_queue_io_to_issue	2
+fn	128 bulk	kernel other	zfs.ko`zio_vdev_io_done	2
+fn	128 bulk	kernel other	zfs.ko`zio_done	2
+fn	128 bulk	kwq bulk	kernel`_rm_rlock_debug	2
+fn	128 bulk	kwq bulk	kernel`getbinuptime	2
+fn	128 bulk	kwq bulk	kernel`smr_poll	2
+fn	128 bulk	kwq bulk	kwq.ko`kwq_doorbell	2
+fn	128 bulk	kwq bulk	kwq.ko`ks_round_end	2
+fn	128 bulk	kwq bulk	kwq.ko`kwq_shard_wake	2
+fn	128 bulk	kwq bulk	kwq.ko`kwq_kc_lock	2
+fn	128 bulk	md	kernel`zone_put_bucket	2
+fn	128 bulk	other kernel	kernel`chacha_encrypt_bytes	2
+fn	128 bulk	other kernel	kernel`kern_close	2
+fn	128 bulk	other kernel	kernel`kern_execve	2
+fn	128 bulk	other kernel	kernel`proc_reap	2
+fn	128 bulk	other kernel	kernel`fork1	2
+fn	128 bulk	other kernel	kernel`free	2
+fn	128 bulk	other kernel	kernel`_mtx_trylock_flags_	2
+fn	128 bulk	other kernel	kernel`killjobc	2
+fn	128 bulk	other kernel	kernel`racct_set	2
+fn	128 bulk	other kernel	kernel`rctl_throttle_decay	2
+fn	128 bulk	other kernel	kernel`pctrie_lookup_unlocked	2
+fn	128 bulk	other kernel	kernel`sleepq_catch_signals	2
+fn	128 bulk	other kernel	kernel`sleepq_timedwait_sig	2
+fn	128 bulk	other kernel	kernel`kern_ioctl	2
+fn	128 bulk	other kernel	kernel`uipc_sopoll_stream_or_seqpacket	2
+fn	128 bulk	other kernel	kernel`namei	2
+fn	128 bulk	other kernel	kernel`arc4rand	2
+fn	128 bulk	other kernel	kernel`mac_proc_check_wait	2
+fn	128 bulk	other kernel	kernel`vm_fault	2
+fn	128 bulk	other kernel	kernel`vm_map_findspace	2
+fn	128 bulk	other kernel	kernel`vm_map_delete	2
+fn	128 bulk	other kernel	kernel`vm_map_pmap_enter	2
+fn	128 bulk	other kernel	kernel`vm_object_terminate_single_page	2
+fn	128 bulk	other kernel	kernel`vm_page_lookup_unlocked	2
+fn	128 bulk	other kernel	kernel`vm_page_alloc_noobj_domain	2
+fn	128 bulk	other kernel	kernel`vm_reserv_rename	2
+fn	128 bulk	other kernel	kernel`iommu_gas_map	2
+fn	128 bulk	other kernel	kernel`iommu_qi_invalidate_sync	2
+fn	128 bulk	other kernel	kernel`pmap_invalidate_all_nopcid_invpcid_cb	2
+fn	128 bulk	other kernel	kernel`pmap_enter_object	2
+fn	128 bulk	other kernel	kernel`memmove_erms	2
+fn	128 bulk	other kernel	kernel`memcpy_erms	2
+fn	128 bulk	other kernel	kernel`trap_pfault	2
+fn	128 bulk	other kernel	kernel`amd64_syscall	2
+fn	128 bulk	other kernel	zfs.ko`kmem_cache_free	2
+fn	128 bulk	other kernel	zfs.ko`zfs_freebsd_fplookup_vexec	2
+fn	128 bulk	other kernel	zfs.ko`zfs_freebsd_getattr	2
+fn	128 bulk	other kernel	zfs.ko`dbuf_hold_impl	2
+fn	128 bulk	other kernel	zfs.ko`sa_attr_op	2
+fn	128 bulk	other kernel	zfs.ko`zap_hash	2
+fn	128 bulk	other kernel	dtrace.ko`dtrace_dynvar_clean	2
+fn	128 small	iolat kernel	kernel`0xffffffff81	2
+fn	128 small	kwq bulk	kernel`lockstat_nsecs	2
+fn	128 small	kwq bulk	kwq.ko`kwq_steal_from	2
+fn	128 small	md	kernel`__mtx_unlock_sleep	2
+fn	128 small	other kernel	kernel`fill_kinfo_proc	2
+fn	128 small	other kernel	kernel`vn_io_fault1	2
+fn	128 small	other kernel	kernel`vm_map_lookup_entry	2
+fn	128 small	other kernel	kernel`kern_mmap	2
+fn	128 small	other kernel	kernel`vm_page_free_prep	2
+fn	128 small	other kernel	kernel`0xffffffff81	2
+fn	128 small	other kernel	kernel`pmap_invalidate_all_nopcid_invpcid_cb	2
+fn	128 small	other kernel	kernel`pagecopy	2
+fn	128 small	other kernel	kernel`copyout_smap_erms	2
+fn	128 small	other kernel	zfs.ko`arc_wait_for_eviction	2
+fn	128 small	other kernel	zfs.ko`sa_attr_op	2
+fn	16 bulk	iolat kernel	kernel`g_alloc_bio	2
+fn	16 bulk	iolat kernel	kernel`g_io_check	2
+fn	16 bulk	iolat kernel	kernel`__mtx_lock_sleep	2
+fn	16 bulk	iolat kernel	kernel`pctrie_iter_lookup_le	2
+fn	16 bulk	iolat kernel	kernel`devfs_iosize_max	2
+fn	16 bulk	iolat kernel	kwq.ko`kwq_enqueue_one	2
+fn	16 bulk	kernel other	kernel`lock_delay	2
+fn	16 bulk	kernel other	zfs.ko`list_remove	2
+fn	16 bulk	kernel other	zfs.ko`arc_write_done	2
+fn	16 bulk	kwq bulk	kernel`malloc	2
+fn	16 bulk	kwq bulk	kwq.ko`kwq_cputime_ns	2
+fn	16 bulk	md	kernel`zone_put_bucket	2
+fn	16 bulk	md	kernel`vm_page_free_pages_toq	2
+fn	16 bulk	md	kernel`pmap_delayed_invl_finish_u	2
+fn	16 bulk	other kernel	kernel`em_update_stats_counters	2
+fn	16 bulk	other kernel	kernel`re_miibus_readreg	2
+fn	16 bulk	other kernel	kernel`do_fork	2
+fn	16 bulk	other kernel	kernel`racct_set_locked	2
+fn	16 bulk	other kernel	kernel`kern_clock_nanosleep	2
+fn	16 bulk	other kernel	kernel`pctrie_lookup_unlocked	2
+fn	16 bulk	other kernel	kernel`pctrie_iter_lookup_le	2
+fn	16 bulk	other kernel	kernel`sysctl_iflist	2
+fn	16 bulk	other kernel	kernel`vm_domainset_iter_phase_first	2
+fn	16 bulk	other kernel	kernel`vm_map_entry_set_vnode_text	2
+fn	16 bulk	other kernel	kernel`vm_map_entry_unlink	2
+fn	16 bulk	other kernel	kernel`vm_map_pmap_enter	2
+fn	16 bulk	other kernel	kernel`vm_object_deallocate	2
+fn	16 bulk	other kernel	kernel`vm_object_shadow	2
+fn	16 bulk	other kernel	kernel`vm_page_pqbatch_submit	2
+fn	16 bulk	other kernel	kernel`pmap_invalidate_page_curcpu_cb	2
+fn	16 bulk	other kernel	kernel`pmap_pvh_remove	2
+fn	16 bulk	other kernel	kernel`pmap_remove_pte	2
+fn	16 bulk	other kernel	kernel`pmap_allocpte_nosleep	2
+fn	16 bulk	other kernel	kernel`trap_pfault	2
+fn	16 bulk	other kernel	zfs.ko`zfs_ace_fuid_size	2
+fn	16 bulk	other kernel	zfs.ko`zfs_freebsd_fplookup_vexec	2
+fn	16 bulk	other kernel	zfs.ko`zfs_freebsd_getattr	2
+fn	16 bulk	other kernel	zfs.ko`arc_read	2
+fn	16 small	iolat kernel	kernel`cache_alloc_retry	2
+fn	16 small	iolat kernel	kernel`0xffffffff81	2
+fn	16 small	kernel other	kernel`em_update_stats_counters	2
+fn	16 small	kernel other	kernel`lock_delay	2
+fn	16 small	other kernel	kernel`cache_fplookup	2
+fn	16 small	other kernel	kernel`PHYS_TO_VM_PAGE	2
+fn	16 small	other kernel	kernel`vm_page_alloc_noobj_domain	2
+fn	16 small	other kernel	kernel`vm_page_pqstate_commit	2
+fn	16 small	other kernel	kernel`random_rdseed_read	2
+fn	16 small	other kernel	kernel`pagecopy	2
+fn	32 bulk	intr	kernel`spinlock_exit	2
+fn	32 bulk	iolat kernel	kernel`binuptime	2
+fn	32 bulk	iolat kernel	kernel`turnstile_trywait	2
+fn	32 bulk	kernel other	kernel`_sx_slock_int	2
+fn	32 bulk	kernel other	zfs.ko`dbuf_write_ready	2
+fn	32 bulk	kwq bulk	kernel`malloc	2
+fn	32 bulk	kwq bulk	kernel`binuptime	2
+fn	32 bulk	kwq bulk	kernel`sched_ule_runnable	2
+fn	32 bulk	kwq bulk	kernel`vm_page_iter_init	2
+fn	32 bulk	kwq bulk	kwq.ko`kwq_shard_wake	2
+fn	32 bulk	md	kernel`cache_free	2
+fn	32 bulk	md	kernel`pmap_remove	2
+fn	32 bulk	other kernel	kernel`chacha_encrypt_bytes	2
+fn	32 bulk	other kernel	kernel`kern_close	2
+fn	32 bulk	other kernel	kernel`fget_unlocked_flags	2
+fn	32 bulk	other kernel	kernel`free	2
+fn	32 bulk	other kernel	kernel`crfree	2
+fn	32 bulk	other kernel	kernel`racct_set_locked	2
+fn	32 bulk	other kernel	kernel`_sx_slock_int	2
+fn	32 bulk	other kernel	kernel`lock_init	2
+fn	32 bulk	other kernel	kernel`pctrie_iter_lookup	2
+fn	32 bulk	other kernel	kernel`pctrie_insert_node	2
+fn	32 bulk	other kernel	kernel`pidctrl_daemon	2
+fn	32 bulk	other kernel	kernel`sleepq_timedwait_sig	2
+fn	32 bulk	other kernel	kernel`vn_need_pageq_flush	2
+fn	32 bulk	other kernel	kernel`arc4rand	2
+fn	32 bulk	other kernel	kernel`ge25519_cmov	2
+fn	32 bulk	other kernel	kernel`fe25519_mul	2
+fn	32 bulk	other kernel	kernel`swap_pager_dealloc	2
+fn	32 bulk	other kernel	kernel`vm_map_findspace	2
+fn	32 bulk	other kernel	kernel`vm_map_pmap_enter	2
+fn	32 bulk	other kernel	kernel`vm_map_entry_link	2
+fn	32 bulk	other kernel	kernel`vm_object_shadow	2
+fn	32 bulk	other kernel	kernel`vm_object_terminate_single_page	2
+fn	32 bulk	other kernel	kernel`vm_page_alloc_domain_iter	2
+fn	32 bulk	other kernel	kernel`vm_domain_allocate	2
+fn	32 bulk	other kernel	kernel`vm_page_alloc_noobj_domain	2
+fn	32 bulk	other kernel	kernel`vm_page_pqstate_commit_dequeue	2
+fn	32 bulk	other kernel	kernel`vm_page_free_prep	2
+fn	32 bulk	other kernel	kernel`0xffffffff81	2
+fn	32 bulk	other kernel	kernel`smp_targeted_tlb_shootdown_native	2
+fn	32 bulk	other kernel	kernel`pmap_invalidate_all_nopcid_invpcid_cb	2
+fn	32 bulk	other kernel	kernel`pmap_kextract	2
+fn	32 bulk	other kernel	kernel`pmap_remove_pte	2
+fn	32 bulk	other kernel	kernel`trap	2
+fn	32 bulk	other kernel	zfs.ko`zfs_freebsd_getattr	2
+fn	32 bulk	other kernel	zfs.ko`arc_buf_access	2
+fn	32 bulk	other kernel	zfs.ko`dmu_zfetch_prepare	2
+fn	32 bulk	other kernel	zfs.ko`dnode_rele_and_unlock	2
+fn	32 bulk	other kernel	zfs.ko`zap_hash	2
+fn	32 bulk	other kernel	zfs.ko`zfs_access	2
+fn	32 bulk	other kernel	zfs.ko`zio_create	2
+fn	32 small	iolat kernel	kernel`foffset_lock_uio	2
+fn	32 small	iolat kernel	kernel`cache_alloc_retry	2
+fn	32 small	iolat kernel	kernel`0xffffffff81	2
+fn	32 small	iolat kernel	kernel`0xffffffff81	2
+fn	32 small	iolat kernel	kernel`0xffffffff81	2
+fn	32 small	kernel other	kernel`spinlock_exit	2
+fn	32 small	other kernel	kernel`ui_racct_foreach	2
+fn	32 small	other kernel	kernel`counter_u64_fetch	2
+fn	32 small	other kernel	kernel`sysctl_iflist	2
+fn	32 small	other kernel	kernel`fe25519_sq	2
+fn	32 small	other kernel	kernel`uma_zalloc_arg	2
+fn	32 small	other kernel	kernel`vm_map_entry_unlink	2
+fn	32 small	other kernel	kernel`vm_object_deallocate	2
+fn	32 small	other kernel	kernel`iommu_qi_invalidate_sync	2
+fn	32 small	other kernel	kernel`pmap_protect	2
+fn	32 small	other kernel	kernel`pagecopy	2
+fn	32 small	other kernel	kernel`trap_pfault	2
+fn	128 bulk	iolat kernel	kernel`thread_lock_flags_	3
+fn	128 bulk	iolat kernel	kernel`sys_pwrite	3
+fn	128 bulk	iolat kernel	kernel`dofilewrite	3
+fn	128 bulk	iolat kernel	kernel`pmap_kextract	3
+fn	128 bulk	iolat kernel	kernel`pagezero_erms	3
+fn	128 bulk	iolat kernel	kwq.ko`kwq_enqueue	3
+fn	128 bulk	kwq bulk	kernel`cache_alloc_retry	3
+fn	128 bulk	md	kernel`pmap_delayed_invl_finish_u	3
+fn	128 bulk	other kernel	kernel`kern_clock_nanosleep	3
+fn	128 bulk	other kernel	kernel`pctrie_iter_insert_lookup	3
+fn	128 bulk	other kernel	kernel`vm_object_deallocate	3
+fn	128 bulk	other kernel	kernel`vm_object_shadow	3
+fn	128 bulk	other kernel	kernel`pmap_copy	3
+fn	128 bulk	other kernel	kernel`free_pv_chunk_dequeued	3
+fn	128 bulk	other kernel	kernel`memset_erms	3
+fn	128 bulk	other kernel	zfs.ko`dbuf_rele_and_unlock	3
+fn	128 small	intr	kernel`lock_delay	3
+fn	128 small	intr	kernel`spinlock_exit	3
+fn	128 small	iolat kernel	kernel`__mtx_unlock_sleep	3
+fn	128 small	iolat kernel	kernel`0xffffffff81	3
+fn	128 small	iolat kernel	kernel`0xffffffff81	3
+fn	128 small	iolat kernel	kernel`0xffffffff81	3
+fn	128 small	other kernel	kernel`counter_u64_fetch	3
+fn	128 small	other kernel	kernel`lock_delay	3
+fn	128 small	other kernel	kernel`pmap_protect	3
+fn	128 small	other kernel	kernel`pmap_pvh_remove	3
+fn	16 bulk	iolat kernel	kernel`lock_mtx	3
+fn	16 bulk	iolat kernel	kernel`devstat_start_transaction_bio_t0	3
+fn	16 bulk	iolat kernel	kernel`userret	3
+fn	16 bulk	iolat kernel	kernel`pmap_kextract	3
+fn	16 bulk	kernel other	kernel`spinlock_exit	3
+fn	16 bulk	kwq bulk	kernel`thread_lock_flags_	3
+fn	16 bulk	kwq bulk	kernel`kern_yield	3
+fn	16 bulk	kwq bulk	kernel`getbinuptime	3
+fn	16 bulk	kwq bulk	kernel`smr_poll	3
+fn	16 bulk	kwq bulk	kernel`zone_fetch_bucket	3
+fn	16 bulk	kwq bulk	kernel`vm_domainset_iter_policy_init	3
+fn	16 bulk	kwq bulk	kernel`vm_page_iter_init	3
+fn	16 bulk	kwq bulk	kwq.ko`kwq_yield	3
+fn	16 bulk	md	kernel`mtx_pool_find	3
+fn	16 bulk	md	kernel`wakeup	3
+fn	16 bulk	md	kernel`smr_advance	3
+fn	16 bulk	md	kernel`cache_free	3
+fn	16 bulk	md	geom_kwqeli.ko`g_eli_free_data	3
+fn	16 bulk	other kernel	kernel`lockmgr_slock	3
+fn	16 bulk	other kernel	kernel`vm_map_entry_delete	3
+fn	16 bulk	other kernel	kernel`vmspace_fork	3
+fn	16 bulk	other kernel	kernel`vm_page_alloc_noobj_domain	3
+fn	16 bulk	other kernel	kernel`iommu_qi_invalidate_sync	3
+fn	16 bulk	other kernel	kernel`cpu_fetch_syscall_args	3
+fn	16 bulk	other kernel	kernel`cpu_set_syscall_retval	3
+fn	16 small	iolat kernel	kernel`cache_alloc	3
+fn	16 small	iolat kernel	kernel`0xffffffff81	3
+fn	16 small	iolat kernel	kernel`0xffffffff81	3
+fn	16 small	iolat kernel	kernel`0xffffffff81	3
+fn	16 small	kernel other	kernel`iommu_qi_invalidate_sync	3
+fn	16 small	kwq bulk	kernel`_mtx_lock_spin_cookie	3
+fn	16 small	kwq bulk	kernel`wakeup	3
+fn	16 small	kwq bulk	kernel`turnstile_trywait	3
+fn	16 small	other kernel	kernel`pctrie_iter_lookup_ge	3
+fn	16 small	other kernel	kernel`vm_map_lookup_entry	3
+fn	16 small	other kernel	kernel`vm_page_alloc_domain_iter	3
+fn	16 small	other kernel	kernel`0xffffffff81	3
+fn	16 small	other kernel	kernel`get_pv_entry	3
+fn	16 small	other kernel	kernel`pmap_try_insert_pv_entry	3
+fn	16 small	other kernel	kernel`pagezero_erms	3
+fn	32 bulk	iolat kernel	kernel`mtx_pool_find	3
+fn	32 bulk	kernel other	kernel`lock_delay	3
+fn	32 bulk	kernel other	kernel`amdiommu_get_x86_common	3
+fn	32 bulk	kernel other	kernel`memset_erms	3
+fn	32 bulk	kernel other	zfs.ko`zio_add_child_impl	3
+fn	32 bulk	kwq bulk	kernel`_rm_rlock	3
+fn	32 bulk	kwq bulk	kernel`bioq_disksort	3
+fn	32 bulk	kwq bulk	kernel`smr_poll	3
+fn	32 bulk	md	kernel`pmap_delayed_invl_finish_u	3
+fn	32 bulk	other kernel	kernel`lock_delay	3
+fn	32 bulk	other kernel	kernel`pctrie_iter_lookup_le	3
+fn	32 bulk	other kernel	kernel`uma_zfree_arg	3
+fn	32 bulk	other kernel	kernel`vm_map_protect	3
+fn	32 bulk	other kernel	kernel`vmspace_fork	3
+fn	32 bulk	other kernel	kernel`vm_object_pip_wakeup	3
+fn	32 bulk	other kernel	kernel`vm_page_pqbatch_submit	3
+fn	32 bulk	other kernel	kernel`vm_page_free_pages_toq	3
+fn	32 bulk	other kernel	kernel`pmap_protect	3
+fn	32 bulk	other kernel	kernel`memcpy_erms	3
+fn	32 bulk	other kernel	kernel`trap_check	3
+fn	32 bulk	other kernel	zfs.ko`zfs_freebsd_fplookup_vexec	3
+fn	32 bulk	other kernel	dtrace.ko`dtrace_dynvar_clean	3
+fn	32 small	md	kernel`lockstat_nsecs	3
+fn	32 small	other kernel	kernel`lock_delay	3
+fn	32 small	other kernel	kernel`pctrie_lookup_unlocked	3
+fn	32 small	other kernel	kernel`pmap_enter	3
+fn	32 small	other kernel	kernel`pmap_enter_quick_locked	3
+fn	32 small	other kernel	kernel`copyout_smap_erms	3
+fn	128 bulk	iolat kernel	kernel`lockstat_nsecs	4
+fn	128 bulk	iolat kernel	kernel`mtx_pool_find	4
+fn	128 bulk	iolat kernel	kernel`devfs_iosize_max	4
+fn	128 bulk	iolat kernel	kernel`tscp_get_timecount_low	4
+fn	128 bulk	iolat kernel	kernel`0xffffffff81	4
+fn	128 bulk	iolat kernel	kernel`0xffffffff81	4
+fn	128 bulk	kwq bulk	kernel`binuptime	4
+fn	128 bulk	kwq bulk	kernel`zone_fetch_bucket	4
+fn	128 bulk	kwq bulk	kernel`vm_page_iter_init	4
+fn	128 bulk	md	kernel`bt_freetrim	4
+fn	128 bulk	md	kernel`cache_free	4
+fn	128 bulk	other kernel	kernel`malloc	4
+fn	128 bulk	other kernel	kernel`lock_delay	4
+fn	128 bulk	other kernel	kernel`vm_map_process_deferred	4
+fn	128 bulk	other kernel	kernel`DELAY	4
+fn	128 bulk	other kernel	kernel`get_pv_entry	4
+fn	128 bulk	other kernel	kernel`pmap_allocpte_nosleep	4
+fn	128 small	iolat kernel	kernel`wakeup	4
+fn	128 small	iolat kernel	kernel`0xffffffff81	4
+fn	128 small	iolat kernel	kernel`0xffffffff81	4
+fn	128 small	iolat kernel	kernel`0xffffffff81	4
+fn	128 small	kwq bulk	kernel`wakeup	4
+fn	128 small	kwq bulk	kernel`sleepq_lock	4
+fn	128 small	md	kernel`g_destroy_bio	4
+fn	128 small	md	kernel`lockstat_nsecs	4
+fn	16 bulk	iolat kernel	kernel`pctrie_lookup_unlocked	4
+fn	16 bulk	iolat kernel	kernel`0xffffffff81	4
+fn	16 bulk	iolat kernel	kernel`cpu_set_syscall_retval	4
+fn	16 bulk	kwq bulk	kernel`msleep_spin_sbt	4
+fn	16 bulk	kwq bulk	kernel`bioq_disksort	4
+fn	16 bulk	kwq bulk	kernel`cache_alloc	4
+fn	16 bulk	md	kernel`knlist_mtx_unlock	4
+fn	16 bulk	other kernel	kernel`timevalsub	4
+fn	16 bulk	other kernel	kernel`uma_zfree_arg	4
+fn	16 bulk	other kernel	kernel`vm_fault	4
+fn	16 bulk	other kernel	kernel`vm_page_alloc_domain_iter	4
+fn	16 bulk	other kernel	kernel`vm_pqbatch_process_page	4
+fn	16 bulk	other kernel	kernel`DELAY	4
+fn	16 bulk	other kernel	kernel`pmap_enter_quick_locked	4
+fn	16 bulk	other kernel	kernel`memset_erms	4
+fn	16 small	iolat kernel	kernel`0xffffffff81	4
+fn	16 small	iolat kernel	kernel`0xffffffff81	4
+fn	16 small	other kernel	kernel`uma_zalloc_arg	4
+fn	16 small	other kernel	kernel`pmap_remove_pages	4
+fn	16 small	other kernel	kernel`copyout_smap_erms	4
+fn	32 bulk	iolat kernel	kernel`spinlock_enter	4
+fn	32 bulk	kernel other	kernel`em_update_stats_counters	4
+fn	32 bulk	kernel other	kernel`uma_zalloc_arg	4
+fn	32 bulk	kernel other	zfs.ko`zio_done	4
+fn	32 bulk	kwq bulk	kernel`_thread_lock	4
+fn	32 bulk	kwq bulk	kernel`cache_alloc	4
+fn	32 bulk	kwq bulk	kwq.ko`ks_budget_left	4
+fn	32 bulk	md	kernel`_thread_lock	4
+fn	32 bulk	md	kernel`bucket_alloc	4
+fn	32 bulk	md	geom_kwqeli.ko`g_eli_free_data	4
+fn	32 bulk	other kernel	kernel`pctrie_lookup_unlocked	4
+fn	32 bulk	other kernel	kernel`vm_fault_allocate	4
+fn	32 bulk	other kernel	kernel`vm_map_process_deferred	4
+fn	32 bulk	other kernel	kernel`vm_map_lookup	4
+fn	32 bulk	other kernel	kernel`vm_object_deallocate	4
+fn	32 bulk	other kernel	kernel`pmap_enter_quick_locked	4
+fn	32 bulk	other kernel	kernel`trap_pfault	4
+fn	32 bulk	other kernel	zfs.ko`dbuf_find	4
+fn	32 small	iolat kernel	kernel`0xffffffff81	4
+fn	32 small	kernel other	kernel`lock_delay	4
+fn	32 small	kernel other	kernel`iommu_qi_invalidate_sync	4
+fn	32 small	kwq bulk	kernel`wakeup	4
+fn	32 small	kwq bulk	kernel`sleepq_lock	4
+fn	32 small	other kernel	kernel`vm_page_alloc_noobj_domain	4
+fn	32 small	other kernel	kernel`pmap_copy	4
+fn	32 small	other kernel	kernel`pmap_try_insert_pv_entry	4
+fn	128 bulk	iolat kernel	kernel`__mtx_lock_spin_flags	5
+fn	128 bulk	iolat kernel	kernel`rctl_enforce	5
+fn	128 bulk	iolat kernel	kernel`userret	5
+fn	128 bulk	kernel other	kernel`iommu_qi_invalidate_sync	5
+fn	128 bulk	kwq bulk	kernel`vmem_alloc	5
+fn	128 bulk	md	kernel`__mtx_lock_sleep	5
+fn	128 bulk	md	kernel`devstat_end_transaction_bio	5
+fn	128 bulk	md	kernel`vm_object_pip_wakeup	5
+fn	128 bulk	other kernel	kernel`pmap_protect	5
+fn	128 bulk	other kernel	kernel`pmap_remove_pte	5
+fn	128 small	iolat kernel	kernel`turnstile_chain_lock	5
+fn	128 small	md	kernel`turnstile_trywait	5
+fn	128 small	other kernel	kernel`vm_page_pqbatch_submit	5
+fn	16 bulk	iolat kernel	kwq.ko`kwq_topo_reach	5
+fn	16 bulk	kernel other	kernel`iommu_qi_invalidate_sync	5
+fn	16 bulk	kernel other	zfs.ko`zfs_lz4_compress	5
+fn	16 bulk	kwq bulk	kernel`g_io_request	5
+fn	16 bulk	md	kernel`vmem_free	5
+fn	16 bulk	other kernel	kernel`free	5
+fn	16 bulk	other kernel	kernel`vm_map_lookup_entry	5
+fn	16 bulk	other kernel	kernel`pmap_copy	5
+fn	16 small	iolat kernel	kernel`turnstile_trywait	5
+fn	16 small	iolat kernel	kernel`foffset_lock_uio	5
+fn	16 small	kwq bulk	kernel`lockstat_nsecs	5
+fn	16 small	md	kernel`lockstat_nsecs	5
+fn	16 small	other kernel	kernel`lock_delay	5
+fn	32 bulk	iolat kernel	kernel`0xffffffff81	5
+fn	32 bulk	kwq bulk	kernel`vm_domainset_iter_policy_init	5
+fn	32 bulk	kwq bulk	kwq.ko`kwq_cputime_ns	5
+fn	32 bulk	kwq bulk	kwq.ko`ks_pass_begin	5
+fn	32 bulk	other kernel	kernel`vm_map_entry_delete	5
+fn	32 bulk	other kernel	kernel`vm_pageout_worker	5
+fn	32 bulk	other kernel	kernel`pmap_pvh_remove	5
+fn	32 bulk	other kernel	kernel`pmap_copy	5
+fn	32 small	intr	kernel`lock_delay	5
+fn	32 small	iolat kernel	kernel`0xffffffff81	5
+fn	32 small	iolat kernel	kernel`0xffffffff81	5
+fn	32 small	iolat kernel	kernel`0xffffffff81	5
+fn	32 small	kwq bulk	kernel`g_destroy_bio	5
+fn	32 small	kwq bulk	kernel`lockstat_nsecs	5
+fn	32 small	md	kernel`pmap_kextract	5
+fn	32 small	other kernel	kernel`vm_map_lookup_entry	5
+fn	32 small	other kernel	kernel`DELAY	5
+fn	32 small	other kernel	kernel`pmap_remove_pages	5
+fn	128 bulk	iolat kernel	kernel`turnstile_trywait	6
+fn	128 bulk	kernel other	kernel`lock_delay	6
+fn	128 bulk	kernel other	zfs.ko`zfs_lz4_compress	6
+fn	128 bulk	kwq bulk	kernel`__mtx_lock_sleep	6
+fn	128 bulk	kwq bulk	kernel`_thread_lock	6
+fn	128 bulk	kwq bulk	kernel`spinlock_enter	6
+fn	128 bulk	md	kernel`smr_advance	6
+fn	128 bulk	md	geom_kwqeli.ko`g_eli_free_data	6
+fn	128 bulk	other kernel	kernel`uma_zalloc_arg	6
+fn	128 bulk	other kernel	kernel`vm_fault_allocate	6
+fn	128 bulk	other kernel	kernel`vm_map_lookup_entry	6
+fn	128 bulk	other kernel	kernel`pmap_pvh_remove	6
+fn	128 small	other kernel	kernel`0xffffffff81	6
+fn	128 small	other kernel	kernel`pmap_remove_pages	6
+fn	16 bulk	iolat kernel	kernel`dofilewrite	6
+fn	16 bulk	kwq bulk	kernel`__mtx_lock_flags	6
+fn	16 bulk	kwq bulk	kernel`__mtx_lock_spin_flags	6
+fn	16 bulk	kwq bulk	kernel`vmem_alloc	6
+fn	16 bulk	kwq bulk	kwq.ko`kwq_topo_reach	6
+fn	16 bulk	md	kernel`bucket_alloc	6
+fn	16 bulk	md	kernel`vm_radix_node_free	6
+fn	16 bulk	other kernel	kernel`pagecopy	6
+fn	16 small	iolat kernel	kernel`lockstat_nsecs	6
+fn	16 small	iolat kernel	kernel`wakeup	6
+fn	16 small	kwq bulk	kernel`kern_yield	6
+fn	16 small	kwq bulk	kwq.ko`kwq_yield	6
+fn	16 small	md	kernel`turnstile_trywait	6
+fn	32 bulk	iolat kernel	kernel`tscp_get_timecount_low	6
+fn	32 bulk	iolat kernel	kwq.ko`kwq_enqueue	6
+fn	32 bulk	kernel other	zfs.ko`zfs_lz4_compress	6
+fn	32 bulk	kwq bulk	kwq.ko`ks_round_end	6
+fn	32 bulk	md	kernel`smr_advance	6
+fn	32 bulk	other kernel	kernel`pagezero_erms	6
+fn	32 bulk	other kernel	kernel`cpu_fetch_syscall_args	6
+fn	32 small	iolat kernel	kernel`__mtx_unlock_sleep	6
+fn	32 small	kernel other	zfs.ko`zfs_lz4_compress	6
+fn	32 small	other kernel	kernel`0xffffffff81	6
+fn	128 bulk	iolat kernel	kernel`_mtx_lock_spin_cookie	7
+fn	128 bulk	kernel other	kernel`spinlock_exit	7
+fn	128 bulk	kwq bulk	kernel`_rm_rlock	7
+fn	128 bulk	kwq bulk	kernel`kern_yield	7
+fn	128 bulk	kwq bulk	kernel`bioq_disksort	7
+fn	128 bulk	kwq bulk	kernel`vm_domainset_iter_policy_init	7
+fn	128 bulk	kwq bulk	kwq.ko`kwq_cputime_ns	7
+fn	128 bulk	md	kernel`bucket_alloc	7
+fn	128 bulk	other kernel	kernel`uma_zfree_arg	7
+fn	128 bulk	other kernel	kernel`vmspace_fork	7
+fn	128 small	iolat kernel	kernel`g_destroy_bio	7
+fn	128 small	iolat kernel	kernel`0xffffffff81	7
+fn	128 small	kernel other	kernel`lock_delay	7
+fn	128 small	kernel other	kernel`iommu_qi_invalidate_sync	7
+fn	16 bulk	iolat kernel	kernel`__mtx_lock_spin_flags	7
+fn	16 bulk	iolat kernel	kernel`rctl_enforce	7
+fn	16 bulk	iolat kernel	kernel`binuptime	7
+fn	16 bulk	iolat kernel	kernel`sys_pwrite	7
+fn	16 bulk	iolat kernel	kernel`0xffffffff81	7
+fn	16 bulk	iolat kernel	kwq.ko`kwq_target_cpu	7
+fn	16 bulk	kwq bulk	kernel`binuptime	7
+fn	16 bulk	kwq bulk	kernel`kmem_malloc_domainset	7
+fn	16 bulk	kwq bulk	kernel`spinlock_enter	7
+fn	16 bulk	md	kernel`vm_object_pip_wakeup	7
+fn	16 bulk	md	kernel`pmap_invalidate_preipi_nopcid	7
+fn	16 bulk	other kernel	kernel`lock_delay	7
+fn	16 small	iolat kernel	kernel`g_reset_bio	7
+fn	16 small	kwq bulk	kernel`thread_lock_flags_	7
+fn	16 small	kwq bulk	kernel`sleepq_lock	7
+fn	16 small	kwq bulk	kernel`crypto_get_driver_session	7
+fn	16 small	kwq bulk	kwq.ko`ks_pass_begin	7
+fn	16 small	kwq bulk	kwq.ko`ks_round_end	7
+fn	32 bulk	iolat kernel	kernel`lock_mtx	7
+fn	32 bulk	iolat kernel	kernel`dofilewrite	7
+fn	32 bulk	iolat kernel	kwq.ko`kwq_topo_reach	7
+fn	32 bulk	kwq bulk	kernel`vmem_alloc	7
+fn	32 bulk	kwq bulk	kernel`zone_fetch_bucket	7
+fn	32 bulk	md	kernel`vm_object_pip_wakeup	7
+fn	32 bulk	other kernel	kernel`vm_fault	7
+fn	32 bulk	other kernel	kernel`get_pv_entry	7
+fn	32 bulk	other kernel	kernel`copyout_smap_erms	7
+fn	32 small	iolat kernel	kernel`turnstile_chain_lock	7
+fn	128 bulk	iolat kernel	kernel`0xffffffff81	8
+fn	128 bulk	iolat kernel	kernel`cpu_set_syscall_retval	8
+fn	128 bulk	kwq bulk	kernel`__mtx_lock_spin_flags	8
+fn	128 bulk	kwq bulk	kernel`thread_lock_flags_	8
+fn	128 bulk	kwq bulk	kernel`cache_alloc	8
+fn	128 bulk	kwq bulk	kernel`vm_domainset_iter_phase_first	8
+fn	128 bulk	md	kernel`mtx_pool_find	8
+fn	128 bulk	other kernel	kernel`vm_page_alloc_domain_iter	8
+fn	128 bulk	other kernel	kernel`pmap_enter	8
+fn	128 small	iolat kernel	kernel`g_alloc_bio	8
+fn	128 small	kwq bulk	kernel`g_destroy_bio	8
+fn	128 small	kwq bulk	kernel`sched_ule_runnable	8
+fn	128 small	kwq bulk	kernel`crypto_dispatch	8
+fn	128 small	kwq bulk	kwq.ko`ks_round_end	8
+fn	128 small	md	kernel`pmap_kextract	8
+fn	128 small	md	kwq.ko`kwq_enqueue	8
+fn	16 bulk	iolat kernel	kernel`fget_write	8
+fn	16 bulk	md	kernel`knlist_mtx_lock	8
+fn	16 bulk	md	kernel`__mtx_lock_sleep	8
+fn	16 bulk	md	kernel`spinlock_enter	8
+fn	16 bulk	md	kernel`pmap_invalidate_range	8
+fn	16 small	iolat kernel	kernel`__mtx_unlock_sleep	8
+fn	16 small	iolat kernel	kernel`0xffffffff81	8
+fn	16 small	iolat kernel	kernel`0xffffffff81	8
+fn	16 small	kwq bulk	kernel`g_destroy_bio	8
+fn	16 small	md	kwq.ko`kwq_enqueue	8
+fn	32 bulk	kwq bulk	kernel`kern_yield	8
+fn	32 bulk	md	kernel`mtx_pool_find	8
+fn	32 bulk	other kernel	kernel`cache_fplookup	8
+fn	32 bulk	other kernel	kernel`vm_map_lookup_entry	8
+fn	32 small	iolat kernel	kernel`wakeup	8
+fn	32 small	kwq bulk	kernel`sched_ule_runnable	8
+fn	32 small	md	kernel`g_destroy_bio	8
+fn	128 bulk	kwq bulk	kernel`__mtx_unlock_flags	9
+fn	128 bulk	kwq bulk	kernel`kmem_malloc_domainset	9
+fn	128 bulk	md	kernel`vmem_free	9
+fn	128 bulk	other kernel	kernel`copyout_smap_erms	9
+fn	128 small	iolat kernel	kernel`0xffffffff81	9
+fn	128 small	kwq bulk	kernel`pmap_kextract	9
+fn	16 bulk	iolat kernel	kernel`g_dev_strategy	9
+fn	16 bulk	kwq bulk	kernel`__mtx_unlock_flags	9
+fn	16 bulk	md	kernel`knote	9
+fn	16 bulk	md	kernel`devstat_end_transaction_bio	9
+fn	16 bulk	md	kernel`vm_object_pip_add	9
+fn	16 bulk	md	kernel`pmap_remove1	9
+fn	16 bulk	other kernel	kernel`cache_fplookup	9
+fn	16 bulk	other kernel	kernel`0xffffffff81	9
+fn	16 small	iolat kernel	kernel`0xffffffff81	9
+fn	16 small	kernel other	zfs.ko`zfs_lz4_compress	9
+fn	16 small	kwq bulk	kernel`sched_ule_runnable	9
+fn	32 bulk	iolat kernel	kernel`sys_pwrite	9
+fn	32 bulk	iolat kernel	kernel`cpu_set_syscall_retval	9
+fn	32 bulk	kernel other	kernel`spinlock_exit	9
+fn	32 bulk	kwq bulk	kernel`spinlock_enter	9
+fn	32 bulk	other kernel	kernel`vm_pqbatch_process_page	9
+fn	32 small	kwq bulk	kwq.ko`ks_round_end	9
+fn	128 bulk	kwq bulk	kernel`crypto_ses2caps	10
+fn	128 small	kernel other	zfs.ko`zfs_lz4_compress	10
+fn	128 small	kwq bulk	kernel`crypto_get_driver_session	10
+fn	16 bulk	kwq bulk	kernel`malloc_large	10
+fn	16 bulk	kwq bulk	kwq.ko`kwq_shard_pull	10
+fn	16 bulk	md	kernel`smp_masked_invlpg_range	10
+fn	16 bulk	other kernel	kernel`copyout_smap_erms	10
+fn	16 small	kwq bulk	kernel`crypto_dispatch	10
+fn	16 small	md	kernel`pmap_kextract	10
+fn	32 bulk	iolat kernel	kwq.ko`kwq_target_cpu	10
+fn	32 bulk	kwq bulk	kernel`thread_lock_flags_	10
+fn	32 bulk	kwq bulk	kernel`kmem_malloc_domainset	10
+fn	32 bulk	kwq bulk	kwq.ko`kwq_topo_reach	10
+fn	32 bulk	kwq bulk	kwq.ko`kwq_yield	10
+fn	32 bulk	kwq bulk	kwq.ko`kwq_steal_from	10
+fn	32 bulk	md	kernel`__mtx_lock_sleep	10
+fn	32 bulk	md	kernel`devstat_end_transaction_bio	10
+fn	32 bulk	other kernel	kernel`pmap_enter	10
+fn	32 bulk	other kernel	kernel`pagecopy	10
+fn	32 small	iolat kernel	kernel`g_destroy_bio	10
+fn	32 small	kernel other	kernel`em_update_stats_counters	10
+fn	32 small	md	kwq.ko`kwq_enqueue	10
+fn	128 bulk	kwq bulk	kernel`malloc_large	11
+fn	128 bulk	kwq bulk	kernel`__mtx_lock_flags	11
+fn	128 bulk	kwq bulk	kernel`tscp_get_timecount_low	11
+fn	128 bulk	kwq bulk	kwq.ko`kwq_yield	11
+fn	128 bulk	md	kernel`vm_radix_node_free	11
+fn	128 bulk	other kernel	kernel`0xffffffff81	11
+fn	128 small	md	kernel`devstat_end_transaction_bio_bt	11
+fn	16 bulk	iolat kernel	kernel`tscp_get_timecount_low	11
+fn	16 bulk	md	kernel`uma_zfree_arg	11
+fn	16 bulk	other kernel	kernel`uma_zalloc_arg	11
+fn	32 bulk	iolat kernel	kernel`_sleep	11
+fn	32 bulk	kwq bulk	kernel`__mtx_lock_spin_flags	11
+fn	32 small	iolat kernel	kernel`lockstat_nsecs	11
+fn	32 small	kwq bulk	kernel`crypto_dispatch	11
+fn	32 small	kwq bulk	kernel`pmap_kextract	11
+fn	128 bulk	iolat kernel	kernel`spinlock_enter	12
+fn	128 bulk	kwq bulk	kernel`g_io_check	12
+fn	128 bulk	md	kernel`binuptime	12
+fn	128 bulk	md	kernel`smp_masked_invlpg_range	12
+fn	128 small	iolat kernel	kernel`foffset_lock_uio	12
+fn	128 small	kwq bulk	kernel`crypto_freereq	12
+fn	16 bulk	iolat kernel	kernel`dev_relthread	12
+fn	16 bulk	iolat kernel	kernel`biowait	12
+fn	16 bulk	iolat kernel	kwq.ko`kwq_enqueue	12
+fn	16 bulk	other kernel	kernel`pctrie_iter_lookup_ge	12
+fn	32 bulk	kwq bulk	kernel`__mtx_lock_sleep	12
+fn	32 bulk	kwq bulk	kernel`tscp_get_timecount_low	12
+fn	32 bulk	md	kernel`vm_radix_node_free	12
+fn	32 bulk	md	kernel`smp_masked_invlpg_range	12
+fn	32 bulk	md	kernel`pmap_invalidate_preipi_nopcid	12
+fn	32 small	iolat kernel	kernel`0xffffffff81	12
+fn	32 small	iolat kernel	kernel`0xffffffff81	12
+fn	32 small	iolat kernel	kernel`0xffffffff81	12
+fn	32 small	kwq bulk	kernel`crypto_get_driver_session	12
+fn	32 small	md	kernel`devstat_end_transaction_bio_bt	12
+fn	128 bulk	kwq bulk	kwq.ko`kwq_higher_waiting	13
+fn	128 bulk	md	kernel`tscp_get_timecount_low	13
+fn	16 bulk	iolat kernel	kernel`malloc	13
+fn	16 bulk	kwq bulk	kwq.ko`kwq_steal_donor	13
+fn	16 small	kwq bulk	kernel`crypto_freereq	13
+fn	16 small	md	kernel`devstat_end_transaction_bio_bt	13
+fn	32 bulk	iolat kernel	kernel`__mtx_lock_spin_flags	13
+fn	32 bulk	iolat kernel	kernel`rctl_enforce	13
+fn	32 bulk	iolat kernel	kernel`0xffffffff81	13
+fn	32 bulk	kwq bulk	kernel`__mtx_lock_flags	13
+fn	32 bulk	kwq bulk	kernel`vm_domainset_iter_phase_first	13
+fn	32 bulk	md	kernel`vmem_free	13
+fn	32 bulk	other kernel	kernel`0xffffffff81	13
+fn	32 small	iolat kernel	kernel`g_reset_bio	13
+fn	128 bulk	md	kernel`pmap_invalidate_range	14
+fn	128 bulk	other kernel	kernel`pctrie_iter_lookup_ge	14
+fn	128 bulk	other kernel	kernel`pagezero_erms	14
+fn	128 small	iolat kernel	kernel`turnstile_trywait	14
+fn	16 bulk	iolat kernel	kernel`fget_unlocked_flags	14
+fn	16 bulk	kwq bulk	kernel`vm_domainset_iter_phase_first	14
+fn	16 bulk	kwq bulk	kernel`vm_radix_node_alloc	14
+fn	16 bulk	kwq bulk	kernel`tscp_get_timecount_low	14
+fn	16 bulk	kwq bulk	kwq.ko`kwq_higher_waiting	14
+fn	16 bulk	other kernel	kernel`pmap_enter	14
+fn	16 small	kwq bulk	kernel`_thread_lock	14
+fn	16 small	other kernel	kernel`spinlock_exit	14
+fn	32 bulk	iolat kernel	kernel`memset_erms	14
+fn	32 bulk	kwq bulk	kernel`g_io_check	14
+fn	32 bulk	kwq bulk	kernel`__mtx_unlock_flags	14
+fn	32 bulk	kwq bulk	kwq.ko`kwq_higher_waiting	14
+fn	32 bulk	md	kernel`uma_zfree_arg	14
+fn	32 bulk	md	kernel`tscp_get_timecount_low	14
+fn	32 bulk	other kernel	kernel`uma_zalloc_arg	14
+fn	32 small	iolat kernel	kernel`g_alloc_bio	14
+fn	32 small	iolat kernel	kernel`foffset_unlock_uio	14
+fn	32 small	kwq bulk	kernel`crypto_get_params	14
+fn	128 bulk	iolat kernel	kernel`memset_erms	15
+fn	128 small	iolat kernel	kernel`g_reset_bio	15
+fn	16 bulk	kwq bulk	kernel`__mtx_lock_sleep	15
+fn	16 bulk	md	kernel`binuptime	15
+fn	16 bulk	md	kernel`bioq_takefirst	15
+fn	16 small	iolat kernel	kernel`0xffffffff81	15
+fn	16 small	md	kernel`g_destroy_bio	15
+fn	32 bulk	kwq bulk	kwq.ko`kwq_steal_donor	15
+fn	32 bulk	other kernel	kernel`pmap_try_insert_pv_entry	15
+fn	128 bulk	iolat kernel	kernel`uma_zfree_arg	16
+fn	128 bulk	kwq bulk	kwq.ko`kwq_topo_reach	16
+fn	128 bulk	md	kernel`spinlock_enter	16
+fn	128 bulk	other kernel	kernel`pagecopy	16
+fn	128 small	iolat kernel	kernel`0xffffffff81	16
+fn	16 bulk	md	kernel`ipi_all_but_self	16
+fn	16 bulk	other kernel	kernel`pmap_try_insert_pv_entry	16
+fn	32 bulk	iolat kernel	kernel`__mtx_lock_sleep	16
+fn	32 bulk	other kernel	kernel`pctrie_iter_lookup_ge	16
+fn	128 bulk	iolat kernel	kernel`dev_relthread	17
+fn	128 bulk	iolat kernel	kernel`fget_write	17
+fn	128 bulk	kwq bulk	kernel`vm_radix_node_alloc	17
+fn	128 bulk	kwq bulk	kwq.ko`kwq_cputime_ns_tick	17
+fn	128 bulk	md	kernel`uma_zfree_arg	17
+fn	128 small	kwq bulk	kernel`get_pcb_user_save_pcb	17
+fn	128 small	other kernel	kernel`spinlock_exit	17
+fn	16 bulk	iolat kernel	kernel`_sleep	17
+fn	16 bulk	iolat kernel	kernel`memset_erms	17
+fn	16 bulk	md	kernel`tscp_get_timecount_low	17
+fn	16 bulk	md	kernel`pmap_delayed_invl_start_u	17
+fn	16 bulk	other kernel	kernel`pagezero_erms	17
+fn	16 small	kwq bulk	kernel`crypto_get_params	17
+fn	32 bulk	md	kernel`spinlock_enter	17
+fn	32 bulk	md	kernel`pmap_remove1	17
+fn	128 bulk	iolat kernel	kernel`lock_mtx	18
+fn	128 bulk	kwq bulk	kernel`crypto_get_params	18
+fn	128 small	iolat kernel	kernel`lockstat_nsecs	18
+fn	128 small	iolat kernel	kernel`getbinuptime	18
+fn	128 small	iolat kernel	kernel`foffset_unlock_uio	18
+fn	128 small	kwq bulk	kwq.ko`ks_pass_begin	18
+fn	16 small	iolat kernel	kernel`g_destroy_bio	18
+fn	16 small	iolat kernel	kernel`_mtx_lock_spin_cookie	18
+fn	32 bulk	iolat kernel	kernel`dev_relthread	18
+fn	16 bulk	md	kernel`_sleep	19
+fn	16 bulk	md	kernel`pmap_kextract	19
+fn	16 small	iolat kernel	kernel`g_alloc_bio	19
+fn	16 small	iolat kernel	kernel`foffset_unlock_uio	19
+fn	16 small	iolat kernel	kernel`vm_fault_quick_hold_pages	19
+fn	16 small	kwq bulk	kernel`pmap_kextract	19
+fn	32 bulk	kwq bulk	kwq.ko`kwq_shard_pull	19
+fn	32 bulk	md	kernel`binuptime	19
+fn	32 bulk	md	kernel`vm_object_pip_add	19
+fn	32 small	iolat kernel	kernel`turnstile_trywait	19
+fn	32 small	kwq bulk	kernel`crypto_freereq	19
+fn	32 small	other kernel	kernel`spinlock_exit	19
+fn	128 bulk	iolat kernel	kwq.ko`kwq_enqueue_one	21
+fn	128 small	md	kernel`mtx_pool_find	21
+fn	16 small	iolat kernel	kernel`0xffffffff81	21
+fn	32 bulk	iolat kernel	kernel`malloc	21
+fn	32 bulk	iolat kernel	kernel`amd64_syscall	21
+fn	32 bulk	kwq bulk	kernel`vm_radix_node_alloc	21
+fn	32 bulk	md	kernel`pmap_invalidate_range	21
+fn	32 small	kwq bulk	kwq.ko`ks_pass_begin	21
+fn	128 bulk	iolat kernel	kernel`malloc	22
+fn	128 small	kwq bulk	kernel`crypto_get_params	22
+fn	16 bulk	kwq bulk	kernel`devstat_start_transaction_bio	22
+fn	16 small	md	kernel`_mtx_lock_spin_cookie	22
+fn	32 bulk	iolat kernel	kernel`cpu_fetch_syscall_args	22
+fn	32 small	kwq bulk	kernel`get_pcb_user_save_pcb	22
+fn	128 bulk	iolat kernel	kernel`cpu_fetch_syscall_args	23
+fn	128 bulk	other kernel	kernel`pmap_try_insert_pv_entry	23
+fn	128 small	md	kernel`vm_page_reference	23
+fn	32 bulk	iolat kernel	kernel`uma_zfree_arg	23
+fn	32 small	iolat kernel	kernel`getbinuptime	23
+fn	128 bulk	iolat kernel	kernel`amd64_syscall	24
+fn	128 bulk	iolat kernel	kwq.ko`kwq_target_cpu	24
+fn	128 bulk	kwq bulk	kwq.ko`kwq_steal_from	24
+fn	128 small	iolat kernel	kernel`_thread_lock	24
+fn	16 bulk	iolat kernel	kernel`kern_pwritev	24
+fn	16 bulk	kwq bulk	kernel`g_io_check	24
+fn	16 bulk	other kernel	kernel`pmap_remove_pages	24
+fn	32 bulk	iolat kernel	kernel`fget_write	24
+fn	32 small	iolat kernel	kernel`_thread_lock	24
+fn	128 bulk	iolat kernel	kernel`_sleep	25
+fn	128 small	md	kernel`_mtx_lock_spin_cookie	25
+fn	16 bulk	iolat kernel	kernel`g_clone_bio	25
+fn	16 bulk	iolat kernel	kernel`cpu_fetch_syscall_args	25
+fn	16 bulk	iolat kernel	kernel`amd64_syscall	25
+fn	32 bulk	iolat kernel	kwq.ko`kwq_enqueue_one	25
+fn	32 bulk	kwq bulk	kernel`crypto_ses2caps	25
+fn	32 bulk	kwq bulk	kwq.ko`kwq_cputime_ns_tick	25
+fn	32 small	iolat kernel	kernel`pmap_kextract	25
+fn	32 small	md	kernel`mtx_pool_find	25
+fn	128 bulk	md	kernel`__rw_wlock_hard	26
+fn	128 bulk	md	kernel`pmap_delayed_invl_start_u	26
+fn	128 small	iolat kernel	kernel`vm_fault_quick_hold_pages	26
+fn	128 small	iolat kernel	kernel`pmap_kextract	26
+fn	16 bulk	iolat kernel	kernel`devfs_write_f	26
+fn	16 bulk	kwq bulk	kernel`vmem_xalloc	26
+fn	16 bulk	kwq bulk	kwq.ko`kwq_cputime_ns_tick	26
+fn	16 bulk	md	kernel`g_dev_done	26
+fn	16 small	iolat kernel	kernel`getbinuptime	26
+fn	32 bulk	kwq bulk	kernel`malloc_large	26
+fn	32 bulk	md	kernel`knlist_mtx_lock	26
+fn	32 bulk	md	kernel`vm_page_free_toq	26
+fn	128 bulk	iolat kernel	kernel`__mtx_unlock_flags	27
+fn	128 bulk	md	kernel`knote	27
+fn	128 bulk	md	kernel`ipi_all_but_self	27
+fn	128 small	kwq bulk	kernel`devstat_end_transaction_bio_bt	27
+fn	16 bulk	iolat kernel	kernel`g_io_request	27
+fn	16 bulk	md	kernel`biodone	27
+fn	16 small	kwq bulk	kernel`devstat_end_transaction_bio_bt	27
+fn	16 bulk	iolat kernel	kernel`racct_add_force	28
+fn	16 bulk	kwq bulk	kernel`__rw_wlock_hard	28
+fn	32 small	iolat kernel	kernel`vm_fault_quick_hold_pages	28
+fn	128 bulk	kwq bulk	kernel`vmem_xalloc	29
+fn	16 bulk	iolat kernel	kernel`uma_zfree_arg	29
+fn	16 bulk	iolat kernel	geom_kwqeli.ko`g_eli_start	29
+fn	16 bulk	kwq bulk	kernel`vmem_clip	29
+fn	16 bulk	md	kernel`__rw_wlock_hard	29
+fn	16 small	kwq bulk	kernel`get_pcb_user_save_pcb	29
+fn	32 bulk	iolat kernel	kernel`biowait	29
+fn	32 bulk	md	kernel`pmap_delayed_invl_start_u	29
+fn	32 small	kwq bulk	kernel`devstat_end_transaction_bio_bt	29
+fn	128 bulk	md	kernel`bioq_takefirst	30
+fn	16 bulk	iolat kernel	kernel`lock_delay	30
+fn	32 bulk	kwq bulk	kernel`g_io_request	30
+fn	32 bulk	md	kernel`knote	30
+fn	32 small	iolat kernel	kernel`sched_ule_userret_slowpath	30
+fn	128 bulk	iolat kernel	kernel`devstat_start_transaction_bio_t0	31
+fn	128 bulk	iolat kernel	kernel`kern_pwritev	31
+fn	128 bulk	iolat kernel	kernel`biowait	31
+fn	128 bulk	kwq bulk	kernel`vmem_clip	31
+fn	128 bulk	md	kernel`pmap_invalidate_preipi_nopcid	31
+fn	128 bulk	md	kernel`pmap_kextract	31
+fn	128 small	md	kernel`sleepq_lock	31
+fn	32 bulk	other kernel	kernel`pmap_remove_pages	31
+fn	128 bulk	kwq bulk	kwq.ko`kwq_shard_pull	32
+fn	128 small	kwq bulk	kernel`set_pcb_flags_fsgsbase	32
+fn	32 bulk	kwq bulk	kernel`crypto_get_params	32
+fn	32 bulk	md	kernel`biodone	32
+fn	32 small	kwq bulk	kernel`_thread_lock	32
+fn	128 bulk	kwq bulk	kernel`crypto_get_driver_session	34
+fn	16 bulk	iolat kernel	kernel`__mtx_unlock_flags	34
+fn	32 bulk	iolat kernel	kernel`g_dev_strategy	34
+fn	32 bulk	iolat kernel	kernel`kern_pwritev	34
+fn	128 bulk	iolat kernel	geom_kwqeli.ko`g_eli_start	35
+fn	128 bulk	md	kernel`vm_page_free_toq	35
+fn	128 small	iolat kernel	kernel`sleepq_lock	35
+fn	128 small	kwq bulk	kernel`explicit_bzero	35
+fn	16 bulk	iolat kernel	kernel`uma_zalloc_arg	35
+fn	16 bulk	kwq bulk	kernel`crypto_ses2caps	35
+fn	32 bulk	iolat kernel	kernel`devstat_start_transaction_bio_t0	35
+fn	32 bulk	md	kernel`ipi_all_but_self	35
+fn	32 small	iolat kernel	kernel`sleepq_lock	35
+fn	32 small	md	kernel`_mtx_lock_spin_cookie	35
+fn	128 small	iolat kernel	kernel`devfs_iosize_max	36
+fn	16 small	md	kernel`mtx_pool_find	36
+fn	32 bulk	iolat kernel	geom_kwqeli.ko`g_eli_start	36
+fn	32 bulk	kwq bulk	kernel`vm_page_valid	36
+fn	32 small	md	kernel`vm_object_pip_wakeup	36
+fn	128 bulk	iolat kernel	kernel`racct_add_force	37
+fn	128 bulk	kwq bulk	kwq.ko`kwq_steal_donor	37
+fn	128 bulk	md	kernel`vm_object_pip_add	37
+fn	128 small	md	kernel`vm_object_pip_wakeup	37
+fn	16 bulk	kwq bulk	kernel`crypto_get_driver_session	37
+fn	16 bulk	md	kernel`uma_zfree_smr	37
+fn	32 bulk	iolat kernel	kernel`racct_add_force	37
+fn	32 bulk	kwq bulk	kernel`crypto_get_driver_session	37
+fn	128 bulk	iolat kernel	kernel`PHYS_TO_VM_PAGE	38
+fn	128 bulk	md	kernel`pmap_remove1	38
+fn	128 small	kwq bulk	kernel`_thread_lock	38
+fn	16 small	iolat kernel	kernel`sched_ule_userret_slowpath	38
+fn	16 small	kwq bulk	kernel`knlist_mtx_unlock	38
+fn	16 small	kwq bulk	kernel`explicit_bzero	38
+fn	32 bulk	iolat kernel	kernel`g_clone_bio	38
+fn	32 bulk	iolat kernel	kernel`__mtx_unlock_flags	38
+fn	32 bulk	md	kernel`_kmem_unback	38
+fn	32 small	md	kernel`vm_page_reference	38
+fn	128 bulk	kwq bulk	kernel`__rw_wlock_hard	39
+fn	128 small	kwq bulk	kernel`knlist_mtx_unlock	39
+fn	16 bulk	kwq bulk	kernel`g_md_start	39
+fn	16 bulk	kwq bulk	kernel`crypto_get_params	39
+fn	16 bulk	kwq bulk	kernel`crypto_freereq	39
+fn	16 small	iolat kernel	kernel`devfs_iosize_max	39
+fn	16 small	iolat kernel	kernel`pmap_kextract	39
+fn	16 small	md	kernel`vm_page_grab_unlocked	39
+fn	32 bulk	md	kernel`__rw_wlock_hard	39
+fn	32 small	kwq bulk	kernel`explicit_bzero	39
+fn	128 bulk	kwq bulk	kernel`g_io_request	40
+fn	128 small	kwq bulk	kernel`crypto_getreq	40
+fn	128 small	md	kernel`vm_page_grab_unlocked	40
+fn	16 small	iolat kernel	kernel`_thread_lock	40
+fn	16 bulk	md	kernel`free	41
+fn	32 bulk	kwq bulk	kernel`vmem_xalloc	41
+fn	32 bulk	md	kernel`_sleep	41
+fn	32 small	md	kernel`vm_page_grab_unlocked	41
+fn	128 bulk	md	kernel`uma_zfree_smr	42
+fn	128 small	kwq bulk	kernel`__mtx_lock_sleep	42
+fn	32 bulk	md	kernel`g_dev_done	42
+fn	32 small	kwq bulk	kernel`set_pcb_flags_fsgsbase	42
+fn	32 small	kwq bulk	kernel`clear_pcb_flags	42
+fn	128 bulk	iolat kernel	kernel`uma_zalloc_arg	43
+fn	128 small	iolat kernel	kernel`sched_ule_userret_slowpath	43
+fn	128 small	kwq bulk	kernel`crypto_ses2caps	43
+fn	16 bulk	other kernel	kernel`spinlock_exit	43
+fn	16 small	md	kernel`sleepq_lock	43
+fn	32 bulk	md	kernel`pmap_kextract	43
+fn	32 small	md	kernel`sleepq_lock	43
+fn	128 bulk	iolat kernel	kwq.ko`kwq_doorbell	44
+fn	128 bulk	md	kernel`biodone	44
+fn	128 bulk	other kernel	kernel`pmap_remove_pages	44
+fn	16 bulk	md	kernel`md_kthread	44
+fn	16 small	md	kernel`vm_object_pip_wakeup	44
+fn	32 bulk	iolat kernel	kernel`uma_zalloc_arg	44
+fn	128 bulk	iolat kernel	kernel`vm_fault_hold_pages	45
+fn	128 bulk	kwq bulk	kernel`vm_page_valid	45
+fn	16 small	iolat kernel	kernel`sleepq_lock	45
+fn	16 small	kwq bulk	kernel`crypto_contiguous_subsegment	45
+fn	32 bulk	iolat kernel	kernel`PHYS_TO_VM_PAGE	45
+fn	32 bulk	iolat kernel	kwq.ko`kwq_doorbell	45
+fn	32 bulk	kwq bulk	kernel`devstat_start_transaction_bio	45
+fn	32 bulk	md	kernel`uma_zfree_smr	45
+fn	128 bulk	kwq bulk	kernel`crypto_freereq	46
+fn	128 small	md	kernel`__mtx_lock_flags	46
+fn	32 small	kwq bulk	kernel`knlist_mtx_unlock	46
+fn	32 small	kwq bulk	kernel`kern_yield	46
+fn	32 small	kwq bulk	kernel`crypto_contiguous_subsegment	46
+fn	128 bulk	iolat kernel	kernel`g_clone_bio	47
+fn	128 small	kwq bulk	kernel`__explicit_bzero_hook	47
+fn	16 small	kwq bulk	kernel`set_pcb_flags_fsgsbase	47
+fn	32 bulk	kwq bulk	kernel`crypto_freereq	47
+fn	32 small	kwq bulk	kernel`crypto_getreq	47
+fn	32 small	md	kernel`__mtx_lock_flags	47
+fn	128 bulk	kwq bulk	kernel`vm_reserv_level_iffullpop	48
+fn	32 bulk	iolat kernel	kernel`g_io_request	48
+fn	128 small	iolat kernel	kernel`bioq_disksort	49
+fn	128 small	kwq bulk	kernel`clear_pcb_flags	49
+fn	128 small	md	kernel`devstat_end_transaction_bio	49
+fn	16 small	kwq bulk	kernel`crypto_getreq	49
+fn	16 bulk	kwq bulk	kernel`pmap_kextract	50
+fn	32 bulk	iolat kernel	kernel`fget_unlocked_flags	50
+fn	32 small	md	kernel`devstat_end_transaction_bio	50
+fn	128 bulk	iolat kernel	kernel`g_io_request	51
+fn	128 small	iolat kernel	kernel`0xffffffff81	51
+fn	128 small	kwq bulk	geom_kwqeli.ko`g_eli_key_drop	51
+fn	16 bulk	md	geom_kwqeli.ko`g_eli_write_done	51
+fn	16 small	kwq bulk	kernel`__explicit_bzero_hook	51
+fn	32 bulk	kwq bulk	kernel`vmem_clip	51
+fn	32 bulk	kwq bulk	kernel`explicit_bzero	51
+fn	32 small	iolat kernel	kernel`devfs_iosize_max	51
+fn	128 bulk	md	kernel`knlist_mtx_lock	52
+fn	16 small	kwq bulk	kernel`aesni_decrypt_xts	52
+fn	16 small	md	kernel`vm_page_reference	52
+fn	32 bulk	iolat kernel	kernel`devfs_write_f	52
+fn	32 bulk	kwq bulk	kernel`__rw_wlock_hard	52
+fn	128 bulk	md	kernel`g_dev_done	53
+fn	128 small	kwq bulk	kwq.ko`kwq_yield	53
+fn	128 small	kwq bulk	geom_kwqeli.ko`g_eli_crypto_ivgen	53
+fn	16 bulk	iolat kernel	kernel`PHYS_TO_VM_PAGE	53
+fn	16 bulk	iolat kernel	kwq.ko`kwq_doorbell	53
+fn	32 bulk	iolat kernel	kernel`vm_fault_hold_pages	53
+fn	128 small	kwq bulk	kwq.ko`kwq_shard_pull	54
+fn	32 bulk	md	kernel`bioq_takefirst	54
+fn	32 small	kwq bulk	kernel`__explicit_bzero_hook	54
+fn	128 small	kwq bulk	kernel`kern_yield	55
+fn	16 small	kwq bulk	geom_kwqeli.ko`g_eli_key_drop	55
+fn	32 small	kwq bulk	geom_kwqeli.ko`g_eli_key_drop	55
+fn	128 bulk	iolat kernel	kernel`devfs_write_f	56
+fn	128 small	kwq bulk	kernel`crypto_contiguous_subsegment	56
+fn	16 bulk	iolat kernel	kernel`free	56
+fn	16 bulk	kwq bulk	kernel`vm_page_valid	56
+fn	32 bulk	kwq bulk	kernel`vm_reserv_level_iffullpop	56
+fn	32 small	iolat kernel	kernel`bioq_disksort	56
+fn	128 bulk	other kernel	kernel`spinlock_exit	57
+fn	16 bulk	kwq bulk	kernel`crypto_contiguous_subsegment	57
+fn	16 bulk	md	kernel`vmem_xfree	57
+fn	32 bulk	other kernel	kernel`spinlock_exit	57
+fn	32 small	kwq bulk	geom_kwqeli.ko`g_eli_crypto_ivgen	57
+fn	128 bulk	kwq bulk	kernel`explicit_bzero	58
+fn	16 bulk	md	kernel`vm_page_free_toq	58
+fn	16 small	md	kernel`devstat_end_transaction_bio	58
+fn	32 small	kwq bulk	kernel`crypto_ses2caps	58
+fn	128 bulk	md	kernel`_kmem_unback	59
+fn	128 small	kwq bulk	kernel`aesni_decrypt_xts	59
+fn	16 bulk	iolat kernel	kernel`vm_fault_hold_pages	59
+fn	16 bulk	kwq bulk	kernel`crypto_dispatch	59
+fn	32 small	iolat kernel	kernel`__mtx_unlock_flags	59
+fn	32 small	kwq bulk	kernel`aesni_decrypt_xts	59
+fn	16 bulk	kwq bulk	kernel`pctrie_iter_lookup_ge	60
+fn	128 bulk	kwq bulk	kernel`kmem_back_domain	61
+fn	16 bulk	iolat kernel	kernel`physio	61
+fn	16 bulk	kwq bulk	geom_kwqeli.ko`g_eli_kwq_handler	61
+fn	16 small	iolat kernel	kernel`bioq_disksort	61
+fn	16 small	kwq bulk	kernel`crypto_ses2caps	61
+fn	32 bulk	md	kernel`free	61
+fn	32 small	kwq bulk	kwq.ko`kwq_yield	61
+fn	128 small	md	kernel`biodone	62
+fn	32 small	md	kernel`biodone	62
+fn	128 bulk	kwq bulk	kernel`devstat_start_transaction_bio	63
+fn	128 small	iolat kernel	kernel`__mtx_unlock_flags	63
+fn	16 small	kwq bulk	kernel`__mtx_lock_sleep	63
+fn	16 small	md	kernel`__mtx_lock_flags	63
+fn	128 small	iolat kernel	kernel`PHYS_TO_VM_PAGE	64
+fn	16 small	kwq bulk	kernel`clear_pcb_flags	64
+fn	128 bulk	kwq bulk	geom_kwqeli.ko`g_eli_kwq_handler	65
+fn	16 bulk	kwq bulk	kwq.ko`kwq_worker_main	65
+fn	16 bulk	md	kernel`_kmem_unback	65
+fn	32 bulk	kwq bulk	kernel`crypto_contiguous_subsegment	65
+fn	128 bulk	kwq bulk	kernel`crypto_contiguous_subsegment	66
+fn	16 bulk	kwq bulk	kernel`kmem_back_domain	66
+fn	16 small	iolat kernel	kernel`__mtx_unlock_flags	66
+fn	32 bulk	kwq bulk	kernel`pctrie_iter_lookup_ge	66
+fn	128 bulk	iolat kernel	kernel`__mtx_lock_sleep	67
+fn	128 bulk	kwq bulk	kernel`__explicit_bzero_hook	67
+fn	16 small	md	kernel`biodone	67
+fn	32 small	kwq bulk	kernel`__mtx_lock_sleep	67
+fn	128 bulk	kwq bulk	kernel`pctrie_iter_lookup_ge	68
+fn	128 bulk	kwq bulk	kernel`crypto_dispatch	68
+fn	128 bulk	md	kernel`free	68
+fn	128 small	md	kernel`spinlock_enter	68
+fn	128 bulk	md	kernel`native_lapic_ipi_vectored	69
+fn	16 bulk	kwq bulk	kernel`vm_reserv_level_iffullpop	69
+fn	16 small	kwq bulk	geom_kwqeli.ko`g_eli_crypto_ivgen	69
+fn	32 small	kwq bulk	kwq.ko`kwq_shard_pull	69
+fn	32 bulk	kwq bulk	kernel`__explicit_bzero_hook	70
+fn	32 bulk	kwq bulk	kernel`set_pcb_flags_fsgsbase	70
+fn	32 small	kwq bulk	kernel`mtx_pool_find	70
+fn	32 small	kwq bulk	kernel`__mtx_unlock_flags	70
+fn	16 bulk	kwq bulk	kernel`explicit_bzero	72
+fn	16 small	kwq bulk	kwq.ko`kwq_shard_pull	73
+fn	32 bulk	iolat kernel	kernel`free	73
+fn	32 bulk	kwq bulk	geom_kwqeli.ko`g_eli_kwq_handler	73
+fn	32 small	kwq bulk	kernel`thread_lock_flags_	73
+fn	32 bulk	kwq bulk	kernel`g_md_start	74
+fn	128 bulk	md	kernel`_sleep	75
+fn	16 bulk	md	kernel`native_lapic_ipi_vectored	75
+fn	32 bulk	md	kernel`native_lapic_ipi_vectored	75
+fn	128 bulk	iolat kernel	kernel`fget_unlocked_flags	76
+fn	128 bulk	kwq bulk	kernel`pmap_kextract	76
+fn	16 bulk	kwq bulk	kwq.ko`ks_budget_need_clock	76
+fn	128 bulk	kwq bulk	kernel`vm_reserv_populate	77
+fn	128 small	kwq bulk	kernel`thread_lock_flags_	77
+fn	32 bulk	kwq bulk	kernel`crypto_dispatch	77
+fn	128 small	kwq bulk	kernel`mtx_pool_find	78
+fn	128 small	kwq bulk	kernel`memcpy_erms	78
+fn	32 bulk	kwq bulk	kernel`vm_reserv_populate	78
+fn	128 bulk	kwq bulk	kernel`crypto_getreq	79
+fn	128 bulk	kwq bulk	kernel`set_pcb_flags_fsgsbase	79
+fn	128 small	iolat kernel	kernel`userret	79
+fn	128 small	kwq bulk	kernel`__mtx_unlock_flags	79
+fn	16 bulk	md	kernel`devstat_end_transaction	79
+fn	16 bulk	md	kernel`pmap_remove_ptes	79
+fn	32 small	md	kwq.ko`kwq_topo_reach	79
+fn	16 small	kwq bulk	kernel`mtx_pool_find	80
+fn	16 small	kwq bulk	kernel`__mtx_unlock_flags	80
+fn	128 bulk	md	kernel`pmap_remove_ptes	82
+fn	128 small	kwq bulk	kernel`crypto_dispatch_one	82
+fn	128 small	md	kwq.ko`kwq_topo_reach	82
+fn	16 bulk	kwq bulk	kernel`memcpy_erms	82
+fn	32 bulk	md	geom_kwqeli.ko`g_eli_write_done	82
+fn	16 small	kwq bulk	kernel`aesni_process	83
+fn	128 small	iolat kernel	kernel`rctl_enforce	85
+fn	32 bulk	md	kernel`pctrie_iter_remove	85
+fn	32 bulk	kwq bulk	kernel`pmap_kextract	86
+fn	32 small	md	kernel`spinlock_enter	86
+fn	128 bulk	iolat kernel	kernel`g_dev_strategy	87
+fn	16 bulk	md	kernel`g_io_deliver	87
+fn	32 bulk	kwq bulk	kernel`crypto_getreq	87
+fn	128 bulk	kwq bulk	kernel`get_pcb_user_save_pcb	88
+fn	128 bulk	md	kernel`pctrie_iter_remove	88
+fn	128 small	iolat kernel	kernel`mtx_pool_find	88
+fn	16 small	md	kernel`spinlock_enter	88
+fn	32 bulk	kwq bulk	kernel`kmem_back_domain	88
+fn	32 bulk	kwq bulk	kwq.ko`ks_budget_need_clock	88
+fn	128 bulk	md	kernel`md_kthread	89
+fn	16 bulk	kwq bulk	kernel`vm_reserv_populate	90
+fn	128 bulk	iolat kernel	kernel`free	91
+fn	16 small	kwq bulk	kernel`knote	91
+fn	128 bulk	kwq bulk	kernel`clear_pcb_flags	92
+fn	32 small	iolat kernel	kernel`mtx_pool_find	93
+fn	32 small	iolat kernel	kernel`0xffffffff81	93
+fn	16 bulk	iolat kernel	kernel`devvn_refthread	94
+fn	16 bulk	kwq bulk	geom_kwqeli.ko`g_eli_key_drop	94
+fn	32 bulk	kwq bulk	geom_kwqeli.ko`g_eli_key_drop	94
+fn	32 small	md	kernel`__mtx_lock_sleep	94
+fn	128 bulk	kwq bulk	kwq.ko`kwq_worker_main	95
+fn	32 small	kwq bulk	kernel`crypto_dispatch_one	95
+fn	128 bulk	kwq bulk	kwq.ko`ks_budget_need_clock	96
+fn	32 bulk	iolat kernel	kernel`physio	96
+fn	128 bulk	md	kernel`devstat_end_transaction	97
+fn	16 small	kwq bulk	kernel`memcpy_erms	98
+fn	32 small	md	kernel`pmap_copy_pages	98
+fn	128 bulk	kwq bulk	geom_kwqeli.ko`g_eli_key_drop	99
+fn	32 bulk	kwq bulk	kernel`clear_pcb_flags	99
+fn	32 bulk	md	kernel`vm_page_unwire_noq	99
+fn	128 bulk	kwq bulk	kernel`memcpy_erms	100
+fn	16 bulk	kwq bulk	kernel`crypto_getreq	100
+fn	32 bulk	kwq bulk	kernel`get_pcb_user_save_pcb	100
+fn	32 small	kwq bulk	kernel`aesni_process	100
+fn	32 small	kwq bulk	kernel`memcpy_erms	100
+fn	128 bulk	iolat kernel	kwq.ko`kwq_pick_shard	101
+fn	16 bulk	md	kernel`vm_page_grab_unlocked	101
+fn	128 bulk	md	kernel`vm_page_unwire_noq	103
+fn	128 bulk	md	geom_kwqeli.ko`g_eli_write_done	103
+fn	128 small	iolat kernel	kernel`fget_read	103
+fn	128 small	kwq bulk	kernel`msleep_spin_sbt	103
+fn	128 small	kwq bulk	kwq.ko`kwq_topo_reach	103
+fn	128 small	md	kernel`pmap_copy_pages	103
+fn	32 bulk	kwq bulk	kernel`aesni_encrypt_xts	103
+fn	32 small	iolat kernel	kernel`PHYS_TO_VM_PAGE	103
+fn	128 small	kwq bulk	kernel`__mtx_lock_flags	104
+fn	128 bulk	md	kernel`vm_page_grab_unlocked	105
+fn	16 small	md	kwq.ko`kwq_topo_reach	105
+fn	128 bulk	iolat kernel	kernel`vm_page_pqstate_commit	106
+fn	16 small	md	kernel`pmap_copy_pages	106
+fn	32 bulk	md	kernel`md_kthread	107
+fn	128 bulk	kwq bulk	kernel`g_md_start	108
+fn	128 small	kwq bulk	kernel`knote	108
+fn	32 bulk	md	kernel`devstat_end_transaction	108
+fn	32 bulk	md	kernel`vmem_xfree	108
+fn	16 bulk	md	kernel`vm_page_unwire_noq	109
+fn	32 bulk	iolat kernel	kwq.ko`kwq_pick_shard	109
+fn	32 small	iolat kernel	kernel`userret	109
+fn	16 small	iolat kernel	kernel`PHYS_TO_VM_PAGE	111
+fn	32 bulk	md	kernel`pmap_remove_ptes	111
+fn	16 bulk	kwq bulk	kernel`set_pcb_flags_fsgsbase	112
+fn	16 bulk	kwq bulk	kernel`crypto_buffer_contiguous_subsegment	113
+fn	16 bulk	md	kernel`pctrie_iter_remove	113
+fn	128 bulk	kwq bulk	kernel`aesni_encrypt_xts	114
+fn	16 bulk	kwq bulk	kernel`uma_zalloc_smr	114
+fn	16 small	iolat kernel	kernel`0xffffffff81	115
+fn	16 bulk	kwq bulk	kwq.ko`kwq_budget_left	116
+fn	16 bulk	iolat kernel	kwq.ko`kwq_pick_shard	117
+fn	16 small	kwq bulk	kernel`crypto_dispatch_one	118
+fn	32 small	kwq bulk	kernel`knote	118
+fn	128 bulk	kwq bulk	kernel`uma_zalloc_smr	119
+fn	128 small	iolat kernel	kernel`binuptime	119
+fn	128 small	md	kernel`__mtx_lock_sleep	119
+fn	16 small	iolat kernel	kernel`userret	119
+fn	128 small	md	kernel`binuptime	120
+fn	16 bulk	kwq bulk	kernel`get_pcb_user_save_pcb	120
+fn	32 small	md	kernel`binuptime	120
+fn	32 bulk	iolat kernel	kernel`vm_page_pqstate_commit	121
+fn	32 bulk	kwq bulk	kernel`memcpy_erms	121
+fn	128 bulk	md	kernel`vmem_xfree	122
+fn	16 bulk	kwq bulk	kernel`__explicit_bzero_hook	122
+fn	32 small	iolat kernel	kernel`fget_read	122
+fn	16 bulk	kwq bulk	kernel`clear_pcb_flags	123
+fn	16 small	kwq bulk	kwq.ko`kwq_topo_reach	123
+fn	32 small	iolat kernel	kernel`binuptime	123
+fn	128 bulk	kwq bulk	geom_kwqeli.ko`g_eli_crypto_ivgen	124
+fn	32 bulk	kwq bulk	kwq.ko`kwq_worker_main	124
+fn	32 bulk	md	kernel`vm_page_grab_unlocked	125
+fn	16 small	iolat kernel	kernel`mtx_pool_find	126
+fn	128 small	iolat kernel	kernel`dofileread	128
+fn	128 small	kwq bulk	kernel`aesni_process	128
+fn	128 small	kwq bulk	kernel`_key_expansion_128	128
+fn	128 small	kwq bulk	kernel`lock_delay	129
+fn	128 bulk	iolat kernel	kernel`devvn_refthread	130
+fn	128 bulk	iolat kernel	kernel`physio	130
+fn	32 bulk	kwq bulk	kernel`uma_zalloc_smr	134
+fn	32 bulk	md	kernel`g_io_deliver	134
+fn	16 bulk	kwq bulk	kernel`aesni_encrypt_xts	135
+fn	16 small	iolat kernel	kernel`fget_read	135
+fn	16 small	iolat kernel	kernel`thread_lock_flags_	135
+fn	32 bulk	iolat kernel	kernel`devvn_refthread	135
+fn	32 small	iolat kernel	kernel`dofileread	135
+fn	32 small	kwq bulk	kwq.ko`kwq_topo_reach	136
+fn	32 bulk	kwq bulk	kernel`vm_page_iter_insert	137
+fn	32 bulk	md	kernel`smp_targeted_tlb_shootdown_native	137
+fn	32 small	kwq bulk	kernel`_key_expansion_128	137
+fn	128 small	iolat kernel	kernel`g_io_check	140
+fn	16 bulk	md	kernel`smp_targeted_tlb_shootdown_native	140
+fn	16 small	kwq bulk	kernel`msleep_spin_sbt	140
+fn	128 small	iolat kernel	kernel`sys_pread	141
+fn	128 small	iolat kernel	kernel`thread_lock_flags_	142
+fn	32 small	kwq bulk	kernel`msleep_spin_sbt	142
+fn	16 small	md	kernel`__mtx_lock_sleep	143
+fn	32 bulk	kwq bulk	geom_kwqeli.ko`g_eli_crypto_ivgen	143
+fn	128 bulk	kwq bulk	kernel`vm_domain_allocate	144
+fn	32 bulk	kwq bulk	kernel`vm_domain_allocate	144
+fn	16 small	kwq bulk	kernel`__mtx_lock_flags	145
+fn	16 small	kwq bulk	kernel`_key_expansion_128	145
+fn	32 small	kwq bulk	kernel`__mtx_lock_flags	145
+fn	128 bulk	kwq bulk	kernel`crypto_buffer_contiguous_subsegment	150
+fn	128 bulk	md	kernel`g_io_deliver	151
+fn	16 bulk	kwq bulk	geom_kwqeli.ko`g_eli_crypto_ivgen	155
+fn	128 small	kwq bulk	kernel`_key_expansion_256b	156
+fn	32 small	iolat kernel	kernel`sys_pread	158
+fn	128 bulk	kwq bulk	kernel`vm_page_iter_insert	159
+fn	128 bulk	md	kernel`vm_page_iter_free	159
+fn	16 small	md	kernel`binuptime	159
+fn	32 small	iolat kernel	kernel`g_io_check	159
+fn	128 small	kwq bulk	kernel`devstat_end_transaction	160
+fn	32 bulk	kwq bulk	kernel`crypto_buffer_contiguous_subsegment	160
+fn	128 small	md	kernel`uma_zfree_arg	163
+fn	128 small	md	kwq.ko`kwq_enqueue_one	163
+fn	32 small	kwq bulk	kernel`_key_expansion_256b	163
+fn	128 small	kwq bulk	kernel`uma_zfree_arg	164
+fn	128 small	kwq bulk	kernel`aesni_set_deckey	164
+fn	32 small	kwq bulk	kernel`lock_delay	165
+fn	32 small	md	kernel`uma_zfree_arg	165
+fn	128 small	iolat kernel	kernel`__mtx_lock_flags	166
+fn	16 small	kwq bulk	kernel`devstat_end_transaction	166
+fn	32 small	iolat kernel	kernel`thread_lock_flags_	167
+fn	16 bulk	md	kernel`PHYS_TO_VM_PAGE	168
+fn	128 small	kwq bulk	kernel`binuptime	169
+fn	16 small	kwq bulk	kernel`_key_expansion_256b	171
+fn	32 small	iolat kernel	kernel`__mtx_lock_flags	171
+fn	16 bulk	kwq bulk	kernel`aesni_cipher_setup_common	172
+fn	32 small	iolat kernel	kernel`cpu_set_syscall_retval	173
+fn	128 bulk	kwq bulk	kwq.ko`kwq_budget_left	175
+fn	16 small	iolat kernel	kernel`__mtx_lock_flags	175
+fn	128 small	kwq bulk	kernel`crypto_invoke	176
+fn	16 bulk	iolat kernel	kernel`vm_page_pqstate_commit	176
+fn	32 bulk	md	kernel`PHYS_TO_VM_PAGE	177
+fn	32 small	kwq bulk	kernel`devstat_end_transaction	178
+fn	16 small	iolat kernel	kernel`binuptime	180
+fn	16 small	iolat kernel	kernel`dofileread	180
+fn	16 small	kwq bulk	kernel`binuptime	180
+fn	32 small	kwq bulk	kernel`uma_zfree_arg	180
+fn	128 bulk	kwq bulk	kernel`aesni_cipher_setup_common	181
+fn	16 small	kwq bulk	kernel`knlist_mtx_lock	182
+fn	32 small	md	kernel`_sleep	183
+fn	16 small	iolat kernel	kernel`g_io_check	184
+fn	16 small	kwq bulk	kernel`crypto_invoke	184
+fn	32 small	iolat kernel	kernel`_mtx_lock_spin_cookie	184
+fn	128 small	kwq bulk	kernel`knlist_mtx_lock	185
+fn	32 small	kwq bulk	kernel`aesni_set_deckey	187
+fn	128 bulk	md	kernel`PHYS_TO_VM_PAGE	188
+fn	128 small	iolat kernel	kernel`cpu_set_syscall_retval	188
+fn	32 bulk	iolat kernel	kernel`lock_delay	189
+fn	32 small	kwq bulk	kernel`binuptime	189
+fn	128 small	kwq bulk	kernel`crypto_done	191
+fn	128 small	kwq bulk	kernel`uma_zalloc_arg	191
+fn	128 small	md	kernel`__mtx_unlock_flags	191
+fn	16 small	iolat kernel	kernel`sys_pread	191
+fn	16 small	md	kwq.ko`kwq_target_cpu	192
+fn	16 small	md	kernel`uma_zfree_arg	193
+fn	32 small	kwq bulk	kernel`crypto_done	194
+fn	32 small	kwq bulk	kernel`crypto_invoke	194
+fn	32 small	md	kwq.ko`kwq_enqueue_one	195
+fn	16 small	iolat kernel	kernel`cpu_set_syscall_retval	196
+fn	32 bulk	kwq bulk	geom_kwqeli.ko`g_eli_key_hold	196
+fn	16 small	iolat kernel	kernel`rctl_enforce	197
+fn	32 bulk	kwq bulk	kwq.ko`kwq_budget_left	197
+fn	32 small	kwq bulk	kernel`knlist_mtx_lock	197
+fn	16 small	kwq bulk	kernel`aesni_set_deckey	199
+fn	32 small	iolat kernel	kernel`g_clone_bio	200
+fn	128 small	md	kernel`vm_page_acquire_unlocked	201
+fn	16 small	md	kernel`_sleep	203
+fn	32 bulk	kwq bulk	kernel`aesni_cipher_setup_common	203
+fn	32 bulk	md	kernel`vm_page_iter_free	203
+fn	32 small	kwq bulk	kernel`uma_zalloc_arg	203
+fn	32 small	md	kwq.ko`kwq_target_cpu	203
+fn	128 small	kwq bulk	kernel`aesni_set_enckey	204
+fn	16 bulk	kwq bulk	geom_kwqeli.ko`g_eli_key_hold	207
+fn	16 small	iolat kernel	geom_kwqeli.ko`g_eli_crypto_read	207
+fn	32 small	md	kernel`vm_page_acquire_unlocked	207
+fn	128 small	md	kernel`_sleep	209
+fn	16 small	kwq bulk	kernel`__mtx_lock_spin_flags	209
+fn	32 small	iolat kernel	kernel`rctl_enforce	211
+fn	128 bulk	kwq bulk	geom_kwqeli.ko`g_eli_key_hold	212
+fn	16 bulk	iolat kernel	kernel`vm_page_wire_mapped	212
+fn	128 small	iolat kernel	kernel`malloc	215
+fn	128 bulk	kwq bulk	kernel`aesni_process	216
+fn	128 small	md	kwq.ko`kwq_doorbell	217
+fn	32 small	md	kernel`__mtx_unlock_flags	219
+fn	16 small	iolat kernel	kernel`spinlock_enter	220
+fn	128 bulk	kwq bulk	kernel`uma_zalloc_arg	221
+fn	128 small	iolat kernel	kernel`g_clone_bio	221
+fn	16 bulk	kwq bulk	kernel`vm_page_iter_insert	222
+fn	128 small	iolat kernel	kernel`_sleep	223
+fn	16 bulk	kwq bulk	kernel`pctrie_iter_lookup_le	223
+fn	32 small	iolat kernel	kernel`_sleep	223
+fn	128 small	kwq bulk	kernel`__mtx_lock_spin_flags	224
+fn	128 small	iolat kernel	kernel`spinlock_enter	226
+fn	16 bulk	kwq bulk	kernel`aesni_process	226
+fn	16 small	kwq bulk	kernel`aesni_cipher_setup_common	227
+fn	16 small	kwq bulk	geom_kwqeli.ko`g_eli_key_hold	227
+fn	128 small	md	kwq.ko`kwq_target_cpu	229
+fn	32 small	iolat kernel	kernel`spinlock_enter	229
+fn	16 small	kwq bulk	kernel`crypto_done	231
+fn	128 small	kwq bulk	kernel`aesni_cipher_crypt	233
+fn	16 bulk	kwq bulk	kernel`vm_domain_allocate	233
+fn	16 small	md	kernel`__mtx_lock_spin_flags	234
+fn	16 small	kwq bulk	kernel`uma_zfree_arg	235
+fn	32 small	md	kernel`__mtx_lock_spin_flags	235
+fn	16 small	iolat kernel	kernel`vm_fault_hold_pages	236
+fn	16 small	kwq bulk	kernel`uma_zalloc_arg	236
+fn	16 small	md	kwq.ko`kwq_enqueue_one	236
+fn	32 small	iolat kernel	kernel`malloc	236
+fn	32 small	kwq bulk	kernel`aesni_cipher_crypt	236
+fn	128 bulk	kwq bulk	kernel`pctrie_iter_lookup_le	237
+fn	16 small	md	kwq.ko`kwq_doorbell	237
+fn	16 bulk	md	kernel`vm_page_iter_free	239
+fn	128 small	kwq bulk	kernel`aesni_cipher_setup_common	240
+fn	16 small	kwq bulk	kernel`lock_delay	240
+fn	128 small	iolat kernel	kernel`vm_page_unwire_managed	241
+fn	32 small	iolat kernel	kernel`vm_fault_hold_pages	242
+fn	32 bulk	kwq bulk	kernel`uma_zalloc_arg	244
+fn	128 small	md	kernel`pmap_map_io_transient	246
+fn	16 bulk	kwq bulk	kernel`uma_zalloc_arg	246
+fn	32 small	iolat kernel	geom_kwqeli.ko`g_eli_crypto_read	248
+fn	128 small	md	kernel`vm_object_pip_add	251
+fn	128 small	iolat kernel	kernel`vm_fault_hold_pages	253
+fn	16 small	md	kernel`__mtx_unlock_flags	253
+fn	128 bulk	kwq bulk	kernel`uiomove_fromphys	254
+fn	128 small	kwq bulk	geom_kwqeli.ko`g_eli_key_hold	254
+fn	128 small	kwq bulk	kwq.ko`kwq_steal_donor	255
+fn	32 small	kwq bulk	kernel`aesni_set_enckey	255
+fn	32 small	kwq bulk	kernel`aesni_cipher_setup_common	257
+fn	16 small	iolat kernel	kernel`g_clone_bio	259
+fn	16 small	kwq bulk	kernel`aesni_set_enckey	260
+fn	128 small	md	kernel`__mtx_lock_spin_flags	261
+fn	32 small	iolat kernel	kernel`vm_page_unwire_managed	262
+fn	32 bulk	kwq bulk	kernel`vm_reserv_alloc_page	263
+fn	32 small	kwq bulk	kernel`__mtx_lock_spin_flags	263
+fn	128 bulk	md	kernel`smp_targeted_tlb_shootdown_native	264
+fn	16 small	kwq bulk	kernel`aesni_cipher_crypt	264
+fn	128 small	iolat kernel	kernel`dev_relthread	266
+fn	32 bulk	kwq bulk	kernel`aesni_process	266
+fn	128 bulk	md	kernel`vm_page_free_prep	267
+fn	32 bulk	kwq bulk	kernel`uiomove_fromphys	267
+fn	16 bulk	md	kernel`pmap_map_io_transient	268
+fn	16 small	iolat kernel	kernel`malloc	269
+fn	32 bulk	kwq bulk	kernel`pctrie_iter_lookup_le	270
+fn	16 bulk	md	kernel`pmap_remove_pte	273
+fn	128 small	iolat kernel	kernel`free	275
+fn	32 small	kwq bulk	kwq.ko`kwq_steal_donor	275
+fn	32 small	kwq bulk	geom_kwqeli.ko`g_eli_key_hold	275
+fn	128 bulk	kwq bulk	kernel`vm_reserv_alloc_page	278
+fn	32 small	md	kwq.ko`kwq_doorbell	279
+fn	16 bulk	kwq bulk	kernel`uiomove_fromphys	283
+fn	32 bulk	kwq bulk	kernel`vm_page_alloc_domain_iter	283
+fn	32 small	md	kernel`pmap_map_io_transient	284
+fn	128 bulk	kwq bulk	kernel`vm_page_alloc_domain_iter	289
+fn	32 bulk	md	kernel`vm_page_free_prep	292
+fn	16 small	kwq bulk	kwq.ko`kwq_steal_donor	296
+fn	32 small	md	kernel`bioq_takefirst	296
+fn	128 small	iolat kernel	kernel`uma_zfree_arg	299
+fn	32 bulk	kwq bulk	kernel`crypto_dispatch_one	299
+fn	128 bulk	md	kernel`pmap_remove_pte	300
+fn	128 small	iolat kernel	kernel`_mtx_lock_spin_cookie	300
+fn	128 bulk	kwq bulk	kernel`aesni_set_deckey	302
+fn	128 bulk	md	kernel`vm_reserv_free_page	304
+fn	16 bulk	kwq bulk	kernel`crypto_dispatch_one	304
+fn	128 bulk	kwq bulk	kernel`_key_expansion_256b	306
+fn	32 small	iolat kernel	kernel`free	306
+fn	32 bulk	iolat kernel	kernel`vm_page_wire_mapped	311
+fn	32 bulk	kwq bulk	kernel`_key_expansion_256b	311
+fn	32 bulk	md	kernel`vm_reserv_free_page	311
+fn	128 bulk	kwq bulk	kernel`_key_expansion_128	312
+fn	128 bulk	kwq bulk	kernel`crypto_dispatch_one	314
+fn	16 small	md	kernel`pmap_map_io_transient	314
+fn	32 small	iolat kernel	kernel`dev_relthread	314
+fn	128 small	md	kernel`bioq_takefirst	319
+fn	32 small	iolat kernel	kernel`uma_zfree_arg	319
+fn	16 small	iolat kernel	kernel`vm_page_unwire_managed	321
+fn	128 small	kwq bulk	kernel`g_dev_done	322
+fn	16 small	iolat kernel	kernel`_sleep	322
+fn	32 small	kwq bulk	kernel`g_dev_done	326
+fn	32 bulk	md	kernel`vm_page_reference	328
+fn	16 small	iolat kernel	kernel`dev_relthread	330
+fn	32 bulk	md	kernel`pmap_remove_pte	330
+fn	32 bulk	kwq bulk	kernel`aesni_set_deckey	333
+fn	16 bulk	kwq bulk	kernel`crypto_invoke	334
+fn	32 small	iolat kernel	kernel`g_dev_strategy	334
+fn	16 bulk	iolat kernel	kernel`vm_page_unhold_pages	335
+fn	16 bulk	kwq bulk	kernel`vm_reserv_alloc_page	337
+fn	128 small	iolat kernel	geom_kwqeli.ko`g_eli_crypto_read	338
+fn	32 bulk	md	kernel`vm_page_valid	338
+fn	16 bulk	kwq bulk	kernel`uma_zfree_arg	339
+fn	16 small	md	kernel`vm_object_pip_add	339
+fn	128 bulk	kwq bulk	kernel`crypto_invoke	340
+fn	16 bulk	kwq bulk	kernel`vm_page_alloc_domain_iter	340
+fn	16 bulk	kwq bulk	geom_kwqeli.ko`g_eli_crypto_write_done	340
+fn	16 small	md	kernel`vm_page_acquire_unlocked	342
+fn	16 small	iolat kernel	kernel`uma_zfree_arg	343
+fn	32 small	md	kernel`vm_object_pip_add	345
+fn	16 small	kwq bulk	kernel`g_dev_done	346
+fn	16 small	iolat kernel	kernel`fget_unlocked_flags	347
+fn	16 small	iolat kernel	kernel`free	348
+fn	128 bulk	md	kernel`pmap_map_io_transient	349
+fn	16 small	kwq bulk	kernel`spinlock_enter	349
+fn	128 bulk	md	kernel`physcopyin	350
+fn	16 bulk	md	kernel`vm_reserv_free_page	350
+fn	128 bulk	iolat kernel	kernel`vm_page_unwire_managed	352
+fn	16 bulk	md	kernel`vm_page_reference	352
+fn	32 bulk	kwq bulk	kernel`_key_expansion_128	352
+fn	128 small	iolat kernel	kernel`devstat_start_transaction_bio	353
+fn	128 small	md	kernel`mdstart_swap	354
+fn	32 small	kwq bulk	geom_kwqeli.ko`g_eli_kwq_handler	358
+fn	32 bulk	iolat kernel	kernel`vm_page_unwire_managed	359
+fn	16 small	kwq bulk	kwq.ko`kwq_cputime_ns_tick	361
+fn	128 bulk	kwq bulk	kernel`uma_zfree_arg	362
+fn	32 bulk	md	kernel`physcopyin	365
+fn	32 bulk	md	kernel`pmap_map_io_transient	366
+fn	128 small	kwq bulk	kwq.ko`kwq_cputime_ns_tick	368
+fn	16 bulk	md	kernel`physcopyin	368
+fn	32 small	md	kernel`g_io_deliver	370
+fn	128 bulk	md	kernel`vm_page_set_dirty	372
+fn	128 bulk	md	kernel`vm_page_valid	372
+fn	128 small	iolat kernel	kernel`g_dev_strategy	374
+fn	32 small	kwq bulk	kernel`biodone	374
+fn	128 small	md	kernel`g_io_deliver	375
+fn	16 small	iolat kernel	kernel`g_dev_strategy	378
+fn	16 small	kwq bulk	geom_kwqeli.ko`g_eli_kwq_handler	381
+fn	32 bulk	kwq bulk	kernel`uma_zfree_arg	381
+fn	128 small	iolat kernel	kernel`lock_mtx	382
+fn	16 bulk	kwq bulk	kernel`aesni_set_deckey	382
+fn	128 small	iolat kernel	kernel`0xffffffff81	383
+fn	128 small	iolat kernel	kernel`cpu_fetch_syscall_args	387
+fn	32 small	kwq bulk	kwq.ko`kwq_cputime_ns_tick	387
+fn	16 bulk	md	kernel`vm_page_valid	389
+fn	16 bulk	iolat kernel	kernel`vm_page_unwire_managed	390
+fn	16 bulk	kwq bulk	kernel`_key_expansion_256b	390
+fn	16 bulk	md	kernel`vm_page_free_prep	390
+fn	128 bulk	md	kernel`vm_page_reference	391
+fn	128 small	iolat kernel	kernel`vm_page_wire_mapped	396
+fn	128 small	kwq bulk	geom_kwqeli.ko`g_eli_kwq_handler	396
+fn	32 bulk	kwq bulk	kernel`crypto_invoke	396
+fn	16 small	kwq bulk	geom_kwqeli.ko`g_eli_crypto_read_done	399
+fn	128 small	kwq bulk	kernel`biodone	403
+fn	128 bulk	kwq bulk	kernel`crypto_done	404
+fn	128 small	iolat kernel	kernel`devstat_start_transaction_bio_t0	407
+fn	128 small	kwq bulk	kernel`spinlock_enter	407
+fn	128 small	iolat kernel	geom_kwqeli.ko`g_eli_start	408
+fn	16 small	md	kernel`mdstart_swap	409
+fn	16 bulk	kwq bulk	kernel`pmap_map_io_transient	410
+fn	128 small	md	kernel`devstat_end_transaction	412
+fn	32 bulk	kwq bulk	kernel`crypto_done	414
+fn	32 small	md	kernel`mdstart_swap	415
+fn	32 small	iolat kernel	kernel`0xffffffff81	420
+fn	16 small	iolat kernel	kernel`vm_page_wire_mapped	421
+fn	16 small	iolat kernel	kernel`g_io_request	423
+fn	32 small	iolat kernel	kernel`fget_unlocked_flags	423
+fn	32 bulk	md	kernel`vm_page_set_dirty	426
+fn	128 small	iolat kernel	kernel`vm_page_pqstate_commit	427
+fn	16 small	md	kernel`g_io_deliver	427
+fn	16 small	kwq bulk	kernel`biodone	429
+fn	16 small	md	kernel`bioq_takefirst	431
+fn	128 small	kwq bulk	geom_kwqeli.ko`g_eli_crypto_read_done	432
+fn	32 bulk	kwq bulk	geom_kwqeli.ko`g_eli_crypto_write_done	432
+fn	16 bulk	kwq bulk	kernel`_key_expansion_128	433
+fn	16 bulk	kwq bulk	kernel`crypto_done	437
+fn	32 small	md	geom_kwqeli.ko`g_eli_read_done	438
+fn	128 small	iolat kernel	kernel`fget_unlocked_flags	442
+fn	32 small	kwq bulk	kernel`spinlock_enter	442
+fn	128 bulk	kwq bulk	kernel`pctrie_iter_insert_lookup	443
+fn	16 small	iolat kernel	geom_kwqeli.ko`g_eli_start	445
+fn	32 small	md	kernel`devstat_end_transaction	445
+fn	16 small	iolat kernel	kernel`devfs_read_f	447
+fn	32 small	iolat kernel	kernel`lock_mtx	448
+fn	128 small	iolat kernel	kernel`uma_zalloc_arg	456
+fn	16 bulk	md	kernel`vm_page_set_dirty	456
+fn	32 bulk	iolat kernel	kernel`pmap_extract_and_hold	458
+fn	32 small	iolat kernel	kernel`cpu_fetch_syscall_args	458
+fn	128 small	iolat kernel	kernel`devfs_read_f	459
+fn	32 small	iolat kernel	geom_kwqeli.ko`g_eli_start	459
+fn	16 small	kwq bulk	kernel`fpu_kern_enter	460
+fn	32 small	md	kernel`lock_delay	460
+fn	32 bulk	kwq bulk	kernel`pctrie_iter_insert_lookup	461
+fn	32 small	kwq bulk	geom_kwqeli.ko`g_eli_crypto_read_done	462
+fn	16 small	md	kernel`devstat_end_transaction	465
+fn	32 small	iolat kernel	kernel`devstat_start_transaction_bio_t0	467
+fn	16 small	iolat kernel	kernel`0xffffffff81	469
+fn	128 small	kwq bulk	kernel`fpu_kern_enter	471
+fn	32 small	iolat kernel	kernel`devstat_start_transaction_bio	472
+fn	128 bulk	kwq bulk	geom_kwqeli.ko`g_eli_crypto_write_done	479
+fn	16 small	md	geom_kwqeli.ko`g_eli_read_done	482
+fn	16 small	iolat kernel	kernel`__mtx_lock_sleep	485
+fn	32 small	kwq bulk	kernel`fpu_kern_enter	488
+fn	32 small	iolat kernel	kernel`devfs_read_f	489
+fn	128 small	kwq bulk	kernel`crypto_buffer_contiguous_subsegment	495
+fn	32 small	iolat kernel	kernel`uma_zalloc_arg	496
+fn	16 small	iolat kernel	kernel`devstat_start_transaction_bio	499
+fn	16 bulk	iolat kernel	kernel`pmap_extract_and_hold	502
+fn	128 bulk	iolat kernel	kernel`pmap_extract_and_hold	504
+fn	16 small	iolat kernel	kernel`uma_zalloc_arg	504
+fn	128 small	md	geom_kwqeli.ko`g_eli_read_done	505
+fn	16 small	iolat kernel	kernel`g_md_start	507
+fn	128 small	kwq bulk	kernel`memset_erms	517
+fn	32 small	iolat kernel	kernel`g_md_start	519
+fn	128 small	iolat kernel	kernel`kern_preadv	524
+fn	16 small	iolat kernel	kernel`devstat_start_transaction_bio_t0	524
+fn	32 small	iolat kernel	kernel`g_io_request	525
+fn	128 small	iolat kernel	kernel`amd64_syscall	530
+fn	16 bulk	md	kernel`vm_page_acquire_unlocked	538
+fn	16 small	iolat kernel	kernel`cpu_fetch_syscall_args	539
+fn	16 bulk	kwq bulk	kernel`pctrie_iter_insert_lookup	541
+fn	32 small	iolat kernel	kernel`vm_page_wire_mapped	541
+fn	16 small	kwq bulk	kernel`crypto_buffer_contiguous_subsegment	544
+fn	128 small	iolat kernel	kernel`g_io_request	548
+fn	32 bulk	kwq bulk	kernel`pmap_map_io_transient	548
+fn	128 small	md	kernel`tscp_get_timecount_low	560
+fn	32 small	kwq bulk	kernel`crypto_buffer_contiguous_subsegment	562
+fn	128 small	kwq bulk	kernel`g_io_deliver	563
+fn	16 small	iolat kernel	kernel`lock_mtx	565
+fn	32 small	iolat kernel	kernel`amd64_syscall	568
+fn	128 small	md	kernel`lock_delay	577
+fn	128 small	iolat kernel	kernel`g_md_start	582
+fn	16 bulk	md	kernel`spinlock_exit	585
+fn	32 small	kwq bulk	kernel`memset_erms	592
+fn	32 small	kwq bulk	kernel`g_io_deliver	599
+fn	128 bulk	kwq bulk	kernel`pmap_map_io_transient	601
+fn	128 bulk	md	kernel`vm_page_acquire_unlocked	607
+fn	128 small	iolat kernel	kernel`vm_page_unhold_pages	607
+fn	32 bulk	iolat kernel	kernel`vm_page_unhold_pages	610
+fn	16 small	iolat kernel	kernel`biowait	620
+fn	16 small	kwq bulk	kernel`memset_erms	621
+fn	16 small	iolat kernel	kernel`amd64_syscall	622
+fn	128 bulk	iolat kernel	kernel`vm_page_unhold_pages	623
+fn	32 small	iolat kernel	kernel`vm_page_pqstate_commit	627
+fn	16 small	kwq bulk	kernel`g_io_deliver	632
+fn	32 small	md	kernel`tscp_get_timecount_low	638
+fn	128 bulk	kwq bulk	kernel`aesni_set_enckey	639
+fn	32 bulk	md	kernel`vm_page_acquire_unlocked	639
+fn	128 bulk	kwq bulk	kernel`pctrie_insert_node	643
+fn	128 small	md	kwq.ko`kwq_pick_shard	647
+fn	16 bulk	kwq bulk	kernel`aesni_cipher_crypt	649
+fn	16 bulk	md	kernel`uiomove_fromphys	650
+fn	32 bulk	kwq bulk	kernel`aesni_set_enckey	650
+fn	32 small	iolat kernel	kernel`biowait	651
+fn	32 small	iolat kernel	kernel`kern_preadv	654
+fn	32 small	iolat kernel	kernel`vm_page_unhold_pages	657
+fn	16 small	md	kernel`tscp_get_timecount_low	667
+fn	128 small	iolat kernel	kernel`tscp_get_timecount_low	668
+fn	128 bulk	iolat kernel	kernel`vm_page_wire_mapped	686
+fn	128 small	iolat kernel	kernel`devvn_refthread	688
+fn	16 small	iolat kernel	kernel`kern_preadv	688
+fn	16 bulk	kwq bulk	geom_kwqeli.ko`g_eli_crypto_run	691
+fn	32 bulk	md	kernel`uiomove_fromphys	696
+fn	32 small	iolat kernel	kernel`tscp_get_timecount_low	699
+fn	32 bulk	kwq bulk	kernel`pctrie_insert_node	701
+fn	16 bulk	md	kernel`mdstart_swap	704
+fn	32 bulk	md	kernel`mdstart_swap	705
+fn	16 small	iolat kernel	kernel`vm_page_pqstate_commit	710
+fn	128 bulk	kwq bulk	kernel`aesni_cipher_crypt	712
+fn	128 bulk	md	kernel`uiomove_fromphys	733
+fn	32 small	md	kwq.ko`kwq_pick_shard	736
+fn	128 bulk	kwq bulk	geom_kwqeli.ko`g_eli_crypto_run	742
+fn	32 bulk	kwq bulk	geom_kwqeli.ko`g_eli_crypto_run	745
+fn	128 bulk	md	kernel`pmap_invalidate_range_curcpu_cb	746
+fn	32 small	kwq bulk	geom_kwqeli.ko`g_eli_crypto_run	746
+fn	16 small	iolat kernel	kernel`tscp_get_timecount_low	753
+fn	16 bulk	kwq bulk	kernel`pctrie_insert_node	760
+fn	16 small	iolat kernel	kernel`vm_page_unhold_pages	773
+fn	128 bulk	md	kernel`mdstart_swap	774
+fn	16 small	kwq bulk	geom_kwqeli.ko`g_eli_crypto_run	778
+fn	16 small	md	kwq.ko`kwq_pick_shard	779
+fn	32 bulk	kwq bulk	kernel`aesni_cipher_crypt	781
+fn	128 small	kwq bulk	geom_kwqeli.ko`g_eli_crypto_run	788
+fn	128 small	kwq bulk	kernel`fpu_kern_leave	790
+fn	16 small	iolat kernel	kernel`pmap_extract_and_hold	790
+fn	16 small	iolat kernel	kernel`devvn_refthread	791
+fn	128 small	iolat kernel	kernel`biowait	802
+fn	32 small	iolat kernel	kernel`devvn_refthread	803
+fn	32 bulk	md	kernel`pmap_invalidate_range_curcpu_cb	807
+fn	16 bulk	iolat kernel	kernel`spinlock_exit	817
+fn	128 small	kwq bulk	kernel`tscp_get_timecount_low	834
+fn	128 small	kwq bulk	kwq.ko`kwq_worker_main	836
+fn	16 small	kwq bulk	kernel`fpu_kern_leave	880
+fn	16 bulk	kwq bulk	kernel`aesni_set_enckey	889
+fn	32 small	kwq bulk	kernel`fpu_kern_leave	908
+fn	32 small	kwq bulk	kernel`tscp_get_timecount_low	922
+fn	16 small	kwq bulk	kernel`tscp_get_timecount_low	923
+fn	32 small	kwq bulk	kwq.ko`kwq_worker_main	926
+fn	32 bulk	md	kernel`spinlock_exit	941
+fn	128 small	iolat kernel	kernel`pmap_extract_and_hold	946
+fn	16 small	kwq bulk	kwq.ko`kwq_worker_main	953
+fn	128 bulk	kwq bulk	kernel`pmap_enter	1024
+fn	32 bulk	kwq bulk	kernel`pmap_enter	1030
+fn	16 bulk	md	kernel`pmap_invalidate_range_curcpu_cb	1046
+fn	128 small	iolat kernel	kernel`__mtx_lock_sleep	1047
+fn	32 small	iolat kernel	kernel`pmap_extract_and_hold	1051
+fn	32 small	iolat kernel	kernel`__mtx_lock_sleep	1072
+fn	16 small	iolat kernel	kernel`racct_add_force	1147
+fn	128 small	iolat kernel	kernel`racct_add_force	1151
+fn	128 bulk	kwq bulk	kernel`memset_erms	1158
+fn	128 small	iolat kernel	kernel`memset_erms	1177
+fn	128 bulk	md	kernel`spinlock_exit	1187
+fn	32 bulk	kwq bulk	kernel`memset_erms	1196
+fn	32 bulk	iolat kernel	kernel`spinlock_exit	1199
+fn	32 small	iolat kernel	kernel`racct_add_force	1223
+fn	16 bulk	kwq bulk	kernel`pmap_enter	1237
+fn	32 small	iolat kernel	kernel`memset_erms	1254
+fn	16 small	iolat kernel	kernel`memset_erms	1320
+fn	16 small	iolat kernel	kernel`physio	1333
+fn	128 small	iolat kernel	kernel`physio	1409
+fn	32 small	iolat kernel	kernel`physio	1461
+fn	128 bulk	md	kernel`pctrie_iter_lookup	1475
+fn	16 bulk	md	kernel`pctrie_iter_lookup	1517
+fn	16 bulk	kwq bulk	kernel`spinlock_exit	1549
+fn	16 bulk	kwq bulk	kernel`memset_erms	1569
+fn	32 bulk	md	kernel`pctrie_iter_lookup	1589
+fn	128 small	md	kernel`md_kthread	1597
+fn	16 small	md	kernel`lock_delay	1617
+fn	128 bulk	iolat kernel	kernel`lock_delay	1667
+fn	128 small	kwq bulk	kernel`fpurestore_xrstor3264	1682
+fn	128 bulk	kwq bulk	kernel`fpu_kern_enter	1753
+fn	32 small	md	kernel`md_kthread	1760
+fn	32 small	kwq bulk	kernel`fpurestore_xrstor3264	1794
+fn	16 small	md	kernel`md_kthread	1806
+fn	16 small	kwq bulk	kernel`fpurestore_xrstor3264	1837
+fn	32 bulk	kwq bulk	kernel`fpu_kern_enter	1970
+fn	16 bulk	kwq bulk	kernel`fpu_kern_enter	2083
+fn	32 bulk	kwq bulk	kernel`spinlock_exit	2162
+fn	128 bulk	kwq bulk	kernel`spinlock_exit	2210
+fn	16 small	md	kernel`pctrie_lookup_unlocked	3040
+fn	128 bulk	md	kernel`pctrie_lookup_unlocked	3166
+fn	32 bulk	md	kernel`pctrie_lookup_unlocked	3270
+fn	16 bulk	md	kernel`pctrie_lookup_unlocked	3325
+fn	32 bulk	kwq bulk	kernel`fpurestore_xrstor3264	3381
+fn	128 bulk	kwq bulk	kernel`fpurestore_xrstor3264	3383
+fn	32 small	md	kernel`pctrie_lookup_unlocked	4089
+fn	128 small	md	kernel`memmove_erms	4441
+fn	16 bulk	kwq bulk	kernel`fpurestore_xrstor3264	4589
+fn	128 bulk	iolat kernel	kernel`spinlock_exit	4810
+fn	128 small	md	kernel`pctrie_lookup_unlocked	4898
+fn	32 small	md	kernel`memmove_erms	4964
+fn	16 small	md	kernel`memmove_erms	5459
+fn	16 bulk	kwq bulk	kernel`fpu_kern_leave	6140
+fn	16 small	iolat kernel	kernel`lock_delay	6208
+fn	128 bulk	kwq bulk	kernel`fpu_kern_leave	8760
+fn	128 bulk	md	kernel`lock_delay	9332
+fn	128 small	kwq bulk	kernel`aesni_crypt_xts	10057
+fn	32 bulk	md	kernel`lock_delay	10684
+fn	32 bulk	kwq bulk	kernel`fpu_kern_leave	10907
+fn	32 small	kwq bulk	kernel`aesni_crypt_xts	11286
+fn	16 small	kwq bulk	kernel`aesni_crypt_xts	11302
+fn	32 bulk	kwq bulk	kernel`lock_delay	12935
+fn	32 small	iolat kernel	kernel`lock_delay	13914
+fn	128 small	md	kernel`spinlock_exit	14466
+fn	32 small	md	kernel`spinlock_exit	14930
+fn	16 bulk	kwq bulk	kernel`lock_delay	15481
+fn	16 small	md	kernel`spinlock_exit	16864
+fn	128 bulk	kwq bulk	kernel`lock_delay	17518
+fn	16 bulk	md	kernel`lock_delay	17750
+fn	128 small	iolat kernel	kernel`lock_delay	22936
+fn	16 small	iolat kernel	kernel`spinlock_exit	27609
+fn	32 small	iolat kernel	kernel`spinlock_exit	27985
+fn	128 small	iolat kernel	kernel`spinlock_exit	28091
+fn	128 bulk	kwq bulk	kernel`aesni_crypt_xts	28923
+fn	16 bulk	kwq bulk	kernel`memmove_erms	29210
+fn	128 bulk	kwq bulk	kernel`memmove_erms	30246
+fn	16 bulk	md	kernel`memmove_erms	31424
+fn	32 bulk	kwq bulk	kernel`aesni_crypt_xts	31854
+fn	16 bulk	kwq bulk	kernel`aesni_crypt_xts	32261
+fn	32 bulk	kwq bulk	kernel`memmove_erms	32437
+fn	128 bulk	md	kernel`memmove_erms	33459
+fn	32 bulk	md	kernel`memmove_erms	34782
+fn	128 small	kwq bulk	kernel`spinlock_exit	35974
+fn	16 small	kwq bulk	kernel`spinlock_exit	38233
+fn	32 small	kwq bulk	kernel`spinlock_exit	38955
+

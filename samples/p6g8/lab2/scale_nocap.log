@@ -1,0 +1,3 @@
+20:37:06 stages: kwqshard; tests: scale; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+20:37:06 rep 1 kwqshard scale
+20:38:05 done: /home/crest/if_pair-scratch/p6g7/out/where2/scale_nocap.tsv

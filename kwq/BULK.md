@@ -444,8 +444,7 @@ per bio went from 0.75 to 1.88 ms.  At this load the limit does not
 even serve its purpose: the CPU it lends goes mostly to md(4), and the
 spin loop beside the writers gets 0.09 of its CPU with the limit and
 0.20 without.  With the limit off 13 % of the gap remains (1.85 against
-1.61 ms per MiB), not traced; the quantum's own cuts (27 % of the
-passes at 16 providers) are the next suspect.
+1.61 ms per MiB), which section 7.5 traces to BULK outranking md(4).
 
 ### 7.2 Overruns: a write's first piece (2026-11-05)
 
@@ -629,6 +628,72 @@ another CPU, not traced.  For the BULK defaults of section 7.3: a
 1 MiB bio is at most 0.26 ms of CPU on lab and 0.84 ms on a07, quiet;
 the 5 ms allowance is 19 and 6 times that.
 
+### 7.5 Where lab's write throughput goes (2026-11-05)
+
+Section 7.3 leaves lab's 1 MiB writes behind stock GELI at 32 providers
+and more.  At 96 % sys the machine is CPU-bound, so throughput follows
+CPU per MiB, and the question is what the extra CPU is.  A 997 Hz
+profile of every CPU (where.d), Zen 3's counters during the bulk phase
+(pmcstat, all CPUs), and the wait of each write's data (waits.d), one
+run each; then an A/B of BULK's priority, three repetitions, medians
+(../samples/p6g8):
+
+| lab, 1 MiB writes | 32: MB/s | CPU per MiB, ms | 128: MB/s | CPU per MiB, ms | 128: IPC | 128: L1D fills from DRAM per MiB |
+|---|---|---|---|---|---|---|
+| stock GELI | 10176 | 1.58 | 9807 | 1.69 | 0.40-0.42 | 0.87 MiB |
+| BULK above md(4), limit on (the default) | 8855 | 1.85 | 6084 | 2.65 | 0.25 | 1.13 MiB |
+| BULK above md(4), limit off | 8614 | 1.89 | 8661 | 1.91 | 0.36 | 0.93 MiB |
+| BULK below md(4), limit on | 10276 | 1.61 | 6631 | 2.50 | 0.28 | 1.06 MiB |
+| BULK below md(4), limit off | 11740 | 1.41 | 9949 | 1.66 | 0.43 | 0.85 MiB |
+
+"Below md(4)" is `kern.kwq.bulk.priority=55`, against md's PRIBIO (43)
+and BULK's default PI_SOFT (2); stock GELI's workers, at PUSER (56), are
+below it too.
+
+It is not extra work.  Instructions per MiB written are the same in all
+setups, 2.86 to 2.99 M, and kwq's own functions come to 0.008 to
+0.021 ms per MiB.  The extra time is the same copy and cipher taking more
+cycles: at 128 providers, in the default setup against stock GELI, the
+workers' `memmove_erms` 0.53 ms per MiB against 0.28, `aesni_crypt_xts`
+0.51 against 0.27, `fpu_kern_leave` 0.19 against 0.07, and md(4)'s own
+`memmove_erms` 0.53 against 0.32.  IPC falls from 0.40 to 0.25, with
+30 % more L1D fills from DRAM and 25 % fewer from L3: the data has left
+the cache.
+
+Two separate causes, though not exactly additive:
+
+- The share limit, at many providers per CPU: 6084 to 8661 MB/s at 128
+  providers.  With the limit, a write's first piece to its ciphertext
+  handed to md(4) takes 12.6 ms on average (p90 33-65 ms) against
+  0.94 ms under stock GELI and 1.13 ms without the limit, because 0.8
+  cuts per bio send the remainder behind the other queues' turns and
+  the hand-overs.  At 6 GB/s, 5 ms is as much data as lab's 32 MB L3,
+  so the buffer just copied is gone when the cipher returns to it, and
+  md(4) finds the ciphertext gone too.  At 32 providers the same cuts
+  cost nothing while BULK is above md(4) (8855 against 8614), the bios
+  finishing within 1.6 ms on average; below it the limit costs 12 %
+  there as well (10276 against 11740).  What matters is that gap, not the wait before the copy:
+  below md(4) with the limit off the plaintext waits 7 ms and the
+  throughput is stock GELI's.  This run does not separate the cuts from
+  the hand-overs.
+- BULK outranking md(4): 8661 to 9949 MB/s at 128 providers, 8614 to
+  11740 at 32, limit off.  Below md(4), IPC and DRAM fills are stock
+  GELI's or better, and kwq-geli passes stock GELI (15 % at 32
+  providers).  How the priority does it is inferred, not traced: above
+  md(4) a BULK worker preempts md's copy, where under stock GELI md
+  preempts the cipher.  md's locality does not explain it: md copies on
+  another core in 88 to 95 % of the cases in all setups.
+
+The 4 KiB reads do not mind: below md(4) they run 5 % faster (1.74 M
+against 1.65 M/s at 32 providers, 1.61 M against 1.53 M at 128), with
+the same spin share and timer.  The price is on the latency rows, at
+128 providers with the limit off: timer p99 11.2 ms (above md(4) 3.1,
+stock GELI 3.4), fork+exec p99 57 ms (45, 32), while the spin loop gets
+0.46 of its CPU (0.20, 0.22).  All of this is lab, at
+`kern.kwq.bulk.priority=55` only with geli_bench's scale test and a
+guest smoke; a07's writes are level with stock GELI already and were
+not run at it.
+
 ## 8. Placement: P6g (2026-11-05)
 
 The steal attempt of S16's idle path reads every stealable list in
@@ -791,8 +856,12 @@ two-socket machine.
   needs `kwq_budget_left()` to tell it from a quantum cut; a limit
   that counts only the competitors it is for, which would need an
   exported scheduler KPI such as "is anything runnable on this CPU
-  below priority p" (`sched_runnable()` says only "something").  The
-  rest, 13 %, is not traced.
+  below priority p" (`sched_runnable()` says only "something").  Section
+  7.5 has what is left at the new defaults and its two causes: the
+  limit's cuts and hand-overs at many providers per CPU, and BULK
+  outranking md(4).  Candidates: kwq-geli checking its budget between
+  bios only, now that the allowance holds a bio; BULK at or below
+  `PRI_MAX_KERN`, which needs crest's decision, a07 and the full suites.
 - kwq-geli's write overruns (section 7.2): a write's first piece
   allocates and copies 1 MiB before its first budget check, 1-4 ms
   under load, 1.2-1.4 % of the passes on lab; the fixes listed there

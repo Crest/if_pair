@@ -1,0 +1,5 @@
+20:47:59 stages: kwqshard; tests: scale; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 3
+20:47:59 rep 1 kwqshard scale
+20:48:59 rep 2 kwqshard scale
+20:49:59 rep 3 kwqshard scale
+20:50:59 done: /home/crest/if_pair-scratch/p6g7/out/prio/scale_pdefault_cap.tsv
