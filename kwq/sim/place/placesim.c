@@ -97,6 +97,7 @@ struct cfg {
 	int	group, probe_groups;	/* P8 */
 	int	donor_cascade, donor_pull, donor_wakes, donor_avoid;	/* P7/P8 */
 	double	donor_us;	/* a donor's backlog, us (spill at it too) */
+	int	donor_bound;	/* a steal takes no more than stays below donor_us */
 	int	oneq;		/* all open producers share one queue */
 	int	extraq;		/* stealable queues without producers */
 	int	verbose;
@@ -118,7 +119,8 @@ cfg_default(void)
 	C.contend = 1;
 	C.group = 16;
 	C.donor_cascade = C.donor_pull = C.donor_wakes = C.donor_avoid = 1;
-	C.donor_us = 500;	/* L: the matrix sweep of 200, 500 and 2000 us */
+	C.donor_us = 500;
+	C.donor_bound = 1;	/* L: the matrix sweep of 200, 500 and 2000 us */
 	C.probe_groups = 2;
 	C.c_hit = 2; C.c_sib = 20; C.c_l3 = 40; C.c_pkg = 100; C.c_far = 200;
 	C.c_atomic = 10; C.scan_entry = 4;	/* V3: 17.9 us per scan of 2048 lists */
@@ -1538,6 +1540,8 @@ donor_point(int c)
 }
 
 /* P7's idle path: the donors in reach, nearest first; one line each. */
+static double	room_us = -1;	/* donor_pull(): the puller's room below L */
+
 static bool
 steal_donor(int c, double *costp)
 {
@@ -1566,6 +1570,18 @@ steal_donor(int c, double *costp)
 		take = (l->depth + 1) / 2;
 		if (take > C.steal_max)
 			take = C.steal_max;
+		/*
+		 * No more than leaves the taker below a donor's backlog (and
+		 * a puller below L), so a batch is not taken on again before
+		 * new arrivals lift its holder (B4).
+		 */
+		if (C.donor_bound && l->cost_e > 0) {
+			double room = (room_us >= 0 ? room_us : C.donor_us) * US / l->cost_e;
+			u_int lim = room > 2 ? (u_int)room - 1 : 1;
+
+			if (take > lim)
+				take = lim;
+		}
 		h = list_cut(l, take, &t, &w);
 		cpus[v].qwork -= w;
 		mark_moved(h);
@@ -1610,7 +1626,9 @@ donor_pull(int c)
 	share = p->share_e > 1.0 / 16 ? p->share_e : 1.0 / 16;
 	if (b / share >= (double)C.kp.l_us * US)
 		return;
+	room_us = C.kp.l_us - b / share / US;
 	(void)steal_donor(c, &cost);
+	room_us = -1;
 	charge_bulk(c, cost);
 	cpus[c].t_scheme -= cost;	/* steal_donor() counted it */
 }
@@ -3049,6 +3067,7 @@ parse(int argc, char **argv)
 		else if (KEY("donor_wakes")) C.donor_wakes = (int)d;
 		else if (KEY("donor_avoid")) C.donor_avoid = (int)d;
 		else if (KEY("donor_us")) C.donor_us = d;
+		else if (KEY("donor_bound")) C.donor_bound = (int)d;
 		else if (KEY("probe_groups")) C.probe_groups = (int)d;
 		else if (KEY("spill")) C.spill = (int)d;
 		else if (KEY("imin_us")) C.kp.imin = KP_US2T(d);
