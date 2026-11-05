@@ -180,8 +180,13 @@ The BULK worker computes its thread's load:
 - **Divided by the share**: an average of BULK's fraction of wall time
   while it had work.  The share limit makes it 0.5 when other threads
   are runnable.
-- **Plus a CPU-busy bucket** from the thread's own `pc_cp_time` delta.
-  That is statclock-coarse, but it sees non-kwq work.
+- **No term for other threads' CPU time.**  The first draft added a
+  bucket from `pc_cp_time`; in the simulator it made every CPU of a
+  machine running other work look equally loaded at about one quantum,
+  and placement went blind: 128 kwq-geli providers on lab, 1.01M
+  against 1.65M IOPS without it.  BULK runs at priority until its share
+  is spent, so other threads delay an item only through the share,
+  which the average above already carries.
 
 The worker updates the word at wake, at the start and end of a pass and
 before it sleeps, but writes it only when the quantized bucket changes:
@@ -216,7 +221,12 @@ before it sleeps, but writes it only when the quantized bucket changes:
 
 Interval, Trickle-style: between Imin and Imax.  It goes back to Imin
 when the table or the own bucket changed, and doubles when the merge
-changed nothing.
+changed nothing.  A failed check (S2.5) is Trickle's inconsistency: it
+shortens the interval to Imin / 4.  Making the merge due at once was a
+merge storm in the simulator (33000 merges/s per core in S3).
+Tombstones, the freshest "busy" observations relayed beside the
+entries so that a stale relay cannot bring a busy core back, were
+tried and gained nothing; they stay an ablation.
 
 Who merges, never on a timer:
 
@@ -364,6 +374,9 @@ for would be a read-only `sched_load(int cpu)` hint.
 | item costs | 4 KiB (3 us), 1 MiB (300 us), mixtures, Pareto (alpha 1.5) cut at the pass budget, as kwq-geli resumes a bio |
 | scheme costs | every remote read, write, merge, check and hand-off is charged as CPU time to the thread doing it, so overhead shows as lost throughput |
 | limits | the per-(queue, CPU) limit of 4096 with refusal and a producer's retry (GEOM's ENOMEM pacing) |
+| share limit | not a rate: BULK runs at full speed until it has used its share (0.5) of the period (1 ms) while other threads wanted the CPU, then waits for the next period (a fluid 50/50 split doubled every item's time and made the simulator steal four times too often) |
+| contention | a line transfer or invalidation holds the line for its transfer time; another one waits for it.  This is what makes the idle mask expensive at a07's rates: every BULK worker writes it at every sleep and wake |
+| idle-path steal | the scan runs as worker time outside a pass, not charged to the share limit, before the worker sleeps (kwq_steal()); a lone item is stolen only from a sleeping worker or one inside a pass (kwq_steal_lone_ok()) |
 | locality | an item run on another core than its producer's pays a move cost, the time to pull its data from L3 (up to the L2's size), calibrated by V4 |
 | other work | each request's non-BULK work (GEOM, md(4), the system calls of the load generator: 6.6 us per 4 KiB read on lab) runs as other threads' time on a CPU, sharing it with the BULK worker under the share limit; the next request of a closed-loop provider is issued from there |
 
@@ -375,7 +388,9 @@ for would be a read-only `sched_load(int cpu)` hint.
 | P1 today | `kwq_pick_any()` (idle mask, the queue's own depth, 4 probes), the idle-path steal with its scan cost, the steal wake, the pass cap |
 | P2 no stealing | `kwq_pick_any()` only |
 | P3 two choices | the producer's thread and two random cores of its L3, true loads at the cost of the reads |
-| P4 group words | one summary word per L3, the alternative discussed before |
+| P4 group words | per L3 an array of its threads' published loads, 16 to a line, the least loaded taken (the first draft's one summary word per L3 herded onto the CPU it named: 265 us waits at rho 0.5) |
+| P7 donor | today's placement (`kwq_pick_any()` and the idle mask); a CPU whose stealable backlog reaches H sets its bit in one donor line (written at the transitions only) and names its longest stealable list in a hint line; an idle worker reads the donor line once before it sleeps instead of scanning every list in reach; becoming a donor wakes the nearest sleeper.  crest's first idea of 2026-11-04, added after the first matrix runs |
+| P8 shard | P7 with the idle mask cut into one line per group of 16 CPUs, written by that group's CPUs only; a producer reads its own group's line and up to two more, nearest first |
 | P5 this scheme | with ablations: no SMT ranking; no hand-off; no spill; fixed 1 ms interval; no check of candidates; no randomization; symmetric hysteresis; tables of 2 and 8; 8 neighbours; a random expander instead of the torus; a per-core "incoming" counter written by producers (the remedy if herding fails W4); a last-target hint per (queue, producer CPU) |
 
 ### 3.4 Metrics
