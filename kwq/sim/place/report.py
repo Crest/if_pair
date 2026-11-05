@@ -285,7 +285,10 @@ FINDINGS = [
 def main():
     main_ = load("main.tsv")
     pols = [1, 2, 3, 4, 5, 7, 8]
-    write("verdicts", verdicts(main_, pols, "main") + verdicts(load("worst.tsv"), [1, 5, 8], "worst"))
+    # the oracle's own W4: how often the reference itself "herds" (the page's decision 5)
+    oracle_w4 = [r for r in verdicts(main_, [0], "main") if r["criterion"] == "W4"]
+    write("verdicts", verdicts(main_, pols, "main") + oracle_w4 +
+          verdicts(load("worst.tsv"), [1, 5, 8], "worst"))
     write("families", families(main_, [0, 1, 2, 5, 7, 8]))
     write("worst_cases", worst_cases(load("worst.tsv")))
     write("ablations", ablations(load("ablate.tsv"), main_, 5) + ablations(load("ablate8.tsv"), main_, 8))
