@@ -95,6 +95,8 @@ struct cfg {
 	int	expcost;	/* exponential item costs (V1) */
 	int	contend;	/* line serialization (default on) */
 	int	group, probe_groups;	/* P8 */
+	int	donor_cascade, donor_pull, donor_wakes, donor_avoid;	/* P7/P8 */
+	double	donor_us;	/* a donor's backlog, us (spill at it too) */
 	int	oneq;		/* all open producers share one queue */
 	int	extraq;		/* stealable queues without producers */
 	int	verbose;
@@ -115,6 +117,8 @@ cfg_default(void)
 	C.busyterm = 0;		/* the other-threads term hurt: S2 at 128 providers */
 	C.contend = 1;
 	C.group = 16;
+	C.donor_cascade = C.donor_pull = C.donor_wakes = C.donor_avoid = 1;
+	C.donor_us = 500;	/* L: the matrix sweep of 200, 500 and 2000 us */
 	C.probe_groups = 2;
 	C.c_hit = 2; C.c_sib = 20; C.c_l3 = 40; C.c_pkg = 100; C.c_far = 200;
 	C.c_atomic = 10; C.scan_entry = 4;	/* V3: 17.9 us per scan of 2048 lists */
@@ -1155,6 +1159,35 @@ queue_ok(void *arg, int c)
 	    (double)l->depth * l->cost_e < (double)C.kp.h_us * US);
 }
 
+/*
+ * P7/P8 without an idle worker in reach: the own CPU unless it is a
+ * donor (backlog of H or more), else the nearest CPU in reach that is
+ * not, else kwq_pick_any()'s shallowest of the own list and four
+ * probes.  One read of the donor line, cached while nobody changes.
+ */
+static int
+avoid_donors(int q, int me, int reach)
+{
+	int i, c, best = me;
+	u_int bd = QL(q, me)->depth;
+
+	cur_cost += line_read(me, L_DONOR);
+	if (!cpus[me].donor)
+		return (me);
+	for (i = 0; i < reach; i++)
+		if (!cpus[order[me][i]].donor)
+			return (order[me][i]);
+	for (i = 0; i < reach && i < 4 && bd != 0; i++) {
+		c = order[me][i];
+		cur_cost += line_read(me, LISTLINE(q, c));
+		if (QL(q, c)->depth < bd) {
+			best = c;
+			bd = QL(q, c)->depth;
+		}
+	}
+	return (best);
+}
+
 /* P8: the idle mask's group of a CPU, and its line */
 static int
 shard_of(int c)
@@ -1201,6 +1234,8 @@ pick_shard(int q, int me)
 	}
 	cur_cost += line_read(me, LISTLINE(q, me));
 	bd = QL(q, me)->depth;
+	if (C.donor_avoid)
+		return (avoid_donors(q, me, order_n[me] < 16 ? order_n[me] : 16));
 	for (i = 0; i < order_n[me] && i < 4 && bd != 0; i++) {
 		c = order[me][i];
 		cur_cost += line_read(me, LISTLINE(q, c));
@@ -1231,6 +1266,8 @@ pick_any(int q, int me)
 	}
 	cur_cost += line_read(me, LISTLINE(q, me));
 	bd = QL(q, me)->depth;
+	if (C.policy == P_DONOR && C.donor_avoid)
+		return (avoid_donors(q, me, reach));
 	for (i = 0; i < reach && i < 4 && bd != 0; i++) {
 		c = order[me][i];
 		cur_cost += line_read(me, LISTLINE(q, c));
@@ -1486,7 +1523,7 @@ donor_point(int c)
 			bq = q;
 		}
 	}
-	d = bd >= 2 && b / share >= (double)C.kp.h_us * US;
+	d = bd >= 2 && b / share >= C.donor_us * US;
 	if (d && bq != p->dq) {
 		cost += line_write(c, L_DHINT + c);
 		p->dq = bq;
@@ -1540,6 +1577,9 @@ steal_donor(int c, double *costp)
 			ring_add(c, q);
 		if (warm())
 			M.steals++;
+		/* the donor still holds H or more: one more helper (a cascade) */
+		if (C.donor_cascade && (double)l->depth * l->cost_e >= C.donor_us * US)
+			steal_wake(v, c, &cost);
 		*costp = cost;
 		cpus[c].t_scheme += cost;
 		return (true);
@@ -1547,6 +1587,32 @@ steal_donor(int c, double *costp)
 	*costp = cost;
 	cpus[c].t_scheme += cost;
 	return (false);
+}
+
+/*
+ * P7/P8: a worker whose own backlog has fallen below L pulls from a
+ * donor at the end of a pass, before it runs dry (the hand-off's
+ * threshold, from the other side; one read of the donor line, cached
+ * while no CPU changes its donor state).
+ */
+static void
+donor_pull(int c)
+{
+	struct cpu *p = &cpus[c];
+	double b = 0, cost = 0, share;
+	int k;
+
+	if ((C.policy != P_DONOR && C.policy != P_SHARD) || !C.donor_pull || nsteal == 0)
+		return;
+	for (k = 0; k < p->rn; k++)
+		b += (double)QL(p->ring[(p->rhead + k) % nq], c)->depth *
+		    QL(p->ring[(p->rhead + k) % nq], c)->cost_e;
+	share = p->share_e > 1.0 / 16 ? p->share_e : 1.0 / 16;
+	if (b / share >= (double)C.kp.l_us * US)
+		return;
+	(void)steal_donor(c, &cost);
+	charge_bulk(c, cost);
+	cpus[c].t_scheme -= cost;	/* steal_donor() counted it */
 }
 
 /* P5's load figure at a decision point (S2.3); P4 publishes the same figure. */
@@ -1956,6 +2022,7 @@ pass_end(int c)
 	load_point(c);
 	handoff_check(c);
 	merge_at(c, true);
+	donor_pull(c);
 }
 
 static void
@@ -2180,6 +2247,16 @@ enqueue_item(int32_t it, int from, int fixed, bool self)
 				M.spills++;
 		}
 	}
+	if (!any && (C.policy == P_DONOR || C.policy == P_SHARD) && C.spill &&
+	    Q[q].stealable) {
+		cur_cost += line_read(from, LISTLINE(q, fixed)) + line_read(from, L_DONOR);
+		if (cpus[fixed].donor || (double)QL(q, fixed)->depth * QL(q, fixed)->cost_e >=
+		    C.donor_us * US) {
+			any = true;
+			if (warm())
+				M.spills++;
+		}
+	}
 	if (!any)
 		t = fixed;
 	else
@@ -2248,7 +2325,8 @@ enqueue_item(int32_t it, int from, int fixed, bool self)
 	cpus[t].qwork += x->cost;
 	if (!l->active)
 		ring_add(t, q);
-	if (C.policy == P_TODAY && Q[q].stealable && steal_crossed(l->depth - 1, l->depth))
+	if ((C.policy == P_TODAY || ((C.policy == P_DONOR || C.policy == P_SHARD) &&
+	    C.donor_wakes)) && Q[q].stealable && steal_crossed(l->depth - 1, l->depth))
 		steal_wake(t, from, &cur_cost);
 	if (self)
 		charge_bulk(from, cur_cost);
@@ -2966,6 +3044,11 @@ parse(int argc, char **argv)
 		else if (KEY("noremerge")) C.kp.flags |= (int)d ? KP_F_NOREMERGE : 0;
 		else if (KEY("tomb")) C.kp.flags |= (int)d ? KP_F_TOMB : 0;
 		else if (KEY("group")) C.group = (int)d;
+		else if (KEY("donor_cascade")) C.donor_cascade = (int)d;
+		else if (KEY("donor_pull")) C.donor_pull = (int)d;
+		else if (KEY("donor_wakes")) C.donor_wakes = (int)d;
+		else if (KEY("donor_avoid")) C.donor_avoid = (int)d;
+		else if (KEY("donor_us")) C.donor_us = d;
 		else if (KEY("probe_groups")) C.probe_groups = (int)d;
 		else if (KEY("spill")) C.spill = (int)d;
 		else if (KEY("imin_us")) C.kp.imin = KP_US2T(d);
