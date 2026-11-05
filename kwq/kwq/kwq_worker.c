@@ -42,6 +42,7 @@
 #include <sys/domainset.h>
 #include <sys/cpuset.h>
 #include <sys/epoch.h>
+#include <sys/sbuf.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
 
@@ -927,6 +928,35 @@ kwq_topo_leaf(struct cpu_group *cg, int cpu)
 }
 #endif
 
+SYSCTL_DECL(_kern_kwq);
+static struct sysctl_ctx_list kwq_topo_sysctl;
+
+/* kern.kwq.topo: each CPU's search order, its rings separated by "|". */
+static int
+kwq_sysctl_topo(SYSCTL_HANDLER_ARGS)
+{
+	struct sbuf sb;
+	int cpu, error, i, r, start, end;
+
+	sbuf_new_for_sysctl(&sb, NULL, 256, req);
+	CPU_FOREACH(cpu) {
+		sbuf_printf(&sb, "\n%d:", cpu);
+		for (r = start = 0; r < KWQ_TOPO_RINGS; r++) {
+			end = kwq_topo_ring[cpu][r];
+			if (end == start)
+				continue;
+			if (start > 0)
+				sbuf_cat(&sb, " |");
+			for (i = start; i < end; i++)
+				sbuf_printf(&sb, " %d", kwq_topo_order[cpu][i]);
+			start = end;
+		}
+	}
+	error = sbuf_finish(&sb);
+	sbuf_delete(&sb);
+	return (error);
+}
+
 static void
 kwq_topo_add(int cpu, cpuset_t *seen, const cpuset_t *grp, int *n, int *r)
 {
@@ -956,7 +986,7 @@ kwq_topo_init(void)
 #ifdef SMP
 	struct cpu_group *cg;
 #endif
-	cpuset_t seen;
+	cpuset_t seen, last;
 	int cpu, n, r, i;
 
 	kwq_topo_order = malloc(sizeof(*kwq_topo_order) * (mp_maxid + 1), M_KWQ,
@@ -968,17 +998,38 @@ kwq_topo_init(void)
 		    M_WAITOK | M_ZERO);
 		CPU_ZERO(&seen);
 		CPU_SET(cpu, &seen);
+		CPU_ZERO(&last);
 		n = r = 0;
 #ifdef SMP
-		for (cg = kwq_topo_leaf(smp_topo(), cpu); cg != NULL;
-		    cg = cg->cg_parent)
+		cg = kwq_topo_leaf(smp_topo(), cpu);
+#ifdef KWQ_TOPO_SIBLING_LAST
+		/*
+		 * The A/B build of SPEC-p6g.md P6g.0 (make KWQ_SIBLING_LAST=1):
+		 * the SMT siblings after every other CPU, a ring of their own.
+		 */
+		if ((cg->cg_flags & CG_FLAG_THREAD) != 0) {
+			CPU_COPY(&cg->cg_mask, &last);
+			CPU_CLR(cpu, &last);
+			CPU_OR(&seen, &seen, &last);
+		}
+#endif
+		for (; cg != NULL; cg = cg->cg_parent)
 			kwq_topo_add(cpu, &seen, &cg->cg_mask, &n, &r);
 #endif
 		kwq_topo_add(cpu, &seen, NULL, &n, &r);	/* anything the tree missed */
+		if (!CPU_EMPTY(&last)) {
+			CPU_ANDNOT(&seen, &seen, &last);
+			kwq_topo_add(cpu, &seen, &last, &n, &r);
+		}
 		for (i = r; i < KWQ_TOPO_RINGS; i++)
 			kwq_topo_ring[cpu][i] = (u_short)n;
 	}
 	CPU_ZERO(&kwq_bulk_idle);
+	sysctl_ctx_init(&kwq_topo_sysctl);
+	SYSCTL_ADD_PROC(&kwq_topo_sysctl, SYSCTL_STATIC_CHILDREN(_kern_kwq),
+	    OID_AUTO, "topo", CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
+	    NULL, 0, kwq_sysctl_topo, "A",
+	    "each CPU's placement and steal order (kwq_topo_order), rings separated by |");
 }
 
 void
@@ -988,6 +1039,7 @@ kwq_topo_fini(void)
 
 	if (kwq_topo_order == NULL)
 		return;
+	sysctl_ctx_free(&kwq_topo_sysctl);	/* waits for a reader in the handler */
 	CPU_FOREACH(cpu)
 		free(kwq_topo_order[cpu], M_KWQ);
 	free(kwq_topo_order, M_KWQ);

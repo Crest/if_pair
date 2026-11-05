@@ -1331,6 +1331,7 @@ Service-wide
 | `kern.kwq.ncpu` | int | RD | `mp_ncpus` | CPUs with workers |
 | `kern.kwq.nqueues` | int | RD | - | queues currently created (active or not) |
 | `kern.kwq.clock` | string | RD | - | the scheduler's tick source and its rate: `tsc`, `cntvct`, `timebase`, or the kernel's `cpu_ticks` (SCHED.md S15.2) |
+| `kern.kwq.topo` | string | RD | - | each CPU's search order for `KWQ_CPU_ANY` placement and stealing (`kwq_topo_order`), nearest first, its rings separated by `\|` (SCHED.md S16) |
 | `kern.kwq.clock_fast` | int | RDTUN | 1 | read the architecture's counter directly where it is fixed-rate; 0 keeps the kernel's `cpu_ticks()`.  A loader tunable: the choice is made when the module loads |
 
 Per class: `kern.kwq.<class>.`

@@ -15,7 +15,10 @@
  *   kwq      one BULK queue per client queue (kern.kwq.bulk.queue.kcq<i>),
  *            each request one item; `cpu' -1 submits with KWQ_CPU_ANY, a
  *            CPU number puts every queue on that CPU (the multiple busy
- *            queues case); `stealable' creates the queues KWQ_F_STEALABLE.
+ *            queues case), or with `cpustep' queue i on cpu + i x cpustep
+ *            (two queues on SMT siblings or on two cores: the SMT yield,
+ *            SPEC-p6g.md P6g.0); `stealable' creates the queues
+ *            KWQ_F_STEALABLE.
  *   scatter  as kwq, but a request is cut into chunks of `chunk' bytes
  *            fanned out with kwq_scatter(); its group's done() completes it.
  *   thread   the baseline: GELI's own model, kernel threads at `prio'
@@ -73,6 +76,7 @@ static u_int	kc_chunk = 16384;
 static u_int	kc_depth = 16;
 static u_int	kc_secs = 5;
 static int	kc_cpu = -1;
+static u_int	kc_cpustep = 0;
 static u_int	kc_stealable = 0;
 static u_int	kc_threads = 0;
 static int	kc_prio = PUSER;
@@ -167,6 +171,8 @@ SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, secs, CTLFLAG_RW, &kc_secs, 0,
     "duration of a run, 1..3600");
 SYSCTL_INT(_kern_kwq_crypto, OID_AUTO, cpu, CTLFLAG_RW, &kc_cpu, 0,
     "kwq modes: -1 = KWQ_CPU_ANY, else every queue on this CPU; thread mode: the CPU the threads are bound to (-1 = per threads)");
+SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, cpustep, CTLFLAG_RW, &kc_cpustep, 0,
+    "kwq mode with cpu set: queue i on CPU cpu + i * cpustep (0 = all on cpu; 1 and 2 put two queues on SMT siblings or on two cores)");
 SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, stealable, CTLFLAG_RW, &kc_stealable, 0,
     "kwq modes: create the queues KWQ_F_STEALABLE");
 SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, threads, CTLFLAG_RW, &kc_threads, 0,
@@ -444,8 +450,8 @@ kc_submit(struct kc_req *r)
 	switch (kc_m) {
 	case 0:
 		KWQ_ITEM_INIT(&r->r_item);
-		error = kwq_enqueue(kq->q_kwq, kc_cpu >= 0 ? kc_cpu : KWQ_CPU_ANY,
-		    &r->r_item);
+		error = kwq_enqueue(kq->q_kwq, kc_cpu >= 0 ?
+		    kc_cpu + kq->q_idx * (int)kc_cpustep : KWQ_CPU_ANY, &r->r_item);
 		break;
 	case 1:
 		for (i = 0; i < r->r_nchunks; i++)
@@ -753,6 +759,25 @@ kc_report(sbintime_t window)
 	kc_r_rejected = kc_rejected;
 }
 
+/* Every queue's CPU, cpu + i x cpustep for i < nq, exists. */
+static bool
+kc_cpus_valid(void)
+{
+	u_int i;
+	int c;
+
+	if (kc_cpustep > mp_maxid)
+		return (false);
+	for (i = 0; i < kc_nq; i++) {
+		c = kc_cpu + (int)(i * kc_cpustep);
+		if (c > (int)mp_maxid || CPU_ABSENT(c))
+			return (false);
+		if (kc_cpustep == 0)
+			break;
+	}
+	return (true);
+}
+
 static void
 kc_run(void *arg __unused)
 {
@@ -784,11 +809,12 @@ kc_run(void *arg __unused)
 	    kc_bytes > 1048576 || kc_bytes % kc_sector != 0 ||
 	    kc_chunk < kc_sector || kc_chunk % kc_sector != 0 ||
 	    kc_secs < 1 || kc_secs > 3600 || kc_weight0 < 1 || kc_weight0 > 8 ||
-	    (kc_cpu >= 0 && (kc_cpu > (int)mp_maxid || CPU_ABSENT(kc_cpu))) ||
+	    (kc_cpu >= 0 && !kc_cpus_valid()) ||
 	    (uint64_t)kc_nq * kc_depth * kc_bytes > 512ULL * 1024 * 1024 ||
 	    kc_prio < PRI_MIN_KERN || kc_prio > PRI_MAX_TIMESHARE) {
 		kc_fail("bad knobs (nq 1..64, depth 1..1024, sector a multiple of 16, "
 		    "bytes and chunk multiples of sector, bytes <= 1 MiB, "
+		    "cpu + (nq - 1) x cpustep a present CPU, "
 		    "nq x depth x bytes <= 512 MiB, prio 40..223)");
 		goto out;
 	}

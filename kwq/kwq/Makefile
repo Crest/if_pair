@@ -43,6 +43,11 @@ CFLAGS+=	-DKWQ_SOFT_INVARIANTS
 .if defined(KWQ_LIST_CHECK)
 CFLAGS+=	-DKWQ_LIST_CHECK
 .endif
+# make KWQ_SIBLING_LAST=1: the SMT siblings last in kwq_topo_order instead of
+# first, an A/B build for ../SPEC-p6g.md P6g.0 (no run-time knob)
+.if defined(KWQ_SIBLING_LAST)
+CFLAGS+=	-DKWQ_TOPO_SIBLING_LAST
+.endif
 # make KWQ_NO_SDT=1: probe sites compiled out, to measure the disabled-probe cost
 .if defined(KWQ_NO_SDT)
 CFLAGS+=	-DKWQ_NO_SDT
