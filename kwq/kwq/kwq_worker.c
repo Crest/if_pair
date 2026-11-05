@@ -331,6 +331,10 @@ kwq_doorbell(struct kwq_cpu *kc, int ring)
 	KASSERT(kc->kc_onlist == KWQ_ON_NONE, ("kwq_doorbell: %s cpu%d on list %u",
 	    kc->kc_q->kwq_name, kc->kc_cpu, kc->kc_onlist));
 	ks_doorbell(kw, kc);
+	/* P8: a CPU holding stealable work keeps the starved tick armed (K12). */
+	if (__predict_false(kwq_bulk_place == KWQ_PLACE_SHARD) &&
+	    (kc->kc_q->kwq_flags & KWQ_F_STEALABLE) != 0)
+		kwq_watch_arm(kw);
 	if (!kw->kw_sleeping) {
 		state = KWQ_DB_AWAKE;
 		/*
@@ -666,7 +670,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	bool head_nf = false, tail_nf = false;
 	u_int n, depth0;
 	int sign;
-	bool net, has_work, cut, helper;
+	bool net, has_work, cut, helper, donor;
 	uint64_t t1, cpu_now, wall;
 	enum ks_cap cap;
 
@@ -690,7 +694,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	 * Stealable lists hold no notifiers (kwq_notify() refuses them), so
 	 * no tag is cut through.
 	 */
-	cut = helper = false;
+	cut = helper = donor = false;
 	if (__predict_false(q->kwq_flags & KWQ_F_STEALABLE) && kwq_steal_on &&
 	    n > 1) {
 		u_int k, take = kwq_steal_batch;
@@ -740,6 +744,21 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 		STAILQ_INIT(&kc->kc_list);
 		kc->kc_depth = 0;
 	}
+	/*
+	 * P8 (place=2): a decision point, with this pass's n items ahead of
+	 * what stays on the list (the lone item's rule, kwq_shard.c).
+	 */
+	if (__predict_false(kwq_bulk_place == KWQ_PLACE_SHARD) &&
+	    (q->kwq_flags & KWQ_F_STEALABLE) != 0) {
+		mtx_lock_spin(&kw->kw_mtx);
+		donor = kwq_donor_point(kw, kc, n);
+		mtx_unlock_spin(&kw->kw_mtx);
+	} else if (__predict_false(kwq_bulk_place == KWQ_PLACE_GOSSIP) &&
+	    q->kwq_class == KWQ_BULK) {
+		mtx_lock_spin(&kw->kw_mtx);
+		kwq_gossip_point(kw, kc, n);	/* the load figure, this pass ahead */
+		mtx_unlock_spin(&kw->kw_mtx);
+	}
 	/* Discard only ever happens on a drained queue. */
 	sign = (!q->kwq_active && (q->kwq_flags & KWQ_F_DISCARD)) ? -1 : 1;
 	/*
@@ -785,6 +804,8 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	kwq_class_prio_restore(kw);
 	if (__predict_false(cut && helper))
 		kwq_steal_wake(kc->kc_cpu);	/* the rest of the list is for it */
+	else if (__predict_false(donor))
+		(void)kwq_shard_wake(kc->kc_cpu);	/* it just became a donor */
 	if (__predict_false(kw->kw_knobs->cap_permille < 1000)) {
 		if (cap == KS_CAP_RESTORE)
 			kwq_cap_act(kw, cap, wall);
@@ -856,6 +877,16 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	SDT_PROBE5(kwq, , , pass__end, q, kc->kc_cpu, n,
 	    cpu_now - kw->kw_pass_start, (int)(kc->kc_requeued - requeued0));
 	ks_pass_end(kw, kc, cpu_now, has_work);
+	donor = false;
+	if (__predict_false(kwq_bulk_place == KWQ_PLACE_SHARD) &&
+	    (q->kwq_flags & KWQ_F_STEALABLE) != 0) {
+		kwq_pass_cost(kc, cpu_now - kw->kw_pass_start, n);
+		donor = kwq_donor_point(kw, has_work ? kc : NULL, 0);
+	} else if (__predict_false(kwq_bulk_place == KWQ_PLACE_GOSSIP) &&
+	    q->kwq_class == KWQ_BULK) {
+		kwq_pass_cost(kc, cpu_now - kw->kw_pass_start, n);
+		kwq_gossip_point(kw, has_work ? kc : NULL, 0);
+	}
 	/* S6.3 on the pass's own wall stamp: NET's cpu_now is already wall. */
 	wall = net ? cpu_now : ks_ticks2ns(t1, kw->kw_ns_scale);
 	cap = ks_cap_check(kw, wall, sched_runnable());
@@ -863,6 +894,8 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	if (kc->kc_waiters != 0)
 		wakeup(kc);
 	kwq_kc_unlock(kc);
+	if (__predict_false(donor))
+		(void)kwq_shard_wake(kc->kc_cpu);
 	if (__predict_false(cap != KS_CAP_NONE))
 		kwq_cap_act(kw, cap, wall);
 	else if (__predict_false(kw->kw_knobs->cap_permille >= 1000 &&
@@ -1166,6 +1199,10 @@ kwq_steal_idle_near(int cpu)
 {
 	u_int i, reach;
 
+	if (kwq_bulk_place == KWQ_PLACE_SHARD)
+		return (kwq_shard_idle_near(cpu));
+	if (kwq_bulk_place == KWQ_PLACE_GOSSIP)
+		return (kwq_gossip_idle_near(cpu));	/* the pass cap's idle core */
 	reach = kwq_topo_reach(cpu);
 	for (i = 0; i < reach; i++)
 		if (CPU_ISSET(kwq_topo_order[cpu][i], &kwq_bulk_idle))
@@ -1186,6 +1223,12 @@ kwq_steal_wake(int cpu)
 	u_int i, reach;
 	int c;
 
+	if (kwq_bulk_place == KWQ_PLACE_SHARD) {
+		(void)kwq_shard_wake(cpu);	/* the group lines, not the mask */
+		return;
+	}
+	if (kwq_bulk_place == KWQ_PLACE_GOSSIP)
+		return;		/* the hand-off replaces stealing (D2) */
 	reach = kwq_topo_reach(cpu);
 	for (i = 0; i < reach; i++) {
 		c = kwq_topo_order[cpu][i];
@@ -1248,10 +1291,14 @@ kwq_worker_main(void *arg)
 			 * placed its list without a wake.
 			 */
 			if (!tried && kw->kw_class == KWQ_BULK &&
-			    kwq_nstealable != 0 && kwq_steal_on) {
+			    kwq_nstealable != 0 && kwq_steal_on &&
+			    kwq_bulk_place != KWQ_PLACE_GOSSIP) {
 				mtx_unlock_spin(&kw->kw_mtx);
 				tried = true;
-				(void)kwq_steal(kw);
+				if (kwq_bulk_place == KWQ_PLACE_SHARD)
+					(void)kwq_steal_donor(kw, -1);
+				else
+					(void)kwq_steal(kw);
 				continue;
 			}
 			tried = false;
@@ -1282,8 +1329,10 @@ kwq_worker_main(void *arg)
 			    (kw->kw_tick_round && kw->kw_tick_items <= 1)))
 				kwq_tick_exit(kw, tick, sbinuptime());
 			kw->kw_sleeping = true;
-			if (kw->kw_class == KWQ_BULK)	/* the steal wake's hint */
-				CPU_SET_ATOMIC(kw->kw_cpu, &kwq_bulk_idle);
+			if (kw->kw_class == KWQ_BULK) {	/* the steal wake's hint */
+				(void)kwq_donor_point(kw, NULL, 0);	/* no longer a donor */
+				kwq_idle_set(kw);
+			}
 			SDT_PROBE3(kwq, , , idle, kw->kw_class, kw->kw_cpu,
 			    kw->kw_busy_ns - kw->kw_idle_busy);
 			t0 = sbinuptime();
@@ -1302,8 +1351,16 @@ kwq_worker_main(void *arg)
 				rv = 0;
 			}
 			t1 = sbinuptime();
-			if (kw->kw_class == KWQ_BULK)
-				CPU_CLR_ATOMIC(kw->kw_cpu, &kwq_bulk_idle);
+			if (kw->kw_class == KWQ_BULK) {
+				kwq_idle_clr(kw);
+				if (__predict_false(kwq_bulk_place == KWQ_PLACE_GOSSIP)) {
+					if (kw->kw_pub_armed) {
+						callout_stop(&kw->kw_pub_co);
+						kw->kw_pub_armed = false;
+					}
+					kwq_gossip_point(kw, NULL, 0);	/* awake: its load */
+				}
+			}
 			kw->kw_idle_ns += kwq_sbt2ns(t1 - t0);
 			kw->kw_idle_busy = kw->kw_busy_ns;
 			/*
@@ -1339,6 +1396,16 @@ kwq_worker_main(void *arg)
 		switch (a) {
 		case KS_SERVE:
 			kwq_pass(kw, kc);
+			/* P8: the early pull, below pull_us at a pass's end */
+			if (__predict_false(kwq_bulk_place == KWQ_PLACE_SHARD) &&
+			    kw->kw_class == KWQ_BULK)
+				kwq_shard_pull(kw);
+			/* gossip: the hand-off and a due merge at a pass's end */
+			else if (__predict_false(kwq_bulk_place == KWQ_PLACE_GOSSIP) &&
+			    kw->kw_class == KWQ_BULK) {
+				kwq_gossip_handoff(kw);
+				kwq_gossip_merge(kw->kw_cpu);
+			}
 			break;
 		case KS_ROUND_END:
 		case KS_HANDBACK:
@@ -1463,6 +1530,10 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 		KW_U64(kw_steals, "steals", "of those, the ones that moved a batch to this CPU");
 		KW_U64(kw_stolen, "stolen", "items in those batches");
 		KW_U64(kw_steal_wakes, "steal_wakes", "wakes from sleep sent by producers so that this worker steals (steal_wake)");
+		KW_U64(kw_pulls, "pulls", "place=2: batches pulled from a donor at a pass end, the own backlog below pull_us");
+		KW_U64(kw_donor_n, "donor_flags", "place=2: times this CPU became a donor (a stealable backlog of donor_us)");
+		KW_U64(kw_starved_n, "starved", "place=2: times the starved tick found this worker without a decision point and flagged it");
+		KW_U64(kw_handoffs, "handoffs", "place=1: batches this worker handed off at a pass end (SPEC-p6g.md S2.7)");
 	}
 #undef KW_U64
 	SYSCTL_ADD_UINT(&kwq_worker_sysctl_ctx, ch, OID_AUTO, "nactive",
@@ -1495,6 +1566,8 @@ kwq_workers_start(struct sysctl_oid_list **cpu_oids)
 			callout_init(&kw->kw_cap_co, 1);
 			callout_init(&kw->kw_wake_co, 1);
 			callout_init(&kw->kw_turg_co, 1);
+			callout_init(&kw->kw_watch_co, 1);
+			callout_init(&kw->kw_pub_co, 1);
 			ks_worker_init(kw, &kwq_knobs[cls], 0);
 			kw->kw_class = cls;
 			kw->kw_cpu = cpu;
@@ -1561,6 +1634,8 @@ kwq_workers_stop(void)
 			callout_drain(&kw->kw_cap_co);
 			callout_drain(&kw->kw_wake_co);
 			callout_drain(&kw->kw_turg_co);
+			callout_drain(&kw->kw_watch_co);
+			callout_drain(&kw->kw_pub_co);
 			mtx_destroy(&kw->kw_mtx);
 			free(kw, M_KWQ);
 			kwq_workers[cls][cpu] = NULL;

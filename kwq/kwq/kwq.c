@@ -564,10 +564,18 @@ kwq_target_cpu(struct kwq *q, int cpu)
 	if (cpu == KWQ_CPU_ANY) {
 		if (q->kwq_class != KWQ_BULK)
 			return (-1);
+		if (kwq_bulk_place == KWQ_PLACE_SHARD)
+			return (kwq_pick_shard(q));
+		if (kwq_bulk_place == KWQ_PLACE_GOSSIP)
+			return (kwq_pick_gossip(q));
 		return (kwq_pick_any(q));
 	}
 	if (__predict_false(cpu < 0 || cpu > (int)mp_maxid || CPU_ABSENT(cpu)))
 		return (curcpu);
+	if (__predict_false(kwq_bulk_place != KWQ_PLACE_TODAY) &&
+	    (q->kwq_flags & KWQ_F_STEALABLE) != 0)
+		return (kwq_bulk_place == KWQ_PLACE_SHARD ? kwq_shard_spill(q, cpu) :
+		    kwq_gossip_spill(q, cpu));	/* the spill (S2.6, K11) */
 	return (cpu);
 }
 
@@ -817,7 +825,7 @@ kwq_scatter(struct kwq *q, struct kwq_group *g, struct kwq_item *list, int n,
 	reach = kwq_topo_reach(me);
 	for (i = 0; i < (int)reach && ntgt < n && ntgt < KWQ_SCATTER_MAX; i++) {
 		c = kwq_topo_order[me][i];
-		if (CPU_ISSET(c, &kwq_bulk_idle))
+		if (kwq_bulk_idle_hint(c))	/* the mode's idle view */
 			tgt[ntgt++] = c;
 	}
 	chunk = n / ntgt;
@@ -1271,9 +1279,11 @@ kwq_create(const char *name, enum kwq_class cls, uint32_t flags,
 	}
 	LIST_INSERT_HEAD(&kwq_all, q, kwq_all);
 	sx_xunlock(&kwq_sx);
+	q->kwq_steal_slot = -1;
 	if (flags & KWQ_F_STEALABLE) {
 		rm_wlock(&kwq_steal_rm);
 		LIST_INSERT_HEAD(&kwq_steal_list, q, kwq_steal);
+		(void)kwq_shard_slot_add(q);	/* a slot for P8's donor hints */
 		q->kwq_stealing = true;
 		atomic_add_int(&kwq_nstealable, 1);
 		rm_wunlock(&kwq_steal_rm);
@@ -1323,6 +1333,7 @@ kwq_steal_unlist(struct kwq *q)
 	rm_wlock(&kwq_steal_rm);
 	if (q->kwq_stealing) {
 		LIST_REMOVE(q, kwq_steal);
+		kwq_shard_slot_del(q);
 		q->kwq_stealing = false;
 		atomic_subtract_int(&kwq_nstealable, 1);
 	}
@@ -1440,8 +1451,12 @@ kwq_modevent(module_t mod __unused, int type, void *data __unused)
 		    SYSCTL_STATIC_CHILDREN(_kern_kwq_blocking_queue);
 		kwq_knobs_register();
 		kwq_topo_init();
+		kwq_shard_init();
+		kwq_gossip_init();
 		error = kwq_workers_start(kwq_cpu_oids);
 		if (error != 0) {
+			kwq_gossip_fini();
+			kwq_shard_fini();
 			kwq_topo_fini();
 			sysctl_ctx_free(&kwq_knob_sysctl);
 		}
@@ -1454,6 +1469,8 @@ kwq_modevent(module_t mod __unused, int type, void *data __unused)
 		}
 		sx_xunlock(&kwq_sx);
 		kwq_workers_stop();
+		kwq_gossip_fini();
+		kwq_shard_fini();
 		kwq_topo_fini();
 		sysctl_ctx_free(&kwq_knob_sysctl);
 		return (0);

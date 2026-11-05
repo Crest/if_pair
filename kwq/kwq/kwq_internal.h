@@ -22,6 +22,7 @@
 #include <sys/time.h>
 
 #include "kwq.h"
+#include "kwq_place.h"
 
 /*
  * Granule for producer/consumer shared state.  128 rather than
@@ -132,6 +133,12 @@ struct kwq_cpu {
 	uint64_t		kc_steals_out;	/* batches taken from this list */
 	uint64_t		kc_stolen_out;	/* items in those batches */
 	uint64_t		kc_scattered;	/* items kwq_scatter() put on this list */
+	/*
+	 * P8 (place=2, ../SPEC-p6g.md K9): the cost of an item on this CPU,
+	 * ns, an average over passes that the owner keeps at pass end; it
+	 * sizes the backlog that makes the CPU a donor and the steal bound.
+	 */
+	uint64_t		kc_cost_ns;
 } __aligned(KWQ_LINE);
 
 CTASSERT(__offsetof(struct kwq_cpu, kc_flags) < 64);	/* enqueue path in line 0 */
@@ -152,6 +159,8 @@ struct kwq {
 	void			*kwq_ctx;
 	struct kwq_cpu		**kwq_pcpu;	/* [mp_maxid + 1], NULL for absent */
 	struct vnet		*kwq_vnet;
+	int			kwq_steal_slot;	/* in kwq_steal_tab, -1 if none (P8) */
+	uint32_t		kwq_steal_id;	/* names it in a donor hint (P8) */
 
 	/* Runtime-written: own block so a drain does not dirty the header. */
 	volatile u_int		kwq_active __aligned(KWQ_LINE);
@@ -284,6 +293,31 @@ struct kwq_worker {
 	 * the wakes producers sent it to steal (kw_steal_wakes under kw_mtx).
 	 */
 	uint64_t		kw_steal_tries, kw_steals, kw_stolen, kw_steal_wakes;
+	/*
+	 * P8 (place=2, ../SPEC-p6g.md K8-K12, kwq_shard.c): where the idle
+	 * bit was set (KWQ_IDLE_*), the donor state (kw_donor, kw_starved,
+	 * the backlog at the last decision point), the decision points
+	 * counted for the starved tick, and the tick itself.  All under
+	 * kw_mtx; kw_donor and kw_starved are read unlocked by thieves.
+	 */
+	u_char			kw_idle_at;
+	bool			kw_donor;
+	volatile bool		kw_starved;
+	bool			kw_watch_armed;
+	uint64_t		kw_backlog_ns;
+	uint64_t		kw_dec_n, kw_watch_n;
+	struct callout		kw_watch_co;
+	uint64_t		kw_pulls, kw_donor_n, kw_starved_n;
+	/*
+	 * The gossip scheme (place=1, kwq_gossip.c): the load figure's state,
+	 * the backlog at the last decision point (step 0's own load), the
+	 * callout that publishes a sleeper's fall after the hold, hand-offs.
+	 */
+	struct kp_load		kw_kl;
+	uint64_t		kw_kp_start_ns;
+	struct callout		kw_pub_co;
+	bool			kw_pub_armed;
+	uint64_t		kw_handoffs;
 } __aligned(KWQ_LINE);
 
 extern struct kwq_worker **kwq_workers[KWQ_NCLASS];	/* [class][cpu] */
@@ -316,6 +350,24 @@ extern int **kwq_topo_order;
 extern u_short (*kwq_topo_ring)[KWQ_TOPO_RINGS];
 extern u_int kwq_steal_on, kwq_steal_scope, kwq_steal_scan, kwq_steal_max,
 	    kwq_steal_wake_at, kwq_steal_batch;
+
+/*
+ * BULK placement (../SPEC-p6g.md S2.8): kern.kwq.bulk.place 0 is
+ * kwq_pick_any(), the one idle mask and kwq_steal()'s scan (SCHED.md
+ * S16); 2 is P8 (kwq_shard.c): the idle mask in lines of
+ * kwq_shard_group CPUs, the donor line and its hints, the starved tick.
+ * The stealable queues have a slot each in kwq_steal_tab, under
+ * kwq_steal_rm, so that a hint names a queue without a pointer to it.
+ */
+#define	KWQ_PLACE_TODAY		0
+#define	KWQ_PLACE_GOSSIP	1
+#define	KWQ_PLACE_SHARD		2
+#define	KWQ_STEAL_SLOTS		4096
+#define	KWQ_IDLE_NONE		0
+#define	KWQ_IDLE_MASK		1	/* kwq_bulk_idle */
+#define	KWQ_IDLE_GROUP		2	/* its group's line */
+extern volatile u_int kwq_bulk_place;
+extern struct kwq *kwq_steal_tab[KWQ_STEAL_SLOTS];
 
 /*
  * How many consecutive sleeps shorter than L enter the tick regime
@@ -402,6 +454,38 @@ void	kwq_topo_fini(void);
 u_int	kwq_topo_reach(int cpu);	/* entries of kwq_topo_order[cpu] within
 					   kwq_steal_scope rings, at most kwq_steal_scan */
 uint64_t kwq_cputime_ns(struct kwq_worker *kw);
+
+/* kwq_shard.c (P8, place=2) */
+void	kwq_shard_init(void);		/* after kwq_topo_init()'s order */
+void	kwq_shard_fini(void);
+int	kwq_shard_slot_add(struct kwq *q);	/* kwq_steal_rm write-locked */
+void	kwq_shard_slot_del(struct kwq *q);	/* kwq_steal_rm write-locked */
+void	kwq_idle_set(struct kwq_worker *kw);	/* kw_mtx held, going to sleep */
+void	kwq_idle_clr(struct kwq_worker *kw);	/* kw_mtx held, awake */
+bool	kwq_shard_idle_near(int cpu);	/* a BULK worker in reach sleeps (hint) */
+bool	kwq_bulk_idle_hint(int cpu);	/* cpu's BULK worker sleeps, in the mode's view */
+bool	kwq_shard_wake(int cpu);	/* wake a sleeper of cpu's group; no lock held */
+bool	kwq_donor_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead);
+					/* kw_mtx held: true if it just became a donor */
+bool	kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns);	/* no lock held */
+void	kwq_shard_pull(struct kwq_worker *kw);	/* after a pass, no lock held */
+int	kwq_pick_shard(struct kwq *q);	/* KWQ_CPU_ANY under place=2 */
+int	kwq_shard_spill(struct kwq *q, int cpu);	/* a fixed CPU, or where it spills */
+void	kwq_watch_arm(struct kwq_worker *kw);	/* kw_mtx held */
+void	kwq_pass_cost(struct kwq_cpu *kc, uint64_t ns, u_int n);	/* pass end, owner */
+
+/* kwq_gossip.c (the gossip scheme, place=1) */
+void	kwq_gossip_init(void);		/* after kwq_shard_init() */
+void	kwq_gossip_fini(void);
+void	kwq_gossip_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead);
+					/* kw_mtx held: the load figure, published */
+void	kwq_gossip_sleep(struct kwq_worker *kw);	/* kw_mtx held, going to sleep */
+void	kwq_gossip_merge(int cpu);	/* a due merge of cpu's core */
+int	kwq_pick_gossip(struct kwq *q);	/* KWQ_CPU_ANY under place=1 */
+int	kwq_gossip_spill(struct kwq *q, int cpu);
+bool	kwq_gossip_idle_near(int cpu);	/* an idle core in the table near cpu */
+bool	kwq_gossip_cpu_idle(int cpu);	/* cpu's status word says idle */
+void	kwq_gossip_handoff(struct kwq_worker *kw);	/* after a pass, no lock held */
 uint64_t kwq_cputime_ns_tick(struct kwq_worker *kw, uint64_t *tick);
 
 
