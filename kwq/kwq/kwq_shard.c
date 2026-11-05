@@ -53,6 +53,7 @@
 #include <machine/atomic.h>
 
 #include "kwq_internal.h"
+#include "kwq_sched.h"
 #include "kwq_sdt.h"
 
 volatile u_int kwq_bulk_place = KWQ_PLACE_TODAY;
@@ -561,13 +562,19 @@ kwq_donor_helper(struct kwq_worker *kw, struct kwq_cpu *kc)
 	return (true);
 }
 
-/* The cost of an item on kc, ns: an average over passes, 1/8 per pass. */
+/*
+ * The cost of an item on kc, ns: an average over passes, 1/8 per pass.  A
+ * pass whose CPU-time delta ks_pass_end() counts as a ticker glitch
+ * (negative or over KS_GLITCH_NS, ../KWQ.md S13; a07's cpu_ticks) says
+ * nothing of the cost and is left out: a negative one drove the average
+ * below zero, which as a uint64_t overflowed the backlog sums.
+ */
 void
 kwq_pass_cost(struct kwq_cpu *kc, uint64_t ns, u_int n)
 {
 	int64_t per, old;
 
-	if (n == 0)
+	if (n == 0 || (int64_t)ns < 0 || ns > KS_GLITCH_NS)
 		return;
 	per = (int64_t)(ns / n);
 	old = (int64_t)kc->kc_cost_ns;
