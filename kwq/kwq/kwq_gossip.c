@@ -11,8 +11,8 @@
  * - the load figure and the status word, at the BULK worker's decision
  *   points (pass start and end, sleep, wake), a sleeping worker's fall
  *   published after the hold by a callout;
- * - the merge: the worker at a pass end and at a wake after more than
- *   Imax asleep, a producer before it places;
+ * - the merge: the worker at a pass end, a producer before it places
+ *   (SPEC-p6g.md K3's merge at a wake after Imax asleep was not built);
  * - placement of KWQ_CPU_ANY (kp_place()) and the spill of a fixed CPU's
  *   items (kp_spill()) for stealable queues;
  * - the hand-off at a pass end in place of stealing (decision D2): no
@@ -321,7 +321,7 @@ kwq_gossip_ok(void *arg, int cpu)
  * figure of the pass start less the CPU time the pass has used.
  */
 int
-kwq_pick_gossip(struct kwq *q)
+kwq_pick_gossip(struct kwq *q, int spill)
 {
 	struct kwq_worker *kw;
 	struct kp_pick pk;
@@ -350,6 +350,7 @@ kwq_pick_gossip(struct kwq *q)
 		counter_u64_add(kwq_gp_expired, 1);
 	if (c < 0 || c > (int)mp_maxid || CPU_ABSENT(c))
 		c = me;
+	SDT_PROBE5(kwq, , , place, q, me, c, KWQ_PICK_GOSSIP + pk.step, spill);
 	return (c);
 }
 
@@ -363,7 +364,7 @@ kwq_gossip_spill(struct kwq *q, int cpu)
 	    (uint64_t)kc->kc_depth * kc->kc_cost_ns < (uint64_t)kwq_kp.h_us * 1000))
 		return (cpu);
 	counter_u64_add(kwq_gp_spill, 1);
-	return (kwq_pick_gossip(q));
+	return (kwq_pick_gossip(q, 1));
 }
 
 /*
@@ -407,7 +408,7 @@ kwq_gossip_handoff(struct kwq_worker *kw)
 	struct kwq *q;
 	struct kwq_item *head, *tail;
 	uint64_t s;
-	u_int i, k, bd, take;
+	u_int i, k, bd, take, left;
 	int t;
 
 	for (i = 0; i < kwq_handoff_n && kwq_steal_on && kwq_nstealable != 0; i++) {
@@ -443,6 +444,7 @@ kwq_gossip_handoff(struct kwq_worker *kw)
 			kc->kc_list.stqh_last = &kc->kc_list.stqh_first;
 		tail->kwi_link.stqe_next = NULL;
 		kc->kc_depth -= take;
+		left = kc->kc_depth;
 		kc->kc_steals_out++;
 		kc->kc_stolen_out += take;
 		kwq_list_check(kc, "handoff giver");
@@ -460,7 +462,8 @@ kwq_gossip_handoff(struct kwq_worker *kw)
 		(void)kwq_kc_place(tkc, take);	/* its doorbell */
 		kwq_kc_unlock(tkc);
 		rm_runlock(&kwq_steal_rm, &tr);
-		SDT_PROBE4(kwq, , , steal, q, kw->kw_cpu, t, (int)take);
+		SDT_PROBE6(kwq, , , steal, q, kw->kw_cpu, t, (int)take,
+		    KWQ_STEAL_HANDOFF, (int)left);
 		kw->kw_handoffs++;
 		counter_u64_add(kwq_gp_handoffs, 1);
 		counter_u64_add(kwq_gp_handed, take);

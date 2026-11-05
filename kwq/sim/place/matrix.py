@@ -146,7 +146,7 @@ ABLATIONS = ["noself=1", "nosmt=1", "nocheck=1", "norand=1", "symhyst=1", "fixiv
 ABLATIONS8 = ["spill=0", "donor_pull=0", "donor_cascade=0", "donor_wakes=0", "donor_avoid=0",
               "donor_bound=0", "probe_groups=0", "far_probe=0", "watch_us=0", "donor_lone=0"]
 ABLATE_ON = r"^(S1-uniform-rho0\.7|S2-crypto-q2|S3-island-k(1|4|9)-x4|S4-idleisland-k4|S6-|S7-return-gap1000-x1\.5|S11-flash|S12-collapse-s0-10ms|S14-smt0\.55|S15-full-rho1\.2|S16-fixed-l0)"
-# P8's far probe and starved tick: the islands that overflow their neighbourhood, a long collapse
+# P8's far probe and starvation watchdog: the islands that overflow their neighbourhood, a long collapse
 ABLATE8_ON = ABLATE_ON[:-1] + r"|S3-island-k9-x8-small|S3-island-k16-x4-small|S12-collapse-s0-100ms)"
 
 

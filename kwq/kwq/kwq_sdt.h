@@ -65,6 +65,10 @@ SDT_PROBE_DECLARE(kwq, , , doorbell);
 SDT_PROBE_DECLARE(kwq, , , tick);
 SDT_PROBE_DECLARE(kwq, , , wake);
 SDT_PROBE_DECLARE(kwq, , , steal);
+SDT_PROBE_DECLARE(kwq, , , steal__wake);
+SDT_PROBE_DECLARE(kwq, , , steal__miss);
+SDT_PROBE_DECLARE(kwq, , , donor);
+SDT_PROBE_DECLARE(kwq, , , place);
 SDT_PROBE_DECLARE(kwq, , , worker__block);
 SDT_PROBE_DECLARE(kwq, , , worker__spawn);
 SDT_PROBE_DECLARE(kwq, , , worker__exit);
@@ -102,5 +106,35 @@ SDT_PROBE_DECLARE(kwq, , , budget__hit);
 #define	KWQ_CAP_YIELD	2	/* hand-over, same period */
 #define	KWQ_CAP_RESTORE	3	/* the period ended while over */
 #define	KWQ_CAP_DEADLINE 4	/* the deadline callout ran */
+
+/* kwq:::steal arg4, kwq:::steal-miss arg1: how the batch moves (SCHED.md S16, S17) */
+#define	KWQ_STEAL_SCAN		0	/* place=0: kwq_steal()'s scan of the reach */
+#define	KWQ_STEAL_DONOR		1	/* place=2: an idle thief, from the nearest donor */
+#define	KWQ_STEAL_MAILBOX	2	/* place=2: from the victim its wake named */
+#define	KWQ_STEAL_CHAIN		3	/* place=2: from the victim of its last batch */
+#define	KWQ_STEAL_PULL		4	/* place=2: a pull at a pass end */
+#define	KWQ_STEAL_HANDOFF	5	/* place=1: the busy worker hands a batch off */
+
+/* kwq:::steal-wake arg2: why a sleeping BULK worker is woken to steal */
+#define	KWQ_SWAKE_ENQUEUE	0	/* an enqueue crossed steal_wake or a doubling */
+#define	KWQ_SWAKE_HELPER	1	/* a pass took one item and left the rest */
+#define	KWQ_SWAKE_DONOR		2	/* place=2: the CPU just became a donor */
+#define	KWQ_SWAKE_WATCHDOG	3	/* place=2: the starvation watchdog flagged it */
+
+/* kwq:::steal-miss arg3: why an attempt moved nothing */
+#define	KWQ_SMISS_NONE		0	/* no victim: the scan found none, or no donor in reach */
+#define	KWQ_SMISS_STALE		1	/* the word names no live queue (slot, id) */
+#define	KWQ_SMISS_EMPTY		2	/* the victim's list is empty */
+#define	KWQ_SMISS_LONE		3	/* one item, which the rule leaves to its worker */
+#define	KWQ_SMISS_INACTIVE	4	/* the queue is draining */
+
+/* kwq:::place arg3: how the CPU was found */
+#define	KWQ_PICK_TODAY		0	/* place=0: kwq_pick_any() */
+#define	KWQ_PICK_NEAR		1	/* place=2: an idle CPU of the near groups */
+#define	KWQ_PICK_FAR		2	/* place=2: an idle CPU of a far group (the far probe) */
+#define	KWQ_PICK_SELF		3	/* place=2: the producer's CPU, not a donor */
+#define	KWQ_PICK_NONDONOR	4	/* place=2: the nearest CPU that is not a donor */
+#define	KWQ_PICK_PROBE		5	/* place=2: the shallowest of the own list and four */
+#define	KWQ_PICK_GOSSIP		16	/* place=1: 16 + kp_place()'s step (KP_STEP_*) */
 
 #endif /* !_KWQ_SDT_H_ */

@@ -331,7 +331,7 @@ kwq_doorbell(struct kwq_cpu *kc, int ring)
 	KASSERT(kc->kc_onlist == KWQ_ON_NONE, ("kwq_doorbell: %s cpu%d on list %u",
 	    kc->kc_q->kwq_name, kc->kc_cpu, kc->kc_onlist));
 	ks_doorbell(kw, kc);
-	/* P8: a CPU holding stealable work keeps the starved tick armed (K12). */
+	/* P8: a CPU holding stealable work keeps the starvation watchdog armed (K12). */
 	if (__predict_false(kwq_bulk_place == KWQ_PLACE_SHARD) &&
 	    (kc->kc_q->kwq_flags & KWQ_F_STEALABLE) != 0)
 		kwq_watch_arm(kw);
@@ -803,9 +803,9 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 	}
 	kwq_class_prio_restore(kw);
 	if (__predict_false(cut && helper))
-		kwq_steal_wake(kc->kc_cpu, kwq_steal_word(kc));	/* the rest is for it */
+		kwq_steal_wake(kc->kc_cpu, kwq_steal_word(kc), KWQ_SWAKE_HELPER);	/* the rest is for it */
 	else if (__predict_false(donor))
-		(void)kwq_shard_wake(kc->kc_cpu, 0);	/* it just became a donor */
+		(void)kwq_shard_wake(kc->kc_cpu, 0, KWQ_SWAKE_DONOR);	/* it just became a donor */
 	if (__predict_false(kw->kw_knobs->cap_permille < 1000)) {
 		if (cap == KS_CAP_RESTORE)
 			kwq_cap_act(kw, cap, wall);
@@ -895,7 +895,7 @@ kwq_pass(struct kwq_worker *kw, struct kwq_cpu *kc)
 		wakeup(kc);
 	kwq_kc_unlock(kc);
 	if (__predict_false(donor))
-		(void)kwq_shard_wake(kc->kc_cpu, 0);
+		(void)kwq_shard_wake(kc->kc_cpu, 0, KWQ_SWAKE_DONOR);
 	if (__predict_false(cap != KS_CAP_NONE))
 		kwq_cap_act(kw, cap, wall);
 	else if (__predict_false(kw->kw_knobs->cap_permille >= 1000 &&
@@ -1131,7 +1131,7 @@ kwq_steal(struct kwq_worker *kw)
 	struct kwq *q;
 	struct kwq_cpu *vkc, *kc;
 	struct kwq_item *head, *tail;
-	u_int i, reach, n, take, k;
+	u_int i, reach, n, take, k, left;
 	int vcpu;
 	bool moved = false;
 
@@ -1168,6 +1168,7 @@ kwq_steal(struct kwq_worker *kw)
 				vkc->kc_list.stqh_last = &vkc->kc_list.stqh_first;
 			tail->kwi_link.stqe_next = NULL;
 			vkc->kc_depth -= take;
+			left = vkc->kc_depth;
 			vkc->kc_steals_out++;
 			vkc->kc_stolen_out += take;
 			kwq_list_check(vkc, "steal victim");
@@ -1182,7 +1183,8 @@ kwq_steal(struct kwq_worker *kw)
 			kwq_list_check(kc, "steal stealer");
 			(void)kwq_kc_place(kc, take);	/* our own doorbell: places it */
 			kwq_kc_unlock(kc);
-			SDT_PROBE4(kwq, , , steal, q, vcpu, kw->kw_cpu, (int)take);
+			SDT_PROBE6(kwq, , , steal, q, vcpu, kw->kw_cpu, (int)take,
+			    KWQ_STEAL_SCAN, (int)left);
 			kw->kw_steals++;
 			kw->kw_stolen += take;
 			moved = true;
@@ -1190,6 +1192,9 @@ kwq_steal(struct kwq_worker *kw)
 		}
 	}
 	rm_runlock(&kwq_steal_rm, &tr);
+	if (!moved)
+		SDT_PROBE4(kwq, , , steal__miss, kw->kw_cpu, KWQ_STEAL_SCAN, -1,
+		    KWQ_SMISS_NONE);
 	return (moved);
 }
 
@@ -1220,14 +1225,14 @@ kwq_steal_idle_near(int cpu)
  * destroy may have completed since the enqueue.
  */
 void
-kwq_steal_wake(int cpu, uint64_t mw)
+kwq_steal_wake(int cpu, uint64_t mw, int why)
 {
 	struct kwq_worker *kw;
 	u_int i, reach;
 	int c;
 
 	if (kwq_bulk_place == KWQ_PLACE_SHARD) {
-		(void)kwq_shard_wake(cpu, mw);	/* the group lines, not the mask */
+		(void)kwq_shard_wake(cpu, mw, why);	/* the group lines, not the mask */
 		return;
 	}
 	if (kwq_bulk_place == KWQ_PLACE_GOSSIP)
@@ -1244,10 +1249,12 @@ kwq_steal_wake(int cpu, uint64_t mw)
 			kw->kw_steal_wakes++;
 			wakeup_one(kw->kw_chan);
 			mtx_unlock_spin(&kw->kw_mtx);
+			SDT_PROBE4(kwq, , , steal__wake, cpu, c, why, 0);
 			return;
 		}
 		mtx_unlock_spin(&kw->kw_mtx);
 	}
+	SDT_PROBE4(kwq, , , steal__wake, cpu, -1, why, 0);
 }
 
 static void
@@ -1534,13 +1541,13 @@ kwq_worker_sysctl(struct kwq_worker *kw, struct sysctl_oid_list *parent)
 	KW_U64(kw_budget_calls, "budget_calls", "kwq_budget_left() calls by handlers on this worker");
 	KW_U64(kw_budget_reads, "budget_reads", "of those, the ones that read the clock (SCHED.md S4.4)");
 	if (kw->kw_class == KWQ_BULK) {
-		KW_U64(kw_steal_tries, "steal_tries", "steal attempts with nothing of its own to do (SCHED.md S16)");
+		KW_U64(kw_steal_tries, "steal_tries", "steal attempts: with nothing of its own to do, and under place=2 the pulls at a pass end; a mailbox or chain victim tried first counts one more (SCHED.md S16, S17)");
 		KW_U64(kw_steals, "steals", "of those, the ones that moved a batch to this CPU");
 		KW_U64(kw_stolen, "stolen", "items in those batches");
-		KW_U64(kw_steal_wakes, "steal_wakes", "wakes from sleep sent by producers so that this worker steals (steal_wake)");
+		KW_U64(kw_steal_wakes, "steal_wakes", "wakes from sleep sent so that this worker steals: a producer past steal_wake, a pass that left items for a helper, and under place=2 a donor transition or the starvation watchdog");
 		KW_U64(kw_pulls, "pulls", "place=2: batches pulled from a donor at a pass end, the own backlog below pull_us");
 		KW_U64(kw_donor_n, "donor_flags", "place=2: times this CPU became a donor (a stealable backlog of donor_us)");
-		KW_U64(kw_starved_n, "starved", "place=2: times the starved tick found this worker without a decision point and flagged it");
+		KW_U64(kw_starved_n, "starved", "place=2: times the starvation watchdog found this worker without a decision point and flagged it");
 		KW_U64(kw_handoffs, "handoffs", "place=1: batches this worker handed off at a pass end (SPEC-p6g.md S2.7)");
 		KW_U64(kw_directed, "directed", "place=2, shard.directed: batches taken from the victim the waking wake named");
 		KW_U64(kw_chained, "chained", "place=2, shard.directed=2: batches taken from the victim of the last batch again");

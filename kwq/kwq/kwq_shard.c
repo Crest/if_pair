@@ -32,13 +32,14 @@
  *   so a batch is not stolen on again before new arrivals lift its holder;
  *   a worker whose backlog falls below kwq_pull_us pulls from a donor at
  *   the end of a pass.
- * - A per-CPU tick, armed while the CPU holds stealable work, flags a
- *   worker that reached no decision point since the last tick a starved
- *   donor, whose lone items may be stolen too: a CPU whose BULK worker
- *   gets no time cannot flag itself.
+ * - A starvation watchdog, a per-CPU callout armed while the CPU holds
+ *   stealable work, flags a worker that reached no decision point since
+ *   it was armed a starved donor, whose whole list may be stolen, lone
+ *   items too: a CPU whose BULK worker gets no time cannot flag itself.
  *
- * Every word added has one writer CPU except the donor line, written at
- * donor transitions.  The hint names a queue by its slot in
+ * Who writes the words added: a group's idle line its CPUs, the donor line
+ * a CPU at its donor transitions, a CPU's hint that CPU, and a worker's
+ * mailbox whoever wakes it, under its kw_mtx.  The hint names a queue by its slot in
  * kwq_steal_tab and its id, never by a pointer, and is checked under the
  * read side of kwq_steal_rm, which a drain's unlisting write-locks.
  */
@@ -71,7 +72,7 @@ static u_int kwq_shard_group = 16;	/* CPUs per idle line; loader tunable */
 static u_int kwq_shard_probe = 2;	/* near groups read besides the own one */
 static u_int kwq_donor_us = 500;	/* a donor's backlog */
 static u_int kwq_pull_us = 500;		/* a worker below it pulls at pass end */
-static u_int kwq_watch_us = 1000;	/* the starved tick; 0: off */
+static u_int kwq_watch_us = 1000;	/* the starvation watchdog's period; 0: off */
 static u_int kwq_directed = 2;		/* the wake names the victim (the mailbox); 2: the chain */
 static u_int kwq_directed_us = 10;	/* directed only for items at least this costly; 0: all */
 
@@ -361,12 +362,12 @@ kwq_shard_idle_near(int cpu)
  * sleeper of its own group nobody to wake while three workers slept.
  */
 bool
-kwq_shard_wake(int cpu, uint64_t mw)
+kwq_shard_wake(int cpu, uint64_t mw, int why)
 {
 	struct kwq_worker *kw;
 	uint64_t w = 0;
 	u_int i, reach;
-	int c, g, lg = -1;
+	int c, g, lg = -1, filled = 0;
 
 	reach = kwq_topo_reach(cpu);
 	for (i = 0; i < reach; i++) {
@@ -396,14 +397,17 @@ kwq_shard_wake(int cpu, uint64_t mw)
 				if (mw != 0) {
 					kw->kw_mb_cpu = cpu;
 					kw->kw_mb_word = mw;
+					filled = 1;
 				}
 			}
 			wakeup_one(kw->kw_chan);
 			mtx_unlock_spin(&kw->kw_mtx);
+			SDT_PROBE4(kwq, , , steal__wake, cpu, c, why, filled);
 			return (true);
 		}
 		mtx_unlock_spin(&kw->kw_mtx);
 	}
+	SDT_PROBE4(kwq, , , steal__wake, cpu, -1, why, 0);
 	return (false);
 }
 
@@ -513,15 +517,17 @@ kwq_donor_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead)
 	struct kwq_cpu *best;
 	uint64_t b, lim = (uint64_t)kwq_donor_us * 1000;
 	u_int bd;
-	bool d;
+	bool d, was;
 
 	mtx_assert(&kw->kw_mtx, MA_OWNED);
 	kw->kw_dec_n++;
+	was = kw->kw_starved;
 	kw->kw_starved = false;
 	if (kwq_bulk_place != KWQ_PLACE_SHARD) {
 		if (__predict_false(kw->kw_donor)) {
 			CPU_CLR_ATOMIC(kw->kw_cpu, &kwq_donors.ds_set);
 			kw->kw_donor = false;
+			SDT_PROBE4(kwq, , , donor, kw->kw_cpu, 0, 0, (uint64_t)0);
 		}
 		return (false);
 	}
@@ -533,13 +539,17 @@ kwq_donor_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead)
 		d = bd >= 2 && b >= lim;
 	if (d)
 		kwq_hint_set(kw->kw_cpu, best);
-	if (d == kw->kw_donor)
+	if (d == kw->kw_donor) {
+		if (__predict_false(was))	/* the starved flag went */
+			SDT_PROBE4(kwq, , , donor, kw->kw_cpu, (int)d, 0, b);
 		return (false);
+	}
 	if (d)
 		CPU_SET_ATOMIC(kw->kw_cpu, &kwq_donors.ds_set);
 	else
 		CPU_CLR_ATOMIC(kw->kw_cpu, &kwq_donors.ds_set);
 	kw->kw_donor = d;
+	SDT_PROBE4(kwq, , , donor, kw->kw_cpu, (int)d, 0, b);
 	if (d) {
 		kw->kw_donor_n++;
 		kwq_watch_arm(kw);
@@ -573,34 +583,40 @@ kwq_pass_cost(struct kwq_cpu *kc, uint64_t ns, u_int n)
  * behind the victim's running work.  True if a batch moved.
  */
 static bool
-kwq_steal_from(struct kwq_worker *kw, int vcpu, uint64_t h, int64_t room_ns)
+kwq_steal_from(struct kwq_worker *kw, int vcpu, uint64_t h, int64_t room_ns,
+    int how)
 {
 	struct kwq *q;
 	struct kwq_cpu *vkc, *kc;
 	struct kwq_worker *vkw;
 	struct kwq_item *head, *tail;
 	uint64_t cost, room;
-	u_int n, take, k, lim;
-	int slot;
+	u_int n, take, k, lim, left;
+	int slot, why;
 	bool lone;
 
 	slot = KH_SLOT(h);
+	why = KWQ_SMISS_STALE;
 	if (vcpu == kw->kw_cpu || slot < 0 || slot >= KWQ_STEAL_SLOTS)
-		return (false);
+		goto miss;
 	q = kwq_steal_tab[slot];
 	if (q == NULL || q->kwq_steal_id != KH_ID(h))
-		return (false);
+		goto miss;
 	vkc = q->kwq_pcpu[vcpu];
 	vkw = kwq_workers[KWQ_BULK][vcpu];
 	lone = vkw->kw_starved || (room_ns < 0 && vkw->kw_cur != NULL);
 	n = vkc->kc_depth;		/* unlocked: a hint */
-	if (n == 0 || (n == 1 && !lone))
-		return (false);
+	if (n == 0 || (n == 1 && !lone)) {
+		why = n == 0 ? KWQ_SMISS_EMPTY : KWQ_SMISS_LONE;
+		goto miss;
+	}
 	kwq_kc_lock(vkc);
 	n = vkc->kc_depth;
 	if (n == 0 || (n == 1 && !lone) || !q->kwq_active) {
+		why = n == 0 ? KWQ_SMISS_EMPTY : n == 1 && !lone ?
+		    KWQ_SMISS_LONE : KWQ_SMISS_INACTIVE;
 		kwq_kc_unlock(vkc);
-		return (false);
+		goto miss;
 	}
 	take = vkw->kw_starved ? n : (n + 1) / 2;
 	if (take > kwq_steal_max)
@@ -623,6 +639,7 @@ kwq_steal_from(struct kwq_worker *kw, int vcpu, uint64_t h, int64_t room_ns)
 		vkc->kc_list.stqh_last = &vkc->kc_list.stqh_first;
 	tail->kwi_link.stqe_next = NULL;
 	vkc->kc_depth -= take;
+	left = vkc->kc_depth;
 	vkc->kc_steals_out++;
 	vkc->kc_stolen_out += take;
 	kwq_list_check(vkc, "donor steal victim");
@@ -639,10 +656,13 @@ kwq_steal_from(struct kwq_worker *kw, int vcpu, uint64_t h, int64_t room_ns)
 	kwq_list_check(kc, "donor steal stealer");
 	(void)kwq_kc_place(kc, take);
 	kwq_kc_unlock(kc);
-	SDT_PROBE4(kwq, , , steal, q, vcpu, kw->kw_cpu, (int)take);
+	SDT_PROBE6(kwq, , , steal, q, vcpu, kw->kw_cpu, (int)take, how, (int)left);
 	kw->kw_steals++;
 	kw->kw_stolen += take;
 	return (true);
+miss:
+	SDT_PROBE4(kwq, , , steal__miss, kw->kw_cpu, how, vcpu, why);
+	return (false);
 }
 
 /*
@@ -667,8 +687,8 @@ kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns, int mcpu, uint64_t mword
 	struct rm_priotracker tr;
 	uint64_t h = 0;
 	u_int i, reach;
-	int vcpu = -1;
-	bool chain = false, moved = false;
+	int vcpu = -1, how;
+	bool chain = false, moved = false, tried = false;
 
 	reach = kwq_topo_reach(kw->kw_cpu);
 	if (mcpu < 0 && room_ns < 0 && kwq_directed >= 2 &&
@@ -680,7 +700,8 @@ kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns, int mcpu, uint64_t mword
 	if (mcpu >= 0 && mword != 0) {
 		kw->kw_steal_tries++;
 		rm_rlock(&kwq_steal_rm, &tr);
-		moved = kwq_steal_from(kw, mcpu, mword, room_ns);
+		moved = kwq_steal_from(kw, mcpu, mword, room_ns,
+		    chain ? KWQ_STEAL_CHAIN : KWQ_STEAL_MAILBOX);
 		rm_runlock(&kwq_steal_rm, &tr);
 		if (moved) {
 			if (chain)
@@ -697,18 +718,24 @@ kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns, int mcpu, uint64_t mword
 		if (chain)
 			kw->kw_chain_cpu = -1;
 	}
-	if (reach == 0 || CPU_EMPTY(&kwq_donors.ds_set))
+	how = room_ns >= 0 ? KWQ_STEAL_PULL : KWQ_STEAL_DONOR;
+	if (reach == 0 || CPU_EMPTY(&kwq_donors.ds_set)) {
+		SDT_PROBE4(kwq, , , steal__miss, kw->kw_cpu, how, -1, KWQ_SMISS_NONE);
 		return (false);
+	}
 	kw->kw_steal_tries++;
 	rm_rlock(&kwq_steal_rm, &tr);
 	for (i = 0; i < reach && !moved; i++) {
 		vcpu = kwq_topo_order[kw->kw_cpu][i];
 		if (kwq_is_donor(vcpu)) {
+			tried = true;
 			h = atomic_load_64(&kwq_hints[vcpu].kh_word);
-			moved = kwq_steal_from(kw, vcpu, h, room_ns);
+			moved = kwq_steal_from(kw, vcpu, h, room_ns, how);
 		}
 	}
 	rm_runlock(&kwq_steal_rm, &tr);
+	if (!tried)
+		SDT_PROBE4(kwq, , , steal__miss, kw->kw_cpu, how, -1, KWQ_SMISS_NONE);
 	if (moved && kwq_directed >= 2 && KH_US(h) >= kwq_directed_us) {
 		kw->kw_chain_cpu = vcpu;
 		kw->kw_chain_word = h;
@@ -765,7 +792,7 @@ kwq_pick_near(struct kwq *q, int me, int *nnp)
 }
 
 int
-kwq_pick_shard(struct kwq *q)
+kwq_pick_shard(struct kwq *q, int spill)
 {
 	uint64_t fw;
 	u_int i, reach, depth, bestdepth, gs = kwq_shard_group;
@@ -775,6 +802,7 @@ kwq_pick_shard(struct kwq *q)
 	reach = kwq_topo_reach(me);
 	if ((c = kwq_pick_near(q, me, &nn)) >= 0) {
 		counter_u64_add(kwq_pk_near, 1);
+		SDT_PROBE5(kwq, , , place, q, me, c, KWQ_PICK_NEAR, spill);
 		return (c);
 	}
 	if (kwq_ngrps > nn) {
@@ -797,6 +825,7 @@ kwq_pick_shard(struct kwq *q)
 				if (q->kwq_pcpu[c] != NULL && q->kwq_pcpu[c]->kc_depth == 0) {
 					DPCPU_SET(kwq_far_g, fg + 1);
 					counter_u64_add(kwq_pk_far, 1);
+					SDT_PROBE5(kwq, , , place, q, me, c, KWQ_PICK_FAR, spill);
 					return (c);
 				}
 			}
@@ -805,12 +834,14 @@ kwq_pick_shard(struct kwq *q)
 	}
 	if (!kwq_is_donor(me)) {
 		counter_u64_add(kwq_pk_self, 1);
+		SDT_PROBE5(kwq, , , place, q, me, me, KWQ_PICK_SELF, spill);
 		return (me);
 	}
 	for (i = 0; i < reach && i < 16; i++) {
 		c = kwq_topo_order[me][i];
 		if (!kwq_is_donor(c)) {
 			counter_u64_add(kwq_pk_nondonor, 1);
+			SDT_PROBE5(kwq, , , place, q, me, c, KWQ_PICK_NONDONOR, spill);
 			return (c);
 		}
 	}
@@ -825,6 +856,7 @@ kwq_pick_shard(struct kwq *q)
 		}
 	}
 	counter_u64_add(kwq_pk_probe, 1);
+	SDT_PROBE5(kwq, , , place, q, me, best, KWQ_PICK_PROBE, spill);
 	return (best);
 }
 
@@ -843,17 +875,17 @@ kwq_shard_spill(struct kwq *q, int cpu)
 	if (kwq_is_donor(cpu) ||
 	    (uint64_t)kc->kc_depth * kc->kc_cost_ns >= (uint64_t)kwq_donor_us * 1000) {
 		counter_u64_add(kwq_pk_spill, 1);
-		return (kwq_pick_shard(q));
+		return (kwq_pick_shard(q, 1));
 	}
 	return (cpu);
 }
 
 /*
- * The starved tick (K12): a direct callout on the worker's CPU, armed
+ * The starvation watchdog (K12): a direct callout on the worker's CPU, armed
  * while the CPU holds stealable work.  It runs in the clock interrupt,
  * so a thread that keeps the BULK worker off the CPU does not stop it;
- * a worker that reached no decision point since the tick was armed is
- * flagged a starved donor and a thief is woken, every tick until the
+ * a worker that reached no decision point since the watchdog was armed is
+ * flagged a starved donor and a thief is woken, every period until the
  * worker runs again.
  */
 static void
@@ -881,16 +913,19 @@ kwq_watch_fire(void *arg)
 		if (!kw->kw_donor) {
 			CPU_SET_ATOMIC(kw->kw_cpu, &kwq_donors.ds_set);
 			kw->kw_donor = true;
+			kw->kw_donor_n++;
 		}
-		if (!kw->kw_starved)
+		if (!kw->kw_starved) {
 			kw->kw_starved_n++;
+			SDT_PROBE4(kwq, , , donor, kw->kw_cpu, 1, 1, b);
+		}
 		kw->kw_starved = true;
 		wake = true;
 	}
 	kwq_watch_arm(kw);
 	mtx_unlock_spin(&kw->kw_mtx);
 	if (wake)
-		(void)kwq_shard_wake(kw->kw_cpu, 0);	/* the hint just set */
+		(void)kwq_shard_wake(kw->kw_cpu, 0, KWQ_SWAKE_WATCHDOG);	/* the hint just set */
 }
 
 void
@@ -937,6 +972,8 @@ kwq_sysctl_place(SYSCTL_HANDLER_ARGS)
 		if (kw == NULL)
 			continue;
 		mtx_lock_spin(&kw->kw_mtx);
+		if (kw->kw_donor || kw->kw_starved)
+			SDT_PROBE4(kwq, , , donor, cpu, 0, 0, (uint64_t)0);
 		if (kw->kw_donor) {
 			CPU_CLR_ATOMIC(cpu, &kwq_donors.ds_set);
 			kw->kw_donor = false;
@@ -1033,7 +1070,7 @@ kwq_shard_sysctl(void)
 	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "watch_us",
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_watch_us, 1000000,
 	    kwq_sysctl_shard_knob, "IU",
-	    "the starved tick's period, us; 0: off");
+	    "the starvation watchdog's period, us; 0: off");
 	SYSCTL_ADD_COUNTER_U64(ctx, sh, OID_AUTO, "pick_near", CTLFLAG_RD,
 	    &kwq_pk_near, "KWQ_CPU_ANY items placed on an idle CPU of the near groups");
 	SYSCTL_ADD_COUNTER_U64(ctx, sh, OID_AUTO, "pick_far", CTLFLAG_RD,

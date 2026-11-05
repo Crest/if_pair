@@ -39,7 +39,7 @@
  * 8 shard (7 with the idle mask cut into lines of `group' CPUs, each
  * written by its own CPUs only; a producer reads its own group's line
  * and up to probe_groups more, then far_probe groups' lines further
- * out; a per-CPU tick flags a starved worker a donor).
+ * out; a per-CPU starvation watchdog flags a starved worker a donor).
  */
 
 #include <sys/types.h>
@@ -101,7 +101,7 @@ struct cfg {
 	int	donor_cascade, donor_pull, donor_wakes, donor_avoid;	/* P7/P8 */
 	double	donor_us;	/* a donor's backlog, us (spill at it too) */
 	int	donor_bound;	/* a steal takes no more than stays below donor_us */
-	double	watch_us;	/* P8: the starved-worker tick, us (0: none) */
+	double	watch_us;	/* P8: the starvation watchdog's period, us (0: none) */
 	int	donor_lone;	/* P8: a lone item behind running work is a backlog */
 	int	lazy;		/* P5, hybrid H1: idle lines for sleepers past lazy_us */
 	double	lazy_us;	/* H1: how long a sleeper waits to set its bit (<0: the hold) */
@@ -823,9 +823,9 @@ struct cpu {
 	int		dq;		/* the donor's longest stealable queue */
 	int		far_g;		/* P8: the far probe's group, -1 before the first */
 	uint64_t	lazyseq;	/* H1: the sleep the lazy timer belongs to */
-	uint64_t	dec_n, watch_n;	/* P8: decision points, and at the tick's arming */
+	uint64_t	dec_n, watch_n;	/* P8: decision points, and at the watchdog's arming */
 	bool		watch_armed;
-	bool		starved;	/* P8: flagged by the tick; lone items stealable */
+	bool		starved;	/* P8: flagged by the watchdog; lone items stealable */
 	/* last handoff, M7 */
 	uint64_t	handoffs_in, handoffs_out;
 };
@@ -1668,10 +1668,10 @@ donor_point(int c)
 }
 
 /*
- * P8: a per-CPU tick, armed while the CPU holds stealable work.  At
+ * P8: the starvation watchdog, a per-CPU callout armed while the CPU holds stealable work.  At
  * softclock priority it runs when the worker gets no time; a worker
- * that reached no decision point since the tick was armed is starved,
- * and the tick flags it a donor (lone items included) and wakes a
+ * that reached no decision point since the watchdog was armed is starved,
+ * and the watchdog flags it a donor (lone items included) and wakes a
  * thief, every tick until the worker runs again (S12).
  */
 static void

@@ -876,7 +876,7 @@ island_cleanup() { kwq_cleanup; }
 
 atf_test_case starved cleanup
 starved_head() {
-	atf_set descr "place=2: a kernel thread at PI_NET spins 100 ms on CPU 1 while 200 items of 100 us arrive on its list: they run elsewhere well within the spin (the starved tick), every item once"
+	atf_set descr "place=2: a kernel thread at PI_NET spins 100 ms on CPU 1 while 200 items of 100 us arrive on its list: they run elsewhere well within the spin (the starvation watchdog), every item once"
 	atf_set require.user root
 }
 starved_body() {

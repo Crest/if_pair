@@ -107,9 +107,10 @@ struct kwq_params {
 				   be interrupt filters or hold spin locks */
 #define	KWQ_F_ALL	0x3f
 
-#define	KWQ_CPU_ANY	(-1)	/* BULK only: an idle worker near the caller,
-				   else the caller's CPU, else the shallowest
-				   list near it (../KWQ.md S3) */
+#define	KWQ_CPU_ANY	(-1)	/* BULK only: a CPU chosen by
+				   kern.kwq.bulk.place, an idle worker near the
+				   caller first under 0 and 2 (../KWQ.md S3,
+				   ../SCHED.md S17) */
 #define	KWQ_NAMELEN	32
 
 /*

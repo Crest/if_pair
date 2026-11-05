@@ -68,9 +68,35 @@ SDT_PROBE_DEFINE3(kwq, , , tick, "int", "int", "uint64_t");
  * (KWQ_WAKE_*), ns since the wait began (KWQ.md S16)
  */
 SDT_PROBE_DEFINE4(kwq, , , wake, "int", "int", "int", "uint64_t");
-/* P6: from cpu, to cpu, items */
-SDT_PROBE_DEFINE4_XLATE(kwq, , , steal, "struct kwq *", "kwqinfo_t *",
-    "int", "int", "int", "int", "int", "int");
+/*
+ * P6, SCHED.md S16-S17: a batch moved between two CPUs' lists of a
+ * stealable queue: from cpu, to cpu, items, how (KWQ_STEAL_*), the items
+ * left on the list it came from
+ */
+SDT_PROBE_DEFINE6_XLATE(kwq, , , steal, "struct kwq *", "kwqinfo_t *",
+    "int", "int", "int", "int", "int", "int", "int", "int", "int", "int");
+/*
+ * a sleeping BULK worker woken to steal: the CPU it is to steal from, the
+ * woken CPU (-1: no worker in reach slept), why (KWQ_SWAKE_*), 1 if the
+ * wake named the list in its mailbox (place=2, shard.directed)
+ */
+SDT_PROBE_DEFINE4(kwq, , , steal__wake, "int", "int", "int", "int");
+/*
+ * a steal attempt that moved nothing: the thief's cpu, how (KWQ_STEAL_*),
+ * the victim cpu (-1: none found), why (KWQ_SMISS_*)
+ */
+SDT_PROBE_DEFINE4(kwq, , , steal__miss, "int", "int", "int", "int");
+/*
+ * place=2: a CPU's donor or starved state changed: cpu, donor, starved
+ * (the starvation watchdog's flag), the stealable backlog, ns
+ */
+SDT_PROBE_DEFINE4(kwq, , , donor, "int", "int", "int", "uint64_t");
+/*
+ * where a BULK item for KWQ_CPU_ANY, or a fixed CPU's spilled one, goes:
+ * the producer's cpu, the chosen cpu, how (KWQ_PICK_*), 1 for a spill
+ */
+SDT_PROBE_DEFINE5_XLATE(kwq, , , place, "struct kwq *", "kwqinfo_t *",
+    "int", "int", "int", "int", "int", "int", "int", "int");
 /* P7: cpu, workers, runnable */
 SDT_PROBE_DEFINE3(kwq, , , worker__block, "int", "int", "int");
 SDT_PROBE_DEFINE3(kwq, , , worker__spawn, "int", "int", "int");

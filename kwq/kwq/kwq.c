@@ -95,11 +95,11 @@ SYSCTL_PROC(_kern_kwq_bulk, OID_AUTO, steal,
 SYSCTL_PROC(_kern_kwq_bulk, OID_AUTO, steal_scope,
     CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, &kwq_steal_scope,
     KWQ_RANGE(0, KWQ_TOPO_RINGS), kwq_sysctl_steal_knob, "IU",
-    "rings of the cache topology that stealing, the steal wake, kwq_scatter() and KWQ_CPU_ANY look at, nearest first (1: the CPUs sharing the smallest group with this one, the SMT sibling or L2; 8: all); 0: none, every item stays on its CPU");
+    "rings of the cache topology that a steal, the steal wake, kwq_scatter() and, under place=0, the KWQ_CPU_ANY pick look at, nearest first (1: the CPUs sharing the smallest group with this one, the SMT sibling or L2; 8: all); 0: none, and under place=0 every item stays on its CPU (P8's pick reads its group lines and the far probe, gossip's its tables)");
 SYSCTL_PROC(_kern_kwq_bulk, OID_AUTO, steal_scan,
     CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, &kwq_steal_scan,
     KWQ_RANGE(1, 4096), kwq_sysctl_steal_knob, "IU",
-    "other CPUs probed at most by one steal attempt, steal wake, scatter or KWQ_CPU_ANY pick, nearest first");
+    "other CPUs probed at most by one steal attempt, steal wake, scatter or, under place=0, KWQ_CPU_ANY pick, nearest first");
 SYSCTL_PROC(_kern_kwq_bulk, OID_AUTO, steal_max,
     CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, &kwq_steal_max,
     KWQ_RANGE(1, 4096), kwq_sysctl_steal_knob, "IU",
@@ -565,10 +565,12 @@ kwq_target_cpu(struct kwq *q, int cpu)
 		if (q->kwq_class != KWQ_BULK)
 			return (-1);
 		if (kwq_bulk_place == KWQ_PLACE_SHARD)
-			return (kwq_pick_shard(q));
+			return (kwq_pick_shard(q, 0));
 		if (kwq_bulk_place == KWQ_PLACE_GOSSIP)
-			return (kwq_pick_gossip(q));
-		return (kwq_pick_any(q));
+			return (kwq_pick_gossip(q, 0));
+		cpu = kwq_pick_any(q);
+		SDT_PROBE5(kwq, , , place, q, curcpu, cpu, KWQ_PICK_TODAY, 0);
+		return (cpu);
 	}
 	if (__predict_false(cpu < 0 || cpu > (int)mp_maxid || CPU_ABSENT(cpu)))
 		return (curcpu);
@@ -669,7 +671,7 @@ kwq_enqueue_one(struct kwq *q, int cpu, struct kwq_item *it, bool urgent)
 	kwq_kc_unlock(kc);
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);
 	if (__predict_false(sw))
-		kwq_steal_wake(cpu, mw);
+		kwq_steal_wake(cpu, mw, KWQ_SWAKE_ENQUEUE);
 	return (0);
 }
 
@@ -728,7 +730,7 @@ kwq_enqueue_list(struct kwq *q, int cpu, struct kwq_item *head,
 	kwq_kc_unlock(kc);
 	SDT_PROBE4(kwq, , , enqueue, q, cpu, depth, woke);	/* once per call */
 	if (__predict_false(sw))
-		kwq_steal_wake(cpu, mw);
+		kwq_steal_wake(cpu, mw, KWQ_SWAKE_ENQUEUE);
 	return (0);
 }
 
@@ -1199,7 +1201,7 @@ kwq_sysctl_register(struct kwq *q)
 			KC_U64(kc_steals_out, "steals_out", "batches other CPUs' workers took from this list");
 			KC_U64(kc_stolen_out, "stolen_out", "items in those batches");
 			KC_U64(kc_scattered, "scattered", "items kwq_scatter() put on this list");
-			KC_U64(kc_cost_ns, "cost_ns", "place=2: an item's cost on this list, ns, averaged over passes (1/8 per pass): the hint's cost");
+			KC_U64(kc_cost_ns, "cost_ns", "an item's cost on this list, ns, averaged over passes (1/8 per pass), kept under place=2 for stealable queues and under place=1 for every BULK queue: what P8's hint and mailbox words carry, gossip's load figure reads");
 		}
 #undef KC_U64
 	}
