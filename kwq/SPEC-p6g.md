@@ -530,7 +530,7 @@ P8 under `place=2` (G1), beside the steps above:
 | K10 | the idle path: the donor steal in place of `kwq_steal()`'s scan; the steal wakes as today, the pull at the end of a pass, the bound, the lone item; no cascade wake (D11).  The steal wake and the pass start's helper test look for a sleeper in reach across the group lines that cover it, as today's code does in its one mask: the simulator's P8 looked in the own group only, which on the guest with groups of one CPU left a donor nobody to wake while three workers slept (6 of 3000 items on the far CPU) |
 | K11 | `kwq_pick_any()` over the group lines, then one far group from a per-CPU cursor; donors avoided; spill for fixed-CPU queues at a donor |
 | K12 | the starved tick: a per-CPU callout(9), armed while the CPU holds stealable work, flagging a worker that reached no decision point since a starved donor.  A direct callout, in the clock interrupt: BULK runs at `PI_SOFT`, above every user thread, so what starves it is an interrupt thread or NET-class work at `PI_INTR` (or a thread at its own priority), and those do not stop the tick |
-| K13 | P6g.3's knobs, all default off: `spill_idle` (an item for a fixed CPU that would wait behind another goes to an idle CPU), `helper_donor` (a pass that leaves its list for a helper keeps the CPU a donor), `directed` 1 (the wake to steal names its victim and list in the woken worker's mailbox, one slot in the line the wake writes anyway) and 2 (also the chain: an idle thief tries the victim of its last batch again before it sleeps; the first miss forgets it), with `directed_us` (the mailbox and the chain only for lists whose items cost at least that many us; 0 every list).  The words name a queue by slot and id as the hints do and are checked under `kwq_steal_rm`'s read side.  Why the chain: a lone item behind running work never makes its CPU a donor, so a P8 thief that finished its batch found no donor and slept, and every item of a shallow list waited for a wake; on a07 one queue fed on CPU 1 (16 x 64 KiB in flight) ran at 56 % of today, p50 79 us against 39, at any `donor_us` from 500 to 5000.  Today's scan chains its thieves; the chain does that without the scan |
+| K13 | P6g.3's knobs.  `directed` 1: the wake to steal names its victim and list in the woken worker's mailbox, one slot in the line the wake writes anyway; 2 (the default, D13): also the chain, an idle thief tries the victim of its last batch again before it sleeps, the first miss forgets it; `directed_us` (default 10): the mailbox and the chain only for lists whose items cost at least that many us.  The words name a queue by slot and id as the hints do and are checked under `kwq_steal_rm`'s read side.  Why the chain: a lone item behind running work never makes its CPU a donor, so a P8 thief that finished its batch found no donor and slept, and every item of a shallow list waited for a wake; on a07 one queue fed on CPU 1 (16 x 64 KiB in flight) ran at 56 % of today, p50 79 us against 39, at any `donor_us` from 500 to 5000.  Today's scan chains its thieves; the chain does that without the scan.  `spill_idle` and `helper_donor`, tried before the chain, were removed (D14) |
 
 ATF cases (kwq/tests/kwq_test.sh, kwq_test.ko):
 
@@ -583,7 +583,7 @@ counters on lab for `place=0` against `place=1` are a diagnostic; the
 events are chosen on the box.
 
 Gate G2: the default of `place`.  The better of 1 and 2 if K1-K5 hold;
-0 is kept for one round of A/B either way (decision D3).
+0 is kept for one round of A/B either way (decision D3).  Decided 2026-11-05 (D12-D15): P8 with the chain on one package.
 
 ## 5a. The hybrid (after P6g.3)
 
@@ -651,7 +651,7 @@ blocker.
 | the merge at wake interferes with the tick regime's accounting (KWQ.md S16) | the merge runs outside the round the regime judges; checked by the existing tick counters' identities |
 | flipping the knob under load races with hand-offs in flight | the drain fence covers batches in transit; `place_switch` tests it |
 
-## 9. Decisions (taken 2026-11-05; D9-D11 at G1)
+## 9. Decisions (taken 2026-11-05; D9-D11 at G1, D12-D15 at G2)
 
 | | decision | taken |
 |---|---|---|
@@ -666,3 +666,7 @@ blocker.
 | D9 | G1: which placement goes into the kernel | both P8 (`place=2`) and the gossip scheme (`place=1`), compared on kwq-geli; then the hybrid study of section 5a |
 | D10 | G1: criteria | A1f for A1, W4o for W4, W5 for steady loads only, the model's known gaps accepted (section 3.8); W2b kept as written; further changes may be proposed |
 | D11 | G1: P8's cascade wake | left out of the kernel (no run changed by much in the ablations) |
+| D12 | G2: the default of `place` | P8 (`place=2`) on a machine of one package, today's code (`place=0`) on more until one is measured; `place=0` stays for one round of A/B (D3).  smp_topo() has no package level (x86 builds its groups from caches and NUMA nodes), so the kernel takes one NUMA domain (`vm_ndomains`) for one package; a two-socket machine with its memory interleaved shows one domain |
+| D13 | G2: P8's directed steal | `directed=2` (the chain) with `directed_us=10`: the mailbox and the chain only for lists of items costing 10 us or more, which the 64 KiB crypto items do and the 4 KiB GELI reads (7 to 9 us) do not; the value is a judgment between the two item classes measured |
+| D14 | G2: the knobs the chain made unnecessary | `spill_idle` and `helper_donor` removed |
+| D15 | G2: gossip (`place=1`) | kept in the kernel as the base of the hybrid H4 (P8 within a package, gossip's hand-off across), to be measured on a two-socket machine; a07's bimodal ssd randread taken as level with today |

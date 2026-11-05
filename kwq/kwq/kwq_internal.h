@@ -309,7 +309,6 @@ struct kwq_worker {
 	 */
 	u_char			kw_idle_at;
 	bool			kw_donor;
-	bool			kw_helper_donor;	/* a donor for the helper it woke */
 	volatile bool		kw_starved;
 	bool			kw_watch_armed;
 	uint64_t		kw_backlog_ns;
@@ -486,7 +485,6 @@ uint64_t kwq_steal_word(struct kwq_cpu *kc);	/* the list held: the mailbox
 					   word of a steal wake from it, or 0 */
 bool	kwq_donor_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead);
 					/* kw_mtx held: true if it just became a donor */
-bool	kwq_donor_helper(struct kwq_worker *kw, struct kwq_cpu *kc);	/* kw_mtx held */
 bool	kwq_steal_donor(struct kwq_worker *kw, int64_t room_ns, int mcpu,
 	    uint64_t mword);	/* no lock held; mcpu/mword: the mailbox, or -1/0 */
 void	kwq_shard_pull(struct kwq_worker *kw);	/* after a pass, no lock held */

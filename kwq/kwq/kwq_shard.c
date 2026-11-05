@@ -51,6 +51,7 @@
 #include <sys/smp.h>
 #include <sys/sysctl.h>
 #include <machine/atomic.h>
+#include <vm/vm.h>
 
 #include "kwq_internal.h"
 #include "kwq_sched.h"
@@ -64,10 +65,8 @@ static u_int kwq_shard_probe = 2;	/* near groups read besides the own one */
 static u_int kwq_donor_us = 500;	/* a donor's backlog */
 static u_int kwq_pull_us = 500;		/* a worker below it pulls at pass end */
 static u_int kwq_watch_us = 1000;	/* the starved tick; 0: off */
-static u_int kwq_spill_idle = 0;	/* spill a waiting item to an idle CPU near */
-static u_int kwq_helper_donor = 0;	/* a list cut for a helper is a donor's */
-static u_int kwq_directed = 0;		/* the wake names the victim (the mailbox); 2: the chain */
-static u_int kwq_directed_us = 0;	/* directed only for items at least this costly; 0: all */
+static u_int kwq_directed = 2;		/* the wake names the victim (the mailbox); 2: the chain */
+static u_int kwq_directed_us = 10;	/* directed only for items at least this costly; 0: all */
 
 #define	KWQ_NEAR_MAX	5		/* the own group and at most 4 more */
 #define	KWQ_GRP_MAX	64		/* bits of a group's line */
@@ -211,6 +210,16 @@ kwq_shard_init(void)
 	kwq_pk_nondonor = counter_u64_alloc(M_WAITOK);
 	kwq_pk_probe = counter_u64_alloc(M_WAITOK);
 	kwq_pk_spill = counter_u64_alloc(M_WAITOK);
+	/*
+	 * The default (SPEC-p6g.md D12): P8 on a machine of one NUMA domain,
+	 * today's code on more, where the simulator's two-socket model saw P8
+	 * collapse near saturation and no machine was measured.  smp_topo()
+	 * has no package level (x86 builds its groups from caches and NUMA
+	 * nodes), so the domain count stands in for the package count; a
+	 * two-socket machine with its memory interleaved shows one domain.
+	 * The loader tunable, applied when the knob registers, wins.
+	 */
+	kwq_bulk_place = vm_ndomains > 1 ? KWQ_PLACE_TODAY : KWQ_PLACE_SHARD;
 	kwq_shard_sysctl();
 }
 
@@ -514,14 +523,6 @@ kwq_donor_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead)
 		d = b + (uint64_t)ahead * cur->kc_cost_ns >= lim;
 	else
 		d = bd >= 2 && b >= lim;
-	/*
-	 * helper_donor: a pass that left its list for a helper keeps the CPU
-	 * a donor while the list holds items, so a helper that arrives after
-	 * the pass still finds it (kwq_donor_helper()).
-	 */
-	if (kw->kw_helper_donor && bd == 0)
-		kw->kw_helper_donor = false;
-	d = d || kw->kw_helper_donor;
 	if (d)
 		kwq_hint_set(kw->kw_cpu, best);
 	if (d == kw->kw_donor)
@@ -536,30 +537,6 @@ kwq_donor_point(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead)
 		kwq_watch_arm(kw);
 	}
 	return (d);
-}
-
-/*
- * helper_donor (a knob, default off): a pass that took one item and left
- * the rest of a stealable list for a helper (the pass cap) makes its CPU
- * a donor of that list until the list is empty, whatever its backlog: the
- * helper it wakes steals from donors only.  kw_mtx held; true if the CPU
- * just became a donor.
- */
-bool
-kwq_donor_helper(struct kwq_worker *kw, struct kwq_cpu *kc)
-{
-	mtx_assert(&kw->kw_mtx, MA_OWNED);
-	if (!kwq_helper_donor || kwq_bulk_place != KWQ_PLACE_SHARD ||
-	    kc->kc_q->kwq_steal_slot < 0)
-		return (false);
-	kw->kw_helper_donor = true;
-	kwq_hint_set(kw->kw_cpu, kc);
-	if (kw->kw_donor)
-		return (false);
-	CPU_SET_ATOMIC(kw->kw_cpu, &kwq_donors.ds_set);
-	kw->kw_donor = true;
-	kw->kw_donor_n++;
-	return (true);
 }
 
 /*
@@ -787,23 +764,6 @@ kwq_pick_near(struct kwq *q, int me, int *nnp)
 	return (-1);
 }
 
-/*
- * spill_idle's search: an idle CPU near the producer (1) or near the fixed
- * CPU the item was for (2), or -1.  Near the producer, one closed-loop
- * queue on a07 spread its 16 requests over all 128 CPUs at 44 % of
- * today's rate: the producer is the CPU that completed the last request,
- * so the working set drifted; today's thieves stay near the fixed CPU.
- */
-static int
-kwq_pick_idle(struct kwq *q, int cpu)
-{
-	int nn, c = kwq_pick_near(q, kwq_spill_idle == 2 ? cpu : curcpu, &nn);
-
-	if (c >= 0)
-		counter_u64_add(kwq_pk_near, 1);
-	return (c);
-}
-
 int
 kwq_pick_shard(struct kwq *q)
 {
@@ -877,7 +837,6 @@ int
 kwq_shard_spill(struct kwq *q, int cpu)
 {
 	struct kwq_cpu *kc = q->kwq_pcpu[cpu];
-	int c;
 
 	if (!kwq_steal_on)
 		return (cpu);
@@ -885,18 +844,6 @@ kwq_shard_spill(struct kwq *q, int cpu)
 	    (uint64_t)kc->kc_depth * kc->kc_cost_ns >= (uint64_t)kwq_donor_us * 1000) {
 		counter_u64_add(kwq_pk_spill, 1);
 		return (kwq_pick_shard(q));
-	}
-	/*
-	 * spill_idle: an item that would wait behind another on its CPU goes
-	 * to an idle CPU near the producer instead, if there is one, as
-	 * today's steal at a list of two moves it a little later (one
-	 * closed-loop queue of kwq_crypto: a donor's backlog of 500 us held
-	 * half of its 16 requests in the fixed CPU's queue).
-	 */
-	if (kwq_spill_idle && kc->kc_depth > 0 &&
-	    (c = kwq_pick_idle(q, cpu)) >= 0) {
-		counter_u64_add(kwq_pk_spill, 1);
-		return (c);
 	}
 	return (cpu);
 }
@@ -1052,7 +999,7 @@ kwq_shard_sysctl(void)
 	sysctl_ctx_init(ctx);
 	SYSCTL_ADD_PROC(ctx, bulk, OID_AUTO, "place",
 	    CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, NULL, 0, kwq_sysctl_place,
-	    "IU", "BULK placement (SPEC-p6g.md S2.8): 0 kwq_pick_any() and the steal scan (SCHED.md S16); 1 the gossip scheme, tables on a torus of cores and the hand-off; 2 P8, the idle mask in group lines and the donor line; flippable under load");
+	    "IU", "BULK placement (SPEC-p6g.md S2.8): 0 kwq_pick_any() and the steal scan (SCHED.md S16); 1 the gossip scheme, tables on a torus of cores and the hand-off; 2 P8, the idle mask in group lines and the donor line; flippable under load; default 2 on one NUMA domain, else 0 (D12)");
 	oid = SYSCTL_ADD_NODE(ctx, bulk, OID_AUTO, "shard",
 	    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "P8 (place=2): knobs and placement counters");
 	sh = SYSCTL_CHILDREN(oid);
@@ -1075,22 +1022,14 @@ kwq_shard_sysctl(void)
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_pull_us, 1000000,
 	    kwq_sysctl_shard_knob, "IU",
 	    "a worker whose backlog is below this at a pass end pulls from a donor, us; 0: never");
-	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "spill_idle",
-	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_spill_idle, 2,
-	    kwq_sysctl_shard_knob, "IU",
-	    "an item for a fixed CPU of a stealable queue that would wait behind another there goes to an idle CPU, if one: 1 near the producer, 2 near the fixed CPU; 0 (default): not");
-	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "helper_donor",
-	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_helper_donor, 1,
-	    kwq_sysctl_shard_knob, "IU",
-	    "1: a pass that leaves its stealable list for a helper keeps the CPU a donor of it until the list is empty (default 0)");
 	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "directed",
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_directed, 2,
 	    kwq_sysctl_shard_knob, "IU",
-	    "1: a wake to steal names the victim and its list in the woken worker's mailbox, which it steals from first, donor or not; 2: and an idle thief tries the victim of its last batch again (the chain); 0 (default): neither");
+	    "1: a wake to steal names the victim and its list in the woken worker's mailbox, which it steals from first, donor or not; 2 (default): and an idle thief tries the victim of its last batch again (the chain); 0: neither");
 	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "directed_us",
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_directed_us, 0xffff,
 	    kwq_sysctl_shard_knob, "IU",
-	    "directed: the mailbox and the chain only for lists whose items cost at least this many us (their hint's cost); 0 (default): every list");
+	    "directed: the mailbox and the chain only for lists whose items cost at least this many us (their hint's cost; default 10); 0: every list");
 	SYSCTL_ADD_PROC(ctx, sh, OID_AUTO, "watch_us",
 	    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, &kwq_watch_us, 1000000,
 	    kwq_sysctl_shard_knob, "IU",
