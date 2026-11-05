@@ -35,7 +35,10 @@
  * from submission to completion (percentiles from a log histogram with
  * four buckets per octave, so +-19 %, the maximum exact); the share each
  * queue got against its weight and Jain's index over them; the CPUs that
- * ran requests; and with `verify' set every other pass decrypts and the
+ * ran requests; with `decrypt' set every pass decrypts, unchecked (to time
+ * decryption); with `rekey' set every operation carries its key as GELI's
+ * do, which makes the driver expand the key schedule per sector; and with
+ * `verify' set every other pass decrypts and the
  * request is checked against its pattern.
  */
 
@@ -82,6 +85,8 @@ static u_int	kc_threads = 0;
 static int	kc_prio = PUSER;
 static u_int	kc_weight0 = 1;
 static u_int	kc_verify = 0;
+static u_int	kc_decrypt = 0;
+static u_int	kc_rekey = 0;
 static u_int	kc_limit = 0;
 
 /* Results. */
@@ -183,6 +188,10 @@ SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, weight0, CTLFLAG_RW, &kc_weight0, 0,
     "kwq modes: queue 0's DRR weight, 1..8 (the others have 1)");
 SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, verify, CTLFLAG_RW, &kc_verify, 0,
     "every other pass decrypts and checks the request against its pattern");
+SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, decrypt, CTLFLAG_RW, &kc_decrypt, 0,
+    "every pass decrypts instead of encrypting, unchecked (timing only); verify overrides it");
+SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, rekey, CTLFLAG_RW, &kc_rekey, 0,
+    "each operation carries its key (crp_cipher_key), as GELI's do, so the driver expands the key schedule per sector");
 SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, limit, CTLFLAG_RW, &kc_limit, 0,
     "kwq modes: per-CPU item limit of the queues (0 = class default)");
 SYSCTL_STRING(_kern_kwq_crypto, OID_AUTO, result_state, CTLFLAG_RD, kc_state,
@@ -362,10 +371,13 @@ kc_crypt(struct kc_req *r, crypto_session_t sid, u_int off, u_int len,
 			continue;
 		}
 		crypto_use_buf(crp, r->r_data + o, kc_sector);
-		crp->crp_op = r->r_decrypt ? CRYPTO_OP_DECRYPT : CRYPTO_OP_ENCRYPT;
+		crp->crp_op = r->r_decrypt || (kc_decrypt && !kc_verify) ?
+		    CRYPTO_OP_DECRYPT : CRYPTO_OP_ENCRYPT;
 		crp->crp_flags = CRYPTO_F_CBIFSYNC | CRYPTO_F_IV_SEPARATE;
 		crp->crp_payload_start = 0;
 		crp->crp_payload_length = kc_sector;
+		if (kc_rekey)	/* GELI: g_eli_key_hold(), a key per 2^20 sectors */
+			crp->crp_cipher_key = kc_key;
 		crp->crp_callback = kc_crypto_done;
 		crp->crp_opaque = opaque;
 		sec = r->r_seq * (kc_bytes / kc_sector) + o / kc_sector;
