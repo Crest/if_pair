@@ -1,0 +1,3 @@
+case=kwq_base ops=40545 mbps=5304.0 iops=5058 dev_min_mbps=32.4 dev_max_mbps=65.3 jain=0.9758 lat_p50_us=15597.6 lat_p90_us=57147.4 lat_p99_us=140509.2 lat_p999_us=249561.1 lat_max_us=406847.5 sys=0.9910
+case=kwq_nocap ops=62683 mbps=8201.0 iops=7821 dev_min_mbps=20.7 dev_max_mbps=168.6 jain=0.7474 lat_p50_us=9044.0 lat_p90_us=34078.7 lat_p99_us=118489.1 lat_p999_us=297795.6 lat_max_us=947912.7 sys=0.9900
+case=eli ops=74898 mbps=9811.4 iops=9357 dev_min_mbps=41.8 dev_max_mbps=200.9 jain=0.7571 lat_p50_us=5701.6 lat_p90_us=28573.7 lat_p99_us=108003.3 lat_p999_us=490733.6 lat_max_us=1929379.8 sys=0.9919
