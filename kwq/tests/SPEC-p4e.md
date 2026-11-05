@@ -330,7 +330,11 @@ tables for burst, sparse and conformance beside today's.
 - `no_arm_when_idle`: after `burst` ends, a 2 s silence: asserts the
   worker CPU's timer interrupt count (vmstat -i delta) is within hz of
   what the silence would produce on an idle CPU on that machine
-  (measured in the same case with the module unloaded).
+  (measured in the same case with the module unloaded).  (2026-11-05:
+  as built, the idle baseline is taken with the modules loaded, and
+  since then each side is the fewest of three 1 s windows, so a burst
+  of the machine's own in one window does not decide the case; lab
+  takes 6 to 92 per 2 s with no kwq loaded.)
 - The existing `gaming` case fails once per full run with "collected
   N boosts" and passes alone (2026-10-24, three times): give it a
   retry of one before reporting, and record the flake in the case's

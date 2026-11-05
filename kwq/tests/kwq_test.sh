@@ -599,6 +599,14 @@ kwq_run_or_skip() {
 timer_intr_w() {	# amd64: the worker CPU's timer interrupts so far; "" elsewhere
 	vmstat -i 2>/dev/null | awk '$1 == "cpu1:timer" { print $2; f = 1 } END { if (!f) print "" }'
 }
+timer_quiet_min() {	# the fewest of the worker CPU's timer interrupts over three 1 s windows
+	local i a b n min=
+	for i in 1 2 3; do
+		a=$(timer_intr_w); sleep 1; b=$(timer_intr_w); n=$(( b - a ))
+		if [ -z "$min" ] || [ $n -lt $min ]; then min=$n; fi
+	done
+	echo $min
+}
 
 atf_test_case prio_invariant cleanup
 prio_invariant_head() {
@@ -657,7 +665,7 @@ tick_hysteresis_cleanup() { knobs_restore; kwq_cleanup; }
 
 atf_test_case no_arm_when_idle cleanup
 no_arm_when_idle_head() {
-	atf_set descr "after a burst ends, two seconds of silence cost the worker CPU no more timer interrupts than two idle seconds with nothing queued"
+	atf_set descr "after a burst ends, a second of silence costs the worker CPU no more timer interrupts than an idle second with nothing queued (the fewest of three 1 s windows on each side)"
 	atf_set require.user root
 }
 no_arm_when_idle_body() {
@@ -665,15 +673,19 @@ no_arm_when_idle_body() {
 	need_oid kern.kwq.net.cpu.1.ticks
 	[ -n "$(timer_intr_w)" ] || atf_skip "no per-CPU timer interrupt line in vmstat -i on this architecture"
 	knob "kern.kwq.net.$(L_KNOB)" 50
-	local i0 i1 idle after
-	# the idle baseline: modules loaded, nothing queued
-	i0=$(timer_intr_w); sleep 2; i1=$(timer_intr_w); idle=$(( i1 - i0 ))
+	local idle after
+	# The idle baseline (modules loaded, nothing queued) and the silence
+	# after the burst, each the fewest of three 1 s windows: a timer the
+	# regime left armed fires in every window (thousands a second at the
+	# 50 us tick), the machine's own bursts hit one (lab, with no kwq
+	# loaded: 6 to 92 per 2 s, samples/p6g4/no_arm_when_idle_lab_*.txt).
+	idle=$(timer_quiet_min)
 	kwq_run_or_skip burst secs=2 burst_items=64 burst_gap_us=500 burst_mode=0 cons_ns=500 limit=1000000
 	kwq_done burst
 	sleep 0.1
-	i0=$(timer_intr_w); sleep 2; i1=$(timer_intr_w); after=$(( i1 - i0 ))
-	echo "timer interrupts on CPU 1 over 2 s: idle $idle, after the burst $after"
-	[ "$after" -le $(( idle + idle / 4 + 20 )) ] || atf_fail "the worker CPU took $after timer interrupts in the silence against $idle idle"
+	after=$(timer_quiet_min)
+	echo "timer interrupts on CPU 1 per second, the fewest of three windows: idle $idle, after the burst $after"
+	[ "$after" -le $(( idle + idle / 4 + 10 )) ] || atf_fail "the worker CPU took $after timer interrupts a second in the silence against $idle idle"
 }
 no_arm_when_idle_cleanup() { knobs_restore; kwq_cleanup; }
 
