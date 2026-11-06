@@ -103,6 +103,10 @@ SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, weight, CTLFLAG_RWTUN,
 u_int g_eli_batch = 0;
 SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, batch, CTLFLAG_RWTUN, &g_eli_batch, 0,
     "Use crypto operations batching");
+u_int g_eli_budget_sectors = G_ELI_BUDGET_SECTORS;
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, budget_sectors, CTLFLAG_RWTUN,
+    &g_eli_budget_sectors, 0,
+    "kwq_budget_left() every this many sectors of a bio; 0: between bios only");
 static u_int g_eli_minbufs = 16;
 static int sysctl_g_eli_minbufs(SYSCTL_HANDLER_ARGS);
 SYSCTL_PROC(_kern_geom_kwqeli, OID_AUTO, minbufs, CTLTYPE_UINT | CTLFLAG_RW |

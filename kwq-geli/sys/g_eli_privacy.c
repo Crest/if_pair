@@ -257,8 +257,10 @@ g_eli_crypto_read(struct g_eli_softc *sc, struct bio *bp, boolean_t fromworker)
  * stopped.  That happens, for synchronous sessions (software and
  * accelerated software drivers, where every request completes inside its
  * dispatch), when the pass's budget is spent, checked every
- * G_ELI_BUDGET_SECTORS sectors so that a long bio does not hold the
- * worker past its quantum or the share limit.  The sector it goes on from
+ * kern.geom.kwqeli.budget_sectors sectors so that a long bio does not hold
+ * the worker past its quantum or the share limit; at 0 a bio always runs
+ * to its end and the handler checks between bios only, so a pass can
+ * overrun by one bio.  The sector it goes on from
  * is bio_inbed, the completions so far, exact because they are
  * synchronous.  A crypto request or key that cannot be had without
  * sleeping fails the bio with ENOMEM wherever it happens, and GEOM issues
@@ -302,7 +304,7 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 	struct cryptop *crp;
 	vm_page_t *pages;
 	struct cryptopq pool;
-	u_int i, first, nsec, secsize;
+	u_int budget, i, first, nsec, secsize;
 	off_t dstoff;
 	u_char *data = NULL;
 	int error __diagused, pages_offset;
@@ -366,6 +368,7 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 	TAILQ_INIT(&crpq);
 	TAILQ_INIT(&pool);
 	batch = atomic_load_int(&g_eli_batch) != 0;
+	budget = atomic_load_int(&g_eli_budget_sectors);
 	if (!sync && g_eli_getreqs(sc, wr->w_sid, nsec, bp->bio_offset, secsize,
 	    (sc->sc_flags & G_ELI_FLAG_SINGLE_KEY) == 0, &pool) != 0) {
 		g_eli_crypto_nomem(sc, bp);
@@ -380,7 +383,7 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 			TAILQ_REMOVE(&pool, crp, crp_next);
 			goto fill;
 		}
-		if (i > first && i % G_ELI_BUDGET_SECTORS == 0 &&
+		if (budget != 0 && i > first && i % budget == 0 &&
 		    kwq_budget_left(sc->sc_kwq) == 0) {
 			partial = true;
 			break;

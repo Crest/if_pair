@@ -22,6 +22,8 @@
 #   kwqshard1   kwqshard with BULK's quantum_us and cap_period_us at
 #               1000, the defaults before 2026-11-05 (../../kwq/SCHED.md
 #               S8); every other kwq stage runs the module's
+#   kwqbio      kwqshard with kern.geom.kwqeli.budget_sectors=0, the pass
+#               budget checked between bios only (../../kwq/BULK.md S7.6)
 #   nop         no encryption: the load on the gnop providers themselves
 #               (ssd only; the other tests skip it)
 # Tests (TESTS, default "tput resp onecpu"):
@@ -260,13 +262,13 @@ stage_setup() {	# the stage's modules and knobs
 	kwq) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 1 ;;
 	kwqlocal) knob kern.geom.kwqeli.cpu -2; knob kern.geom.kwqeli.stealable 1 ;;
 	kwqnosteal) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 0 ;;
-	kwqgossip|kwqshard|kwqshard1) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 1 ;;
+	kwqgossip|kwqshard|kwqshard1|kwqbio) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 1 ;;
 	esac
 	# BULK placement (kwq.ko of P6g.2 and later): stages on one boot each set theirs
 	case $STAGE in
 	nop|eli) ;;
 	kwqgossip) knob kern.kwq.bulk.place 1 ;;
-	kwqshard|kwqshard1) knob kern.kwq.bulk.place 2 ;;
+	kwqshard|kwqshard1|kwqbio) knob kern.kwq.bulk.place 2 ;;
 	*) sysctl -q kern.kwq.bulk.place >/dev/null 2>&1 && knob kern.kwq.bulk.place 0 ;;
 	esac
 	# BULK's quantum and share-limit period: kwqshard1's of before 2026-11-05
@@ -274,6 +276,12 @@ stage_setup() {	# the stage's modules and knobs
 	nop|eli) ;;
 	kwqshard1) knob kern.kwq.bulk.quantum_us 1000; knob kern.kwq.bulk.cap_period_us 1000 ;;
 	*) unknob kern.kwq.bulk.quantum_us; unknob kern.kwq.bulk.cap_period_us ;;
+	esac
+	# where a pass may end: inside a bio, or between bios only
+	case $STAGE in
+	nop|eli) ;;
+	kwqbio) knob kern.geom.kwqeli.budget_sectors 0 ;;
+	*) unknob kern.geom.kwqeli.budget_sectors ;;
 	esac
 }
 

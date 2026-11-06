@@ -99,6 +99,7 @@ New knobs, in `kern.geom.kwqeli`:
 | `cpu` | -1 | CPU a bio is queued to: -1 `KWQ_CPU_ANY` (an idle BULK worker near the caller), -2 the caller's CPU, N CPU N for every provider (the several-busy-queues-on-one-CPU case) |
 | `stealable` | 1 | queues of providers attached from now on are `KWQ_F_STEALABLE` |
 | `weight` | 1 | DRR weight 1..8 of the queues of providers attached from now on |
+| `budget_sectors` | 16 | `kwq_budget_left()` every this many sectors of a bio, which ends a pass part way through the bio; 0: between bios only, so a pass can overrun by one bio |
 
 `threads` is gone (the workers are kwq's, one per CPU).  CPU ids
 above 254 are refused at attach: a bio carries its worker in eight bits

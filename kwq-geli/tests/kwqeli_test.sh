@@ -398,6 +398,35 @@ SPIN
 }
 resume_cleanup() { kwqeli_cleanup; }
 
+atf_test_case whole_bio cleanup
+whole_bio_head() {
+	atf_set descr "budget_sectors 0: with one bio in flight and a quantum far shorter than a bio, no bio is cut part way (one is at 16 sectors), and what was written reads back"
+	atf_set require.user root
+}
+whole_bio_body() {
+	kwqeli_setup
+	knob kern.geom.kwqeli.cpu 1
+	knob kern.geom.kwqeli.stealable 0
+	knob kern.kwq.bulk.quantum_us 10
+	knob kern.geom.kwqeli.budget_sectors 16
+	m=$(newmd 64m)
+	atf_check -o ignore geli init -B none -P -K key -s 4096 "$m"
+	atf_check $GK attach -p -k key "$m"
+	dd if=data.in of=data.cmp bs=1m count=32 2>/dev/null
+	dd if=data.cmp of="/dev/$m.kweli" bs=1m 2>/dev/null || atf_fail "write"
+	cut=$(qsum "$m" requeued)
+	# not knob(): cleanup restores in order, the last entry would win
+	sysctl -q kern.geom.kwqeli.budget_sectors=0 >/dev/null
+	dd if=data.cmp of="/dev/$m.kweli" bs=1m 2>/dev/null || atf_fail "write"
+	dd if="/dev/$m.kweli" of=data.out bs=1m count=32 2>/dev/null || atf_fail "read"
+	whole=$(($(qsum "$m" requeued) - cut))
+	echo "requeued $cut at 16 sectors, $whole at 0"
+	cmp -s data.cmp data.out || atf_fail "read back something else"
+	[ "$whole" -eq 0 ] || atf_fail "$whole bios cut part way at budget_sectors 0"
+	[ "$cut" -gt 0 ] || atf_skip "no bio was cut at 16 sectors: the comparison says nothing"
+}
+whole_bio_cleanup() { kwqeli_cleanup; }
+
 atf_test_case nomem cleanup
 nomem_head() {
 	atf_set descr "crypto requests that cannot be had (fail point kwqeli_getreq, 0.2 % of sectors) fail bios part way with ENOMEM, GEOM issues them again, and stock geli reads back exactly what kwq-geli wrote"
@@ -473,6 +502,7 @@ atf_init_test_cases() {
 	atf_add_test_case ufs
 	atf_add_test_case detach_load
 	atf_add_test_case resume
+	atf_add_test_case whole_bio
 	atf_add_test_case nomem
 	atf_add_test_case resume_fail
 }

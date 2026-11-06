@@ -133,7 +133,7 @@
  * completed one, bio_inbed, which is exact for synchronous sessions only
  * (g_eli_crypto_run()).  bio_pflags is 16 bits wide, all in use above.
  */
-#define	G_ELI_BUDGET_SECTORS	16	/* kwq_budget_left() every this many */
+#define	G_ELI_BUDGET_SECTORS	16	/* default of budget_sectors */
 #define	G_ELI_SET_NEW_BIO(pflags)	G_ELI_SETWORKER((pflags), G_ELI_NEW_BIO)
 #define	G_ELI_IS_NEW_BIO(pflags)	(G_ELI_WORKER(pflags) == G_ELI_NEW_BIO)
 #define	G_ELI_UMA_ALLOC		0x100	/* bio_driver2 alloc came from UMA */
@@ -170,6 +170,7 @@
 extern int g_eli_debug;
 extern u_int g_eli_overwrites;
 extern u_int g_eli_batch;
+extern u_int g_eli_budget_sectors;
 
 #define	G_ELI_DEBUG(lvl, ...) \
     _GEOM_DEBUG("GEOM_KWQELI", g_eli_debug, (lvl), NULL, __VA_ARGS__)
