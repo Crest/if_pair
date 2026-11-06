@@ -52,17 +52,17 @@ untun
 log "kwq suite at priority 55: $(tally $t)"
 cd "$D/src/kwq-geli/tests" || exit 1
 for cfg in base:default:default bio:0:default prio:default:55 both:0:55; do
-	n=${cfg%%:*}; b=${cfg#*:}; p=${b#*:}; b=${b%:*}
+	s=${cfg%%:*}; b=${cfg#*:}; p=${b#*:}; b=${b%:*}
 	tun $b $p
 	$SU kldload $S/kwq.ko || { log "cannot preload kwq.ko"; untun; exit 1; }
-	log "loaded kwq.ko for $n: priority=$(sysctl -n kern.kwq.bulk.priority)"
-	t=$O/atf_geli_$n.txt
+	log "loaded kwq.ko for $s: priority=$(sysctl -n kern.kwq.bulk.priority)"
+	t=$O/atf_geli_$s.txt
 	for c in $(sed -n 's/^[[:space:]]*atf_add_test_case //p' kwqeli_test.sh); do
 		kcase kwqeli_test.sh:$c test_suites.kwqeli.moddir="$S"
 	done > $t
 	$SU kldunload kwq
 	untun
-	log "unloaded kwq; kwq-geli suite, $n: $(tally $t)"
+	log "unloaded kwq; kwq-geli suite, $s: $(tally $t)"
 done
 grep -vhE ': +(passed|skipped)|-> +(passed|skipped)' $O/atf_*.txt | head -8
 log "end, modules $(kldstat | grep -cE 'kwq|kwqeli|geom_nop'), md $($SU mdconfig -l | wc -w), uptime $(uptime)"

@@ -1,0 +1,3 @@
+03:10:04 stages: eli; tests: scale; P 128, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+03:10:04 rep 1 eli scale
+03:15:20 done: /home/crest/if_pair-scratch/p6g9/out/steps/stock/scale_r2.tsv

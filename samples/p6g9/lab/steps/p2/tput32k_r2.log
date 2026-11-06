@@ -1,0 +1,36 @@
+03:08:59 stages: kwqshard kwqbio; tests: tput; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+03:08:59 rep 1 kwqshard tput
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+03:09:00 rep 1 kwqbio tput
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+03:09:02 done: /home/crest/if_pair-scratch/p6g9/out/steps/p2/tput32k_r2.tsv

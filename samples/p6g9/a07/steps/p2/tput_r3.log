@@ -1,0 +1,9 @@
+04:01:35 stages: kwqshard kwqbio; tests: tput resp onecpu; P 128, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+04:01:35 rep 1 idle probes
+04:01:56 rep 1 kwqshard tput
+04:02:25 rep 1 kwqshard resp
+04:04:56 rep 1 kwqshard onecpu
+04:05:14 rep 1 kwqbio tput
+04:05:44 rep 1 kwqbio resp
+04:06:48 rep 1 kwqbio onecpu
+04:07:06 done: /home/crest/if_pair-scratch/p6g9/out/steps/p2/tput_r3.tsv

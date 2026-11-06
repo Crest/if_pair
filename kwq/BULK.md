@@ -667,22 +667,22 @@ Two separate causes, though not exactly additive:
   handed to md(4) takes 12.6 ms on average (p90 33-65 ms) against
   0.94 ms under stock GELI and 1.13 ms without the limit, because 0.8
   cuts per bio send the remainder behind the other queues' turns and
-  the hand-overs.  At 6 GB/s, 5 ms is as much data as lab's 32 MB L3,
+  the hand-overs (the cuts alone, section 7.6).  At 6 GB/s, 5 ms is as much data as lab's 32 MB L3,
   so the buffer just copied is gone when the cipher returns to it, and
   md(4) finds the ciphertext gone too.  At 32 providers the same cuts
   cost nothing while BULK is above md(4) (8855 against 8614), the bios
   finishing within 1.6 ms on average; below it the limit costs 12 %
   there as well (10276 against 11740).  What matters is that gap, not the wait before the copy:
   below md(4) with the limit off the plaintext waits 7 ms and the
-  throughput is stock GELI's.  This run does not separate the cuts from
-  the hand-overs.
+  throughput is stock GELI's.
 - BULK outranking md(4): 8661 to 9949 MB/s at 128 providers, 8614 to
   11740 at 32, limit off.  Below md(4), IPC and DRAM fills are stock
   GELI's or better, and kwq-geli passes stock GELI (15 % at 32
-  providers).  How the priority does it is inferred, not traced: above
-  md(4) a BULK worker preempts md's copy, where under stock GELI md
-  preempts the cipher.  md's locality does not explain it: md copies on
-  another core in 88 to 95 % of the cases in all setups.
+  providers).  Section 7.6 splits this in two: BULK's preempting at all,
+  and its rank.  (This section's guess, that under stock GELI md preempts
+  the cipher, was wrong: 43 is past ULE's preemption threshold.)  md's
+  locality does not explain it: md copies on another core in 88 to 95 %
+  of the cases in all setups.
 
 The 4 KiB reads do not mind: below md(4) they run 5 % faster (1.74 M
 against 1.65 M/s at 32 providers, 1.61 M against 1.53 M at 128), with
@@ -692,7 +692,144 @@ stock GELI 3.4), fork+exec p99 57 ms (45, 32), while the spin loop gets
 0.46 of its CPU (0.20, 0.22).  All of this is lab, at
 `kern.kwq.bulk.priority=55` only with geli_bench's scale test and a
 guest smoke; a07's writes are level with stock GELI already and were
-not run at it.
+not run at it.  Section 7.6 runs both machines, and finds what the scale
+test could not: lab's 1 MiB reads lose 14 % at this priority.
+
+### 7.6 Section 7.5's two steps, one at a time and together (2026-11-06)
+
+The first step ends a pass between bios only: kwq-geli's
+`kern.geom.kwqeli.budget_sectors` at 0, against 16, the knob of 1a6f715
+(geli_bench's stage kwqbio).  A write then runs from its copy to its
+hand-over to md(4) in one go.  The second puts BULK below md(4):
+`kern.kwq.bulk.priority=55`, as in section 7.5.  Neither is a default yet.
+Debug guest first, then the suites on both machines at all four setups:
+the kwq suite at priority 55 39 of 39 (a07 38, `no_arm_when_idle` skipped
+as always there), kwq-geli's 15 of 15 (at 0 `resume` skips, nothing being
+cut), no leak, witness or panic line.  Then steps.sh on one boot of each
+machine: three repetitions, in each stock GELI alone with kwq.ko unloaded
+(the two never run together, geom_eli stays loaded for swap, a07's swap
+unused), then kwq-geli as it is (base), bio, prio, both; medians
+(../samples/p6g9).
+
+| 1 MiB writes, MB/s | stock | base | bio | prio | both |
+|---|---|---|---|---|---|
+| lab, 32 providers | 10056 | 8177 | 8178 | 9352 | 10181 |
+| lab, 64 | 9822 | 6139 | 8198 | 6650 | 9412 |
+| lab, 128 | 9804 | 6103 | 8592 | 6637 | 9055 |
+| lab, tput (16) | 8596 | 7822 | 8436 | 7929 | 8214 |
+| a07, 64 | 6993 | 6973 | 6978 | 6995 | 7069 |
+| a07, 128 | 7372 | 7313 | 7208 | 7228 | 7247 |
+| a07, tput (128) | 6794 | 6856 | 7165 | 6797 | 7140 |
+
+| reads | stock | base | bio | prio | both |
+|---|---|---|---|---|---|
+| lab, 1 MiB, MB/s | 21571 | 22609 | 22498 | 19338 | 19663 |
+| lab, 1 MiB at 32 KiB sectors | 21268 | 21635 | 22080 | 19832 | 19873 |
+| lab, 4 KiB, 128 providers, k/s | 660 | 1528 | 1527 | 1609 | 1613 |
+| a07, 1 MiB, MB/s | 30916 | 38889 | 38043 | 38503 | 38271 |
+| a07, 4 KiB, 128 providers, k/s | 61 | 977 | 971 | 1006 | 1002 |
+| a07, SSD model randread, k/s | 60 | 1167 | 1085 | 1384 | 1383 |
+
+| beside the writes, 128 providers | stock | base | bio | prio | both |
+|---|---|---|---|---|---|
+| lab timer p99, ms | 3.5 | 7.7 | 7.3 | 8.8 | 9.1 |
+| lab fork+exec p99, ms | 32 | 202 | 226 | 55 | 133 |
+| lab spin share | 0.22 | 0.06 | 0.16 | 0.20 | 0.07 |
+| a07 timer p99, ms | 0.64 | 0.51 | 0.34 | 0.010 | 0.010 |
+| a07 fork+exec p99, ms | 66 | 19 | 9.9 | 1.6 | 1.7 |
+| a07 spin share | 0.26 | 0.64 | 0.95 | 0.99 | 0.99 |
+
+| one CPU, beside the timer | stock | base | bio | prio | both |
+|---|---|---|---|---|---|
+| lab timer p99 / max, ms | 37.8 / 38.6 | 5.0 / 5.1 | 5.2 / 5.4 | 5.0 / 5.2 | 5.2 / 5.4 |
+| a07 timer p99 / max, ms | 105 / 108 | 5.0 / 5.4 | 5.5 / 8.3 | 5.0 / 5.2 | 5.7 / 10.0 |
+
+Lab's write repetitions spread by up to 14 %, in stock GELI's rows as well;
+base, bio and both differ by more than that at 64 and 128 providers, and
+per repetition both is level with stock GELI to 8 % behind it at 128.
+a07's spread 1 %.  Fork+exec p99 is noisy: stock GELI's on lab reads 328,
+318 and 32 ms at 32, 64 and 128 providers.  a07's randread is the bimodal
+row of section 8; all six runs at priority 55 (1319-1405 k) lie above all
+six at priority 2 (579-1269 k), which three repetitions cannot make more
+than a tendency.  bio's lower median at priority 2 is not the check: a 4 KiB
+bio has one sector and never reaches it.
+
+**The first step is the cuts, not the hand-overs.**  Section 7.5 could not
+separate the two.  With the check between bios the limit stays on and the
+cuts go, 0.83 per bio to 0, and lab's writes at 128 providers rise 41 %, to
+what the limit off reached.  One traced run per setup (where3_lab.sh, dtrace
+and counters on, so its MB/s are low), 128 providers:
+
+| | stock | base | bio | limit off | prio | both | prio, limit off |
+|---|---|---|---|---|---|---|---|
+| first piece to md(4), avg ms | 0.99 | 11.4 | 1.16 | 1.32 | 9.84 | 1.07 | 1.09 |
+| MB/s | 9054 | 6178 | 8363 | 7503 | 6537 | 9124 | 9000 |
+| IPC | 0.39 | 0.26 | 0.35 | 0.33 | 0.28 | 0.38 | 0.40 |
+| L1D fills from DRAM per MiB | 0.90 | 1.13 | 0.92 | 0.99 | 1.07 | 0.88 | 0.90 |
+
+The share limit itself, hand-overs included, costs nothing measurable once
+it stops cutting bios.  At up to 32 providers bio changes little, as
+section 7.5's "the same cuts cost nothing" says.  On a07 tput writes rise
+5 % in every repetition, past stock GELI, with CPU per MiB 5 % down; the
+scale writes do not follow (1.4 % down at 128 providers).  The price is the one bio a pass can overrun
+by: a timer beside one busy CPU 0.2 ms later at p99 on lab, 0.5 ms on a07,
+and on a07 its maximum 8.3 against 5.4 ms, stock GELI's being 108 ms.  At
+16 and 128 providers on lab overrun.d found one overrun per phase in more
+than 100 k passes, no park.
+
+**The second step is two effects, and the larger is preemption.**
+Section 7.5 read it as BULK against md(4), and its guess that under stock
+GELI md(4) preempts the cipher does not hold.  ULE preempts for
+`pri <= preempt_thresh` (sched_ule.c, `sched_shouldpreempt()`), and
+`kern.sched.ule.preempt_thresh` is 40, PRI_MIN_KERN, on both machines: a
+thread at 43 preempts nothing but the idle class and, from another CPU, a
+batch-priority thread.  A sweep at budget_sectors 0, on lab, three
+repetitions (prio_sweep.sh; priority 2 and 40 from their own interleaved
+run, whose 2 reads 8169, 8492 and 23032):
+
+| BULK priority | 32 providers, writes MB/s | 128 | 1 MiB reads, MB/s | read CPU per MiB, ms | |
+|---|---|---|---|---|---|
+| 2 | 7996 | 8485 | 22197 | 0.73 | preempts, above md(4) |
+| 40 | 8138 | 8530 | 22515 | 0.70 | preempts, above md(4) |
+| 41 | 9443 | 8549 | 18959 | 0.84 | does not preempt, above md(4) |
+| 43 | 9469 | 8925 | 18962 | 0.84 | md's own |
+| 44 | 10523 | 9408 | 19839 | 0.77 | below md(4) |
+| 55 | 10344 | 9385 | 19570 | 0.81 | below md(4) |
+
+Nothing moves from 2 to 40.  Past the threshold, at 41, lab's 32-provider
+writes gain 18 % and its 1 MiB reads lose 15 %, the second number new here:
+section 7.5 ran the scale test only, whose reads are 4 KiB.  The rank below
+md(4) adds 10 to 11 % to the writes at 128 and 32 providers and gives some
+of the reads back.  Why reads pay is not traced; their CPU per MiB rises as the
+writes' falls, which looks like the same cooling on the other side, the
+worker no longer taking md's data the moment it is there.
+
+On a07 the reads do not pay, and the workers' not preempting is worth much
+more: beside writes at 128 providers the timer's p99 falls from 0.51 to
+0.010 ms and fork+exec's from 19 to 1.6 ms, with the spin loop at 0.99 of
+its CPU.  On lab, saturated, fork+exec improves too (202 to 55 ms), but the
+timer gets worse.  The one a07 row against it is resp's fork+exec p99, 42 ms against
+17, stock GELI's 40.
+
+**Both**, against the bar: on a07 kwq-geli is level with stock GELI or
+ahead everywhere, by 5 % on writes in tput, 24 % on 1 MiB reads, 16 times on
+4 KiB reads.  On lab it is ahead on 4 KiB reads (2.4 times), level at 32
+and within 8 % at 64 and 128 providers on writes, and 9 % behind on
+1 MiB reads, 7 % at 32 KiB sectors; the timer beside writes stays
+2.6 times stock GELI's, as it was at base (2.2).
+
+All of this stands on md(4), whose copying thread is what BULK competes
+with at PRIBIO.  A real disk has no such thread, so what the rank below
+md(4) buys here may not carry over; the preemption effect does not depend
+on it.  No real SSD has been run.
+
+The overruns of section 7.2 are lab's.  a07 has many more, at every setup:
+at 128 providers 20 % of the passes at base (26.7 k of 131 k; the same
+in section 7.3's round), 31 % at bio, 13 % at prio, 20 % at both; 8 %, 14 %,
+7 %, 12 % at 64; none at 16.  CPU per MiB written there is 17 ms at 128
+providers against 1.2 at 4, under stock GELI as well, so the passes are
+long for the same reason the machine is slow; what the DRR does with them
+on a07 has not been traced.
 
 ## 8. Placement: P6g (2026-11-05)
 
@@ -857,15 +994,18 @@ two-socket machine.
   that counts only the competitors it is for, which would need an
   exported scheduler KPI such as "is anything runnable on this CPU
   below priority p" (`sched_runnable()` says only "something").  Section
-  7.5 has what is left at the new defaults and its two causes: the
-  limit's cuts and hand-overs at many providers per CPU, and BULK
-  outranking md(4).  Candidates: kwq-geli checking its budget between
-  bios only, now that the allowance holds a bio; BULK at or below
-  `PRI_MAX_KERN`, which needs crest's decision, a07 and the full suites.
+  7.5 has what is left at the new defaults, section 7.6 the two steps
+  tried: `budget_sectors` 0 removes the limit's share of it and is
+  not the default yet; BULK past ULE's preemption threshold (41 and
+  up) trades lab's 1 MiB reads for its writes and for a07's latency,
+  crest's decision.  Why the reads pay is not traced.  No real SSD has
+  been run.
 - kwq-geli's write overruns (section 7.2): a write's first piece
   allocates and copies 1 MiB before its first budget check, 1-4 ms
-  under load, 1.2-1.4 % of the passes on lab; the fixes listed there
-  are untried.
+  under load, 1.2-1.4 % of the passes on lab at the 1 ms quantum, about
+  none at 5 ms; the fixes listed there are untried.  On a07 at 128
+  providers 20 % of the passes overrun at the defaults (section 7.6), not
+  traced.
 - Placement on a machine of two or more packages (section 8, D12):
   today's code stays there until one is measured, with P8 and the
   hybrid H4.

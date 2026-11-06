@@ -1,0 +1,437 @@
+passes between 2
+passes 128 bulk 132047
+passes 16 bulk 136871
+slow_n 16 bulk 90544
+slow_n 128 bulk 159698
+
+== ov_over_us
+
+
+== ov_budget_us
+
+
+== ov_dt_us (kwq CPU time)
+
+
+== ov_vdt_us (vtimestamp)
+
+
+== ov_wdt_us (wall)
+
+
+== ov_n
+
+
+== ov_calls
+
+
+== ov_gap_v_us
+
+
+== ov_gap_w_us
+
+
+== pass_us
+
+  between                                           
+           value  ------------- Distribution ------------- count    
+               1 |                                         0        
+               2 |@@@@@@@@@@@@@@@@@@@@                     1        
+               4 |@@@@@@@@@@@@@@@@@@@@                     1        
+               8 |                                         0        
+
+  16 bulk                                           
+           value  ------------- Distribution ------------- count    
+               0 |                                         0        
+               1 |                                         53       
+               2 |                                         50       
+               4 |                                         49       
+               8 |                                         19       
+              16 |                                         283      
+              32 |                                         722      
+              64 |                                         1393     
+             128 |@                                        3569     
+             256 |@@@@                                     14347    
+             512 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@             96472    
+            1024 |@@@@@                                    17696    
+            2048 |@                                        2173     
+            4096 |                                         45       
+            8192 |                                         0        
+
+  128 bulk                                          
+           value  ------------- Distribution ------------- count    
+              -1 |                                         0        
+               0 |                                         15       
+               1 |                                         840      
+               2 |                                         1633     
+               4 |@                                        2215     
+               8 |@                                        4578     
+              16 |@                                        3149     
+              32 |@                                        1805     
+              64 |@@                                       6070     
+             128 |@@                                       7321     
+             256 |@@@@                                     11687    
+             512 |@@@@@@@@@@@@@@                           45214    
+            1024 |@@@@@@@@@@@@@                            44029    
+            2048 |@                                        3465     
+            4096 |                                         26       
+            8192 |                                         0        
+
+
+== pass_gap_v_us
+
+  between                                           
+           value  ------------- Distribution ------------- count    
+               1 |                                         0        
+               2 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ 2        
+               4 |                                         0        
+
+  16 bulk                                           
+           value  ------------- Distribution ------------- count    
+              -1 |                                         0        
+               0 |                                         118      
+               1 |                                         28       
+               2 |                                         15       
+               4 |                                         11       
+               8 |                                         28       
+              16 |@                                        4279     
+              32 |@@                                       8193     
+              64 |                                         1206     
+             128 |@@@@@@@                                  24546    
+             256 |@@@@@@@@@@@@@@@@@@@@@@                   76922    
+             512 |@@@@                                     15063    
+            1024 |@@                                       5713     
+            2048 |                                         735      
+            4096 |                                         14       
+            8192 |                                         0        
+
+  128 bulk                                          
+           value  ------------- Distribution ------------- count    
+              -1 |                                         0        
+               0 |@@@                                      8787     
+               1 |@                                        1784     
+               2 |                                         1167     
+               4 |                                         1092     
+               8 |                                         309      
+              16 |                                         193      
+              32 |@@@                                      10747    
+              64 |@@@@@@@@@                                29898    
+             128 |@@@@@                                    14933    
+             256 |@@@                                      8331     
+             512 |@@@@@@@@@@@@@                            44346    
+            1024 |@@@                                      9623     
+            2048 |                                         834      
+            4096 |                                         3        
+            8192 |                                         0        
+
+
+== gap_v_us
+
+  128 bulk                                          
+           value  ------------- Distribution ------------- count    
+               4 |                                         0        
+               8 |                                         2676     
+              16 |@@@@@@@                                  174032   
+              32 |@@@@@@@@@@@@@@@@@@@@@                    508088   
+              64 |@@@@@@@                                  174254   
+             128 |@                                        25035    
+             256 |                                         8329     
+             512 |@@                                       44346    
+            1024 |                                         9623     
+            2048 |                                         834      
+            4096 |                                         3        
+            8192 |                                         0        
+
+  16 bulk                                           
+           value  ------------- Distribution ------------- count    
+               4 |                                         0        
+               8 |@@                                       110218   
+              16 |@@@@@@@@@@@@@@@@@@@@@@@@@@@              1254802  
+              32 |@@@@@@@@                                 353018   
+              64 |                                         11506    
+             128 |@                                        24584    
+             256 |@@                                       76922    
+             512 |                                         15063    
+            1024 |                                         5713     
+            2048 |                                         735      
+            4096 |                                         14       
+            8192 |                                         0        
+
+
+== tail_v_us
+
+  between                                           
+           value  ------------- Distribution ------------- count    
+               1 |                                         0        
+               2 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ 2        
+               4 |                                         0        
+
+  16 bulk                                           
+           value  ------------- Distribution ------------- count    
+              -1 |                                         0        
+               0 |@@                                       7602     
+               1 |@                                        3276     
+               2 |                                         1515     
+               4 |                                         735      
+               8 |@                                        1936     
+              16 |@@@@@@@@@@@@@@@@@@@@@@@@@                86237    
+              32 |@@@@@@@@@@                               34342    
+              64 |                                         1220     
+             128 |                                         8        
+             256 |                                         0        
+
+  128 bulk                                          
+           value  ------------- Distribution ------------- count    
+              -1 |                                         0        
+               0 |@@@@@                                    17356    
+               1 |@@@@@                                    15306    
+               2 |@@@@@                                    17420    
+               4 |@@@@                                     11673    
+               8 |@@                                       6525     
+              16 |@                                        3379     
+              32 |@@@@@@@@@@@                              34835    
+              64 |@@@@@@@                                  21571    
+             128 |@                                        3979     
+             256 |                                         3        
+             512 |                                         0        
+
+
+== park_def_us
+
+
+== park_wait_us
+
+
+== gapsite
+
+  128 bulk                                          
+              geom_kwqeli.ko`g_eli_crypto_run+0x3d8
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+            63045
+  16 bulk                                           
+              geom_kwqeli.ko`g_eli_crypto_run+0x3d8
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+            77583
+
+== slow
+
+  16 bulk                                           
+              kernel`pctrie_iter_insert_lookup+0x6c
+              kernel`kmem_malloc_domainset+0xd2
+              kernel`malloc_large+0x2c
+              geom_kwqeli.ko`g_eli_alloc_data+0x6f
+              geom_kwqeli.ko`g_eli_crypto_run+0xf3
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              334
+  128 bulk                                          
+              kernel`pmap_map_io_transient+0x44
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              343
+  128 bulk                                          
+              kernel`pmap_map_io_transient+0x48
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              370
+  16 bulk                                           
+              kernel`fpu_kern_enter+0x11e
+              geom_kwqeli.ko`g_eli_crypto_run+0x368
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              433
+  16 bulk                                           
+              kernel`aesni_crypt_xts+0x269
+              kernel`crypto_dispatch_one+0xde
+              geom_kwqeli.ko`g_eli_crypto_run+0x368
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              452
+  128 bulk                                          
+              kernel`lock_delay+0x10
+              geom_kwqeli.ko`g_eli_alloc_data+0x6f
+              geom_kwqeli.ko`g_eli_crypto_run+0xf3
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              488
+  16 bulk                                           
+              kernel`pctrie_insert_node+0x7
+              kernel`malloc_large+0x2c
+              geom_kwqeli.ko`g_eli_alloc_data+0x6f
+              geom_kwqeli.ko`g_eli_crypto_run+0xf3
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              543
+  16 bulk                                           
+              kernel`lock_delay+0x14
+              kernel`malloc_large+0x2c
+              geom_kwqeli.ko`g_eli_alloc_data+0x6f
+              geom_kwqeli.ko`g_eli_crypto_run+0xf3
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              596
+  16 bulk                                           
+              kernel`aesni_crypt_xts+0x1c7
+              kernel`crypto_dispatch_one+0xde
+              geom_kwqeli.ko`g_eli_crypto_run+0x368
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              645
+  128 bulk                                          
+              kernel`pctrie_insert_node+0x7
+              kernel`malloc_large+0x2c
+              geom_kwqeli.ko`g_eli_alloc_data+0x6f
+              geom_kwqeli.ko`g_eli_crypto_run+0xf3
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              710
+  16 bulk                                           
+              kernel`fpurestore_xrstor3264+0x33
+              kernel`crypto_dispatch_one+0xde
+              geom_kwqeli.ko`g_eli_crypto_run+0x368
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              716
+  128 bulk                                          
+              kernel`lock_delay+0x14
+              kernel`malloc_large+0x2c
+              geom_kwqeli.ko`g_eli_alloc_data+0x6f
+              geom_kwqeli.ko`g_eli_crypto_run+0xf3
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              758
+  128 bulk                                          
+              kernel`fpurestore_xrstor3264+0x33
+              kernel`crypto_dispatch_one+0xde
+              geom_kwqeli.ko`g_eli_crypto_run+0x368
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              828
+  128 bulk                                          
+              kernel`fpu_kern_enter+0x11e
+              geom_kwqeli.ko`g_eli_crypto_run+0x368
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+              909
+  128 bulk                                          
+              kernel`aesni_crypt_xts+0x269
+              kernel`crypto_dispatch_one+0xde
+              geom_kwqeli.ko`g_eli_crypto_run+0x368
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+             1032
+  16 bulk                                           
+              kernel`lock_delay+0x10
+              geom_kwqeli.ko`g_eli_alloc_data+0x6f
+              geom_kwqeli.ko`g_eli_crypto_run+0xf3
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+             1261
+  16 bulk                                           
+              kernel`fpu_kern_leave+0xba
+              geom_kwqeli.ko`g_eli_crypto_run+0x368
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+             1335
+  128 bulk                                          
+              kernel`aesni_crypt_xts+0x1c7
+              kernel`crypto_dispatch_one+0xde
+              geom_kwqeli.ko`g_eli_crypto_run+0x368
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+             1626
+  128 bulk                                          
+              kernel`fpu_kern_leave+0xba
+              geom_kwqeli.ko`g_eli_crypto_run+0x368
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+             2491
+  128 bulk                                          
+              kernel`lock_delay+0x12
+              geom_kwqeli.ko`g_eli_alloc_data+0x6f
+              geom_kwqeli.ko`g_eli_crypto_run+0xf3
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+             4687
+  16 bulk                                           
+              kernel`lock_delay+0x12
+              geom_kwqeli.ko`g_eli_alloc_data+0x6f
+              geom_kwqeli.ko`g_eli_crypto_run+0xf3
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+             7363
+  128 bulk                                          
+              kernel`lock_delay+0x14
+              geom_kwqeli.ko`g_eli_alloc_data+0x6f
+              geom_kwqeli.ko`g_eli_crypto_run+0xf3
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+            16270
+  16 bulk                                           
+              kernel`lock_delay+0x14
+              geom_kwqeli.ko`g_eli_alloc_data+0x6f
+              geom_kwqeli.ko`g_eli_crypto_run+0xf3
+              geom_kwqeli.ko`g_eli_kwq_handler+0x119
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+            25932
+  16 bulk                                           
+              kernel`memmove_erms+0x116
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+            38980
+  128 bulk                                          
+              kernel`memmove_erms+0x116
+              kwq.ko`kwq_worker_main+0x102f
+              kernel`fork_exit+0x7b
+              kernel`0xffffffff8106807e
+           111188
+
