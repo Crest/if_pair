@@ -1,0 +1,78 @@
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * gelisim's environment for kwq_sched.c: ../kwq_sched_env.h with the two
+ * fields of keepturn.patch and a back pointer of its own.
+ */
+
+#ifndef _KWQ_SCHED_ENV_H_
+#define	_KWQ_SCHED_ENV_H_
+
+#include <sys/types.h>
+#include <sys/queue.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+
+struct kwq_sched_knobs;
+struct lst;
+
+struct kwq_cpu {
+	TAILQ_ENTRY(kwq_cpu)	kc_active;
+	u_int			kc_state;
+	u_int			kc_onlist;
+	u_int			kc_warm;
+	u_int			kc_idle_served;
+	u_int			kc_src;
+	int64_t			kc_deficit;
+	uint64_t		kc_glitches, kc_debts, kc_bc_avg;
+	uint64_t		kc_passes, kc_overruns, kc_overruns_switched,
+				kc_parks, kc_boosts, kc_grace;
+	u_int			kc_weight;
+	struct lst		*kc_l;		/* simulator back pointer */
+};
+
+struct kwq_worker {
+	TAILQ_HEAD(, kwq_cpu)	kw_new;
+	TAILQ_HEAD(, kwq_cpu)	kw_active;
+	u_int			kw_nactive;
+	u_int			kw_nnew;
+	uint64_t		kw_round;
+	uint64_t		kw_served_us;
+	uint64_t		kw_served_rem;
+	u_int			kw_phase;
+	int			kw_ring_left;
+	int			kw_tail_left;
+	bool			kw_want_new;
+	u_int			kw_served;
+	struct kwq_cpu		*kw_cur;
+	uint64_t		kw_pass_start;
+	int64_t			kw_pass_budget;
+	u_int			kw_bc_calls;
+	int64_t			kw_bc_last;
+	uint64_t		kw_cap_start;
+	uint64_t		kw_cap_used;
+	bool			kw_cap_over;
+	bool			kw_cap_handed;
+	bool			kw_pass_switched;	/* never set in the simulator */
+	struct kwq_cpu		*kw_resume;	/* keepturn.patch: the turn a cut pass keeps */
+	bool			kw_cut_out;	/* keepturn.patch: cut from outside this pass */
+	const struct kwq_sched_knobs *kw_knobs;
+	uint64_t		kw_rounds, kw_passes, kw_yields, kw_cap_demotions,
+				kw_cap_yields, kw_cap_cuts, kw_cap_runon, kw_handbacks,
+				kw_busy_ns, kw_budget_calls, kw_budget_reads;
+};
+
+#define	KSQ_WEIGHT(kc)	((kc)->kc_weight)
+
+/* __diagused is a kernel-side annotation (sys/systm.h); the simulator's
+   checking code is always compiled, so the variable is simply used. */
+#ifndef __diagused
+#define	__diagused
+#endif
+
+/* Core self-checks land in the simulator's violation count. */
+void	ks_env_fail(const char *fmt, ...);
+#define	KS_ASSERT(e, msg)	do { if (!(e)) ks_env_fail msg; } while (0)
+
+#endif /* !_KWQ_SCHED_ENV_H_ */

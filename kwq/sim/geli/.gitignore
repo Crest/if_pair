@@ -1,0 +1,5 @@
+gelisim
+build/
+*.csv
+__pycache__/
+*.core

@@ -1,0 +1,105 @@
+--- a/kwq_sched.c
++++ b/kwq_sched.c
+@@ -27,6 +27,8 @@
+ 	kw->kw_want_new = true;
+ 	kw->kw_served = 0;
+ 	kw->kw_cur = NULL;
++	kw->kw_resume = NULL;
++	kw->kw_cut_out = false;
+ 	kw->kw_pass_start = 0;
+ 	kw->kw_pass_budget = 0;
+ 	kw->kw_cap_start = wall_now;
+@@ -144,7 +146,8 @@
+ 
+ 	*kcp = NULL;
+ 	if (kw->kw_phase == KWQ_PH_IDLE) {
+-		if (TAILQ_EMPTY(&kw->kw_new) && TAILQ_EMPTY(&kw->kw_active))
++		if (TAILQ_EMPTY(&kw->kw_new) && TAILQ_EMPTY(&kw->kw_active) &&
++		    kw->kw_resume == NULL)
+ 			return (KS_IDLE);
+ 		kw->kw_round++;
+ 		kw->kw_phase = KWQ_PH_ROUND;
+@@ -164,6 +167,20 @@
+ 			kw->kw_handbacks++;
+ 			kw->kw_phase = KWQ_PH_IDLE;
+ 			return (KS_HANDBACK);
++		}
++		/*
++		 * A pass the share limit or a higher class cut goes on before
++		 * anything else starts here.  No refill: this is the same turn.
++		 */
++		if (kw->kw_resume != NULL) {
++			kc = kw->kw_resume;
++			kw->kw_resume = NULL;
++			kc->kc_src = KWQ_SRC_RING;
++			kc->kc_state = KWQ_CPU_RUNNING;
++			kw->kw_cur = kc;
++			kw->kw_served++;
++			*kcp = kc;
++			return (KS_SERVE);
+ 		}
+ 		if (kw->kw_want_new && !TAILQ_EMPTY(&kw->kw_new)) {
+ 			kw->kw_want_new = false;
+@@ -407,7 +424,10 @@
+ 	kw->kw_cur = NULL;
+ 	if (has_work) {
+ 		kc->kc_state = kc->kc_deficit > 0 ? KWQ_CPU_WAKING : KWQ_CPU_PARKED;
+-		ks_ring_append(kw, kc);
++		if (kw->kw_knobs->keep_turn && kw->kw_cut_out && kc->kc_deficit > 0)
++			kw->kw_resume = kc;
++		else
++			ks_ring_append(kw, kc);
+ 	} else {
+ 		kc->kc_state = KWQ_CPU_IDLE;
+ 		kc->kc_warm = (kc->kc_src == KWQ_SRC_RING) ? KWQ_WARM : 0;
+@@ -418,8 +438,16 @@
+ 			kc->kc_deficit = 0;		/* DRR: reset on empty */
+ 	}
+ 	kc->kc_src = KWQ_SRC_NONE;
++	kw->kw_cut_out = false;
+ }
+ 
++void
++ks_cap_decline(struct kwq_worker *kw)
++{
++	if (kw->kw_cap_used < kw->kw_knobs->cap_allow_ns)
++		kw->kw_cap_used = kw->kw_knobs->cap_allow_ns;
++}
++
+ /*
+  * S6.1.  The yield is skipped when nothing else is runnable, and (S6.3)
+  * when the round's last pass handed the CPU over under the share limit:
+--- a/kwq_sched.h
++++ b/kwq_sched.h
+@@ -32,7 +32,8 @@
+  *                      kw_cap_yields, kw_cap_cuts, kw_cap_runon,
+  *                      kw_handbacks, kw_busy_ns,
+  *                      kw_bc_calls (u_int), kw_bc_last (int64_t), kw_budget_calls,
+- *                      kw_budget_reads (uint64_t)
++ *                      kw_budget_reads (uint64_t), kw_resume (kwq_cpu *),
++ *                      kw_cut_out (bool)
+  *
+  * Units: all times are nanoseconds.  "cpu" times are the worker's own CPU
+  * time (S1a.4); "wall" times are a monotonic clock (sbinuptime in the
+@@ -71,6 +72,7 @@
+ 	uint64_t	cap_allow_ns;	/* cap_period_ns x cap_permille / 1000 (owner derives) */
+ 	bool		boost_weighted;	/* boost = Q x w (default) or Q; S12 */
+ 	uint32_t	penalty_rounds;	/* debt clamp: D >= -penalty_rounds x Qw; 32 */
++	bool		keep_turn;	/* a pass cut from outside keeps its turn */
+ };
+ 
+ /* kc_state */
+@@ -187,6 +189,13 @@
+ 	    bool runnable);
+ 
+ /*
++ * A handler declined to start an item that would not fit: the rest of this
++ * period's allowance counts as spent, so the worker hands the CPU over at
++ * the pass end instead of walking the ring for nothing.
++ */
++void	ks_cap_decline(struct kwq_worker *kw);
++
++/*
+  * S6.3, the budget cut: is the allowance spent?  Judged by the passes
+  * completed in this period (kw_cap_used is added to at pass end only), so
+  * a pass that began under the allowance runs to its clamped budget.  The
