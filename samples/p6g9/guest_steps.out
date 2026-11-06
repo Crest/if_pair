@@ -1,0 +1,56 @@
+ 2:17AM  up 2 days,  5:31, 0 users, load averages: 0.30, 0.23, 0.18
+eli tput resp onecpu exit 0:       69 rows
+eli scale exit 0:      134 rows
+eli tput 32 KiB sectors exit 0:        9 rows
+eli	1	tput	write_mbps	1785.3
+eli	1	tput	read_mbps	2289.7
+eli console: 0, modules 0, md        0
+== base: priority 2 budget_sectors 16 cap_prio 224
+geli_base: 15/15 passed (0 broken, 0 failed, 0 skipped)
+base tput resp onecpu exit 0:       95 rows
+base scale exit 0:      170 rows
+base tput 32 KiB sectors exit 0:       27 rows
+kwqshard	1	tput	write_mbps	1476.4
+kwqshard	1	tput	kwq_requeued	38
+kwqshard	1	tput	kwq_overruns	0
+kwqshard	1	tput	read_mbps	1894.8
+base console: 0, modules 1, md        0
+== bio: priority 2 budget_sectors 0 cap_prio 224
+geli_bio: 14/15 passed (0 broken, 0 failed, 1 skipped)
+bio tput resp onecpu exit 0:       95 rows
+bio scale exit 0:      170 rows
+bio tput 32 KiB sectors exit 0:       27 rows
+kwqbio	1	tput	write_mbps	1508.8
+kwqbio	1	tput	kwq_requeued	0
+kwqbio	1	tput	kwq_overruns	0
+kwqbio	1	tput	read_mbps	1931.1
+bio console: 0, modules 1, md        0
+== prio: priority 55 budget_sectors 16 cap_prio 224
+kwq_prio: 39/39 passed (0 broken, 0 failed, 0 skipped)
+geli_prio: 15/15 passed (0 broken, 0 failed, 0 skipped)
+prio tput resp onecpu exit 0:       95 rows
+prio scale exit 0:      170 rows
+prio tput 32 KiB sectors exit 0:       27 rows
+kwqshard	1	tput	write_mbps	1834.4
+kwqshard	1	tput	kwq_requeued	15
+kwqshard	1	tput	kwq_overruns	0
+kwqshard	1	tput	read_mbps	2265.1
+prio console: 0, modules 1, md        0
+== both: priority 55 budget_sectors 0 cap_prio 224
+kwq_both: 39/39 passed (0 broken, 0 failed, 0 skipped)
+geli_both: 14/15 passed (0 broken, 0 failed, 1 skipped)
+both tput resp onecpu exit 0:       95 rows
+both scale exit 0:      170 rows
+both tput 32 KiB sectors exit 0:       27 rows
+kwqbio	1	tput	write_mbps	1810.3
+kwqbio	1	tput	kwq_requeued	0
+kwqbio	1	tput	kwq_overruns	0
+kwqbio	1	tput	read_mbps	2250.6
+both console: 0, modules 1, md        0
+2026-11-06T02:31:30Z geli_bench: destroyed md2
+2026-11-06T02:31:30Z geli_bench: destroyed md3
+2026-11-06T02:31:30Z geli_bench: restored kern.geom.kwqeli.cpu=-1 kern.geom.kwqeli.stealable=1 kern.kwq.bulk.place=2 kern.geom.kwqeli.budget_sectors=16 
+2026-11-06T02:31:30Z geli_bench: unloaded geom_kwqeli
+modules: 0, md:        0, kenv: 0
+832
+ 2:31AM  up 2 days,  5:45, 0 users, load averages: 5.49, 3.43, 2.35
