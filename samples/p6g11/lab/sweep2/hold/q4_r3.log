@@ -1,0 +1,3 @@
+16:45:08 stages: kwqhold; tests: dev; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+16:45:08 rep 1 kwqhold dev
+16:45:41 done: /home/crest/if_pair-scratch/p6g11/sweep2/hold/q4_r3.tsv

@@ -1,0 +1,10 @@
+ 8:18PM  up 2 days, 23:33, 0 users, load averages: 1.05, 2.37, 2.94
+aesni0 off
+r1 stock: exit 0,       91 rows
+r1 kwq (kwqshard kwqbio kwqtime kwqrq kwqbuf): exit 0,      620 rows
+r2 stock: exit 0,       91 rows
+r2 kwq (kwqbio kwqtime kwqrq kwqbuf kwqshard): exit 0,      620 rows
+r3 stock: exit 0,       91 rows
+r3 kwq (kwqtime kwqrq kwqbuf kwqshard kwqbio): exit 0,      620 rows
+end: modules 0, sd        0, aesni 1
+ 8:28PM  up 2 days, 23:42, 0 users, load averages: 5.44, 5.03, 4.18

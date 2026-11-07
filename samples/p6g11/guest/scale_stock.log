@@ -1,0 +1,3 @@
+18:39:06 stages: eli; tests: scale; P 4, ONECPU_N 4 on CPU 1, 64 MB/writer, SECS 4, REPS 1
+18:39:06 rep 1 eli scale
+18:39:52 done: /root/ifpair-scratch/stages/p6g11/out/scale_stock.tsv

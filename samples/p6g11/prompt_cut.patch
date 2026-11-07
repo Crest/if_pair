@@ -1,0 +1,357 @@
+--- a/kwq/SCHED.md
++++ b/kwq/SCHED.md
+@@ -420,6 +420,17 @@
+ than `item_min_us` finishes, is charged in full and overruns its budget
+ by at most that; one longer stops about every `item_min_us`.
+ 
++With `prompt_cut` (class knob, default 0) waiting prompt work (S4.8) that
++is due also stops an item of another queue at its next such point: a
++4 KiB read need not wait out a 1 MiB write.  Such an item keeps its turn:
++its queue goes to the ring's head with what is left of its deficit, runs
++next after the prompt work and before anything new, and gets no refill
++when taken, nor does that count as a ring slot for S4.8, so the prompt
++bound still holds.  Without this it would go to the ring's tail, and each
++read would leave another item part done, which is what `item_min_us` is
++there to avoid.  `keep_turn` (class knob, default 0) keeps the turn of an
++item stopped for a higher class in the same way.
++
+ ### 4.6 Grace rule (anti-gaming)
+ 
+ Without it, a bulk queue whose producer pauses briefly between bursts
+--- a/kwq/kwq/kwq.c
++++ b/kwq/kwq/kwq.c
+@@ -325,6 +325,8 @@
+ u_int kwq_wake_delay_us[KWQ_NCLASS] = { 0, 0, 0 };
+ u_int kwq_tick_urgent_us[KWQ_NCLASS] = { 0, 0, 0 };
+ static u_int kwq_item_min_us[KWQ_NCLASS] = { 0, 0, 0 };
++static u_int kwq_prompt_cut[KWQ_NCLASS] = { 0, 0, 0 };
++static u_int kwq_keep_turn[KWQ_NCLASS] = { 0, 0, 0 };
+ static u_int kwq_budget_check_every[KWQ_NCLASS] = { 8, 8, 8 };
+ static struct sysctl_ctx_list kwq_knob_sysctl;
+ 
+@@ -348,6 +350,8 @@
+ 	k->penalty_rounds = kwq_penalty_rounds[cls];
+ 	k->budget_check_every = kwq_budget_check_every[cls];
+ 	k->item_min_ns = (uint64_t)kwq_item_min_us[cls] * 1000;
++	k->prompt_cut = kwq_prompt_cut[cls] != 0;
++	k->keep_turn = kwq_keep_turn[cls] != 0;
+ }
+ 
+ static int
+@@ -400,7 +404,7 @@
+ 	return (0);
+ }
+ 
+-#define	KWQ_NKNOBS	9
++#define	KWQ_NKNOBS	11
+ static struct kwq_knob kwq_knob_desc[KWQ_NCLASS][KWQ_NKNOBS];
+ 
+ static void
+@@ -416,6 +420,8 @@
+ 		{ "tick_us", "the tick regime's latency bound L (KWQ.md S16): after three consecutive sleeps shorter than L the worker sleeps with L as its timeout and producers place their lists without waking it, until a tick serves one element or none; 0 = off, the doorbell regime", 0, 100000 },
+ 		{ "tick_urgent_us", "inside the tick regime, an urgent item (kwq_enqueue_urgent()) that finds the worker asleep wakes it this much later instead of at once, so that urgent items within this bound share one wake; at or above tick_us the tick serves them; 0 = at once", 0, 100000 },
+ 		{ "item_min_us", "an item that can stop part way (kwq_item_stop()) stops for the pass's budget or the share limit only after running this long in a pass; a higher class stops it at any point; 0 = at any point", 0, 1000000 },
++		{ "prompt_cut", "1: waiting KWQ_F_PROMPT work stops an item of another queue at its next kwq_item_stop(), and the item keeps its turn", 0, 1 },
++		{ "keep_turn", "1: an item kwq_item_stop() stopped for a higher class keeps its turn", 0, 1 },
+ 	};
+ 	u_int *vars[KWQ_NKNOBS];
+ 	int cls, i;
+@@ -427,6 +433,7 @@
+ 		vars[3] = &kwq_penalty_rounds[cls]; vars[4] = &kwq_budget_check_every[cls];
+ 		vars[5] = &kwq_wake_delay_us[cls]; vars[6] = &kwq_tick_us[cls];
+ 		vars[7] = &kwq_tick_urgent_us[cls]; vars[8] = &kwq_item_min_us[cls];
++		vars[9] = &kwq_prompt_cut[cls]; vars[10] = &kwq_keep_turn[cls];
+ 		for (i = 0; i < KWQ_NKNOBS; i++) {
+ 			struct kwq_knob *kn = &kwq_knob_desc[cls][i];
+ 
+@@ -832,12 +839,22 @@
+ kwq_item_stop(struct kwq *q)
+ {
+ 	struct kwq_worker *kw = kwq_workers[q->kwq_class][curcpu];
+-	uint64_t min = kw->kw_knobs->item_min_ns;
++	const struct kwq_sched_knobs *k = kw->kw_knobs;
+ 
++	/* the lists are read unlocked: a hint, the next check sees the rest */
++	if (k->prompt_cut && (q->kwq_flags & KWQ_F_PROMPT) == 0 &&
++	    !TAILQ_EMPTY(&kw->kw_prompt) && kw->kw_prompt_ns < k->quantum_ns) {
++		kw->kw_cut_out = true;
++		return (true);
++	}
+ 	if (kwq_budget_left(q) != 0)
+ 		return (false);
+-	return (min == 0 || kwq_higher_waiting(q->kwq_class) ||
+-	    kwq_cputime_ns(kw) - kw->kw_item_start >= min);
++	if (kwq_higher_waiting(q->kwq_class)) {
++		kw->kw_cut_out = k->keep_turn;
++		return (true);
++	}
++	return (k->item_min_ns == 0 ||
++	    kwq_cputime_ns(kw) - kw->kw_item_start >= k->item_min_ns);
+ }
+ 
+ /*
+--- a/kwq/kwq/kwq.h
++++ b/kwq/kwq/kwq.h
+@@ -208,7 +208,8 @@
+  * stops it at any such point; the pass's budget and the share limit stop
+  * it only once it has run kern.kwq.<class>.item_min_us in this pass, since
+  * what a part-done item leaves behind goes cold while it waits (SCHED.md
+- * S4.9).  0: as kwq_budget_left() reading 0.
++ * S4.9).  0: as kwq_budget_left() reading 0.  With prompt_cut, waiting
++ * KWQ_F_PROMPT work stops it at any such point too, and it keeps its turn.
+  */
+ void		 kwq_requeue(struct kwq *q, struct kwq_item *head,
+ 		    struct kwq_item *tail, int n);
+--- a/kwq/kwq/kwq_internal.h
++++ b/kwq/kwq/kwq_internal.h
+@@ -342,6 +342,7 @@
+ 	TAILQ_HEAD(, kwq_cpu)	kw_prompt;
+ 	uint64_t		kw_prompt_ns;
+ 	uint64_t		kw_item_start;	/* kwq_item_begin(): charged clock */
++	bool			kw_cut_out;	/* kwq_item_stop(): this pass keeps its turn */
+ } __aligned(KWQ_LINE);
+ 
+ /* The mailbox shares the wake's line (kw_mtx, kw_sleeping): block 0 is one line. */
+--- a/kwq/kwq/kwq_sched.c
++++ b/kwq/kwq/kwq_sched.c
+@@ -18,6 +18,7 @@
+ 	TAILQ_INIT(&kw->kw_active);
+ 	TAILQ_INIT(&kw->kw_prompt);
+ 	kw->kw_prompt_ns = 0;
++	kw->kw_cut_out = false;
+ 	kw->kw_nactive = 0;
+ 	kw->kw_nnew = 0;
+ 	kw->kw_round = 0;
+@@ -68,6 +69,28 @@
+ 	kw->kw_nactive++;
+ }
+ 
++/*
++ * Put kc at the ring's head, its turn kept (S4.9): the pass goes on after what
++ * stopped it, before anything new starts here, with no refill when it is taken.
++ */
++static void
++ks_ring_keep(struct kwq_worker *kw, struct kwq_cpu *kc)
++{
++	TAILQ_INSERT_HEAD(&kw->kw_active, kc, kc_active);
++	kc->kc_onlist = KWQ_ON_ACTIVE;
++	kc->kc_warm |= KWQ_KEPT;
++	kw->kw_nactive++;
++	kw->kw_ring_left++;
++}
++
++static bool
++ks_kept_first(struct kwq_worker *kw)
++{
++	struct kwq_cpu *kc = TAILQ_FIRST(&kw->kw_active);
++
++	return (kc != NULL && (kc->kc_warm & KWQ_KEPT) != 0);
++}
++
+ /* Put kc on the prompt list's tail (S4.8). */
+ static void
+ ks_prompt_append(struct kwq_worker *kw, struct kwq_cpu *kc)
+@@ -202,7 +225,8 @@
+ 			*kcp = kc;
+ 			return (KS_SERVE);
+ 		}
+-		if (kw->kw_want_new && !TAILQ_EMPTY(&kw->kw_new)) {
++		if (kw->kw_want_new && !TAILQ_EMPTY(&kw->kw_new) &&
++		    !ks_kept_first(kw)) {
+ 			kw->kw_want_new = false;
+ 			kw->kw_served++;
+ 			*kcp = ks_take_new(kw);
+@@ -219,11 +243,16 @@
+ 			TAILQ_REMOVE(&kw->kw_active, kc, kc_active);
+ 			kc->kc_onlist = KWQ_ON_NONE;
+ 			kw->kw_nactive--;
+-			kw->kw_prompt_ns = 0;
+-			q = ks_quantum(kw, kc);
+-			kc->kc_deficit += q;
+-			if (kc->kc_deficit > 2 * q)	/* carry cap */
+-				kc->kc_deficit = 2 * q;
++			if ((kc->kc_warm & KWQ_KEPT) != 0) {
++				/* S4.9: the same turn, and no ring slot for S4.8 */
++				kc->kc_warm &= ~KWQ_KEPT;
++			} else {
++				kw->kw_prompt_ns = 0;
++				q = ks_quantum(kw, kc);
++				kc->kc_deficit += q;
++				if (kc->kc_deficit > 2 * q)	/* carry cap */
++					kc->kc_deficit = 2 * q;
++			}
+ 			if (kc->kc_deficit <= 0) {
+ 				kc->kc_parks++;
+ 				kc->kc_state = KWQ_CPU_PARKED;
+@@ -450,7 +479,10 @@
+ 		ks_prompt_append(kw, kc);
+ 	} else if (has_work) {
+ 		kc->kc_state = kc->kc_deficit > 0 ? KWQ_CPU_WAKING : KWQ_CPU_PARKED;
+-		ks_ring_append(kw, kc);
++		if (kw->kw_cut_out && kc->kc_deficit > 0)
++			ks_ring_keep(kw, kc);
++		else
++			ks_ring_append(kw, kc);
+ 	} else {
+ 		kc->kc_state = KWQ_CPU_IDLE;
+ 		kc->kc_warm = (kc->kc_src == KWQ_SRC_RING) ? KWQ_WARM : 0;
+@@ -461,6 +493,7 @@
+ 			kc->kc_deficit = 0;		/* DRR: reset on empty */
+ 	}
+ 	kc->kc_src = KWQ_SRC_NONE;
++	kw->kw_cut_out = false;
+ }
+ 
+ /*
+--- a/kwq/kwq/kwq_sched.h
++++ b/kwq/kwq/kwq_sched.h
+@@ -20,7 +20,7 @@
+  *                      kc_debts, kc_bc_avg (uint64_t ns per budget call),
+  *                      kc_boosts, kc_grace
+  *   struct kwq_worker: kw_new, kw_active, kw_prompt (TAILQ_HEAD of kwq_cpu),
+- *                      kw_prompt_ns (uint64_t),
++ *                      kw_prompt_ns (uint64_t), kw_cut_out (bool),
+  *                      kw_nactive, kw_nnew (u_int list lengths),
+  *                      kw_round, kw_served_us, kw_served_rem (uint64_t),
+  *                      kw_phase,
+@@ -73,6 +73,9 @@
+ 	bool		boost_weighted;	/* boost = Q x w (default) or Q; S12 */
+ 	uint32_t	penalty_rounds;	/* debt clamp: D >= -penalty_rounds x Qw; 32 */
+ 	uint64_t	item_min_ns;	/* kwq_item_stop(): S4.9; 0 = at any point */
++	bool		prompt_cut;	/* waiting prompt work stops an item: S4.9 */
++	bool		keep_turn;	/* an item stopped for a higher class keeps
++					   its turn: S4.9 */
+ };
+ 
+ /* kc_state */
+@@ -276,6 +279,7 @@
+  */
+ #define	KWQ_WARM	0x01
+ #define	KWQ_DEBT	0x02
++#define	KWQ_KEPT	0x04	/* at the ring's head, its turn kept (S4.9) */
+ 
+ static inline uint64_t
+ ks_ns_scale(uint64_t rate_hz)
+--- a/kwq-geli/tests/geli_bench.sh
++++ b/kwq-geli/tests/geli_bench.sh
+@@ -36,6 +36,10 @@
+ #               zone's size (132 KiB) from UMA zones instead of malloc(9)
+ #   kwqout      kwqbuf with kern.geom.kwqeli.sep_out=1: writes encrypted into
+ #               the buffer, without the copy
++#   kwqcut      kwqout with kern.kwq.bulk.prompt_cut=1: waiting reads stop a
++#               write at its next check, and it keeps its turn
++#   kwqkeep     kwqcut with kern.kwq.bulk.keep_turn=1: a write stopped for
++#               NET keeps its turn too
+ #   nop         no encryption: the load on the gnop providers themselves
+ #               (ssd and dev only; the other tests skip it)
+ #   none        no provider and no load (net and netcpu only): NET_CMD's
+@@ -379,13 +383,13 @@
+ 	kwq) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 1 ;;
+ 	kwqlocal) knob kern.geom.kwqeli.cpu -2; knob kern.geom.kwqeli.stealable 1 ;;
+ 	kwqnosteal) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 0 ;;
+-	kwqgossip|kwqshard|kwqshard1|kwqbio|kwqbio1|kwqtime|kwqrq|kwqbuf|kwqout) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 1 ;;
++	kwqgossip|kwqshard|kwqshard1|kwqbio|kwqbio1|kwqtime|kwqrq|kwqbuf|kwqout|kwqcut|kwqkeep) knob kern.geom.kwqeli.cpu -1; knob kern.geom.kwqeli.stealable 1 ;;
+ 	esac
+ 	# BULK placement (kwq.ko of P6g.2 and later): stages on one boot each set theirs
+ 	case $STAGE in
+ 	nop|none|eli) ;;
+ 	kwqgossip) knob kern.kwq.bulk.place 1 ;;
+-	kwqshard|kwqshard1|kwqbio|kwqbio1|kwqtime|kwqrq|kwqbuf|kwqout) knob kern.kwq.bulk.place 2 ;;
++	kwqshard|kwqshard1|kwqbio|kwqbio1|kwqtime|kwqrq|kwqbuf|kwqout|kwqcut|kwqkeep) knob kern.kwq.bulk.place 2 ;;
+ 	*) sysctl -q kern.kwq.bulk.place >/dev/null 2>&1 && knob kern.kwq.bulk.place 0 ;;
+ 	esac
+ 	# BULK's quantum and share-limit period: kwqshard1's of before 2026-11-05
+@@ -403,26 +407,33 @@
+ 	# how long a bio runs before its budget or the share limit may stop it
+ 	case $STAGE in
+ 	nop|none|eli) ;;
+-	kwqtime|kwqrq|kwqbuf|kwqout) knob kern.kwq.bulk.item_min_us "$ITEM_MIN_US" ;;
++	kwqtime|kwqrq|kwqbuf|kwqout|kwqcut|kwqkeep) knob kern.kwq.bulk.item_min_us "$ITEM_MIN_US" ;;
+ 	*) unknob kern.kwq.bulk.item_min_us ;;
+ 	esac
+ 	# reads on a queue of their own
+ 	case $STAGE in
+ 	nop|none|eli) ;;
+-	kwqrq|kwqbuf|kwqout) knob kern.geom.kwqeli.read_queue "$READ_QUEUE" ;;
++	kwqrq|kwqbuf|kwqout|kwqcut|kwqkeep) knob kern.geom.kwqeli.read_queue "$READ_QUEUE" ;;
+ 	*) unknob kern.geom.kwqeli.read_queue ;;
+ 	esac
+ 	# 1 MiB buffers from a zone
+ 	case $STAGE in
+ 	nop|none|eli) ;;
+-	kwqbuf|kwqout) knob kern.geom.kwqeli.big_bufs 1 ;;
++	kwqbuf|kwqout|kwqcut|kwqkeep) knob kern.geom.kwqeli.big_bufs 1 ;;
+ 	*) unknob kern.geom.kwqeli.big_bufs ;;
+ 	esac
+ 	# writes encrypted into the buffer, without the copy
+ 	case $STAGE in
+ 	nop|none|eli) ;;
+-	kwqout) knob kern.geom.kwqeli.sep_out 1 ;;
++	kwqout|kwqcut|kwqkeep) knob kern.geom.kwqeli.sep_out 1 ;;
+ 	*) unknob kern.geom.kwqeli.sep_out ;;
++	esac
++	# waiting reads stop a write; a stopped write keeps its turn
++	case $STAGE in
++	nop|none|eli) ;;
++	kwqcut) knob kern.kwq.bulk.prompt_cut 1; unknob kern.kwq.bulk.keep_turn ;;
++	kwqkeep) knob kern.kwq.bulk.prompt_cut 1; knob kern.kwq.bulk.keep_turn 1 ;;
++	*) unknob kern.kwq.bulk.prompt_cut; unknob kern.kwq.bulk.keep_turn ;;
+ 	esac
+ 	# how often a check between bios reads the clock
+ 	case $STAGE in
+--- a/kwq-geli/tests/kwqeli_test.sh
++++ b/kwq-geli/tests/kwqeli_test.sh
+@@ -458,6 +458,45 @@
+ }
+ item_min_cleanup() { kwqeli_cleanup; }
+ 
++atf_test_case prompt_cut cleanup
++prompt_cut_head() {
++	atf_set descr "prompt_cut: with item_min_us 1 s no budget stops a write, so reads on a KWQ_F_PROMPT queue on the same CPU are what stops writes part way, and what was written reads back"
++	atf_set require.user root
++}
++prompt_cut_body() {
++	local cut i r
++	kwqeli_setup
++	knob kern.geom.kwqeli.cpu 1
++	knob kern.geom.kwqeli.stealable 0
++	knob kern.geom.kwqeli.read_queue 2
++	knob kern.kwq.bulk.item_min_us 1000000
++	knob kern.kwq.bulk.prompt_cut 1
++	m=$(newmd 96m)
++	atf_check -o ignore geli init -B none -P -K key -s 4096 "$m"
++	atf_check $GK attach -p -k key "$m"
++	dd if=data.in of=data.cmp bs=1m count=32 2>/dev/null
++	dd if=data.cmp of="/dev/$m.kweli" bs=1m 2>/dev/null || atf_fail "write"
++	(i=0; while [ $i -lt 6 ]; do
++		dd if="/dev/$m.kweli" of=/dev/null bs=4k count=8000 2>/dev/null
++		i=$((i + 1))
++	done) &
++	r=$!
++	i=0
++	while [ $i -lt 6 ]; do
++		dd if=data.cmp of="/dev/$m.kweli" bs=1m oseek=32 2>/dev/null || atf_fail "write beside reads"
++		i=$((i + 1))
++	done
++	wait $r
++	cut=$(qsum "$m" requeued)
++	dd if="/dev/$m.kweli" of=data.out bs=1m count=32 2>/dev/null || atf_fail "read"
++	cmp -s data.cmp data.out || atf_fail "read back something else"
++	dd if="/dev/$m.kweli" of=data.out bs=1m iseek=32 count=32 2>/dev/null || atf_fail "read"
++	cmp -s data.cmp data.out || atf_fail "read back something else beside reads"
++	echo "prompt_cut: $cut writes stopped part way"
++	[ "$cut" -gt 0 ] || atf_skip "no write was stopped: the reads never met one"
++}
++prompt_cut_cleanup() { kwqeli_cleanup; }
++
+ atf_test_case read_queue cleanup
+ read_queue_head() {
+ 	atf_set descr "read_queue, 1 and 2 (KWQ_F_PROMPT): reads go to a queue of their own and writes stay on the provider's, what was written reads back, and detach removes both"
+@@ -657,6 +696,7 @@
+ 	atf_add_test_case whole_bio
+ 	atf_add_test_case item_min
+ 	atf_add_test_case read_queue
++	atf_add_test_case prompt_cut
+ 	atf_add_test_case big_bufs
+ 	atf_add_test_case sep_out
+ 	atf_add_test_case sep_out_mapped

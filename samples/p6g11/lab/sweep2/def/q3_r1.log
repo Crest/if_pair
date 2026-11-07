@@ -1,0 +1,3 @@
+16:32:12 stages: kwqdef; tests: dev; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+16:32:12 rep 1 kwqdef dev
+16:32:45 done: /home/crest/if_pair-scratch/p6g11/sweep2/def/q3_r1.tsv

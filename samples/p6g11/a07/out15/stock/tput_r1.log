@@ -1,0 +1,5 @@
+17:13:49 stages: eli; tests: tput resp; P 128, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+17:13:49 rep 1 idle probes
+17:14:10 rep 1 eli tput
+17:14:28 rep 1 eli resp
+17:15:34 done: /home/crest/if_pair-scratch/p6g11/out15/stock/tput_r1.tsv

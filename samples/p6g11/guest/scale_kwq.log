@@ -1,0 +1,5 @@
+18:41:17 stages: kwqshard kwqbio kwqtime; tests: scale; P 4, ONECPU_N 4 on CPU 1, 64 MB/writer, SECS 4, REPS 1
+18:41:17 rep 1 kwqshard scale
+18:42:03 rep 1 kwqbio scale
+18:42:49 rep 1 kwqtime scale
+18:43:34 done: /root/ifpair-scratch/stages/p6g11/out/scale_kwq.tsv

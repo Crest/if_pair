@@ -1,0 +1,54 @@
+| test | best (MB/s) | stock | today | whole | time | time+rq | time+rq+buf | +buf p55 | +buf+out | +cut | spread % | nop |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| home dev both_r | 70 time+rq | -3.9 | - | - | - | +0.0 | -5.6 | - | -22.8 | - | 3.9 | 54 |
+| home dev both_w | 853 +buf+out | -1.3 | - | - | - | -1.6 | -1.2 | - | +0.0 | - | 0.3 | 854 |
+| home dev read (at the ceiling) | 1040 stock | +0.0 | - | - | - | +0.0 | -0.0 | - | +0.0 | - | 0.0 | 1040 |
+| home dev write (at the ceiling) | 900 time+rq+buf | -0.0 | - | - | - | -0.0 | +0.0 | - | -0.0 | - | 0.0 | 900 |
+| scale scale128 bulk | 37241 time+rq+buf | -41.8 | - | - | - | -35.9 | +0.0 | - | -3.1 | - | 4.2 | - |
+| scale scale128 small | 8204 +buf+out | -64.7 | - | - | - | -0.3 | -0.4 | - | +0.0 | - | 1.7 | - |
+| scale scale16 bulk | 47306 +buf+out | -49.6 | - | - | - | -49.3 | -8.8 | - | +0.0 | - | 1.0 | - |
+| scale scale16 small | 8588 +buf+out | -64.9 | - | - | - | -0.2 | -0.1 | - | +0.0 | - | 2.2 | - |
+| scale scale32 bulk | 43728 +buf+out | -48.5 | - | - | - | -47.4 | -5.7 | - | +0.0 | - | 1.1 | - |
+| scale scale32 small | 8517 +buf+out | -64.8 | - | - | - | -0.3 | -0.3 | - | +0.0 | - | 0.7 | - |
+| scale scale4 bulk | 19250 +buf+out | -32.6 | - | - | - | -22.7 | -7.5 | - | +0.0 | - | 1.1 | - |
+| scale scale4 small | 3904 time+rq | -42.1 | - | - | - | +0.0 | -0.3 | - | -0.3 | - | 1.3 | - |
+| scale scale64 bulk | 39089 time+rq+buf | -43.3 | - | - | - | -41.7 | +0.0 | - | -0.6 | - | 1.3 | - |
+| scale scale64 small | 8275 time+rq+buf | -64.8 | - | - | - | -0.2 | +0.0 | - | -0.0 | - | 1.8 | - |
+| storage dev both_r | 4261 time+rq | -49.7 | - | - | - | +0.0 | -42.1 | - | -20.5 | - | 7.8 | 3650 |
+| storage dev both_w | 13998 +buf+out | -22.4 | - | - | - | -6.3 | -21.6 | - | +0.0 | - | 3.1 | 28185 |
+| storage dev read | 37052 time+rq+buf | -14.5 | - | - | - | -0.1 | +0.0 | - | -1.2 | - | 4.8 | 57902 |
+| storage dev write | 11966 +buf+out | -18.2 | - | - | - | -12.2 | -13.5 | - | +0.0 | - | 1.7 | 41935 |
+| storage64 dev both_r | 15400 +buf+out | -4.9 | - | - | - | -0.8 | -0.4 | - | +0.0 | - | 2.1 | 16259 |
+| storage64 dev both_w | 15132 +buf+out | -5.3 | - | - | - | -0.9 | -0.6 | - | +0.0 | - | 2.3 | 16259 |
+| storage64 dev read | 33724 time+rq+buf | -22.5 | - | - | - | -0.4 | +0.0 | - | -0.7 | - | 2.1 | 46234 |
+| storage64 dev write | 31987 +buf+out | -21.5 | - | - | - | -2.9 | -2.8 | - | +0.0 | - | 1.0 | 40837 |
+| tput resp load | 18896 +buf+out | -10.6 | - | - | - | -8.9 | -2.2 | - | +0.0 | - | 2.4 | - |
+| tput tput read | 40150 time+rq | -1.2 | - | - | - | +0.0 | -0.1 | - | -0.6 | - | 1.8 | - |
+| tput tput write | 20785 +buf+out | -20.0 | - | - | - | -19.1 | -10.6 | - | +0.0 | - | 5.8 | - |
+| tput32k tput read | 50350 time+rq | -1.5 | - | - | - | +0.0 | -2.0 | - | -0.4 | - | 4.0 | - |
+| tput32k tput write | 20682 +buf+out | -14.9 | - | - | - | -14.8 | -4.5 | - | +0.0 | - | 3.7 | - |
+
+2 rows at the drives' ceiling left out of the score
+stock        within 5 %: 5 of 25, worst 64.9 %; [(64.9, 'scale', 'scale16', 'small'), (64.8, 'scale', 'scale64', 'small'), (64.8, 'scale', 'scale32', 'small'), (64.7, 'scale', 'scale128', 'small'), (49.7, 'storage', 'dev', 'both_r'), (49.6, 'scale', 'scale16', 'bulk')]
+today        within 5 %: 0 of 0, worst 0.0 %; []
+whole        within 5 %: 0 of 0, worst 0.0 %; []
+time         within 5 %: 0 of 0, worst 0.0 %; []
+time+rq      within 5 %: 15 of 25, worst 49.3 %; [(49.3, 'scale', 'scale16', 'bulk'), (47.4, 'scale', 'scale32', 'bulk'), (41.7, 'scale', 'scale64', 'bulk'), (35.9, 'scale', 'scale128', 'bulk'), (22.7, 'scale', 'scale4', 'bulk'), (19.1, 'tput', 'tput', 'write')]
+time+rq+buf  within 5 %: 17 of 25, worst 42.1 %; [(42.1, 'storage', 'dev', 'both_r'), (21.6, 'storage', 'dev', 'both_w'), (13.5, 'storage', 'dev', 'write'), (10.6, 'tput', 'tput', 'write'), (8.8, 'scale', 'scale16', 'bulk'), (7.5, 'scale', 'scale4', 'bulk')]
++buf p55     within 5 %: 0 of 0, worst 0.0 %; []
++buf+out     within 5 %: 23 of 25, worst 22.8 %; [(22.8, 'home', 'dev', 'both_r'), (20.5, 'storage', 'dev', 'both_r')]
++cut         within 5 %: 0 of 0, worst 0.0 %; []
+
+drives: reads beside writes (p50 / p99 us), MB/s, timer p99 us, under writes: timer probe ms, spin share, exec us, busiest / idlest CPU
+stock        home       read    7537 /    9830  w     842 r      67  timer       5  probe   3001  spin 1.00  exec    360  cpu 0.05/0.03  alone    504/    520
+stock        storage    read    2130 /   44564  w   10861 r    2144  timer    6575  probe   4536  spin 1.00  exec    363  cpu 0.41/0.40  alone   1262/   1393
+stock        storage64  read      75 /   17564  w   14332 r   14638  timer      43  probe   3033  spin 0.06  exec  40198  cpu 0.41/0.41  alone    647/    713
+time+rq      home       read    7537 /    9830  w     840 r      70  timer       3  probe   3001  spin 1.00  exec    356  cpu 0.27/0.00  alone    504/    512
+time+rq      storage    read     549 /   44564  w   13114 r    4261  timer    1710  probe   3204  spin 0.11  exec  40876  cpu 0.41/0.40  alone    190/   1393
+time+rq      storage64  read      71 /    9306  w   14989 r   15278  timer      49  probe   3006  spin 0.65  exec   2878  cpu 0.37/0.36  alone    631/    680
+time+rq+buf  home       read    7537 /    9830  w     843 r      66  timer       3  probe   3001  spin 1.00  exec    360  cpu 0.25/0.00  alone    504/    512
+time+rq+buf  storage    read    1458 /   44564  w   10981 r    2466  timer    5504  probe   3060  spin 0.29  exec  21877  cpu 0.41/0.40  alone    186/   1393
+time+rq+buf  storage64  read      73 /    9306  w   15034 r   15334  timer      30  probe   3006  spin 0.65  exec   2796  cpu 0.37/0.36  alone    631/    680
++buf+out     home       read    9830 /    9830  w     853 r      54  timer       2  probe   3001  spin 1.00  exec    363  cpu 0.28/0.00  alone    504/    512
++buf+out     storage    read     942 /   43516  w   13998 r    3387  timer    3160  probe   3049  spin 0.34  exec  18057  cpu 0.41/0.40  alone    227/   1393
++buf+out     storage64  read      71 /    9306  w   15132 r   15400  timer      46  probe   3005  spin 0.73  exec   2224  cpu 0.35/0.34  alone    631/    680

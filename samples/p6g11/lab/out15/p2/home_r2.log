@@ -1,0 +1,5 @@
+17:54:14 stages: kwqhold0 kwqhold1 kwqdef; tests: dev; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+17:54:14 rep 1 kwqhold0 dev
+17:54:47 rep 1 kwqhold1 dev
+17:55:20 rep 1 kwqdef dev
+17:55:53 done: /home/crest/if_pair-scratch/p6g11/out15/p2/home_r2.tsv

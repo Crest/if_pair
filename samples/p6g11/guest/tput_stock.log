@@ -1,0 +1,5 @@
+18:38:43 stages: eli; tests: tput resp; P 4, ONECPU_N 4 on CPU 1, 64 MB/writer, SECS 4, REPS 1
+18:38:43 rep 1 idle probes
+18:38:52 rep 1 eli tput
+18:38:53 rep 1 eli resp
+18:39:04 done: /root/ifpair-scratch/stages/p6g11/out/tput_stock.tsv

@@ -1,0 +1,2 @@
+19:16:12 stages: kwqbio kwqtime; tests: scale; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+19:16:12 rep 1 kwqbio scale

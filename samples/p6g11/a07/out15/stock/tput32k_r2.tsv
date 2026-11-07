@@ -1,0 +1,9 @@
+eli	1	tput	write_cs_s	693433
+eli	1	tput	write_mbps	7667.5
+eli	1	tput	write_sys	0.9539
+eli	1	tput	write_prov_min	60.0
+eli	1	tput	write_prov_max	68.2
+eli	1	tput	write_jain	0.9995
+eli	1	tput	read_cs_s	5157925
+eli	1	tput	read_mbps	40116.0
+eli	1	tput	read_sys	0.7833

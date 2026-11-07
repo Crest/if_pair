@@ -1,0 +1,53 @@
+19:06:21 stages: kwqshard kwqbio kwqtime; tests: tput; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+19:06:21 rep 1 kwqshard tput
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+19:06:22 rep 1 kwqbio tput
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+19:06:23 rep 1 kwqtime tput
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+geom: warning: Using sectorsize bigger than the page size!
+19:06:24 done: /home/crest/if_pair-scratch/p6g11/out/p2/tput32k_r1.tsv

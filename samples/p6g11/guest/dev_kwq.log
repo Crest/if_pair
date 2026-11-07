@@ -1,0 +1,5 @@
+18:43:37 stages: kwqshard kwqbio kwqtime; tests: dev; P 4, ONECPU_N 4 on CPU 1, 64 MB/writer, SECS 4, REPS 1
+18:43:37 rep 1 kwqshard dev
+18:44:10 rep 1 kwqbio dev
+18:44:43 rep 1 kwqtime dev
+18:45:16 done: /root/ifpair-scratch/stages/p6g11/out/dev_kwq.tsv

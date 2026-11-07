@@ -1,0 +1,8 @@
+15:42:15 stages: kwqbio kwqbio1; tests: deep deepcpu mixed; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+15:42:15 rep 1 kwqbio deep
+15:42:26 rep 1 kwqbio deepcpu
+15:42:37 rep 1 kwqbio mixed
+15:42:48 rep 1 kwqbio1 deep
+15:42:59 rep 1 kwqbio1 deepcpu
+15:43:10 rep 1 kwqbio1 mixed
+15:43:21 done: /home/crest/if_pair-scratch/p6g10/out/t1/r5.tsv

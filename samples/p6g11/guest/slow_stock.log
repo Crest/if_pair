@@ -1,0 +1,3 @@
+18:45:51 stages: eli; tests: dev; P 4, ONECPU_N 4 on CPU 1, 64 MB/writer, SECS 4, REPS 1
+18:45:51 rep 1 eli dev
+18:46:20 done: /root/ifpair-scratch/stages/p6g11/out/slow_stock.tsv

@@ -1,0 +1,12 @@
+nop	1	dev	write_timer_late_avg	1
+nop	1	dev	write_timer_late_p99	10
+nop	1	dev	write_timer_late_max	24
+nop	1	dev	write_timer_catchups	0
+nop	1	dev	write_timer_elapsed_ms	3003
+nop	1	dev	write_spin_share	1.0003
+nop	1	dev	write_spin_start_delay_ms	3
+nop	1	dev	write_spin_share_outside	0.9995
+nop	1	dev	write_exec_exec_avg	1168
+nop	1	dev	write_exec_exec_p99	1389
+nop	1	dev	write_exec_exec_max	1389
+nop	1	dev	write_exec_elapsed_ms	561

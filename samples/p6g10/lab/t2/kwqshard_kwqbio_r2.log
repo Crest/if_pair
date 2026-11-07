@@ -1,0 +1,6 @@
+16:03:25 stages: kwqshard kwqbio; tests: net netcpu; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+16:03:25 rep 1 kwqshard net
+16:03:49 rep 1 kwqshard netcpu
+16:04:08 rep 1 kwqbio net
+16:04:32 rep 1 kwqbio netcpu
+16:04:52 done: /home/crest/if_pair-scratch/p6g10/out/t2/kwqshard_kwqbio_r2.tsv

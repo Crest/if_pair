@@ -1,0 +1,19 @@
+17:06:09 stages: eli; tests: tput; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+17:06:09 rep 1 eli tput
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+geli: warning: Using sectorsize bigger than the page size!
+17:06:10 done: /home/crest/if_pair-scratch/p6g11/out15/stock/tput32k_r1.tsv

@@ -1,0 +1,45 @@
+      78 kernel`devvn_refthread
+      90 kernel`memcpy_erms
+      99 geom_kwqeli.ko`g_eli_kwq_handler
+     100 geom_kwqeli.ko`g_eli_key_drop
+     101 geom_kwqeli.ko`g_eli_write_done
+     102 kernel`physio
+     104 kernel`aesni_encrypt_xts
+     105 kwq.ko`kwq_item_stop
+     127 kernel`g_io_deliver
+     131 kwq.ko`kwq_worker_main
+     145 kernel`aesni_cipher_setup_common
+     152 kernel`vm_page_wire_mapped
+     166 geom_kwqeli.ko`g_eli_crypto_ivgen
+     168 kernel`lock_delay
+     198 kernel`clear_pcb_flags
+     206 kernel`crypto_dispatch_one
+     233 kernel`_key_expansion_128
+     237 kernel`aesni_process
+     237 kernel`uma_zalloc_arg
+     244 kernel`aesni_set_deckey
+     252 kernel`crypto_invoke
+     267 kernel`_key_expansion_256b
+     278 kernel`vm_page_unwire_managed
+     336 kernel`crypto_done
+     404 geom_kwqeli.ko`g_eli_key_hold
+     414 kernel`uma_zfree_arg
+     427 kernel`pmap_extract_and_hold
+     456 kernel`aesni_set_enckey
+     502 user
+     631 geom_kwqeli.ko`g_eli_crypto_run
+     682 geom_kwqeli.ko`g_eli_crypto_write_done
+     764 kernel`aesni_cipher_crypt
+     768 kernel`vm_page_unhold_pages
+     803 kernel`crypto_buffer_contiguous_subsegment
+     860 kernel`memset_erms
+    1637 kernel`spinlock_exit
+    2246 kernel`fpurestore_xrstor3264
+    7642 kernel`fpu_kern_enter
+   20092 kernel`fpu_kern_leave
+   41825 kernel`aesni_crypt_xts
+ITEM                   SIZE   LIMIT     USED     FREE      REQ FAIL SLEEP XDOM
+GELI buffers:        135168,      0,       0,      16,       0,   0,   0,   0
+GELI big buffers 256k:262144,      0,       0,       0,       0,   0,   0,   0
+GELI big buffers 512k:524288,      0,       0,       0,       0,   0,   0,   0
+GELI big buffers 1024k:1048576,      0,     110,      47,  142065,   0,   0,   0

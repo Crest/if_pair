@@ -1,0 +1,4 @@
+15:57:41 stages: eli; tests: net netcpu; P 128, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+15:57:41 rep 1 eli net
+15:59:46 rep 1 eli netcpu
+16:00:10 done: /home/crest/if_pair-scratch/p6g10/out/t2/eli_r1.tsv

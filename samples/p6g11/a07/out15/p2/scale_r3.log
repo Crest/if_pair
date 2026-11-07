@@ -1,0 +1,5 @@
+19:08:03 stages: kwqhold1 kwqdef kwqhold0; tests: scale; P 128, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+19:08:03 rep 1 kwqhold1 scale
+19:10:58 rep 1 kwqdef scale
+19:13:55 rep 1 kwqhold0 scale
+19:16:50 done: /home/crest/if_pair-scratch/p6g11/out15/p2/scale_r3.tsv

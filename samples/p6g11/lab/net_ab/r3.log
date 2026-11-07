@@ -1,0 +1,8 @@
+19:30:08 stages: kwqdef kwqhold0 kwqhold2; tests: net netcpu; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+19:30:08 rep 1 kwqdef net
+19:30:33 rep 1 kwqdef netcpu
+19:30:53 rep 1 kwqhold0 net
+19:31:17 rep 1 kwqhold0 netcpu
+19:31:37 rep 1 kwqhold2 net
+19:32:00 rep 1 kwqhold2 netcpu
+19:32:20 done: /home/crest/if_pair-scratch/p6g11/net_ab/net/r3.tsv

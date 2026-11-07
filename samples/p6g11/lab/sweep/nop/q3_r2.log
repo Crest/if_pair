@@ -1,0 +1,3 @@
+16:19:44 stages: nop; tests: dev; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+16:19:44 rep 1 nop dev
+16:20:17 done: /home/crest/if_pair-scratch/p6g11/sweep/nop/q3_r2.tsv

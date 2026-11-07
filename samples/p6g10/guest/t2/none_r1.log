@@ -1,0 +1,4 @@
+15:32:47 stages: none; tests: net netcpu; P 1, ONECPU_N 1 on CPU 1, 256 MB/writer, SECS 5, REPS 1
+15:32:47 rep 1 none net
+15:33:08 rep 1 none netcpu
+15:33:28 done: /root/ifpair-scratch/stages/p6g10/out/t2/none_r1.tsv

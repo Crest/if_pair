@@ -1,0 +1,51 @@
+| test | best (MB/s) | stock | today | whole | time | time+rq | time+rq+buf | +buf p55 | +buf+out | +nobucket | spread % | nop |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| home dev both_r | 70 time+rq | - | - | - | - | +0.0 | - | - | -20.6 | -23.6 | 0.7 | 54 |
+| home dev both_w | 854 +nobucket | - | - | - | - | -1.7 | - | - | -0.2 | +0.0 | 0.0 | 854 |
+| home dev read (at the ceiling) | 1040 time+rq | - | - | - | - | +0.0 | - | - | +0.0 | +0.0 | 0.0 | 1040 |
+| home dev write (at the ceiling) | 900 time+rq | - | - | - | - | +0.0 | - | - | +0.0 | -0.0 | 0.0 | 900 |
+| scale scale128 bulk | 36401 +buf+out | - | - | - | - | -37.0 | - | - | +0.0 | -0.2 | 3.8 | - |
+| scale scale128 small | 8212 +nobucket | - | - | - | - | -0.1 | - | - | -0.6 | +0.0 | 1.0 | - |
+| scale scale16 bulk | 47310 +buf+out | - | - | - | - | -51.2 | - | - | +0.0 | -0.1 | 2.2 | - |
+| scale scale16 small | 8596 time+rq | - | - | - | - | +0.0 | - | - | -0.1 | -0.1 | 0.4 | - |
+| scale scale32 bulk | 42994 +buf+out | - | - | - | - | -49.1 | - | - | +0.0 | -0.3 | 3.1 | - |
+| scale scale32 small | 8529 time+rq | - | - | - | - | +0.0 | - | - | -0.1 | -0.2 | 0.5 | - |
+| scale scale4 bulk | 19158 +buf+out | - | - | - | - | -25.1 | - | - | +0.0 | -0.1 | 3.1 | - |
+| scale scale4 small | 3894 time+rq | - | - | - | - | +0.0 | - | - | -0.3 | -0.2 | 0.9 | - |
+| scale scale64 bulk | 39081 +nobucket | - | - | - | - | -42.6 | - | - | -0.2 | +0.0 | 1.6 | - |
+| scale scale64 small | 8282 time+rq | - | - | - | - | +0.0 | - | - | -0.2 | -0.2 | 0.9 | - |
+| storage dev both_r | 4306 time+rq | - | - | - | - | +0.0 | - | - | -21.1 | -16.1 | 3.3 | 3639 |
+| storage dev both_w | 14598 +nobucket | - | - | - | - | -9.6 | - | - | -4.0 | +0.0 | 1.2 | 28114 |
+| storage dev read | 37540 +buf+out | - | - | - | - | -0.5 | - | - | +0.0 | -0.2 | 3.6 | 57920 |
+| storage dev write | 12280 +nobucket | - | - | - | - | -13.8 | - | - | -2.6 | +0.0 | 4.1 | 41934 |
+| storage64 dev both_r | 15489 +buf+out | - | - | - | - | -2.0 | - | - | +0.0 | -0.3 | 1.8 | 16207 |
+| storage64 dev both_w | 15287 +buf+out | - | - | - | - | -2.6 | - | - | +0.0 | -0.1 | 1.8 | 16213 |
+| storage64 dev read | 33628 time+rq | - | - | - | - | +0.0 | - | - | -0.5 | -0.4 | 0.9 | 46240 |
+| storage64 dev write | 32149 +buf+out | - | - | - | - | -3.4 | - | - | +0.0 | -0.5 | 2.5 | 40829 |
+| tput resp load | 19917 +nobucket | - | - | - | - | -22.6 | - | - | -3.3 | +0.0 | 4.3 | - |
+| tput tput read | 40185 +buf+out | - | - | - | - | -0.4 | - | - | +0.0 | -0.5 | 0.8 | - |
+| tput tput write | 21083 +buf+out | - | - | - | - | -21.4 | - | - | +0.0 | -0.8 | 14.6 | - |
+| tput32k tput read | 50083 +nobucket | - | - | - | - | -0.4 | - | - | -0.1 | +0.0 | 0.7 | - |
+| tput32k tput write | 21696 +nobucket | - | - | - | - | -16.4 | - | - | -1.8 | +0.0 | 13.9 | - |
+
+2 rows at the drives' ceiling left out of the score
+stock        within 5 %: 0 of 0, worst 0.0 %; []
+today        within 5 %: 0 of 0, worst 0.0 %; []
+whole        within 5 %: 0 of 0, worst 0.0 %; []
+time         within 5 %: 0 of 0, worst 0.0 %; []
+time+rq      within 5 %: 15 of 25, worst 51.2 %; [(51.2, 'scale', 'scale16', 'bulk'), (49.1, 'scale', 'scale32', 'bulk'), (42.6, 'scale', 'scale64', 'bulk'), (37.0, 'scale', 'scale128', 'bulk'), (25.1, 'scale', 'scale4', 'bulk'), (22.6, 'tput', 'resp', 'load')]
+time+rq+buf  within 5 %: 0 of 0, worst 0.0 %; []
++buf p55     within 5 %: 0 of 0, worst 0.0 %; []
++buf+out     within 5 %: 23 of 25, worst 21.1 %; [(21.1, 'storage', 'dev', 'both_r'), (20.6, 'home', 'dev', 'both_r')]
++nobucket    within 5 %: 23 of 25, worst 23.6 %; [(23.6, 'home', 'dev', 'both_r'), (16.1, 'storage', 'dev', 'both_r')]
+
+drives: reads beside writes (p50 / p99 us), MB/s, timer p99 us, under writes: timer probe ms, spin share, exec us, busiest / idlest CPU
+time+rq      home       read    7537 /    7537  w     840 r      70  timer       5  probe   3001  spin 1.00  exec    353  cpu 0.28/0.00  alone    504/    512
+time+rq      storage    read     532 /   44564  w   13195 r    4306  timer    2002  probe   3208  spin 0.11  exec  41881  cpu 0.41/0.40  alone    182/   1393
+time+rq      storage64  read      73 /   17564  w   14890 r   15172  timer      49  probe   3006  spin 0.63  exec   2855  cpu 0.37/0.36  alone    631/    680
++buf+out     home       read    9830 /    9830  w     852 r      56  timer       3  probe   3001  spin 1.00  exec    353  cpu 0.28/0.00  alone    504/    512
++buf+out     storage    read     926 /   43516  w   14011 r    3395  timer    2952  probe   3059  spin 0.34  exec  17597  cpu 0.41/0.40  alone    158/   1360
++buf+out     storage64  read      71 /    9306  w   15287 r   15489  timer      28  probe   3004  spin 0.75  exec   2006  cpu 0.35/0.33  alone    631/    696
++nobucket    home       read    9830 /    9830  w     854 r      54  timer       3  probe   3001  spin 1.00  exec    345  cpu 0.19/0.00  alone    504/    512
++nobucket    storage    read     844 /   43516  w   14598 r    3614  timer    2914  probe   3042  spin 0.34  exec  16961  cpu 0.41/0.40  alone    166/   1360
++nobucket    storage64  read      71 /   17564  w   15265 r   15436  timer      36  probe   3005  spin 0.74  exec   2233  cpu 0.35/0.33  alone    631/    680

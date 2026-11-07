@@ -1,0 +1,4 @@
+16:05:13 stages: none; tests: net netcpu; P 1, ONECPU_N 1 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+16:05:13 rep 1 none net
+16:05:39 rep 1 none netcpu
+16:06:02 done: /home/crest/if_pair-scratch/p6g10/out/t2/none_r2.tsv

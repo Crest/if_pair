@@ -1,0 +1,3 @@
+16:15:48 stages: eli; tests: dev; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+16:15:48 rep 1 eli dev
+16:16:21 done: /home/crest/if_pair-scratch/p6g11/sweep/stock/q4_r2.tsv

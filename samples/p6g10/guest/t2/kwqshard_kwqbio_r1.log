@@ -1,0 +1,6 @@
+15:34:14 stages: kwqshard kwqbio; tests: net netcpu; P 4, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 5, REPS 1
+15:34:14 rep 1 kwqshard net
+15:34:37 rep 1 kwqshard netcpu
+15:34:57 rep 1 kwqbio net
+15:35:20 rep 1 kwqbio netcpu
+15:35:40 done: /root/ifpair-scratch/stages/p6g10/out/t2/kwqshard_kwqbio_r1.tsv

@@ -1,0 +1,5 @@
+18:57:53 stages: kwqshard kwqbio kwqtime; tests: scale; P 16, ONECPU_N 4 on CPU 1, 256 MB/writer, SECS 10, REPS 1
+18:57:53 rep 1 kwqshard scale
+19:00:10 rep 1 kwqbio scale
+19:02:27 rep 1 kwqtime scale
+19:04:45 done: /home/crest/if_pair-scratch/p6g11/out/p2/scale_r1.tsv

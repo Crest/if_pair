@@ -1,0 +1,45 @@
+     170 geom_kwqeli.ko`g_eli_crypto_write_done
+     182 kernel`aesni_cipher_setup_common
+     187 kernel`vm_page_alloc_domain_iter
+     188 kernel`uma_zalloc_arg
+     190 kernel`crypto_buffer_contiguous_subsegment
+     199 kernel`vm_page_free_prep
+     199 kernel`vm_page_wire_mapped
+     199 kernel`vm_reserv_alloc_page
+     211 kernel`vm_reserv_free_page
+     212 kernel`crypto_invoke
+     227 kernel`vm_page_pqstate_commit
+     228 kernel`pctrie_iter_insert_lookup
+     230 kernel`crypto_dispatch_one
+     244 kernel`uma_zfree_arg
+     247 kernel`aesni_set_deckey
+     273 kernel`smp_targeted_tlb_shootdown_native
+     274 kernel`crypto_done
+     275 kernel`_key_expansion_256b
+     306 kernel`_key_expansion_128
+     319 kernel`vm_page_unwire_managed
+     327 kernel`pmap_map_io_transient
+     355 kernel`vm_page_unhold_pages
+     367 kernel`pctrie_insert_node
+     375 kernel`aesni_cipher_crypt
+     419 kernel`pmap_extract_and_hold
+     442 kernel`pmap_invalidate_range_curcpu_cb
+     509 geom_kwqeli.ko`g_eli_crypto_run
+     593 kernel`aesni_set_enckey
+     624 kernel`pmap_enter
+     628 user
+     840 kernel`pctrie_iter_lookup
+    1153 kernel`memset_erms
+    1698 kernel`fpu_kern_enter
+    2141 kernel`spinlock_exit
+    3149 kernel`fpurestore_xrstor3264
+    3558 kernel`cpu_idle
+    4314 kernel`fpu_kern_leave
+   16834 kernel`memmove_erms
+   22384 kernel`aesni_crypt_xts
+   23879 kernel`lock_delay
+ITEM                   SIZE   LIMIT     USED     FREE      REQ FAIL SLEEP XDOM
+GELI buffers:        135168,      0,       0,      16,       0,   0,   0,   0
+GELI big buffers 256k:262144,      0,       0,       0,       0,   0,   0,   0
+GELI big buffers 512k:524288,      0,       0,       0,       0,   0,   0,   0
+GELI big buffers 1024k:1048576,      0,       0,       0,       0,   0,   0,   0
