@@ -63,7 +63,7 @@ EXPORT_SYMS=	kwq_create kwq_activate kwq_drain kwq_destroy kwq_notifier_consumed
 		kwq_enqueue kwq_enqueue_urgent kwq_enqueue_list kwq_cpu_for_hash \
 		kwq_scatter kwq_group_leave kwq_name_valid \
 		kwq_notifier_init kwq_notify kwq_notify_cancel \
-		kwq_requeue kwq_budget_left kwq_name kwq_class
+		kwq_requeue kwq_budget_left kwq_item_begin kwq_item_stop kwq_name kwq_class
 
 # The DTrace translator (KWQ.md S10.2) goes where dtrace(1) looks for
 # library files; DDB's "show kwq" needs nothing beyond the module.

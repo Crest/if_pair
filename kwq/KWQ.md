@@ -161,6 +161,10 @@ defined in GLOSSARY.md.
                 /* sleepable; returns with nf neither queued nor running */
     uint64_t    kwq_budget_left(struct kwq *q);       /* handler only, ns;
                                                           P0: a constant, P1: SCHED.md */
+    void        kwq_item_begin(struct kwq *q);        /* handler only: a stoppable
+                                                          item starts or resumes */
+    bool        kwq_item_stop(struct kwq *q);         /* handler only: stop it here?
+                                                          SCHED.md S4.9 */
     int         kwq_cpu_for_hash(uint32_t hash);       /* hash -> online CPU */
     #define KWQ_CPU_ANY      (-1)   /* BULK only: a CPU chosen by
                                        kern.kwq.bulk.place, an idle worker
@@ -196,6 +200,9 @@ defined in GLOSSARY.md.
     #define KWQ_F_VNET       0x10   /* handler runs CURVNET_SET(q->kwq_vnet) */
     #define KWQ_F_SPIN       0x20   /* per-CPU lists use MTX_SPIN: producers may
                                        be interrupt filters or hold spin locks */
+    #define KWQ_F_PROMPT     0x40   /* BULK: served ahead of the ring and the
+                                       new list, a quantum per ring slot
+                                       (SCHED.md S4.8) */
 
 **Allocation happens exactly twice, both at configuration time.**
 `kwq_create()` allocates the queue object and its per-CPU state (heads,
@@ -661,6 +668,7 @@ infallible so that no client needs an error path there.
 | `kwq_notify_cancel()` | no | `void`; may sleep; detach only |
 | `kwq_scatter()` | yes, all-or-nothing | `EINVAL` for a non-BULK queue, a NULL group, list or `done`, or `n <= 0`; `ENOBUFS` if the chunks do not all fit (checked before the first append, which with the rest is then exempt from the limit), `ENXIO` if the queue is draining or inactive, in both cases nothing is queued and `done` is never called; on success `done` is called exactly once, from the last `kwq_group_leave()` |
 | `kwq_budget_left()` | no | returns 0 when the quantum is exhausted; never an error |
+| `kwq_item_begin()`, `kwq_item_stop()` | no | an item that can stop part way: begin marks its start in a pass, stop says whether to stop at this point (SCHED.md S4.9); never an error |
 | `kwq_requeue()` | no | `void`; handler-only, prepends already-admitted items, never counts against the limit |
 | the handler | no | has no return value and owns every item it is given; it cannot refuse work, only requeue it |
 | `kwq_drain()` | no | `void`; may sleep; calling it from a handler or non-sleepable context is a bug, asserted |
@@ -703,6 +711,7 @@ re-entrant from it; the class decides the rest.
 | `kwq_notify` to any queue, including this one and for the notifier being handled | yes | yes | re-arms the signal; the usual way a notifier handler says "my list is still non-empty" (S14) |
 | `kwq_requeue` (leftovers of this pass) | yes | yes | prepends to the current CPU's list of this queue; FIFO preserved; only for items received in this pass |
 | `kwq_budget_left` | yes | yes (informational) | 0 means: requeue and return |
+| `kwq_item_begin`, `kwq_item_stop` | yes | yes (informational) | handler only; true: leave the item part done and requeue it in front of the list |
 | `kwq_scatter` | yes | yes | to a BULK queue; `done` runs later in the handler that leaves the group's last item |
 | `kwq_create` | no | no | sleeps; configuration-time only |
 | `kwq_activate` | no | no | configuration-time only, asserted |
@@ -1356,6 +1365,7 @@ Per class: `kern.kwq.<class>.`
 | `quantum_us` | uint | RWTUN | net 200, bulk 5000, blocking 5000 | CPU time a queue of weight 1 may consume per round (BLOCKING too: the quantum shares a worker between queues, which ULE's slice does not) |
 | `penalty_rounds` | uint | RWTUN | 32 | debt clamp in quanta: the most rounds an overrunning queue is parked (P1; SCHED.md S4.3) |
 | `budget_check_every` | uint | RWTUN | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; 1 = every call (SCHED.md S4.4) (P2) |
+| `item_min_us` | uint | RWTUN | BULK 2000, others 0 | an item that can stop part way stops for the pass's budget or the share limit only after running this long in a pass; a higher class stops it at any point (SCHED.md S4.9) |
 | `limit` | uint | RWTUN | 4096 | default per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards; 1..`UINT_MAX`, clamped to `INT_MAX` at creation; 0 is refused (EINVAL), as a tunable it leaves the default |
 | `cap_permille` | uint | RWTUN | 500 | share limit: the share of its CPU the worker may spend in passes per `cap_period_us` while other threads are runnable, the rest waiting between passes as an idle-priority thread, in 1/1000; 1000 = off, and the worker then obeys ULE's slice end as a process would (S11 Missing 1; SCHED.md S6.3) |
 | `cap_period_us` | uint | RWTUN | net 1000, bulk 10000, blocking 1000 | the share limit's period (BULK's holds a 1 MiB item with slack, SCHED.md S8) |

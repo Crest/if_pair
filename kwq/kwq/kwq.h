@@ -105,7 +105,10 @@ struct kwq_params {
 #define	KWQ_F_VNET	0x10	/* handler runs with the creator's vnet set */
 #define	KWQ_F_SPIN	0x20	/* per-CPU lists use spin mutexes: producers may
 				   be interrupt filters or hold spin locks */
-#define	KWQ_F_ALL	0x3f
+#define	KWQ_F_PROMPT	0x40	/* BULK: served ahead of the ring and the new
+				   list, one quantum of service per ring slot
+				   at most (../SCHED.md S4.8) */
+#define	KWQ_F_ALL	0x7f
 
 #define	KWQ_CPU_ANY	(-1)	/* BULK only: a CPU chosen by
 				   kern.kwq.bulk.place, an idle worker near the
@@ -197,10 +200,21 @@ void		 kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf);
  * returns the nanoseconds of this pass's budget still unspent, 0 when the
  * handler should requeue and return; P0 returns a constant, P1 implements
  * SCHED.md S4.4.  A handler processes at least one item per call.
+ *
+ * An item that can stop part way and go on in a later pass (the handler
+ * keeps where it stopped and requeues the item in front of the list): the
+ * handler calls kwq_item_begin() when it starts or resumes the item in a
+ * pass and kwq_item_stop() at each point it could stop.  A higher class
+ * stops it at any such point; the pass's budget and the share limit stop
+ * it only once it has run kern.kwq.<class>.item_min_us in this pass, since
+ * what a part-done item leaves behind goes cold while it waits (SCHED.md
+ * S4.9).  0: as kwq_budget_left() reading 0.
  */
 void		 kwq_requeue(struct kwq *q, struct kwq_item *head,
 		    struct kwq_item *tail, int n);
 uint64_t	 kwq_budget_left(struct kwq *q);
+void		 kwq_item_begin(struct kwq *q);
+bool		 kwq_item_stop(struct kwq *q);
 
 /* Introspection. */
 const char	*kwq_name(const struct kwq *q);

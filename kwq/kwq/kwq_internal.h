@@ -334,6 +334,14 @@ struct kwq_worker {
 	struct callout		kw_pub_co;
 	bool			kw_pub_armed;
 	uint64_t		kw_handoffs;
+	/*
+	 * KWQ_F_PROMPT queues (SCHED.md S4.8), under kw_mtx as kw_new is, and
+	 * their service since the last ring slot, the worker's own.  Out of
+	 * block 0, which is one line, and rarely touched without them.
+	 */
+	TAILQ_HEAD(, kwq_cpu)	kw_prompt;
+	uint64_t		kw_prompt_ns;
+	uint64_t		kw_item_start;	/* kwq_item_begin(): charged clock */
 } __aligned(KWQ_LINE);
 
 /* The mailbox shares the wake's line (kw_mtx, kw_sleeping): block 0 is one line. */

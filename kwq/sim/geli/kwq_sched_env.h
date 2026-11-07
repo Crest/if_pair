@@ -35,6 +35,8 @@ struct kwq_cpu {
 struct kwq_worker {
 	TAILQ_HEAD(, kwq_cpu)	kw_new;
 	TAILQ_HEAD(, kwq_cpu)	kw_active;
+	TAILQ_HEAD(, kwq_cpu)	kw_prompt;
+	uint64_t		kw_prompt_ns;
 	u_int			kw_nactive;
 	u_int			kw_nnew;
 	uint64_t		kw_round;
@@ -64,6 +66,7 @@ struct kwq_worker {
 };
 
 #define	KSQ_WEIGHT(kc)	((kc)->kc_weight)
+#define	KSQ_PROMPT(kc)	false
 
 /* __diagused is a kernel-side annotation (sys/systm.h); the simulator's
    checking code is always compiled, so the variable is simply used. */

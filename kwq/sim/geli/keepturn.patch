@@ -1,6 +1,6 @@
 --- a/kwq_sched.c
 +++ b/kwq_sched.c
-@@ -27,6 +27,8 @@
+@@ -29,6 +29,8 @@
  	kw->kw_want_new = true;
  	kw->kw_served = 0;
  	kw->kw_cur = NULL;
@@ -9,22 +9,19 @@
  	kw->kw_pass_start = 0;
  	kw->kw_pass_budget = 0;
  	kw->kw_cap_start = wall_now;
-@@ -144,7 +146,8 @@
- 
+@@ -160,7 +162,7 @@
  	*kcp = NULL;
  	if (kw->kw_phase == KWQ_PH_IDLE) {
--		if (TAILQ_EMPTY(&kw->kw_new) && TAILQ_EMPTY(&kw->kw_active))
-+		if (TAILQ_EMPTY(&kw->kw_new) && TAILQ_EMPTY(&kw->kw_active) &&
-+		    kw->kw_resume == NULL)
+ 		if (TAILQ_EMPTY(&kw->kw_new) && TAILQ_EMPTY(&kw->kw_active) &&
+-		    TAILQ_EMPTY(&kw->kw_prompt))
++		    TAILQ_EMPTY(&kw->kw_prompt) && kw->kw_resume == NULL)
  			return (KS_IDLE);
+ 		kw->kw_prompt_ns = 0;
  		kw->kw_round++;
- 		kw->kw_phase = KWQ_PH_ROUND;
-@@ -164,6 +167,20 @@
- 			kw->kw_handbacks++;
- 			kw->kw_phase = KWQ_PH_IDLE;
+@@ -183,6 +185,20 @@
  			return (KS_HANDBACK);
-+		}
-+		/*
+ 		}
+ 		/*
 +		 * A pass the share limit or a higher class cut goes on before
 +		 * anything else starts here.  No refill: this is the same turn.
 +		 */
@@ -37,12 +34,14 @@
 +			kw->kw_served++;
 +			*kcp = kc;
 +			return (KS_SERVE);
- 		}
- 		if (kw->kw_want_new && !TAILQ_EMPTY(&kw->kw_new)) {
- 			kw->kw_want_new = false;
-@@ -407,7 +424,10 @@
- 	kw->kw_cur = NULL;
- 	if (has_work) {
++		}
++		/*
+ 		 * S4.8: KWQ_F_PROMPT queues go first, until they have had a
+ 		 * quantum since the last ring slot, so that the ring moves
+ 		 * however many there are.  Each pass is a turn of its own: a
+@@ -450,7 +466,10 @@
+ 		ks_prompt_append(kw, kc);
+ 	} else if (has_work) {
  		kc->kc_state = kc->kc_deficit > 0 ? KWQ_CPU_WAKING : KWQ_CPU_PARKED;
 -		ks_ring_append(kw, kc);
 +		if (kw->kw_knobs->keep_turn && kw->kw_cut_out && kc->kc_deficit > 0)
@@ -52,7 +51,7 @@
  	} else {
  		kc->kc_state = KWQ_CPU_IDLE;
  		kc->kc_warm = (kc->kc_src == KWQ_SRC_RING) ? KWQ_WARM : 0;
-@@ -418,8 +438,16 @@
+@@ -461,8 +480,16 @@
  			kc->kc_deficit = 0;		/* DRR: reset on empty */
  	}
  	kc->kc_src = KWQ_SRC_NONE;
@@ -71,7 +70,7 @@
   * when the round's last pass handed the CPU over under the share limit:
 --- a/kwq_sched.h
 +++ b/kwq_sched.h
-@@ -32,7 +32,8 @@
+@@ -33,7 +33,8 @@
   *                      kw_cap_yields, kw_cap_cuts, kw_cap_runon,
   *                      kw_handbacks, kw_busy_ns,
   *                      kw_bc_calls (u_int), kw_bc_last (int64_t), kw_budget_calls,
@@ -81,15 +80,15 @@
   *
   * Units: all times are nanoseconds.  "cpu" times are the worker's own CPU
   * time (S1a.4); "wall" times are a monotonic clock (sbinuptime in the
-@@ -71,6 +72,7 @@
- 	uint64_t	cap_allow_ns;	/* cap_period_ns x cap_permille / 1000 (owner derives) */
+@@ -73,6 +74,7 @@
  	bool		boost_weighted;	/* boost = Q x w (default) or Q; S12 */
  	uint32_t	penalty_rounds;	/* debt clamp: D >= -penalty_rounds x Qw; 32 */
+ 	uint64_t	item_min_ns;	/* kwq_item_stop(): S4.9; 0 = at any point */
 +	bool		keep_turn;	/* a pass cut from outside keeps its turn */
  };
  
  /* kc_state */
-@@ -187,6 +189,13 @@
+@@ -191,6 +193,13 @@
  	    bool runnable);
  
  /*

@@ -397,6 +397,29 @@ list grew, and the spiral ended with one CPU 100 % busy walking while
 its fifteen peers idled.  The rule that follows: nothing the handler
 must do to comply with the budget may cost more than a constant.
 
+### 4.8 Prompt queues (KWQ_F_PROMPT)
+
+A BULK queue created `KWQ_F_PROMPT` skips the ring and the new list: its
+passes come first, each with a fresh quantum, until such queues have had
+one quantum of service since the last ring slot; then the ring gets its
+slot and the count starts again.  Items of the queues behind them wait
+for those passes, so this is for work that should not queue behind long
+items and whose own items are short by comparison (kwq-geli's reads
+beside its writes, 2026-11-06).  The bound is what keeps it fair: the
+ring moves however many prompt queues there are.
+
+### 4.9 Items that stop part way
+
+A long item a handler can leave part done (kwq-geli's bios) stops at the
+points the handler offers, through `kwq_item_stop()`.  A higher class
+stops it at any such point.  The pass's budget and the share limit stop
+it only once it has run `item_min_us` in this pass (class knob, BULK's
+default 2000, the others' 0: at any point), because what a part-done item leaves behind goes cold
+while its queue waits for the ring: on lab 0.8 ms of CPU per cut at 64
+providers, against nothing for the checks themselves.  An item shorter
+than `item_min_us` finishes, is charged in full and overruns its budget
+by at most that; one longer stops about every `item_min_us`.
+
 ### 4.6 Grace rule (anti-gaming)
 
 Without it, a bulk queue whose producer pauses briefly between bursts

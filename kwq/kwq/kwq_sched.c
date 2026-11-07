@@ -16,6 +16,8 @@ ks_worker_init(struct kwq_worker *kw, const struct kwq_sched_knobs *k,
 {
 	TAILQ_INIT(&kw->kw_new);
 	TAILQ_INIT(&kw->kw_active);
+	TAILQ_INIT(&kw->kw_prompt);
+	kw->kw_prompt_ns = 0;
 	kw->kw_nactive = 0;
 	kw->kw_nnew = 0;
 	kw->kw_round = 0;
@@ -66,6 +68,14 @@ ks_ring_append(struct kwq_worker *kw, struct kwq_cpu *kc)
 	kw->kw_nactive++;
 }
 
+/* Put kc on the prompt list's tail (S4.8). */
+static void
+ks_prompt_append(struct kwq_worker *kw, struct kwq_cpu *kc)
+{
+	TAILQ_INSERT_TAIL(&kw->kw_prompt, kc, kc_active);
+	kc->kc_onlist = KWQ_ON_PROMPT;
+}
+
 /*
  * S4.1.  A warm queue (left the ring less than one ring's worth of
  * service ago) goes back to the ring with its deficit as it is (0 after
@@ -85,6 +95,11 @@ ks_doorbell(struct kwq_worker *kw, struct kwq_cpu *kc)
 {
 	bool boost;
 
+	if (KSQ_PROMPT(kc)) {
+		ks_prompt_append(kw, kc);
+		kc->kc_state = KWQ_CPU_WAKING;
+		return (true);
+	}
 	if (kc->kc_warm & KWQ_DEBT) {
 		/* Owes time (S4.3): to the ring, where the refill parks it. */
 		ks_ring_append(kw, kc);
@@ -144,8 +159,10 @@ ks_next(struct kwq_worker *kw, bool higher_waiting, struct kwq_cpu **kcp)
 
 	*kcp = NULL;
 	if (kw->kw_phase == KWQ_PH_IDLE) {
-		if (TAILQ_EMPTY(&kw->kw_new) && TAILQ_EMPTY(&kw->kw_active))
+		if (TAILQ_EMPTY(&kw->kw_new) && TAILQ_EMPTY(&kw->kw_active) &&
+		    TAILQ_EMPTY(&kw->kw_prompt))
 			return (KS_IDLE);
+		kw->kw_prompt_ns = 0;
 		kw->kw_round++;
 		kw->kw_phase = KWQ_PH_ROUND;
 		kw->kw_ring_left = (int)kw->kw_nactive;
@@ -165,6 +182,26 @@ ks_next(struct kwq_worker *kw, bool higher_waiting, struct kwq_cpu **kcp)
 			kw->kw_phase = KWQ_PH_IDLE;
 			return (KS_HANDBACK);
 		}
+		/*
+		 * S4.8: KWQ_F_PROMPT queues go first, until they have had a
+		 * quantum since the last ring slot, so that the ring moves
+		 * however many there are.  Each pass is a turn of its own: a
+		 * fresh deficit, since the bound here is what keeps them fair.
+		 */
+		if (!TAILQ_EMPTY(&kw->kw_prompt) &&
+		    kw->kw_prompt_ns < kw->kw_knobs->quantum_ns) {
+			kc = TAILQ_FIRST(&kw->kw_prompt);
+			TAILQ_REMOVE(&kw->kw_prompt, kc, kc_active);
+			kc->kc_onlist = KWQ_ON_NONE;
+			kc->kc_warm = 0;
+			kc->kc_deficit = ks_quantum(kw, kc);
+			kc->kc_src = KWQ_SRC_PROMPT;
+			kc->kc_state = KWQ_CPU_RUNNING;	/* handed to the worker: I2 */
+			kw->kw_cur = kc;
+			kw->kw_served++;
+			*kcp = kc;
+			return (KS_SERVE);
+		}
 		if (kw->kw_want_new && !TAILQ_EMPTY(&kw->kw_new)) {
 			kw->kw_want_new = false;
 			kw->kw_served++;
@@ -182,6 +219,7 @@ ks_next(struct kwq_worker *kw, bool higher_waiting, struct kwq_cpu **kcp)
 			TAILQ_REMOVE(&kw->kw_active, kc, kc_active);
 			kc->kc_onlist = KWQ_ON_NONE;
 			kw->kw_nactive--;
+			kw->kw_prompt_ns = 0;
 			q = ks_quantum(kw, kc);
 			kc->kc_deficit += q;
 			if (kc->kc_deficit > 2 * q)	/* carry cap */
@@ -405,7 +443,12 @@ ks_pass_end(struct kwq_worker *kw, struct kwq_cpu *kc, uint64_t cpu_now,
 	if (kc->kc_deficit < -(int64_t)kw->kw_knobs->penalty_rounds * q)
 		kc->kc_deficit = -(int64_t)kw->kw_knobs->penalty_rounds * q;
 	kw->kw_cur = NULL;
-	if (has_work) {
+	if (kc->kc_src == KWQ_SRC_PROMPT)
+		kw->kw_prompt_ns += (uint64_t)dt;
+	if (has_work && KSQ_PROMPT(kc)) {
+		kc->kc_state = KWQ_CPU_WAKING;
+		ks_prompt_append(kw, kc);
+	} else if (has_work) {
 		kc->kc_state = kc->kc_deficit > 0 ? KWQ_CPU_WAKING : KWQ_CPU_PARKED;
 		ks_ring_append(kw, kc);
 	} else {

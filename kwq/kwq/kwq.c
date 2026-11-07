@@ -324,6 +324,7 @@ u_int kwq_tick_us[KWQ_NCLASS] = { 0, 0, 0 };
  */
 u_int kwq_wake_delay_us[KWQ_NCLASS] = { 0, 0, 0 };
 u_int kwq_tick_urgent_us[KWQ_NCLASS] = { 0, 0, 0 };
+static u_int kwq_item_min_us[KWQ_NCLASS] = { 0, 2000, 0 };
 static u_int kwq_budget_check_every[KWQ_NCLASS] = { 8, 8, 8 };
 static struct sysctl_ctx_list kwq_knob_sysctl;
 
@@ -346,6 +347,7 @@ kwq_knobs_apply(int cls)
 	k->boost_weighted = true;
 	k->penalty_rounds = kwq_penalty_rounds[cls];
 	k->budget_check_every = kwq_budget_check_every[cls];
+	k->item_min_ns = (uint64_t)kwq_item_min_us[cls] * 1000;
 }
 
 static int
@@ -398,7 +400,7 @@ kwq_sysctl_cap_prio(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
-#define	KWQ_NKNOBS	8
+#define	KWQ_NKNOBS	9
 static struct kwq_knob kwq_knob_desc[KWQ_NCLASS][KWQ_NKNOBS];
 
 static void
@@ -413,6 +415,7 @@ kwq_knobs_register(void)
 		{ "wake_delay_us", "the idle-class wait for same-CPU producers (KWQ.md S16): an enqueue from the worker's own CPU makes the worker runnable in the idle class at cap_prio and this is the deadline by which it is promoted to the class priority; an enqueue from another CPU rings the plain doorbell; 0 = off", 0, 1000000 },
 		{ "tick_us", "the tick regime's latency bound L (KWQ.md S16): after three consecutive sleeps shorter than L the worker sleeps with L as its timeout and producers place their lists without waking it, until a tick serves one element or none; 0 = off, the doorbell regime", 0, 100000 },
 		{ "tick_urgent_us", "inside the tick regime, an urgent item (kwq_enqueue_urgent()) that finds the worker asleep wakes it this much later instead of at once, so that urgent items within this bound share one wake; at or above tick_us the tick serves them; 0 = at once", 0, 100000 },
+		{ "item_min_us", "an item that can stop part way (kwq_item_stop()) stops for the pass's budget or the share limit only after running this long in a pass; a higher class stops it at any point; 0 = at any point", 0, 1000000 },
 	};
 	u_int *vars[KWQ_NKNOBS];
 	int cls, i;
@@ -423,7 +426,7 @@ kwq_knobs_register(void)
 		vars[2] = &kwq_cap_period_us[cls];
 		vars[3] = &kwq_penalty_rounds[cls]; vars[4] = &kwq_budget_check_every[cls];
 		vars[5] = &kwq_wake_delay_us[cls]; vars[6] = &kwq_tick_us[cls];
-		vars[7] = &kwq_tick_urgent_us[cls];
+		vars[7] = &kwq_tick_urgent_us[cls]; vars[8] = &kwq_item_min_us[cls];
 		for (i = 0; i < KWQ_NKNOBS; i++) {
 			struct kwq_knob *kn = &kwq_knob_desc[cls][i];
 
@@ -812,6 +815,29 @@ kwq_budget_left(struct kwq *q)
 	if (left == 0)
 		SDT_PROBE2(kwq, , , budget__hit, q, curcpu);
 	return (left);
+}
+
+/* Handler only: a stoppable item starts or resumes here.  See kwq.h. */
+void
+kwq_item_begin(struct kwq *q)
+{
+	struct kwq_worker *kw = kwq_workers[q->kwq_class][curcpu];
+
+	if (kw->kw_knobs->item_min_ns != 0)
+		kw->kw_item_start = kwq_cputime_ns(kw);
+}
+
+/* Handler only: stop this item here?  See kwq.h. */
+bool
+kwq_item_stop(struct kwq *q)
+{
+	struct kwq_worker *kw = kwq_workers[q->kwq_class][curcpu];
+	uint64_t min = kw->kw_knobs->item_min_ns;
+
+	if (kwq_budget_left(q) != 0)
+		return (false);
+	return (min == 0 || kwq_higher_waiting(q->kwq_class) ||
+	    kwq_cputime_ns(kw) - kw->kw_item_start >= min);
 }
 
 /*

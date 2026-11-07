@@ -460,8 +460,22 @@ kwq_ring_backlog(struct kwq_worker *kw, struct kwq_cpu *cur, uint64_t *bp, u_int
 	u_int bd = 0, d, k = 0;
 	bool seen = false;
 
-	TAILQ_FOREACH(kc, &kw->kw_new, kc_active) {
+	TAILQ_FOREACH(kc, &kw->kw_prompt, kc_active) {
 		if (k++ == KWQ_RING_WALK)
+			break;
+		if (kc == cur)
+			seen = true;
+		if ((kc->kc_q->kwq_flags & KWQ_F_STEALABLE) == 0)
+			continue;
+		d = kc->kc_depth;
+		b += (uint64_t)d * kc->kc_cost_ns;
+		if (d > bd) {
+			bd = d;
+			best = kc;
+		}
+	}
+	TAILQ_FOREACH(kc, &kw->kw_new, kc_active) {
+		if (k++ >= KWQ_RING_WALK)
 			break;
 		if (kc == cur)
 			seen = true;

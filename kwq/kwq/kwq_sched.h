@@ -9,7 +9,7 @@
  * userspace) holds the locks the fields need, reads the clocks, and acts
  * on the decisions returned.  Both worlds provide <kwq_sched_env.h>,
  * which declares struct kwq_worker and struct kwq_cpu with the fields
- * listed below and the KSQ_WEIGHT() accessor.
+ * listed below and the KSQ_WEIGHT() and KSQ_PROMPT() accessors.
  *
  * Fields the core uses (names are those of kwq_internal.h):
  *
@@ -19,7 +19,8 @@
  *                      kc_overruns_switched, kc_parks, kc_glitches,
  *                      kc_debts, kc_bc_avg (uint64_t ns per budget call),
  *                      kc_boosts, kc_grace
- *   struct kwq_worker: kw_new, kw_active (TAILQ_HEAD of kwq_cpu),
+ *   struct kwq_worker: kw_new, kw_active, kw_prompt (TAILQ_HEAD of kwq_cpu),
+ *                      kw_prompt_ns (uint64_t),
  *                      kw_nactive, kw_nnew (u_int list lengths),
  *                      kw_round, kw_served_us, kw_served_rem (uint64_t),
  *                      kw_phase,
@@ -71,6 +72,7 @@ struct kwq_sched_knobs {
 	uint64_t	cap_allow_ns;	/* cap_period_ns x cap_permille / 1000 (owner derives) */
 	bool		boost_weighted;	/* boost = Q x w (default) or Q; S12 */
 	uint32_t	penalty_rounds;	/* debt clamp: D >= -penalty_rounds x Qw; 32 */
+	uint64_t	item_min_ns;	/* kwq_item_stop(): S4.9; 0 = at any point */
 };
 
 /* kc_state */
@@ -85,6 +87,7 @@ enum kwq_cpu_state {
 enum kwq_onlist {
 	KWQ_ON_NONE = 0,
 	KWQ_ON_NEW,
+	KWQ_ON_PROMPT,
 	KWQ_ON_ACTIVE,
 };
 
@@ -92,6 +95,7 @@ enum kwq_onlist {
 enum kwq_src {
 	KWQ_SRC_NONE = 0,
 	KWQ_SRC_NEW,
+	KWQ_SRC_PROMPT,
 	KWQ_SRC_RING,
 };
 

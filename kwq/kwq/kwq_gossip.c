@@ -208,6 +208,11 @@ kwq_gossip_backlog(struct kwq_worker *kw, struct kwq_cpu *cur, u_int ahead,
 	struct kwq_cpu *kc;
 	u_int k = 0;
 
+	TAILQ_FOREACH(kc, &kw->kw_prompt, kc_active) {
+		if (k++ >= 32)
+			break;
+		kwq_gossip_one(&g, kc, cur, ahead);
+	}
 	TAILQ_FOREACH(kc, &kw->kw_new, kc_active) {
 		if (k++ >= 32)
 			break;
