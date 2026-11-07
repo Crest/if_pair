@@ -80,6 +80,50 @@ g_eli_bio_copyin(struct bio *bp, void *kaddr)
 }
 
 /*
+ * kwq-geli: the write held back, if any, goes down.
+ */
+void
+g_eli_write_release(struct g_eli_softc *sc)
+{
+	uintptr_t held;
+
+	held = sc->sc_held;
+	if (held == 0 || !atomic_cmpset_acq_ptr(&sc->sc_held, held, 0))
+		return;
+	atomic_add_int(&sc->sc_writes_down, 1);
+	g_io_request((struct bio *)held, LIST_FIRST(&sc->sc_geom->consumer));
+}
+
+/*
+ * kwq-geli: an encrypted write goes down, or with write_hold stays back until
+ * the next write below completes.  The two sides are a Dekker pair: whoever
+ * holds looks at sc_writes_down after publishing sc_held, g_eli_write_done()
+ * looks at sc_held after its decrement, so that one of them sees the other and
+ * a held write never outlives the last write below.  A write that must not be
+ * overtaken is not held and does not overtake.
+ */
+static void
+g_eli_write_send(struct g_eli_softc *sc, struct bio *cbp)
+{
+
+	if ((cbp->bio_flags & BIO_ORDERED) != 0)
+		g_eli_write_release(sc);
+	else if (g_eli_write_hold != 0 && sc->sc_reads_down != 0 &&
+	    sc->sc_writes_down >= g_eli_write_hold &&
+	    atomic_cmpset_rel_ptr(&sc->sc_held, 0, (uintptr_t)cbp)) {
+		atomic_thread_fence_seq_cst();
+		if (atomic_load_int(&sc->sc_writes_down) != 0) {
+			counter_u64_add(g_eli_write_holds, 1);
+			return;
+		}
+		if (!atomic_cmpset_ptr(&sc->sc_held, (uintptr_t)cbp, 0))
+			return;
+	}
+	atomic_add_int(&sc->sc_writes_down, 1);
+	g_io_request(cbp, LIST_FIRST(&sc->sc_geom->consumer));
+}
+
+/*
  * The function is called after we read and decrypt data.
  *
  * g_eli_start -> g_eli_crypto_read -> g_io_request -> g_eli_read_done -> g_eli_crypto_run -> G_ELI_CRYPTO_READ_DONE -> g_io_deliver
@@ -194,7 +238,7 @@ g_eli_crypto_write_done(struct cryptop *crp)
 	/*
 	 * Send encrypted data to the provider.
 	 */
-	g_io_request(cbp, cp);
+	g_eli_write_send(sc, cbp);
 	return (0);
 }
 
@@ -239,6 +283,7 @@ g_eli_crypto_read(struct g_eli_softc *sc, struct bio *bp, boolean_t fromworker)
 	/*
 	 * Read encrypted data from provider.
 	 */
+	atomic_add_int(&sc->sc_reads_down, 1);
 	g_io_request(cbp, cp);
 }
 
@@ -260,7 +305,8 @@ g_eli_crypto_read(struct g_eli_softc *sc, struct bio *bp, boolean_t fromworker)
  * kern.geom.kwqeli.budget_sectors sectors so that a long bio does not hold
  * the worker past its quantum or the share limit; at 0 a bio always runs
  * to its end and the handler checks between bios only, so a pass can
- * overrun by one bio.  The sector it goes on from
+ * overrun by one bio.  Whether to stop at a check is kwq's decision
+ * (kwq_item_stop(), kern.kwq.bulk.item_min_us).  The sector it goes on from
  * is bio_inbed, the completions so far, exact because they are
  * synchronous.  A crypto request or key that cannot be had without
  * sleeping fails the bio with ENOMEM wherever it happens, and GEOM issues
@@ -306,9 +352,9 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 	struct cryptopq pool;
 	u_int budget, i, first, nsec, secsize;
 	off_t dstoff;
-	u_char *data = NULL;
+	u_char *data = NULL, *out = NULL;
 	int error __diagused, pages_offset;
-	bool batch, sync, partial = false;
+	bool batch, sepout, sync, partial = false;
 
 	G_ELI_LOGREQ(3, bp, "%s", __func__);
 
@@ -317,6 +363,7 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 	secsize = LIST_FIRST(&sc->sc_geom->provider)->sectorsize;
 	nsec = bp->bio_length / secsize;
 	sync = (crypto_ses2caps(wr->w_sid) & CRYPTOCAP_F_SYNC) != 0;
+	sepout = bp->bio_cmd == BIO_WRITE && sc->sc_sepout;
 	first = (bp->bio_pflags & G_ELI_STARTED) != 0 ? bp->bio_inbed : 0;
 	KASSERT(first < nsec, ("%s: bio %p resumed at %u of %u", __func__, bp,
 	    first, nsec));
@@ -346,16 +393,21 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 			/* 
 			 * This copy could be eliminated by using crypto's output
 			 * buffer, instead of using a single overwriting buffer.
+			 * kwq-geli: it is, with sc_sepout.
 			 */
-			if ((bp->bio_flags & BIO_UNMAPPED) != 0)
+			if (sepout)
+				;
+			else if ((bp->bio_flags & BIO_UNMAPPED) != 0)
 				g_eli_bio_copyin(bp, bp->bio_driver2);
 			else
 				bcopy(bp->bio_data, bp->bio_driver2, bp->bio_length);
 		}
 	}
-	if (bp->bio_cmd == BIO_WRITE) {
+	if (bp->bio_cmd == BIO_WRITE && !sepout) {
 		data = (u_char *)bp->bio_driver2 + (size_t)first * secsize;
 	} else {
+		if (sepout)
+			out = (u_char *)bp->bio_driver2 + (size_t)first * secsize;
 		if ((bp->bio_flags & BIO_UNMAPPED) != 0) {
 			pages_offset = bp->bio_ma_offset + first * secsize;
 			pages = bp->bio_ma + (pages_offset >> PAGE_SHIFT);
@@ -369,6 +421,8 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 	TAILQ_INIT(&pool);
 	batch = atomic_load_int(&g_eli_batch) != 0;
 	budget = atomic_load_int(&g_eli_budget_sectors);
+	if (sync && budget != 0 && nsec - first > budget)
+		kwq_item_begin(wr->w_kwq);
 	if (!sync && g_eli_getreqs(sc, wr->w_sid, nsec, bp->bio_offset, secsize,
 	    (sc->sc_flags & G_ELI_FLAG_SINGLE_KEY) == 0, &pool) != 0) {
 		g_eli_crypto_nomem(sc, bp);
@@ -384,7 +438,7 @@ g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 			goto fill;
 		}
 		if (budget != 0 && i > first && i % budget == 0 &&
-		    kwq_budget_left(sc->sc_kwq) == 0) {
+		    kwq_item_stop(wr->w_kwq)) {
 			partial = true;
 			break;
 		}
@@ -424,6 +478,10 @@ fill:
 			pages_offset += secsize;
 			pages += pages_offset >> PAGE_SHIFT;
 			pages_offset &= PAGE_MASK;
+		}
+		if (out != NULL) {
+			crypto_use_output_buf(crp, out, secsize);
+			out += secsize;
 		}
 		crp->crp_opaque = (void *)bp;
 		if (bp->bio_cmd == BIO_WRITE) {

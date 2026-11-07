@@ -356,6 +356,7 @@ resume_head() {
 }
 resume_body() {
 	kwqeli_setup
+	knob kern.kwq.bulk.item_min_us 0
 	if ! kldstat -q -m g_eli; then
 		kldload geom_eli || atf_skip "cannot load geom_eli"
 		echo geom_eli >> loaded
@@ -409,6 +410,7 @@ whole_bio_body() {
 	knob kern.geom.kwqeli.stealable 0
 	knob kern.kwq.bulk.quantum_us 10
 	knob kern.geom.kwqeli.budget_sectors 16
+	knob kern.kwq.bulk.item_min_us 0
 	m=$(newmd 64m)
 	atf_check -o ignore geli init -B none -P -K key -s 4096 "$m"
 	atf_check $GK attach -p -k key "$m"
@@ -426,6 +428,201 @@ whole_bio_body() {
 	[ "$cut" -gt 0 ] || atf_skip "no bio was cut at 16 sectors: the comparison says nothing"
 }
 whole_bio_cleanup() { kwqeli_cleanup; }
+
+atf_test_case item_min cleanup
+item_min_head() {
+	atf_set descr "item_min_us: with one bio in flight and a quantum far shorter than a bio, no bio is cut while it has run less than item_min_us, bios are cut once it is 1 us, and what was written reads back"
+	atf_set require.user root
+}
+item_min_body() {
+	kwqeli_setup
+	knob kern.geom.kwqeli.cpu 1
+	knob kern.geom.kwqeli.stealable 0
+	knob kern.kwq.bulk.quantum_us 10
+	knob kern.kwq.bulk.item_min_us 1000000
+	m=$(newmd 64m)
+	atf_check -o ignore geli init -B none -P -K key -s 4096 "$m"
+	atf_check $GK attach -p -k key "$m"
+	dd if=data.in of=data.cmp bs=1m count=32 2>/dev/null
+	dd if=data.cmp of="/dev/$m.kweli" bs=1m 2>/dev/null || atf_fail "write"
+	dd if="/dev/$m.kweli" of=data.out bs=1m count=32 2>/dev/null || atf_fail "read"
+	held=$(qsum "$m" requeued)
+	cmp -s data.cmp data.out || atf_fail "read back something else at 1 s"
+	# not knob(): cleanup restores in order, the last entry would win
+	sysctl -q kern.kwq.bulk.item_min_us=1 >/dev/null
+	dd if=data.cmp of="/dev/$m.kweli" bs=1m 2>/dev/null || atf_fail "write"
+	dd if="/dev/$m.kweli" of=data.out bs=1m count=32 2>/dev/null || atf_fail "read"
+	cut=$(($(qsum "$m" requeued) - held))
+	echo "requeued $held at 1 s, $cut at 1 us"
+	cmp -s data.cmp data.out || atf_fail "read back something else at 1 us"
+	[ "$held" -eq 0 ] || atf_fail "$held bios cut part way at item_min_us 1 s"
+	[ "$cut" -gt 0 ] || atf_skip "no bio was cut at 1 us: the comparison says nothing"
+}
+item_min_cleanup() { kwqeli_cleanup; }
+
+atf_test_case read_queue cleanup
+read_queue_head() {
+	atf_set descr "read_queue, 1 and 2 (KWQ_F_PROMPT): reads go to a queue of their own and writes stay on the provider's, what was written reads back, and detach removes both"
+	atf_set require.user root
+}
+read_queue_body() {
+	kwqeli_setup
+	knob kern.geom.kwqeli.read_queue 1
+	dd if=data.in of=data.cmp bs=1m count=32 2>/dev/null
+	for mode in 1 2; do
+		# not knob(): cleanup restores in order, the last entry would win
+		sysctl -q kern.geom.kwqeli.read_queue=$mode >/dev/null
+		m=$(newmd 64m)
+		atf_check -o ignore geli init -B none -P -K key -s 4096 "$m"
+		atf_check $GK attach -p -k key "$m"
+		dd if=data.cmp of="/dev/$m.kweli" bs=1m 2>/dev/null || atf_fail "write"
+		dd if="/dev/$m.kweli" of=data.out bs=1m count=32 2>/dev/null || atf_fail "read"
+		cmp -s data.cmp data.out || atf_fail "read back something else"
+		w=$(qsum "$m" items)
+		r=$(sysctl -a "kern.kwq.bulk.queue.kwelir-$m.cpu" 2>/dev/null | awk -F': ' '{ n = split($1, p, "."); if (p[n] == "items") s += $2 } END { print s + 0 }')
+		echo "read_queue $mode: items $w on the writes' queue, $r on the reads'"
+		[ "$w" -gt 0 ] || atf_fail "no items on the writes' queue"
+		[ "$r" -gt 0 ] || atf_fail "no items on the reads' queue"
+		atf_check $GK detach "$m.kweli"
+		atf_check_equal 0 "$(sysctl -a kern.kwq.bulk.queue 2>/dev/null | grep -c "kwelir-$m\.")"
+	done
+}
+read_queue_cleanup() { kwqeli_cleanup; }
+
+atf_test_case big_bufs cleanup
+big_bufs_head() {
+	atf_set descr "big_bufs: writes above the swap zone's size take their buffers from the zone of their size and writes of 128 KiB from none, what was written reads back, no buffer stays allocated, and the last detach destroys the zones"
+	atf_set require.user root
+}
+bigzone() {	# FIELD [SIZE]: of vmstat -z, summed: 4 used, 6 requests; -1 without zones
+	vmstat -z | awk -F'[:,]' -v f="$1" -v z="^GELI big buffers $2" '$0 ~ z { v += $f; n = 1 } END { print n ? v : -1 }'
+}
+big_bufs_body() {
+	kwqeli_setup
+	knob kern.geom.kwqeli.big_bufs 1
+	dd if=data.in of=data.cmp bs=1m count=32 2>/dev/null
+	m=$(newmd 64m)
+	atf_check -o ignore geli init -B none -P -K key -s 4096 "$m"
+	atf_check $GK attach -p -k key "$m"
+	dd if=data.cmp of="/dev/$m.kweli" bs=128k 2>/dev/null || atf_fail "write at 128 KiB"
+	r0=$(bigzone 6)
+	dd if=data.cmp of="/dev/$m.kweli" bs=256k 2>/dev/null || atf_fail "write at 256 KiB"
+	s0=$(bigzone 6 256k)
+	dd if=data.cmp of="/dev/$m.kweli" bs=1m 2>/dev/null || atf_fail "write at 1 MiB"
+	r1=$(bigzone 6 1024k)
+	dd if="/dev/$m.kweli" of=data.out bs=1m count=32 2>/dev/null || atf_fail "read"
+	cmp -s data.cmp data.out || atf_fail "read back something else"
+	echo "big_bufs: $r0 requests at 128 KiB, $s0 at 256 KiB, $r1 at 1 MiB, $(bigzone 4) in use"
+	atf_check_equal 0 "$r0"
+	[ "$s0" -ge 128 ] || atf_fail "256 KiB writes did not use their zone"
+	[ "$r1" -ge 32 ] || atf_fail "1 MiB writes did not use their zone"
+	atf_check_equal 0 "$(bigzone 4)"
+	atf_check $GK detach "$m.kweli"
+	atf_check_equal -1 "$(bigzone 4)"
+}
+big_bufs_cleanup() { kwqeli_cleanup; }
+
+# sep_out_case: written whole and cut part way, stock geli reads it back
+sep_out_case() {
+	local cut m
+	knob kern.geom.kwqeli.sep_out 1
+	knob kern.geom.kwqeli.cpu 1
+	knob kern.geom.kwqeli.stealable 0
+	knob kern.kwq.bulk.quantum_us 10
+	knob kern.kwq.bulk.item_min_us 0
+	if ! kldstat -q -m g_eli; then
+		kldload geom_eli || atf_skip "cannot load geom_eli"
+		echo geom_eli >> loaded
+	fi
+	m=$(newmd 64m)
+	atf_check -o ignore geli init -B none -P -K key -s 4096 "$m"
+	atf_check $GK attach -p -k key "$m"
+	dd if=data.in of=data.cmp bs=1m count=32 2>/dev/null
+	dd if=data.cmp of="/dev/$m.kweli" bs=1m 2>/dev/null || atf_fail "write"
+	cut=$(qsum "$m" requeued)
+	dd if=data.cmp of="/dev/$m.kweli" bs=4k 2>/dev/null || atf_fail "write in sectors"
+	dd if="/dev/$m.kweli" of=data.out bs=1m count=32 2>/dev/null || atf_fail "read"
+	cmp -s data.cmp data.out || atf_fail "read back something else"
+	dd if=data.cmp of="/dev/$m.kweli" bs=1m 2>/dev/null || atf_fail "write again"
+	atf_check $GK detach "$m.kweli"
+	atf_check geli attach -p -k key "$m"
+	dd if="/dev/$m.eli" of=data.out bs=1m count=32 2>/dev/null
+	atf_check geli detach "$m.eli"
+	echo "sep_out: $cut bios cut part way"
+	cmp -s data.cmp data.out || atf_fail "stock geli reads something else"
+	[ "$cut" -gt 0 ] || atf_skip "no bio was cut: the resume path was not used"
+}
+
+# write_hold: writers beside a reader, so that writes are held back; what they
+# wrote reads back, also through stock geli, and detach finds nothing left
+atf_test_case write_hold cleanup
+write_hold_head() {
+	atf_set descr "write_hold: writes held back beside reads all reach the disk, in place, and none is left behind at detach"
+	atf_set require.user root
+}
+write_hold_body() {
+	local h0 h1 i j m
+	kwqeli_setup
+	knob kern.geom.kwqeli.write_hold 1
+	if ! kldstat -q -m g_eli; then
+		kldload geom_eli || atf_skip "cannot load geom_eli"
+		echo geom_eli >> loaded
+	fi
+	m=$(newmd 64m)
+	atf_check -o ignore geli init -B none -P -K key -s 4096 "$m"
+	atf_check $GK attach -p -k key "$m"
+	dd if=data.in of=data.cmp bs=1m count=32 2>/dev/null
+	h0=$(sysctl -n kern.geom.kwqeli.write_holds)
+	for j in 1 2 3 4; do
+		for i in 0 1 2 3 4 5 6 7; do
+			dd if=data.cmp of="/dev/$m.kweli" bs=128k count=32 \
+			    iseek=$((i * 32)) oseek=$((i * 32)) 2>/dev/null &
+		done
+		dd if="/dev/$m.kweli" of=/dev/null bs=128k count=256 2>/dev/null &
+		dd if="/dev/$m.kweli" of=/dev/null bs=128k count=256 iseek=256 2>/dev/null &
+		wait
+	done
+	h1=$(sysctl -n kern.geom.kwqeli.write_holds)
+	dd if="/dev/$m.kweli" of=data.out bs=1m count=32 2>/dev/null || atf_fail "read"
+	cmp -s data.cmp data.out || atf_fail "read back something else"
+	atf_check $GK detach "$m.kweli"
+	atf_check geli attach -p -k key "$m"
+	dd if="/dev/$m.eli" of=data.out bs=1m count=32 2>/dev/null
+	atf_check geli detach "$m.eli"
+	cmp -s data.cmp data.out || atf_fail "stock geli reads something else"
+	echo "write_hold: $((h1 - h0)) writes held"
+	[ $((h1 - h0)) -gt 0 ] || atf_skip "no write was held: nothing tested"
+}
+write_hold_cleanup() { kwqeli_cleanup; }
+
+atf_test_case sep_out cleanup
+sep_out_head() {
+	atf_set descr "sep_out, unmapped bios: a write encrypted from the bio into the buffer, whole or cut part way, reads back through kwq-geli and through stock geli"
+	atf_set require.user root
+}
+sep_out_body() {
+	kwqeli_setup
+	sep_out_case
+}
+sep_out_cleanup() { kwqeli_cleanup; }
+
+atf_test_case sep_out_mapped cleanup
+sep_out_mapped_head() {
+	atf_set descr "sep_out, mapped bios (unmapped_io 0): a write encrypted from the bio into the buffer, whole or cut part way, reads back through kwq-geli and through stock geli"
+	atf_set require.user root
+}
+sep_out_mapped_body() {
+	kldstat -q -m g_kwqeli && atf_skip "geom_kwqeli loaded: the tunable would not apply"
+	kenv kern.geom.kwqeli.unmapped_io=0 >/dev/null
+	kwqeli_setup
+	atf_check_equal 0 "$(sysctl -n kern.geom.kwqeli.unmapped_io)"
+	sep_out_case
+}
+sep_out_mapped_cleanup() {
+	kwqeli_cleanup
+	kenv -u kern.geom.kwqeli.unmapped_io 2>/dev/null
+	true
+}
 
 atf_test_case nomem cleanup
 nomem_head() {
@@ -503,6 +700,12 @@ atf_init_test_cases() {
 	atf_add_test_case detach_load
 	atf_add_test_case resume
 	atf_add_test_case whole_bio
+	atf_add_test_case item_min
+	atf_add_test_case read_queue
+	atf_add_test_case big_bufs
+	atf_add_test_case write_hold
+	atf_add_test_case sep_out
+	atf_add_test_case sep_out_mapped
 	atf_add_test_case nomem
 	atf_add_test_case resume_fail
 }

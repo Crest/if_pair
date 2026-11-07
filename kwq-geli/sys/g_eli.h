@@ -37,6 +37,7 @@
 #include <opencrypto/cryptodev.h>
 #ifdef _KERNEL
 #include <sys/bio.h>
+#include <sys/counter.h>
 #include <sys/libkern.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
@@ -131,7 +132,7 @@
 /*
  * kwq-geli: a partly dispatched bio goes on from the sector after the last
  * completed one, bio_inbed, which is exact for synchronous sessions only
- * (g_eli_crypto_run()).  bio_pflags is 16 bits wide, all in use above.
+ * (g_eli_crypto_run()).
  */
 #define	G_ELI_BUDGET_SECTORS	16	/* default of budget_sectors */
 #define	G_ELI_SET_NEW_BIO(pflags)	G_ELI_SETWORKER((pflags), G_ELI_NEW_BIO)
@@ -139,6 +140,8 @@
 #define	G_ELI_UMA_ALLOC		0x100	/* bio_driver2 alloc came from UMA */
 #define	G_ELI_ON_KWQ		0x200	/* kwq-geli: on the provider's queue (asserted) */
 #define	G_ELI_STARTED		0x400	/* kwq-geli: g_eli_crypto_run() began this bio */
+#define	G_ELI_BIG_SHIFT		12	/* kwq-geli: bio_driver2 from big buffers' zone N - 1, */
+#define	G_ELI_BIG_MASK		0xf000	/* in the top bits of the 16 of bio_pflags; 0: not */
 
 #define	SHA512_MDLEN		64
 #define	G_ELI_AUTH_SECKEYLEN	SHA256_DIGEST_LENGTH
@@ -171,6 +174,8 @@ extern int g_eli_debug;
 extern u_int g_eli_overwrites;
 extern u_int g_eli_batch;
 extern u_int g_eli_budget_sectors;
+extern u_int g_eli_write_hold;
+extern counter_u64_t g_eli_write_holds;
 
 #define	G_ELI_DEBUG(lvl, ...) \
     _GEOM_DEBUG("GEOM_KWQELI", g_eli_debug, (lvl), NULL, __VA_ARGS__)
@@ -184,6 +189,7 @@ extern u_int g_eli_budget_sectors;
  */
 struct g_eli_worker {
 	struct g_eli_softc	*w_softc;
+	struct kwq		*w_kwq;		/* the queue of the pass running here */
 	void			*w_first_key;
 	u_int			 w_number;
 	crypto_session_t	 w_sid;
@@ -234,6 +240,11 @@ struct g_eli_softc {
 	LIST_HEAD(, g_eli_worker) sc_workers;
 	struct g_eli_worker **sc_wr;	/* kwq-geli: [mp_maxid + 1], by CPU */
 	struct kwq	*sc_kwq;	/* kwq-geli: the provider's BULK queue */
+	struct kwq	*sc_kwq_rd;	/* kwq-geli: its reads', with read_queue */
+	bool		 sc_sepout;	/* kwq-geli: writes encrypt into bio_driver2 */
+	u_int		 sc_reads_down;	/* kwq-geli: reads below, not with auth */
+	u_int		 sc_writes_down; /* kwq-geli: writes below, not with auth */
+	volatile uintptr_t sc_held;	/* kwq-geli: the write held, write_hold */
 #endif /* _KERNEL */
 };
 #define	sc_name		 sc_geom->name
@@ -718,6 +729,7 @@ bool g_eli_alloc_data(struct bio *bp, int sz);
 void g_eli_free_data(struct bio *bp);
 
 void g_eli_crypto_read(struct g_eli_softc *sc, struct bio *bp, boolean_t fromworker);
+void g_eli_write_release(struct g_eli_softc *sc);
 bool g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp);
 
 void g_eli_auth_read(struct g_eli_softc *sc, struct bio *bp);

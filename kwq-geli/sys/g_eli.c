@@ -106,7 +106,35 @@ SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, batch, CTLFLAG_RWTUN, &g_eli_batch, 0,
 u_int g_eli_budget_sectors = G_ELI_BUDGET_SECTORS;
 SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, budget_sectors, CTLFLAG_RWTUN,
     &g_eli_budget_sectors, 0,
-    "kwq_budget_left() every this many sectors of a bio; 0: between bios only");
+    "kwq_item_stop() every this many sectors of a bio; 0: between bios only");
+/*
+ * kwq-geli: a write encrypts each sector from the bio straight into the
+ * buffer, instead of copying the whole bio there and encrypting it in place:
+ * half the passes over memory, which is what a bio larger than the cache pays
+ * for.  Read at attach, as a bio cut part way must go on as it began; without
+ * authentication, and where the driver has no separate output, the copy stays.
+ */
+static u_int g_eli_sep_out = 1;
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, sep_out, CTLFLAG_RWTUN, &g_eli_sep_out, 0,
+    "Providers attached from now on encrypt writes into the buffer, without copying them there first");
+/*
+ * kwq-geli: a drive that serves in order makes a read wait for every write
+ * ahead of it, and encrypting quickly puts them all there.  While reads are
+ * below and this many writes are too, one more write waits here for the next
+ * of them to complete (g_eli_write_send()).  One per provider at most, and the
+ * drive keeps that many writes to work on.  0: none held.
+ */
+u_int g_eli_write_hold = 2;
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, write_hold, CTLFLAG_RWTUN,
+    &g_eli_write_hold, 0,
+    "While reads and this many writes are below, keep one encrypted write back until the next of them completes; 0: never");
+COUNTER_U64_DEFINE_EARLY(g_eli_write_holds);
+SYSCTL_COUNTER_U64(_kern_geom_kwqeli, OID_AUTO, write_holds, CTLFLAG_RD,
+    &g_eli_write_holds, "Writes held back by write_hold");
+static u_int g_eli_read_queue = 2;
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, read_queue, CTLFLAG_RWTUN,
+    &g_eli_read_queue, 0,
+    "Providers attached from now on queue their reads apart from their writes; 2: ahead of them, KWQ_F_PROMPT");
 static u_int g_eli_minbufs = 16;
 static int sysctl_g_eli_minbufs(SYSCTL_HANDLER_ARGS);
 SYSCTL_PROC(_kern_geom_kwqeli, OID_AUTO, minbufs, CTLTYPE_UINT | CTLFLAG_RW |
@@ -126,6 +154,23 @@ SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, use_uma_bytes, CTLFLAG_RD,
 static struct sx g_eli_umalock;	/* Controls changes to UMA zone. */
 SX_SYSINIT(g_eli_umalock, &g_eli_umalock, "GELI UMA");
 static uma_zone_t g_eli_uma = NULL;
+/*
+ * kwq-geli: buffers above the zone for swap, up to maxphys.  malloc(9) above
+ * vm.kmem_zmax maps a buffer's pages for each bio and unmaps them with a TLB
+ * shootdown of every CPU; a zone keeps them mapped between bios.  One zone per
+ * power of two above G_ELI_BIG_MIN, the last maxphys, so that an item is less
+ * than twice its buffer.  g_eli_alloc_sz is a little above G_ELI_BIG_MIN.
+ * No per-CPU buckets: they spread reuse over more megabytes than the last
+ * level cache holds, so that each buffer comes back cold, and an allocation
+ * this size can well afford the zone's lock.
+ */
+#define	G_ELI_BIG_MIN	131072
+#define	G_ELI_BIG_ZONES	8		/* up to 32 MiB; above: malloc(9) */
+static uma_zone_t g_eli_big_uma[G_ELI_BIG_ZONES];
+static char g_eli_big_name[G_ELI_BIG_ZONES][32];
+static u_int g_eli_big_bufs = 1;
+SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, big_bufs, CTLFLAG_RWTUN, &g_eli_big_bufs, 0,
+    "Take buffers above the swap zone's size, up to maxphys, from UMA zones of their own");
 static volatile int g_eli_umaoutstanding;
 static volatile int g_eli_devs;
 
@@ -264,6 +309,8 @@ g_eli_read_done(struct bio *bp)
 	if (pbp->bio_inbed < pbp->bio_children)
 		return;
 	sc = pbp->bio_to->geom->softc;
+	if (sc != NULL && (sc->sc_flags & G_ELI_FLAG_AUTH) == 0)
+		atomic_subtract_int(&sc->sc_reads_down, 1);
 	if (pbp->bio_error != 0) {
 		G_ELI_LOGREQ(0, pbp, "%s() failed (error=%d)", __func__,
 		    pbp->bio_error);
@@ -300,6 +347,11 @@ g_eli_write_done(struct bio *bp)
 	if (pbp->bio_inbed < pbp->bio_children)
 		return;
 	sc = pbp->bio_to->geom->softc;
+	if (sc != NULL && (sc->sc_flags & G_ELI_FLAG_AUTH) == 0) {
+		atomic_subtract_int(&sc->sc_writes_down, 1);
+		atomic_thread_fence_seq_cst();
+		g_eli_write_release(sc);
+	}
 	g_eli_free_data(pbp);
 	if (pbp->bio_error != 0) {
 		G_ELI_LOGREQ(0, pbp, "%s() failed (error=%d)", __func__,
@@ -520,6 +572,11 @@ g_eli_newsession(struct g_eli_worker *wr)
 		csp.csp_auth_klen = G_ELI_AUTH_SECKEYLEN;
 	}
 
+retry:
+	if (sc->sc_sepout)
+		csp.csp_flags |= CSP_F_SEPARATE_OUTPUT;
+	else
+		csp.csp_flags &= ~CSP_F_SEPARATE_OUTPUT;
 	switch (sc->sc_crypto) {
 	case G_ELI_CRYPTO_SW_ACCEL:
 	case G_ELI_CRYPTO_SW:
@@ -549,6 +606,11 @@ g_eli_newsession(struct g_eli_worker *wr)
 		break;
 	default:
 		panic("%s: invalid condition", __func__);
+	}
+	if (error != 0 && sc->sc_sepout) {
+		/* before any bio: every worker's session comes from here */
+		sc->sc_sepout = false;
+		goto retry;
 	}
 
 	if ((sc->sc_flags & G_ELI_FLAG_FIRST_KEY) != 0) {
@@ -642,7 +704,12 @@ g_eli_kwq_enqueue(struct g_eli_softc *sc, struct bio *bp)
 	    ("%s: bio %p enqueued twice", __func__, bp));
 	bp->bio_pflags |= G_ELI_ON_KWQ;
 	KWQ_ITEM_INIT(G_ELI_BIO_ITEM(bp));
-	error = kwq_enqueue(sc->sc_kwq, cpu, G_ELI_BIO_ITEM(bp));
+	/*
+	 * Apart from the writes, a read does not wait behind them in a list:
+	 * DRR shares the CPU between the two queues, whatever the bios' sizes.
+	 */
+	error = kwq_enqueue(bp->bio_cmd == BIO_READ && sc->sc_kwq_rd != NULL ?
+	    sc->sc_kwq_rd : sc->sc_kwq, cpu, G_ELI_BIO_ITEM(bp));
 	if (__predict_false(error != 0)) {
 		bp->bio_pflags &= ~G_ELI_ON_KWQ;
 		g_eli_kwq_refuse(sc, bp, error == ENOBUFS ? ENOMEM : ENXIO);
@@ -706,6 +773,7 @@ g_eli_kwq_handler(struct kwq *q, struct kwq_item *head, int n, void *ctx)
 	int done = 0;
 
 	KASSERT(n > 0 && wr != NULL, ("%s: n %d wr %p", __func__, n, wr));
+	wr->w_kwq = q;
 	for (it = head; it != NULL; it = next) {
 		next = KWQ_ITEM_NEXT(q, it);
 		done++;
@@ -901,6 +969,8 @@ g_eli_access(struct g_provider *pp, int dr, int dw, int de)
 static void
 g_eli_init_uma(void)
 {
+	u_long sz;
+	int i;
 
 	atomic_add_int(&g_eli_devs, 1);
 	sx_xlock(&g_eli_umalock);
@@ -919,6 +989,15 @@ g_eli_init_uma(void)
 		/* Reserve and pre-allocate pages, as appropriate. */
 		uma_zone_reserve(g_eli_uma, g_eli_minbufs);
 		uma_prealloc(g_eli_uma, g_eli_minbufs);
+		for (i = 0; i < G_ELI_BIG_ZONES &&
+		    ((u_long)G_ELI_BIG_MIN << i) < maxphys; i++) {
+			sz = MIN((u_long)G_ELI_BIG_MIN << (i + 1), maxphys);
+			snprintf(g_eli_big_name[i], sizeof(g_eli_big_name[i]),
+			    "GELI big buffers %luk", sz / 1024);
+			g_eli_big_uma[i] = uma_zcreate(g_eli_big_name[i], sz,
+			    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR,
+			    UMA_ZONE_NOBUCKET);
+		}
 	}
 	sx_xunlock(&g_eli_umalock);
 }
@@ -930,20 +1009,27 @@ g_eli_init_uma(void)
 static void
 g_eli_destroy_uma(void)
 {
-	uma_zone_t oldzone;
+	uma_zone_t oldbig[G_ELI_BIG_ZONES], oldzone;
+	int i;
 
+	memset(oldbig, 0, sizeof(oldbig));
 	sx_xlock(&g_eli_umalock);
 	/* Ensure we really should be destroying this. */
 	if (atomic_load_int(&g_eli_devs) == 0 &&
 	    atomic_load_int(&g_eli_umaoutstanding) == 0) {
 		oldzone = g_eli_uma;
 		g_eli_uma = NULL;
+		memcpy(oldbig, g_eli_big_uma, sizeof(oldbig));
+		memset(g_eli_big_uma, 0, sizeof(g_eli_big_uma));
 	} else
 		oldzone = NULL;
 	sx_xunlock(&g_eli_umalock);
 
 	if (oldzone != NULL)
 		uma_zdestroy(oldzone);
+	for (i = 0; i < G_ELI_BIG_ZONES; i++)
+		if (oldbig[i] != NULL)
+			uma_zdestroy(oldbig[i]);
 }
 
 static void
@@ -970,6 +1056,7 @@ g_eli_fini_uma(void)
 bool
 g_eli_alloc_data(struct bio *bp, int sz)
 {
+	int z;
 
 	KASSERT(sz <= g_eli_alloc_sz || (bp->bio_flags & BIO_SWAP) == 0,
 	    ("BIO_SWAP request for %d bytes exceeds the precalculated buffer"
@@ -984,7 +1071,19 @@ g_eli_alloc_data(struct bio *bp, int sz)
 		if (bp->bio_driver2 != NULL || (bp->bio_flags & BIO_SWAP) != 0)
 			return (bp->bio_driver2 != NULL);
 	}
-	bp->bio_pflags &= ~(G_ELI_UMA_ALLOC);
+	bp->bio_pflags &= ~(G_ELI_UMA_ALLOC | G_ELI_BIG_MASK);
+	if (sz > G_ELI_BIG_MIN && sz <= maxphys &&
+	    atomic_load_int(&g_eli_big_bufs) != 0) {
+		z = flsl(sz - 1) - flsl(G_ELI_BIG_MIN);
+		if (z < G_ELI_BIG_ZONES) {
+			bp->bio_driver2 = uma_zalloc(g_eli_big_uma[z], M_NOWAIT);
+			if (bp->bio_driver2 != NULL) {
+				bp->bio_pflags |= (z + 1) << G_ELI_BIG_SHIFT;
+				atomic_add_int(&g_eli_umaoutstanding, 1);
+				return (true);
+			}
+		}
+	}
 	bp->bio_driver2 = malloc(sz, M_ELI, M_NOWAIT);
 	return (bp->bio_driver2 != NULL);
 }
@@ -1000,6 +1099,7 @@ g_eli_alloc_data(struct bio *bp, int sz)
 void
 g_eli_free_data(struct bio *bp)
 {
+	int z;
 
 	/*
 	 * Mimic the free(9) behavior of allowing a NULL pointer to be
@@ -1008,8 +1108,10 @@ g_eli_free_data(struct bio *bp)
 	if (bp->bio_driver2 == NULL)
 		return;
 
-	if ((bp->bio_pflags & G_ELI_UMA_ALLOC) != 0) {
-		uma_zfree(g_eli_uma, bp->bio_driver2);
+	z = (bp->bio_pflags & G_ELI_BIG_MASK) >> G_ELI_BIG_SHIFT;
+	if (z != 0 || (bp->bio_pflags & G_ELI_UMA_ALLOC) != 0) {
+		uma_zfree(z != 0 ? g_eli_big_uma[z - 1] : g_eli_uma,
+		    bp->bio_driver2);
 		if (atomic_fetchadd_int(&g_eli_umaoutstanding, -1) == 1 &&
 		    atomic_load_int(&g_eli_devs) == 0)
 			g_eli_destroy_uma();
@@ -1112,9 +1214,10 @@ g_eli_create(struct gctl_req *req, struct g_class *mp, struct g_provider *bpp,
 
 	/*
 	 * kwq-geli: a crypto session per CPU, where GELI made one per worker
-	 * thread, and one BULK queue for the provider, named after it
-	 * (kern.kwq.bulk.queue.kweli-<provider>).  A bio carries its worker
-	 * in eight bits of bio_pflags, with 255 marking a new bio.
+	 * thread, and BULK queues for the provider, named after it
+	 * (kern.kwq.bulk.queue.kweli-<provider>, and kwelir-<provider> for
+	 * reads with read_queue).  A bio carries its worker in eight bits of
+	 * bio_pflags, with 255 marking a new bio.
 	 */
 	if (mp_maxid >= G_ELI_MAX_WORKERS) {
 		error = EOPNOTSUPP;
@@ -1125,6 +1228,8 @@ g_eli_create(struct gctl_req *req, struct g_class *mp, struct g_provider *bpp,
 	}
 	sc->sc_wr = malloc(sizeof(*sc->sc_wr) * (mp_maxid + 1), M_ELI,
 	    M_WAITOK | M_ZERO);
+	sc->sc_sepout = g_eli_sep_out != 0 &&
+	    (sc->sc_flags & G_ELI_FLAG_AUTH) == 0;
 	CPU_FOREACH(cpu) {
 		wr = malloc(sizeof(*wr), M_ELI, M_WAITOK | M_ZERO);
 		wr->w_softc = sc;
@@ -1163,6 +1268,24 @@ g_eli_create(struct gctl_req *req, struct g_class *mp, struct g_provider *bpp,
 			    qname, bpp->name);
 		goto failed;
 	}
+	if (g_eli_read_queue != 0) {
+		snprintf(qname, sizeof(qname), "kwelir-%s", bpp->name);
+		for (i = 0; qname[i] != '\0'; i++)	/* as above */
+			if (!isalpha(qname[i]) && !isdigit(qname[i]) &&
+			    qname[i] != '_' && qname[i] != '-')
+				qname[i] = '_';
+		sc->sc_kwq_rd = kwq_create(qname, KWQ_BULK,
+		    (g_eli_kwq_stealable ? KWQ_F_STEALABLE : 0) |
+		    (g_eli_read_queue > 1 ? KWQ_F_PROMPT : 0), &kp,
+		    g_eli_kwq_handler, sc);
+		if (sc->sc_kwq_rd == NULL) {
+			error = EEXIST;
+			if (req != NULL)
+				gctl_error(req, "Cannot create kwq queue %s for %s.",
+				    qname, bpp->name);
+			goto failed;
+		}
+	}
 
 	/*
 	 * Create decrypted provider.
@@ -1200,6 +1323,10 @@ failed:
 	if (sc->sc_kwq != NULL) {
 		kwq_drain(sc->sc_kwq);
 		kwq_destroy(sc->sc_kwq);
+	}
+	if (sc->sc_kwq_rd != NULL) {
+		kwq_drain(sc->sc_kwq_rd);
+		kwq_destroy(sc->sc_kwq_rd);
 	}
 	while ((wr = LIST_FIRST(&sc->sc_workers)) != NULL) {
 		LIST_REMOVE(wr, w_next);
@@ -1261,11 +1388,18 @@ g_eli_destroy(struct g_eli_softc *sc, boolean_t force)
 	sc->sc_flags |= G_ELI_FLAG_DESTROY;
 	mtx_unlock(&sc->sc_queue_mtx);
 	kwq_drain(sc->sc_kwq);
+	if (sc->sc_kwq_rd != NULL)
+		kwq_drain(sc->sc_kwq_rd);
+	g_eli_write_release(sc);
 	mtx_lock(&sc->sc_queue_mtx);
 	g_eli_cancel(sc);
 	mtx_unlock(&sc->sc_queue_mtx);
 	kwq_destroy(sc->sc_kwq);
 	sc->sc_kwq = NULL;
+	if (sc->sc_kwq_rd != NULL) {
+		kwq_destroy(sc->sc_kwq_rd);
+		sc->sc_kwq_rd = NULL;
+	}
 	while ((wr = LIST_FIRST(&sc->sc_workers)) != NULL) {
 		LIST_REMOVE(wr, w_next);
 		if (wr->w_active)

@@ -53,12 +53,13 @@ intake wipe at mountroot are gone with it; they belong to geom_eli.ko.
 
 The port (all marked `kwq-geli:` in the source):
 
-- **Workers become one BULK queue per provider**
-  (`kern.kwq.bulk.queue.kweli-<provider>`), created `KWQ_F_STEALABLE`
-  by default.  The bios are the items, linked through `bio_queue`,
-  which GELI's own queue used.  They enter at GELI's two queueing
-  points: `g_eli_start()` for writes and authenticated reads, and
-  `g_eli_read_done()` for decryption.
+- **Workers become BULK queues, two per provider**
+  (`kern.kwq.bulk.queue.kweli-<provider>` for writes and
+  `kwelir-<provider>` for reads, see `read_queue` below), created
+  `KWQ_F_STEALABLE` by default.  The bios are the items, linked through
+  `bio_queue`, which GELI's own queue used.  They enter at GELI's two
+  queueing points: `g_eli_start()` for writes and authenticated reads,
+  and `g_eli_read_done()` for decryption.
 - **A refused bio is retried by GEOM.**  kwq refuses an item only at its
   per-CPU limit (`ENOBUFS`) or while the queue drains (`ENXIO`).  The
   first becomes `ENOMEM`, which `g_io_deliver()` answers by issuing the
@@ -99,7 +100,11 @@ New knobs, in `kern.geom.kwqeli`:
 | `cpu` | -1 | CPU a bio is queued to: -1 `KWQ_CPU_ANY` (an idle BULK worker near the caller), -2 the caller's CPU, N CPU N for every provider (the several-busy-queues-on-one-CPU case) |
 | `stealable` | 1 | queues of providers attached from now on are `KWQ_F_STEALABLE` |
 | `weight` | 1 | DRR weight 1..8 of the queues of providers attached from now on |
-| `budget_sectors` | 16 | `kwq_budget_left()` every this many sectors of a bio, which ends a pass part way through the bio; 0: between bios only, so a pass can overrun by one bio |
+| `budget_sectors` | 16 | `kwq_item_stop()` every this many sectors of a bio, which can end a pass part way through the bio; 0: between bios only, so a pass can overrun by one bio.  How long a bio runs before it may stop is kwq's `kern.kwq.bulk.item_min_us` |
+| `big_bufs` | 1 | buffers above the swap zone's size (132 KiB), up to `maxphys`, come from UMA zones without per-CPU caches, one per power of two, instead of `malloc(9)`, which above `vm.kmem_zmax` maps and unmaps a buffer for each bio |
+| `write_hold` | 2 | while reads and this many writes are below, one encrypted write per provider stays back until the next of them completes, so that a read waits behind one write fewer on a drive that serves in order; 0: never, and not with authentication. `write_holds` counts them |
+| `sep_out` | 1 | providers attached from now on encrypt a write's sectors from the bio straight into the buffer through a separate crypto output, instead of copying the bio there and encrypting in place; not with authentication, and only where the driver allows it |
+| `read_queue` | 2 | providers attached from now on queue their reads on a queue of their own (`kern.kwq.bulk.queue.kwelir-<provider>`), so that DRR shares the CPU between reads and writes whatever the bios' sizes; 2: `KWQ_F_PROMPT`, reads go ahead of the ring, a quantum per ring slot at most |
 
 `threads` is gone (the workers are kwq's, one per CPU).  CPU ids
 above 254 are refused at attach: a bio carries its worker in eight bits
