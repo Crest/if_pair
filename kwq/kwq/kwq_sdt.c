@@ -4,9 +4,9 @@
  * kwq DTrace provider (../KWQ.md S10.1).  Queue arguments are declared with
  * the translator type kwqinfo_t (kwq.d) so scripts never see a raw struct
  * kwq pointer; plain arguments repeat their type, the form the tcp provider
- * uses for untranslated arguments.  Probes for P6 (steal) and P7 (worker
+ * uses for untranslated arguments.  The probes for P7 (worker
  * pool) are defined so that "dtrace -l" shows the whole set; they fire
- * once those phases exist.
+ * once that phase exists.
  */
 
 #include <sys/param.h>

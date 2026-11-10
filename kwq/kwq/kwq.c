@@ -4,9 +4,10 @@
  * kwq(9) - kernel work queues: queue objects, lifecycle, data path.
  * Workers and the pass live in kwq_worker.c.
  *
- * This is the P0 subset (../PLAN.txt): NET and BULK classes, create/
- * activate/enqueue/notify/drain/destroy, module load/unload.  DRR,
- * quantum and yield are P1; probes, DDB and the full sysctl set are P2.
+ * NET and BULK classes (BLOCKING is ../PLAN.txt P7): create/activate/
+ * enqueue/notify/drain/destroy, the class knobs and the sysctl tree,
+ * module load/unload.  The scheduler core is kwq_sched.c, the probes
+ * kwq_sdt.c, DDB kwq_ddb.c, BULK placement kwq_shard.c and kwq_gossip.c.
  */
 
 #include <sys/param.h>
@@ -59,8 +60,9 @@ u_int kwq_steal_wake_at = 2;
 u_int kwq_steal_batch = 16;
 
 /*
- * sysctl tree (../KWQ.md S10.7): kern.kwq.{version,ncpu,nqueues,clock,
- * clock_fast}; kern.kwq.<class>.{knobs,priority,limit}; kern.kwq.<class>.cpu.<N>.* per
+ * sysctl tree (../KWQ.md S10.7): kern.kwq.{version,ncpu,nqueues,topo,clock,
+ * clock_fast}; kern.kwq.<class>.{knobs,priority,limit}; kern.kwq.bulk.{shard,
+ * gossip}.* (kwq_shard.c, kwq_gossip.c); kern.kwq.<class>.cpu.<N>.* per
  * worker; kern.kwq.<class>.queue.<name>.* and .cpu.<N>.* per queue.  User
  * chosen names live only under "queue", one level of their own.
  */

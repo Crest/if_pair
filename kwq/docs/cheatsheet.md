@@ -3,8 +3,9 @@
 Working patterns for kwq clients, each with what it is for, the code,
 what it costs and what goes wrong.  The warnings are mistakes that were
 made and measured during development, not hypotheticals.  So are most of
-the patterns: 1, 4 to 8 and 10 to 12 are what `if_pair(4)`, the only
-in-tree client, actually does.  Patterns 2, 3 and 9, for batched
+the patterns: 1, 4 to 8 and 10 to 12 are what `if_pair(4)`, the NET
+client, actually does; sections 11.1 and 11.2 are what the BULK
+clients, kwq_crypto and kwq-geli, do.  Patterns 2, 3 and 9, for batched
 enqueue, notifiers and interrupt filters, follow the KPI and the
 specification but have no client behind them yet, so treat their details
 as untested where this says so.  Exact signatures and
@@ -568,11 +569,11 @@ flight, ran at 100 and 98 % of today's rate on lab and a07 with it
 and at 9 and 28 % without (BULK.md S8).
 
 **Recommended:** an item may be longer than the share limit's period
-(1 ms): the limit charges it, carrying the excess into the next period
-(SCHED.md S6.3), so a user thread on the CPU still gets its share
-between items.  What it cannot do is preempt an item: a thread waiting
-for the CPU waits for the item in progress, so keep items to a few
-milliseconds where users share the machine.
+(10 ms for BULK): the limit charges it, carrying the excess into the
+next period (SCHED.md S6.3), so a user thread on the CPU still gets its
+share between items.  What it cannot do is preempt an item: a thread
+waiting for the CPU waits for the item in progress, so keep items to a
+few milliseconds where users share the machine.
 
 **Warning:** a stealable queue takes no notifiers (`kwq_notify()` is
 refused and asserted): a stolen notifier could run on two CPUs at once.

@@ -79,7 +79,7 @@ and go under it.
 client-chosen priority.  A class fixes the worker priority, whether the
 handler may sleep, and the default quantum.  NET is interrupt-class work
 that never sleeps (packet input, 200 us quantum); BULK is lower-priority
-work that never sleeps (crypto, compression, 1 ms quantum), and the one
+work that never sleeps (crypto, compression, 5 ms quantum), and the one
 class whose work may move between CPUs: an idle BULK worker steals from
 a busy CPU's `KWQ_F_STEALABLE` queue (under the gossip scheme, `place=1`,
 the busy worker hands a batch to an idle core instead), and
@@ -423,7 +423,7 @@ Build and load.  `kwq.ko` must be loaded first, or installed so that the
 module dependency pulls it in:
 
 ```sh
-make -C ../kwq            # builds kwq.ko and kwq_test.ko
+make -C ../kwq            # builds kwq.ko and its test modules
 make                      # builds kwq_tutorial.ko
 kldload ../kwq/kwq/kwq.ko
 kldload ./kwq_tutorial.ko

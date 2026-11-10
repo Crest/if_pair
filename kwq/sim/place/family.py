@@ -4,6 +4,7 @@ median over variants and seeds of each policy's mean wait, p99.9 and max
 wait relative to the oracle's, and the CPU per item.
 
     python3 family.py OUT.tsv [--policies 0,1,2,5,7,8] [--by variant]
+        [--metric wait_all_mean_us]
 """
 import argparse, collections, math, re, statistics, sys
 

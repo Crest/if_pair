@@ -7,7 +7,9 @@ defaults are exact as of 2026-10-01 and were read from the code, not
 from the design documents.  Where this and `../KWQ.md` or `../SCHED.md`
 differ, those are normative.  The entries added from 2026-10-28 on, the
 two optional wake regimes, the urgent exemption and their counters,
-were read from the merged module on 2026-11-02.
+were read from the merged module on 2026-11-02; the BULK entries
+(stealing, scatter, placement, `KWQ_F_PROMPT`, the items that stop part
+way and `item_min_us`) on 2026-11-10.
 
 Contents: 1 synopsis; 2 types; 3 flags and constants; 4 functions;
 5 the handler contract; 6 errors; 7 caller contexts; 8 what a handler
@@ -120,7 +122,8 @@ enum kwq_class { KWQ_NET = 0, KWQ_BULK = 1, KWQ_BLOCKING = 2 };
 | `KWQ_F_RESERVE` | 0x08 | BLOCKING only; asserted at create today |
 | `KWQ_F_VNET` | 0x10 | the worker sets the creator's vnet around the handler |
 | `KWQ_F_SPIN` | 0x20 | per-CPU list locks are spin mutexes: producers may be interrupt filters or hold spin locks |
-| `KWQ_F_ALL` | 0x3f | the mask of valid flags |
+| `KWQ_F_PROMPT` | 0x40 | for BULK: the queue's passes come ahead of the ring and the new list, each with a fresh quantum, until the prompt queues have had one quantum of service since the last ring slot (SCHED.md S4.8); for short items that should not wait behind long ones.  `kwq_create()` does not check the class |
+| `KWQ_F_ALL` | 0x7f | the mask of valid flags |
 
 | constant | value | meaning |
 |---|---|---|
@@ -359,18 +362,41 @@ uint64_t kwq_budget_left(struct kwq *q);
 
 Handler only.  Nanoseconds of this pass's budget still unspent, in the
 worker's own CPU time.  0 means stop: requeue the remainder and return.
-Returns 0 in exactly three cases: a higher class is waiting for this
-CPU, the budget is spent, or the clock read looked impossible (negative,
-or over one second).  A positive value is an *estimate*: the clock is
-read at least every `budget_check_every` calls, and early whenever the
-estimate comes within a tenth of a quantum of the end, so the answer to
-"is there time for another item" is reliable near the boundary while the
-number itself may be a few microseconds out mid-pass.  Never an error.
+Returns 0 in exactly four cases: a higher class is waiting for this CPU,
+the budget is spent, the share limit's allowance is spent while
+something else is runnable on the CPU (counted in `cap_cuts`), or the
+clock read looked impossible (negative, or over one second).  A positive
+value is an *estimate*: the clock is read at least every
+`budget_check_every` calls, and early whenever the estimate comes within
+a tenth of a quantum of the end, so the answer to "is there time for
+another item" is reliable near the boundary while the number itself may
+be a few microseconds out mid-pass.  Never an error.
 
 The tick guard that bounds a worker's CPU occupancy is *not* visible
 here: it runs between passes, in the worker, and does not affect what a
 handler's budget query returns.  See the cadence guidance in
 [cheatsheet.md](cheatsheet.md) section 5.
+
+### kwq_item_begin, kwq_item_stop
+
+```c
+void kwq_item_begin(struct kwq *q);
+bool kwq_item_stop(struct kwq *q);
+```
+
+Handler only, for an item the handler can leave part done and go on
+with in a later pass (kwq-geli's bios).  The handler calls
+`kwq_item_begin()` when it starts or resumes such an item in a pass and
+`kwq_item_stop()` at each point where it could stop.  True means stop
+here: keep where the item stopped, `KWQ_ITEM_INIT()` it, requeue it in
+front of the remainder and return.  A higher class waiting stops the
+item at any such point; the pass's budget and the share limit, where
+`kwq_budget_left()` reads 0, stop it only once it has run
+`kern.kwq.<class>.item_min_us` in this pass, because what a part-done
+item leaves behind goes cold while its queue waits (SCHED.md S4.9).
+With `item_min_us` 0, `kwq_item_stop()` is `kwq_budget_left() == 0`.
+An item shorter than `item_min_us` finishes and overruns its budget by
+at most that.
 
 ### kwq_drain, kwq_destroy
 
@@ -530,7 +556,8 @@ are leaves.
 |---|---|---|
 | `kwq_enqueue` to another queue, or this one | yes | to this queue it is new work, behind what is already queued |
 | `kwq_notify` to any queue, including its own notifier | yes | the way to say "still not empty" |
-| `kwq_requeue` the pass's remainder | yes | prepends, FIFO kept, notifiers among it; never an element whose successor the handler has already fetched |
+| `kwq_requeue` the pass's remainder | yes | prepends, FIFO kept, notifiers among it; never a notifier whose successor the handler has already fetched (an item may be, after `KWQ_ITEM_INIT()`) |
+| `kwq_item_begin`, `kwq_item_stop` | yes | around an item that can stop part way; true means requeue it and return |
 | `kwq_budget_left` | yes | 0 means requeue and return |
 | sleep mutex, rwlock, rmlock | yes, briefly | |
 | spin mutex, `critical_enter`, `sched_pin` | yes, release before return | while held, only `KWQ_F_SPIN` queues may be enqueued to |
@@ -614,6 +641,12 @@ to `kwq_create()`, verbatim.
 | `kern.kwq.ncpu` | CPUs with workers |
 | `kern.kwq.nqueues` | queues that exist, active or not |
 
+The other read-only nodes, `kern.kwq.clock`, `kern.kwq.topo` and BULK
+placement's under `kern.kwq.bulk.shard` (`group`, `ngroups`, `idle`,
+`pick_*`, `spills`) and `kern.kwq.bulk.gossip` (`torus`, `place_*`,
+`spills`, `handoffs`, `handed`, `merges`, `expired_used`), are listed
+with their formats in `../OBSERVABILITY.md` section 3.
+
 ### Class knobs
 
 All per class, except BULK's `steal*`, `place`, `shard.*` and
@@ -626,6 +659,7 @@ also read from `loader.conf` when the module is preloaded.  Out-of-range values 
 | `limit` | RWTUN | 1 .. UINT_MAX | 4096 | default per-CPU bound for queues created with `limit = 0`; applies to queues created afterwards, clamped to `INT_MAX` there.  0 is refused (EINVAL; a loader tunable of 0 leaves 4096 and the kernel prints `Setting sysctl ... failed: 22`): every queue created afterwards would refuse every enqueue |
 | `penalty_rounds` | RWTUN | 1 .. 1024 | 32 | how many quanta of debt a queue may accumulate, i.e. the longest parking |
 | `budget_check_every` | RWTUN | 1 .. 64 | 8 | how often `kwq_budget_left()` reads the clock; 1 is exact and expensive |
+| `item_min_us` | RWTUN | 0 .. 1000000 | 0 / 2000 / 0 | an item that can stop part way (`kwq_item_stop()`) stops for the pass's budget or the share limit only after running this long in a pass; a higher class stops it at any point; 0: at any point (SCHED.md S4.9) |
 | `cap_permille` | RWTUN | 1 .. 1000 | 500 | share limit: the share of its CPU the worker may spend in passes per period while other threads are runnable, in 1/1000; the rest of the period it waits between passes as an idle-priority thread.  Equal share by default, 1000 = off, and the worker then obeys ULE's slice end as a process would (SCHED.md S6.3) |
 | `cap_period_us` | RWTUN | 100 .. 1000000 | 1000 / 10000 / 1000 | the share limit's period, the longest the CPU is given away at a time |
 | `cap_prio` | RWTUN | class priority + 1 .. 255 | 224 (`PRI_MIN_IDLE`) | the priority the worker waits at between passes while over its allowance, never the priority of a pass.  224 runs only when the CPU would otherwise idle and is preempted by anything that wakes; 223 (`PRI_MAX_TIMESHARE`) is the other useful value, the last batch slot, which ULE does not treat as idle when placing a waking thread.  The rest of the range is for experiments (SCHED.md S6.3) |
@@ -634,7 +668,7 @@ also read from `loader.conf` when the module is preloaded.  Out-of-range values 
 | `wake_delay_us` | RWTUN | 0 .. 1000000 | 0 (off) | the idle-class wait's deadline (KWQ.md S16, opt-in): an enqueue from the worker's own CPU makes the worker runnable in the idle class at `cap_prio` instead of preempting the producer, and it runs when the producer sleeps or at this deadline, whichever is first.  0 is the preempting doorbell.  An enqueue from another CPU rings the doorbell at either setting |
 | `yield_prio` | RW | class priority .. 223 | 56 (`PUSER`) | priority of the end-of-round yield.  223 lets every user thread run a full slice, which is the setting for the case where an interactive process turns CPU-bound and its latency spikes with `yields` normal and no kwq counter explaining them.  The one knob that is not a loader tunable |
 | `steal` | RWTUN | 0, 1 | bulk: 1 | 1: a BULK worker with nothing of its own takes batches of stealable queues before it sleeps, and producers wake sleeping workers to do so (under `place=1` the busy worker hands batches off instead, with no steal wake); 0: no stealing, and a stealable pass takes its whole list again (SCHED.md S16) |
-| `steal_scope` | RWTUN | 0 .. 8 | bulk: 8 | rings of the cache topology that a steal, the steal wake, `kwq_scatter()` and, under `place=0`, the `KWQ_CPU_ANY` pick look at, nearest first (P8's pick reads its group lines and the far probe, gossip's its tables); 1 is the CPUs sharing the smallest group with this one (the SMT sibling on an SMT machine); 0 keeps every item on its CPU |
+| `steal_scope` | RWTUN | 0 .. 8 | bulk: 8 | rings of the cache topology that a steal, the steal wake, `kwq_scatter()` and, under `place=0`, the `KWQ_CPU_ANY` pick look at, nearest first (P8's pick reads its group lines and the far probe first and is bounded by this reach only in its last two steps, the nearest non-donor and the shallowest of four; gossip's pick reads its tables); 1 is the CPUs sharing the smallest group with this one (the SMT sibling on an SMT machine); 0 keeps every item on its CPU |
 | `steal_scan` | RWTUN | 1 .. 4096 | bulk: 16 | other CPUs probed at most per steal attempt, steal wake, scatter or, under `place=0`, pick |
 | `steal_max` | RWTUN | 1 .. 4096 | bulk: 64 | items one steal takes at most; otherwise half the victim's live list, the victim's lock held while the stealer walks them |
 | `steal_batch` | RWTUN | 1 .. 4096 | bulk: 16 | items a pass of a stealable queue takes at most; one while a BULK worker near it sleeps, which it then wakes for the rest |
@@ -909,9 +943,9 @@ Other providers see kwq without any kwq-specific support:
 ## 14. Build and install
 
 ```sh
-make -C kwq                 # kwq.ko and kwq_test.ko
+make -C kwq                 # kwq.ko, kwq_test.ko and kwq_crypto.ko
 make -C kwq install         # modules to /boot/modules, kwq.d to /usr/lib/dtrace
-make -C kwq uninstall       # removes both and refreshes linker.hints
+make -C kwq uninstall       # removes them and refreshes linker.hints
 ```
 
 Defaults of the module build: `WITH_CTF=1` so the DTrace translator
@@ -937,16 +971,17 @@ or installed so the dependency resolves.
 | new list with boost, grace rule, debt rule, progress rule | implemented |
 | estimated budget check, clock glitch guard | implemented |
 | yield at round end and tick, hand-back between classes, share limit | implemented |
-| sysctl tree, 23 DTrace probes, translator, `show kwq` | implemented |
+| sysctl tree, 27 DTrace probes, translator, `show kwq` | implemented |
 | writable per-queue `limit` | implemented |
 | `kwq_cpu_for_hash()` remap for sparse CPU ids | implemented; the sparse path itself is **untested**, no such machine being available |
 | notifiers on the item list in arrival order, budgeted, requeueable (tagged link, 2026-10-08) | implemented, tested by the eight `mix` cases |
-| `KWQ_F_STEALABLE`: stealing, the pass cap, the steal wake (P6, SCHED.md S16) | implemented on branch kwq-bulk; the `steal`, `steal_off`, `stealdrain` and `stealdrain_discard` cases |
-| `kwq_scatter()` with `struct kwq_group` (P6) | implemented on branch kwq-bulk; the `scatter` case |
+| `KWQ_F_STEALABLE`: stealing, the pass cap, the steal wake (P6, SCHED.md S16) | implemented; the `steal`, `steal_off`, `stealdrain` and `stealdrain_discard` cases |
+| `kwq_scatter()` with `struct kwq_group` (P6) | implemented; the `scatter` case |
 | `KWQ_BLOCKING` | refused at create with a log line; no workers of that class exist (P7) |
 | `KWQ_F_RESERVE`, `nreserve != 0` | asserted at create, not cleanly refused (P7) |
-| cache-topology `KWQ_CPU_ANY`, an idle worker first (P6) | implemented on branch kwq-bulk |
-| BULK placement `kern.kwq.bulk.place`: P8 with the chain, the default on one NUMA domain, and gossip (P6g, SCHED.md S17) | implemented on branch kwq-bulk; the `place_switch`, `place_stale`, `torus`, `island` and `starved` cases; measured on lab and a07 (BULK.md S8) |
+| cache-topology `KWQ_CPU_ANY`, an idle worker first (P6) | implemented |
+| BULK placement `kern.kwq.bulk.place`: P8 with the chain, the default on one NUMA domain, and gossip (P6g, SCHED.md S17) | implemented; the `place_switch`, `place_stale`, `torus`, `island` and `starved` cases; measured on lab and a07 (BULK.md S8) |
+| `KWQ_F_PROMPT` queues; items that stop part way, `kwq_item_begin()`, `kwq_item_stop()` and `item_min_us` (SCHED.md S4.8, S4.9) | implemented; no kwq_test case, exercised by kwq-geli's `read_queue` and `item_min` cases (`../../kwq-geli/tests`) |
 | grace rule in service, `GRACE_SERVICE` one ring's worth (replaces `GRACE_ROUNDS`) | implemented |
 | tick regime (`tick_us`), its counters and the `tick` probe | implemented, off by default |
 | idle-class wait for same-CPU producers (`wake_delay_us`), its counters and the `wake` probe; it takes precedence over the tick regime for a same-CPU producer | implemented, off by default |
@@ -958,6 +993,6 @@ or installed so the dependency resolves.
 
 Clients: `if_pair(4)` runs on kwq and is measured against a frozen copy
 of its taskqueue predecessor (`../../extras/if_pair_tq`).  epair is P5.
-The BULK proof (P6, branch kwq-bulk) is `../../kwq-geli`, GELI ported to
+The BULK proof (P6) is `../../kwq-geli`, GELI ported to
 BULK queues and measured against the stock module, with
 `kwq_crypto.ko`, a dummy BULK client benchmarking AES-XTS, beside it.

@@ -237,7 +237,8 @@ per burst; it is not on the per-item path.)
         if higher class waiting and >= 1 pass served this round (S6.4): break
         kc = pop head of kw_active; kw_nactive--
         kc_deficit = min(kc_deficit + Qw(kc), 2 Qw(kc))   # refill, carry cap
-        # (the lower clamp -2 Qw was applied when the pass was charged, S4.3)
+        # (the lower clamp, -penalty_rounds x Qw, was applied when the pass
+        # was charged, S4.3)
         if kc_deficit <= 0:
             kc_state = PARKED; kc_parks++
             append kc to kw_active tail; kw_nactive++
@@ -267,8 +268,9 @@ it, and the ring receives at least every other pass.
 A round with an empty new list and an empty ring does not happen: the
 worker sleeps on `kw_active` while both are empty (P0's idle loop).  A
 round in which every ring entry is PARKED performs no pass; it still
-refills every entry, and because `D >= -2Qw` after any charge (S4.3) at
-most two such rounds occur in a row, each costing a few hundred
+refills every entry, and because `D >= -penalty_rounds x Qw` after any
+charge (S4.3) at most `penalty_rounds` such rounds (32 by default)
+occur in a row, each costing a few hundred
 nanoseconds plus the end-of-round yield.
 
 ### 4.3 Pass (worker, `kwq_pass()` as in P0 plus accounting)
@@ -397,29 +399,6 @@ list grew, and the spiral ended with one CPU 100 % busy walking while
 its fifteen peers idled.  The rule that follows: nothing the handler
 must do to comply with the budget may cost more than a constant.
 
-### 4.8 Prompt queues (KWQ_F_PROMPT)
-
-A BULK queue created `KWQ_F_PROMPT` skips the ring and the new list: its
-passes come first, each with a fresh quantum, until such queues have had
-one quantum of service since the last ring slot; then the ring gets its
-slot and the count starts again.  Items of the queues behind them wait
-for those passes, so this is for work that should not queue behind long
-items and whose own items are short by comparison (kwq-geli's reads
-beside its writes, 2026-11-06).  The bound is what keeps it fair: the
-ring moves however many prompt queues there are.
-
-### 4.9 Items that stop part way
-
-A long item a handler can leave part done (kwq-geli's bios) stops at the
-points the handler offers, through `kwq_item_stop()`.  A higher class
-stops it at any such point.  The pass's budget and the share limit stop
-it only once it has run `item_min_us` in this pass (class knob, BULK's
-default 2000, the others' 0: at any point), because what a part-done item leaves behind goes cold
-while its queue waits for the ring: on lab 0.8 ms of CPU per cut at 64
-providers, against nothing for the checks themselves.  An item shorter
-than `item_min_us` finishes, is charged in full and overruns its budget
-by at most that; one longer stops about every `item_min_us`.
-
 ### 4.6 Grace rule (anti-gaming)
 
 Without it, a bulk queue whose producer pauses briefly between bursts
@@ -526,6 +505,30 @@ time for BULK and BLOCKING, wall time for NET.
   left the ring is not boosted.
   A queue that went idle owing time is not boosted at all; its doorbell
   goes to the ring.
+
+### 4.8 Prompt queues (KWQ_F_PROMPT)
+
+A BULK queue created `KWQ_F_PROMPT` skips the ring and the new list: its
+passes come first, each with a fresh quantum, until such queues have had
+one quantum of service since the last ring slot; then the ring gets its
+slot and the count starts again.  Items of the queues behind them wait
+for those passes, so this is for work that should not queue behind long
+items and whose own items are short by comparison (kwq-geli's reads
+beside its writes, 2026-11-06).  The bound is what keeps it fair: the
+ring moves however many prompt queues there are.
+
+### 4.9 Items that stop part way
+
+A long item a handler can leave part done (kwq-geli's bios) stops at the
+points the handler offers, through `kwq_item_stop()`.  A higher class
+stops it at any such point.  The pass's budget and the share limit stop
+it only once it has run `item_min_us` in this pass (class knob, BULK's
+default 2000, the others' 0: at any point), because what a part-done
+item leaves behind goes cold while its queue waits for the ring: on lab
+0.8 ms of CPU per cut at 64 providers, against nothing for the checks
+themselves.  An item shorter than `item_min_us` finishes, is charged in
+full and overruns its budget by at most that; one longer stops about
+every `item_min_us`.
 
 ## 5. Handler contract under the scheduler
 
@@ -2087,11 +2090,11 @@ hints; a wrong guess is what stealing corrects.  The P0 pick probed four
 CPUs of the NUMA domain by id.
 
 Counters (per (queue, CPU), BULK): `steals_in`, `stolen_in`,
-`steals_out`, `stolen_out`, `scattered`; per BULK worker:
-`steal_tries`, `steals`, `stolen`, `steal_wakes`.  `kwq:::steal(q,
-from, to, n)` fires per batch.  Machine-wide `steals_in == steals_out`
-and `stolen_in == stolen_out` hold by construction and are asserted by
-the ATF `steal` case.
+`steals_out`, `stolen_out`, `scattered`; per BULK worker: `steal_tries`,
+`steals`, `stolen`, `steal_wakes`.  `kwq:::steal(q, from, to, n, how,
+left)` fires per batch (`how` and `left` are S17's).  Machine-wide
+`steals_in == steals_out` and `stolen_in == stolen_out` hold by
+construction and are asserted by the ATF `steal` case.
 
 ## 17. BULK placement: P8 and gossip (P6g, 2026-11-05)
 
@@ -2151,8 +2154,9 @@ it.
   empty: its backlog is what the donor rule watches.
 - *The donor line and the hints.*  At each decision point, the start
   and the end of a pass of a stealable queue and the worker's sleep,
-  the worker walks its new list
-  and its ring (at most 16 and 32 entries) and sums the stealable
+  the worker walks its prompt list, its new list
+  and its ring (16 entries at most of the first two together, 32 of the
+  three) and sums the stealable
   backlog, depth times the list's item cost, over the stealable lists.
   The CPU is a donor when that backlog reaches `shard.donor_us` (500)
   and its longest stealable list holds two items or more, or when a

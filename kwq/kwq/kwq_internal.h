@@ -96,7 +96,10 @@ struct kwq_cpu {
 						   was armed: no wakeup now, the tick or
 						   tick_urgent_us serves them (KWQ.md S16) */
 
-	/* Block 1..: consumer-private, written only by the owning worker. */
+	/*
+	 * Block 1..: consumer-private, written only by the owning worker,
+	 * the three counters marked below excepted.
+	 */
 	struct kwq		*kc_q __aligned(KWQ_LINE);
 	int			kc_cpu;
 	u_int			kc_src;		/* enum kwq_src: list of the pass in progress */

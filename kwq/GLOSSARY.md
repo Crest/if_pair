@@ -57,7 +57,10 @@ more.  "kwq:" marks terms this project defines.
   `kwq_enqueue()`: by flow hash (`kwq_cpu_for_hash()`, the same mapping
   TCP's per-CPU timers use), by source CPU, by `curcpu`, or
   `KWQ_CPU_ANY` for unordered BULK work.  The CPU is an ordering key;
-  the service never re-steers.  Aliases: *placement*, *RSS bucket*
+  the service never re-steers, except the items of a stealable BULK
+  queue, which have no order to keep: stealing moves them, and under
+  `kern.kwq.bulk.place` 1 or 2 an enqueue for a fixed CPU may spill to
+  another (SCHED.md S16, S17).  Aliases: *placement*, *RSS bucket*
   (hardware), *m2cpuid/m2flow* (netisr(9) policy functions).
 - **reject** (kwq) - an enqueue that returns non-zero and leaves the item
   with the caller: `ENOBUFS` at the queue's *limit*, `ENXIO` after drain

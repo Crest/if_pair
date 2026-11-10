@@ -1,12 +1,13 @@
 # kwq: tunables and introspection
 
 How to steer a running kwq and how to see what it is doing, with the
-commands to type.  Everything here exists in the module as of
-2026-09-29 (P2); the knobs and counters of the two optional wake
-regimes, the urgent exemption and the priority tripwire, specified from
-2026-10-28 on (KWQ.md S3, S16, SCHED.md S4.6, S6.3), are in the merged
-module as well.  KWQ.md S10 is the design behind it and the reference
-for anything not listed.  Names are exact.  ASCII only.
+commands to type.  Everything here exists in the module as of 2026-09-29
+(P2); the knobs and counters of the two optional wake regimes, the
+urgent exemption and the priority tripwire, specified from 2026-10-28 on
+(KWQ.md S3, S16, SCHED.md S4.6, S6.3), are in the merged module as well,
+and so are those of BULK stealing and placement (P6, P6g, 2026-11-05)
+and `item_min_us` (2026-11-07).  KWQ.md S10 is the design behind it and
+the reference for anything not listed.  Names are exact.  ASCII only.
 
 Contents: 1 the sysctl tree; 2 tunables; 3 service-wide read-only nodes;
 4 per-worker counters; 5 per-queue nodes and counters; 6 DTrace; 7 DDB;
@@ -51,6 +52,7 @@ handler rejects values outside its range with EINVAL.
 | `limit` (RWTUN) | 1..UINT_MAX | 4096 | per-CPU item limit for queues created with `limit = 0`; applies to queues created afterwards, clamped to INT_MAX there.  A queue at its limit refuses enqueues with ENOBUFS and counts them in `rejected`.  0 is refused with EINVAL, since every queue created afterwards would refuse every enqueue; as a loader tunable 0 leaves 4096 and the kernel prints `Setting sysctl kern.kwq.<class>.limit failed: 22` |
 | `penalty_rounds` (RWTUN) | 1 .. 1024 | 32 | how many rounds a queue can be parked for overrunning its budget, in quanta of debt.  Smaller forgives a misbehaving handler sooner |
 | `budget_check_every` (RWTUN) | 1 .. 64 | 8 | `kwq_budget_left()` reads the clock at least every this many calls and whenever the budget is nearly spent; between reads it estimates.  1 = a clock read per call (exact, expensive with cheap items) |
+| `item_min_us` (RWTUN) | 0 .. 1000000 | 0 / 2000 / 0 | an item that can stop part way (`kwq_item_stop()`, kwq-geli's bios) stops for the pass's budget or the share limit only after running this long in a pass; a higher class stops it at any point.  0: at any point (SCHED.md S4.9) |
 | `yield_prio` (RW) | class priority .. 223 | 56 (PUSER) | the priority the worker yields at after a round when something else is runnable.  223 lets every user thread run a full time slice per round |
 | `cap_permille` (RWTUN) | 1 .. 1000 | 500 | share limit: the share of its CPU the worker may spend in passes per `cap_period_us` while other threads are runnable there, in 1/1000; for the rest of the period it waits between passes as an idle-priority thread, which runs only when the CPU would otherwise idle.  The default is an equal share; 1000 turns it off, and the worker then obeys ULE's slice end as a process would (SCHED.md S6.3) |
 | `cap_period_us` (RWTUN) | 100 .. 1000000 | 1000 / 10000 / 1000 | the period of the share limit, and the longest the CPU is given away at a time |
@@ -58,7 +60,7 @@ handler rejects values outside its range with EINVAL.
 | `tick_us` (RWTUN) | 0 .. 100000 | 0 (off) | the tick regime's bound L, an opt-in (KWQ.md S16): while the worker's producer is dense (three consecutive sleeps shorter than L) its sleep has a timeout of L and precision L/8, a producer that places a list counts `doorbells_skipped` instead of waking the worker, and the timeout serves what accumulated; it leaves on a tick that served one element or none.  An item that arrives while the regime is on waits at most L plus the pass in progress, so every co-scheduled small flow pays L; 20 to 50 us where it is worth having, off everywhere else |
 | `tick_urgent_us` (RWTUN) | 0 .. 100000 | 0 (at once) | inside the tick regime, an urgent item (`kwq_enqueue_urgent()`) that finds the worker asleep wakes it this much later instead of at once, so the urgent items within the bound share one wake (`tick_urgent_deferred`, `tick_urgent_wakes`); a bound at or above `tick_us` is the tick's own and arms nothing.  Outside the regime, and for a notifier, a drain or a cancel, an urgent ring wakes at once at any setting (KWQ.md S16) |
 | `steal` (RWTUN) | 0, 1 | bulk: 1 | BULK only: a worker with nothing of its own takes batches of `KWQ_F_STEALABLE` queues from other CPUs before it sleeps, and producers wake sleeping workers to do so; 0 turns stealing off and a stealable pass takes its whole list again (SCHED.md S16) |
-| `steal_scope` (RWTUN) | 0 .. 8 | bulk: 8 | rings of the cache topology that a steal, the steal wake, `kwq_scatter()` and, under `place=0`, the `KWQ_CPU_ANY` pick look at, nearest first; 0: none, and under `place=0` every item stays on its CPU.  P8's pick reads its group lines and the far probe, gossip's its tables, neither this reach |
+| `steal_scope` (RWTUN) | 0 .. 8 | bulk: 8 | rings of the cache topology that a steal, the steal wake, `kwq_scatter()` and, under `place=0`, the `KWQ_CPU_ANY` pick look at, nearest first; 0: none, and under `place=0` every item stays on its CPU.  P8's pick reads its group lines and the far probe first, and only its last two steps (the nearest non-donor, the shallowest of four) stay within this reach; gossip's pick reads its tables, not this reach |
 | `steal_scan` (RWTUN) | 1 .. 4096 | bulk: 16 | other CPUs probed at most per steal attempt, wake, scatter or, under `place=0`, pick |
 | `steal_max` (RWTUN) | 1 .. 4096 | bulk: 64 | items one steal takes at most, otherwise half the victim's live list |
 | `steal_batch` (RWTUN) | 1 .. 4096 | bulk: 16 | items a pass of a stealable queue takes at most; one while a BULK worker near it sleeps, which the pass wakes for the rest |
@@ -267,7 +269,7 @@ for a producer the regime cannot help.
 |---|---|
 | `weight` | DRR weight as created (1 .. 8) |
 | `limit` | per-CPU item limit in effect (`2147483647` for `KWQ_LIMIT_NONE`); writable at run time, 1..INT_MAX, to tune or sweep a queue's depth without recreating it |
-| `flags` | `KWQ_F_*` as created (0x1 inactive at create, 0x2 stealable, 0x4 discard on drain, 0x8 reserve, 0x10 vnet, 0x20 spin) |
+| `flags` | `KWQ_F_*` as created (0x1 inactive at create, 0x2 stealable, 0x4 discard on drain, 0x8 reserve, 0x10 vnet, 0x20 spin, 0x40 prompt) |
 | `state` | `inactive`, `active`, `draining`, `drained` |
 | `reset` | write 1 to zero `maxlat_ns` and `maxdepth` on every CPU of the queue |
 
@@ -375,6 +377,7 @@ One-liners, all verified against the test module:
 
     # who is dropping, and who feeds the queue that drops
     dtrace -n 'kwq:::reject { @[args[0]->kwq_name, arg1, arg2] = count(); }'
+    dtrace -n 'fbt::kwq_enqueue:return /arg1 != 0/ { @[stack()] = count(); }'
 
     # BULK stealing: items moved per path, and whether the thieves chain
     dtrace -L /path/to/kwq/kwq -n 'kwq:::steal { @[args[0]->kwq_name, arg4] = sum(arg3); }'
@@ -396,7 +399,6 @@ The `KWQ_STEAL_*`, `KWQ_SWAKE_*`, `KWQ_SMISS_*` and `KWQ_PICK_*` codes
 are D inlines in kwq.d (kwq_sdt.h defines them for the kernel), so a
 script that loads kwq.d can name them.  Gossip's merges are counted
 (`gossip.merges`), not probed.
-    dtrace -n 'fbt::kwq_enqueue:return /arg1 != 0/ { @[stack()] = count(); }'
 
     # is the worker giving the CPU away, and why
     dtrace -n 'kwq:::yield { @[arg1, arg2 == 1 ? "tick" : arg2 == 2 ? "cap" : arg2 == 3 ? "slice" : "round"] = count(); }'
@@ -584,15 +586,19 @@ kwq source tree after an in-tree build:
     FANIN=8 PROD_NS=500 CONS_NS=500 LOCKSTAT=1 tests/run_p1b.sh ifpair
 
 `tests/kwq_test.sh` is the ATF test program and `tests/Kyuafile` its
-suite: twenty-six cases that load the two modules, run a scenario and
+suite: thirty-six cases that load the two modules, run a scenario and
 assert the property it proves (per-CPU FIFO and exactly-once delivery,
 rejects and discards, notifier coalescing, name validation, the class
 limit refusing 0, fairness
 within 10 %, the light queue's latency bound, the grace rule, overrun
 parking, tick yields, two flow smoke tests, the eight `mix` cases on
 notifiers among items, the priority promise with every moderation knob
-on, the tick regime's entry and exit, and no timer left armed in a
-silence).  It needs root and at
+on, the tick regime's entry and exit, no timer left armed in a
+silence, and BULK's ten: stealing on and off, scatter, a drain and a
+discarding drain of a stealable queue, the switch of `place` under
+load, stale placement state, gossip's torus, an island of CPUs and the
+starvation watchdog).  `tests/kwq_crypto_test.sh`, three cases on
+`kwq_crypto.ko`, is the suite's second program.  It needs root and at
 least 4 CPUs and skips otherwise; each case unloads what it loaded.
 Run it as root on the test machine, pointing `moddir` at a flat module
 directory or the source tree, or leave it unset to load installed
@@ -658,10 +664,10 @@ A plain `make` in `kwq/` produces modules with everything above:
   which exists only after a full `installkernel`.
 
 `make uninstall` (as root, after `kldunload kwq_test kwq`) removes the
-two modules and the translator again and refreshes `linker.hints`.  Do
-that before testing a build from another tree: `kldload kwq` by name,
-and a client module's `MODULE_DEPEND` on kwq, pick up
-`/boot/modules/kwq.ko` in preference to anything loaded by path.
+modules (`kwq_crypto` as well) and the translator again and refreshes
+`linker.hints`.  Do that before testing a build from another tree:
+`kldload kwq` by name, and a client module's `MODULE_DEPEND` on kwq,
+pick up `/boot/modules/kwq.ko` in preference to anything loaded by path.
 
 Checks:
 

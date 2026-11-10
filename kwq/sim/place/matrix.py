@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """matrix.py - placesim's scenario matrix (SPEC-p6g.md S3.5).
 
-    python3 matrix.py [-j JOBS] [-s SEEDS] [--only REGEX] [--set NAME] OUT.tsv
+    python3 matrix.py [-j JOBS] [-s SEEDS] [--only REGEX] [--set NAME] [--list] OUT.tsv
 
 Each run is one line of placesim key=value arguments; its TSV rows are
 appended to OUT.tsv with a leading column naming the variant.  Runs that

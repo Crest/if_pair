@@ -16,8 +16,8 @@
  *   kwqsim suite                     run every scenario over its seeds
  *
  * Scenarios: fairness latency gaming overrun overrun_idle handback cut
- * storm nnew manyq budgetjump glitch wrap ratechange badhandler random
- * grace_pause sweep_boost.
+ * cap_long cap_onset storm nnew manyq budgetjump glitch wrap ratechange
+ * badhandler random grace_pause sweep_boost.
  */
 
 #include <sys/types.h>

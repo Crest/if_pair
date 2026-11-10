@@ -208,7 +208,7 @@ time.
 | admission failure | the packet is freed and `nw_qdrops` incremented (`netisr.c:1021`) | the item is returned to the caller, which decides to drop, count or push back |
 | depth control | `maxqlimit` and `defaultqlimit` are `RDTUN`; a runtime change needs the protocol to call `netisr_setqlimit()`, which IP wraps in a sysctl of its own (`ip_input.c:237`) | the per-queue `limit` is writable at run time |
 | placement | chosen per packet by policy, with fallbacks: flow falls back to source ordering (`netisr.c:857`), and CPU policy to `curcpu` under hybrid dispatch (`netisr.c:838`) or to source ordering otherwise (`netisr.c:842`) | the client passes the CPU; the only remapping is the load-time table that keeps a hash on a present CPU |
-| observability | packet counts, a watermark and a DDB command; no time, no latency, and zero SDT probes in `netisr.c` | 19 probes with a translator, queueing latency, CPU time per queue, overruns, parking, boosts, grace, clock glitches |
+| observability | packet counts, a watermark and a DDB command; no time, no latency, and zero SDT probes in `netisr.c` | 27 probes with a translator, queueing latency, CPU time per queue, overruns, parking, boosts, grace, clock glitches |
 | extensibility | a compile-time table of 16 protocol slots with numbers fixed in a public header, 8 assigned | any number of named queues, created at run time by the client |
 
 Three entries deserve a sentence more than a table row gives them.
@@ -281,9 +281,10 @@ design:
 - The bound is per list, so a hash skew shows up as `ENOBUFS` on one CPU
   with the others idle: a diagnosable steering symptom rather than a
   mysterious global slowdown.
-- Stealing, when it arrives for BULK, is a per-class property, not a
-  per-item one, and NET is never stolen: a flow's items never wait
-  behind a cross-CPU cache miss they did not cause.
+- Stealing, which BULK has had since 2026-11-03 (`../SCHED.md` S16), is
+  a per-class property, not a per-item one, and NET is never stolen: a
+  flow's items never wait behind a cross-CPU cache miss they did not
+  cause.
 
 ### 4.2 Why the handler receives batches
 

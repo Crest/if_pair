@@ -74,7 +74,8 @@ CTASSERT(__alignof(struct kwq_item) >= 2);
  * handler tells them from items by pointer identity against its own
  * notifier objects, and walks with KWQ_ITEM_NEXT(q, it), which consumes
  * a notifier as the handler fetches its successor (above).  A notifier
- * may be handed back with kwq_requeue() like any element.
+ * the handler has not walked past yet may be handed back with
+ * kwq_requeue() like any element.
  */
 typedef void kwq_handler_t(struct kwq *q, struct kwq_item *head, int n,
     void *ctx);
@@ -196,10 +197,10 @@ void		 kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf);
  * Handler only.  kwq_requeue() prepends already-admitted leftovers,
  * notifiers among them, to the current (queue, CPU) list (FIFO kept, no
  * limit check); tail NULL means the leftovers run to the end of the list
- * this pass handed over, so the handler does not walk to find it.  kwq_budget_left()
- * returns the nanoseconds of this pass's budget still unspent, 0 when the
- * handler should requeue and return; P0 returns a constant, P1 implements
- * SCHED.md S4.4.  A handler processes at least one item per call.
+ * this pass handed over, so the handler does not walk to find it.
+ * kwq_budget_left() returns the nanoseconds of this pass's budget still
+ * unspent, 0 when the handler should requeue and return (SCHED.md S4.4).
+ * A handler processes at least one item per call.
  *
  * An item that can stop part way and go on in a later pass (the handler
  * keeps where it stopped and requeues the item in front of the list): the

@@ -25,9 +25,10 @@
  *            to the last writer; a write invalidates the other holders.
  *            The costs are charged as CPU time to the thread doing it.
  *   workers  wake latency after a sleep (short or long), DRR with a
- *            quantum of 1 ms, passes that take a list (cut by P1's pass
- *            cap), items never preempted; a sleeping worker is woken by
- *            the doorbell of an enqueue.
+ *            quantum of 1 ms (BULK's when this was written; the kernel's
+ *            is 5 ms since 2026-11-05), passes that take a list (cut by
+ *            P1's pass cap), items never preempted; a sleeping worker is
+ *            woken by the doorbell of an enqueue.
  *   items    cost in ns of work at full speed; an item that runs on
  *            another core than the one it was produced on pays move_ns.
  *

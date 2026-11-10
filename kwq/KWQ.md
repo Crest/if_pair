@@ -160,7 +160,7 @@ defined in GLOSSARY.md.
     void        kwq_notify_cancel(struct kwq *q, struct kwq_notifier *nf);
                 /* sleepable; returns with nf neither queued nor running */
     uint64_t    kwq_budget_left(struct kwq *q);       /* handler only, ns;
-                                                          P0: a constant, P1: SCHED.md */
+                                                          SCHED.md S4.4 */
     void        kwq_item_begin(struct kwq *q);        /* handler only: a stoppable
                                                           item starts or resumes */
     bool        kwq_item_stop(struct kwq *q);         /* handler only: stop it here?
@@ -278,7 +278,10 @@ worker's spin mutex from the producer's CPU (S17).
   an idle core from the table.  P0 probed four CPUs of the NUMA domain
   by id, a bounded probe since 2026-09-29.  It is invalid for NET
   (ordering).  An offline or non-existent CPU maps to the caller's
-  CPU.
+  CPU.  A fixed CPU of a `KWQ_F_STEALABLE` queue is where the item
+  starts unless stolen, and under place 1 and 2 a preference only: the
+  enqueue sends the item where `KWQ_CPU_ANY` would when that CPU holds
+  a donor's backlog (the spill, SCHED.md S17).
 - Never sleeps, never allocates, never calls the handler.  Safe from any
   context that may take a sleep mutex: threads, ithreads, callouts,
   other handlers.  From an interrupt filter, or while holding a spin
@@ -618,11 +621,12 @@ of the steal rmlock (SCHED.md S16).
   in `n`, and are consumed by the handler's `KWQ_ITEM_NEXT(q, it)` (S3
   `kwq_notify`).  A handler processes at least one element per call
   before honouring a zero budget (SCHED.md S5).
-- Runs on the worker of the CPU the items were enqueued to (NET, and BULK
-  unless stolen), with the class's priority, inside the network epoch for
-  NET (the `NET_TASK_INIT` convention), with `CURVNET_SET` to the queue's
-  vnet if `KWQ_F_VNET`, and with `THREAD_NO_SLEEPING()` asserted for NET
-  and BULK.
+- Runs on the worker of the CPU the items were enqueued to (NET, and
+  BULK unless stolen or spilled at the enqueue, S3 `kwq_enqueue`), with
+  the class's priority, inside the network epoch for NET (the
+  `NET_TASK_INIT` convention), with `CURVNET_SET` to the queue's vnet if
+  `KWQ_F_VNET`, and with `THREAD_NO_SLEEPING()` asserted for NET and
+  BULK.
 - Is given a budget it can query: `kwq_budget_left(q)` returns the
   nanoseconds remaining in the current quantum.  A handler processing a
   long list should stop when the budget is gone, hand the unprocessed
@@ -1141,8 +1145,9 @@ scripts name fields, not struct offsets.  kwq follows it exactly.
 in-tree providers do, so probes read `kwq:::name`.  Probes are defined
 with `SDT_PROBE_DEFINEn_XLATE` (the mechanism `ip`/`tcp` use) so that
 `args[0]` is a translated `kwqinfo_t`, never a raw `struct kwq *`.
-`kwq_sdt.c` defines the 23 probes below; `steal` fires since P6, the
-three worker-pool probes once P7 exists.
+`kwq_sdt.c` defines the 27 probes below; `steal` fires since P6,
+`steal-wake`, `steal-miss`, `donor` and `place` since P6g, the three
+worker-pool probes once P7 exists.
 
 | probe | when | args (after translation) | cost class |
 |---|---|---|---|
@@ -1160,7 +1165,11 @@ three worker-pool probes once P7 exists.
 | `kwq:::doorbell` | a list was placed with the worker, or an urgent item's nudge woke it (S16) | `int class`, `int cpu`, `int state` (the worker when rung: 0 awake, 2 asleep and woken, 4 asleep and made runnable in the idle class, 6 asleep with the tick armed: placed, not woken; 1 polling is defined and never fires) | per burst |
 | `kwq:::tick` | the tick regime's own timeout woke the worker (S16) | `int class`, `int cpu`, `uint64_t n` (elements served between the previous wake and this sleep: the previous tick's round, or at an episode's first tick the round that entered the regime) | per tick |
 | `kwq:::wake` | a worker waiting in the idle class was promoted to the class priority (S16) | `int class`, `int cpu`, `int reason` (2 the `wake_delay_us` deadline; 4 urgent: a notifier, a drain, a cancel, an urgent item, an enqueue from another CPU, the share limit's deadline or the unload; 5 self: the worker got the CPU by itself), `uint64_t ns` since the wait began | per wait |
-| `kwq:::steal` | BULK batch moved between CPUs | `kwqinfo_t *`, `int from`, `int to`, `int n` | per event |
+| `kwq:::steal` | BULK batch moved between CPUs | `kwqinfo_t *`, `int from`, `int to`, `int n`, `int how` (`KWQ_STEAL_*`: 0 S16's scan, 1 P8's donor steal, 2 mailbox, 3 chain, 4 pull, 5 gossip's hand-off), `int left` (items left on the list it came from) | per event |
+| `kwq:::steal-wake` | a sleeping BULK worker woken so that it steals (place 0 and 2) | `int from` (the CPU to steal from), `int woken` (-1: no worker in reach slept), `int why` (`KWQ_SWAKE_*`: 0 enqueue, 1 helper, 2 donor, 3 watchdog), `int mailbox` (1 if the wake named the list) | per event |
+| `kwq:::steal-miss` | a steal attempt that moved nothing | `int thief`, `int how` (as `steal`), `int victim` (-1: none found), `int why` (`KWQ_SMISS_*`: 0 none, 1 stale, 2 empty, 3 lone, 4 inactive) | per event |
+| `kwq:::donor` | place=2: a CPU's donor or starved state changed | `int cpu`, `int donor`, `int starved`, `uint64_t backlog_ns` | per event |
+| `kwq:::place` | a BULK item for `KWQ_CPU_ANY`, or a fixed CPU's spilled one, was given its CPU | `kwqinfo_t *`, `int producer`, `int chosen`, `int how` (`KWQ_PICK_*`), `int spill` | per item, BULK only |
 | `kwq:::worker-block`, `worker-spawn`, `worker-exit` | BLOCKING pool management | `int cpu`, `int nworkers`, `int nrunnable` | per event |
 | `kwq:::budget-hit` | a handler asked `kwq_budget_left()` and received 0 | `kwqinfo_t *`, `int cpu` | per event |
 
@@ -1313,8 +1322,9 @@ All nodes live under `kern.kwq`.  The tree has one level for each kind
 of thing, so user-chosen names never share a level with anything kwq
 defines:
 
-    kern.kwq.{version,ncpu,nqueues,clock,clock_fast}
+    kern.kwq.{version,ncpu,nqueues,topo,clock,clock_fast}
     kern.kwq.<class>.<knob>                 quantum_us, limit, ... (below)
+    kern.kwq.bulk.{shard,gossip}.*          BULK placement (OBSERVABILITY.md)
     kern.kwq.<class>.cpu.<N>.*              the class's worker on CPU N
     kern.kwq.<class>.queue.<name>.*         one queue
     kern.kwq.<class>.queue.<name>.cpu.<N>.* that queue's list on CPU N
@@ -1344,7 +1354,7 @@ Decide when the first such client appears.
 Counters are 64-bit per-CPU fields (S17 Rule 2), one per
 (queue, CPU) node, read individually.  RW knobs take effect at the next
 round; RWTUN knobs are also read from `loader.conf` when the module is
-preloaded.  Rows marked P6/P7 are specified but not yet exported.
+preloaded.  Rows marked P7 are specified but not yet exported.
 
 Service-wide
 
@@ -1427,10 +1437,16 @@ Per worker: `kern.kwq.<class>.cpu.<N>.`
 | `cpu.<N>.nnew` | uint | RD | | entries on the new list right now, waiting for a boosted pass (SCHED.md S3 `kw_nnew`) |
 | `cpu.<N>.idle_ns` | counter | RD | | time the worker spent asleep with nothing queued (P1) |
 | `cpu.<N>.busy_ns` | counter | RD | | time charged to passes: CPU time, NET wall time (P1; SCHED.md S1a.4) |
-| `cpu.<N>.steal_tries` | counter | RD | | bulk only: steal attempts with nothing of its own to do (P6, SCHED.md S16) |
+| `cpu.<N>.steal_tries` | counter | RD | | bulk only: steal attempts: with nothing of its own to do, and under place=2 the pulls at a pass end; a mailbox or chain victim tried first counts one more (P6, SCHED.md S16, S17) |
 | `cpu.<N>.steals` | counter | RD | | bulk only: of those, the ones that moved a batch to this CPU |
 | `cpu.<N>.stolen` | counter | RD | | bulk only: items in those batches |
-| `cpu.<N>.steal_wakes` | counter | RD | | bulk only: wakes from sleep sent to this worker so that it steals (`steal_wake`, a stealable pass that left items) |
+| `cpu.<N>.steal_wakes` | counter | RD | | bulk only: wakes from sleep sent to this worker so that it steals: a producer past `steal_wake`, a pass that left items for a helper, and under place=2 a donor transition or the starvation watchdog |
+| `cpu.<N>.pulls` | counter | RD | | bulk only, place=2: batches pulled from a donor at a pass end, the own backlog below `shard.pull_us` (P6g, SCHED.md S17) |
+| `cpu.<N>.donor_flags` | counter | RD | | bulk only, place=2: times this CPU became a donor |
+| `cpu.<N>.starved` | counter | RD | | bulk only, place=2: times the starvation watchdog found this worker without a decision point and flagged it |
+| `cpu.<N>.handoffs` | counter | RD | | bulk only, place=1: batches this worker handed off at a pass end (SPEC-p6g.md S2.7) |
+| `cpu.<N>.directed` | counter | RD | | bulk only, place=2 with `shard.directed`: batches taken from the victim the waking wake named |
+| `cpu.<N>.chained` | counter | RD | | bulk only, place=2 with `shard.directed=2`: batches taken from the victim of the last batch again |
 
 Per queue: `kern.kwq.<class>.queue.<name>.`
 
@@ -1465,6 +1481,7 @@ Per queue: `kern.kwq.<class>.queue.<name>.`
 | `cpu.<N>.steals_out` | counter | RD | bulk only: batches other CPUs' workers took from this list (P6; written by the stealer under the list lock) |
 | `cpu.<N>.stolen_out` | counter | RD | bulk only: items in those batches |
 | `cpu.<N>.scattered` | counter | RD | bulk only: items `kwq_scatter()` put on this list |
+| `cpu.<N>.cost_ns` | uint64 | RD | bulk only: an item's cost on this list, ns, averaged over passes (1/8 per pass); kept under place=2 for stealable queues and under place=1 for every BULK queue (P6g) |
 | `cpu.<N>.maxlat_ns` | uint64 | RD, reset via `reset` | longest doorbell-to-first-pass latency since last reset: the age of the burst stamp at the first pass after each doorbell (P1; sampling fixed P2) |
 | `reset` | int | WR | write 1 to zero `maxlat_ns` and `maxdepth` on every CPU of the queue (P2; one node per queue, not per CPU) |
 
@@ -1488,12 +1505,12 @@ Implemented 2026-09-29 (P2): the provider (`kwq_sdt.c`, hooks for the
 core's park and overrun events in `kwq_sched_env.h`), the translator
 (`kwq/kwq.d`, installed to `/usr/lib/dtrace` by `make install`; an
 uninstalled tree works with `-L`; the module carries the CTF it needs by
-default),
-`show kwq` (`kwq_ddb.c`), and the S10.7 rows marked P2 except the P6/P7
-ones.  The measured probe effect is in S10.3.  OBSERVABILITY.md is the
-operator's version of S10: every tunable and counter with its range and
-default, the probes with their arguments, and commands to type; the P8
-manual pages derive from it.
+default), `show kwq` (`kwq_ddb.c`), and the S10.7 rows marked P2 except
+the P6/P7 ones (the P6 rows since 2026-11-03).  The measured probe
+effect is in S10.3.  OBSERVABILITY.md is the operator's version of S10:
+every tunable and counter with its range and default, the probes with
+their arguments, and commands to type; the P8 manual pages derive from
+it.
 
 ## 11. What FreeBSD already provides, and what is missing
 
@@ -2376,7 +2393,8 @@ counters, drain waiters) fill the second 64 bytes.  This is the layout
         TAILQ_ENTRY(kwq_cpu) kc_active;
         uint64_t        kc_rejected, kc_coalesced,
                         kc_doorbells, kc_doorbells_skipped;
-        /* block 1..: consumer-private, written only by the owning CPU */
+        /* block 1..: consumer-private, written only by the owning CPU
+           (but BULK's kc_steals_out, kc_stolen_out, kc_scattered: Rule 2) */
         struct kwq     *kc_q __aligned(KWQ_LINE);
         int             kc_cpu;
         int64_t         kc_deficit;
@@ -2398,7 +2416,12 @@ takes the list lock while holding its own.
 counter except `rejected` is written only by the owning CPU's worker,
 which already holds the line, so a plain `uint64_t` in the private line
 is cheaper (no `critical_enter`, no per-CPU offset) and never shared.
-`rejected` is written by the producer under the lock, in line 0.  The
+`rejected` is written by the producer under the lock, in line 0.
+Since P6 BULK has three more exceptions: `steals_out`, `stolen_out`
+and `scattered` sit in the private block and are written by another
+CPU under the list lock (the worker that takes a batch,
+`kwq_scatter()`'s caller); line 0 is full, and both are rare next to
+the passes that write the block.  The
 sysctl handler sums across CPUs on read, which touches the lines once per
 read and is irrelevant.  S10.7's "counter(9) cells" means this: per-CPU
 cells with `counter(9)` semantics, not the `counter(9)` allocator.  The
@@ -2907,3 +2930,15 @@ decision deferred until real clients show what fan-in they produce.
   placement by `kern.kwq.bulk.place` (P8 the default on one NUMA
   domain, SCHED.md S17; BULK.md S8), and kwq-geli's BULK queue in place
   of the notifier plan; the class table gains `place`.
+- 2026-11-05 (P6): BULK's `quantum_us` 5000 and `cap_period_us` 10000
+  (they were 1000 and 1000): a 1 MiB kwq-geli write is longer than
+  1 ms (BULK.md S7.3).
+- 2026-11-07 (P6): `kwq_item_begin()`, `kwq_item_stop()` and the class
+  knob `item_min_us` (BULK 2000) for items a handler can leave part
+  done, and `KWQ_F_PROMPT` queues, served ahead of the ring (S2, S3,
+  S10.7; SCHED.md S4.8, S4.9).
+- 2026-11-10: branch kwq-bulk merged into kwq.  Review against the
+  code: S10.1 lists the 27 probes with `kwq:::steal`'s six arguments;
+  S10.7 gains the P6g worker counters, `cost_ns`, `kern.kwq.topo` and
+  the placement levels; S3 names the spill; S17 Rule 2 names the three
+  BULK counters another CPU writes.

@@ -401,7 +401,8 @@ ks_budget_left(struct kwq_worker *kw, uint64_t cpu_now)
 }
 
 /*
- * S4.3.  Charge the worker's own CPU time, clamp the debt at -2Qw (S13),
+ * S4.3.  Charge the worker's own CPU time, clamp the debt at
+ * -penalty_rounds x Qw (S13),
  * and either put the queue back on the ring or let it go idle with the
  * warm mark the grace rule needs.
  */

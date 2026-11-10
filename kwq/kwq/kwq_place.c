@@ -30,7 +30,8 @@ kp_params_default(struct kp_params *p)
  * The load figure (S2.3): the active lists' backlog in us of work
  * (each queue counted for at most one quantum, the caller's sum), over
  * BULK's share while it had work, plus the share of the CPU other
- * threads took, counted as up to one quantum.
+ * threads took, counted as up to one quantum.  The kernel passes 0 for
+ * that last term (kwq_gossip_point(); SPEC-p6g.md S2.3 has why).
  */
 u_int
 kp_load_us(uint64_t backlog_ns, u_int share1024, u_int busy1024,

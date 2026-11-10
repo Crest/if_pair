@@ -448,8 +448,9 @@ kwq_hint_set(int cpu, struct kwq_cpu *kc)
 }
 
 /*
- * The longest stealable list among the worker's new list and ring, at
- * most KWQ_RING_WALK of them, and the stealable backlog they hold, ns.
+ * The longest stealable list among the worker's prompt list, new list
+ * and ring (KWQ_RING_WALK of the first two together at most, twice that
+ * of the three), and the stealable backlog they hold, ns.
  * kw_mtx held (both lists are under it); the depths are read unlocked.
  */
 static struct kwq_cpu *
