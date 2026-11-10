@@ -6,6 +6,12 @@ P6g.3.  PLAN.txt's P6g entry.  Branch kwq-bulk, worktree
 ~/if_pair-scratch/wt/bulk.  Proposed as "P6b"; renamed because P6a-P6f
 are P6's own steps in PLAN.txt.
 
+This is the plan, kept as it was written, with "(built: ...)" notes
+where the code went another way.  The design as built is SCHED.md S17.
+G2 made P8 with the chain the default on one NUMA domain (`place=2`,
+D12-D15); the gossip scheme planned here stays behind `place=1`.
+kwq-bulk was merged into kwq on 2026-11-10.
+
 The idea, from the discussion of 2026-11-04 (crest's questions on the
 design space of stealing): every CPU publishes a load figure; the cores
 form a 2D torus, each with up to four neighbours; each core keeps a small
@@ -15,7 +21,7 @@ place `KWQ_CPU_ANY` items from their own core's table, and an overloaded
 worker hands work to a core from its table.  Idle workers search
 nothing: they sleep.
 
-The plan has four stages, each ending at a gate reviewed with crest:
+The plan has five stages, each ending at a gate reviewed with crest:
 
 | stage | what | gate |
 |---|---|---|
@@ -29,9 +35,9 @@ The plan has four stages, each ending at a gate reviewed with crest:
 
 | finding | evidence |
 |---|---|
-| The idle path's steal attempt reads (CPUs in reach) x (stealable queues) list depths, once before every sleep and after every wake (kwq_worker.c:1043) | lab, 128 kwq-geli providers on md(4), 4 KiB random reads: 550k IOPS and 28.2 us of CPU per request with stealing, 1.58M and 9.6 us without; 1.05 attempts and 0.18 steals per request |
-| `kwq_pick_any()` compares this queue's depth on each CPU, not the CPU's BULK backlog (kwq.c:517) | with many queues of about one item each, an item lands on the caller's CPU when no worker sleeps nearby, however full it is |
-| `kwq_bulk_idle` is one cpuset written by every BULK worker at every sleep and wake | code (kwq_worker.c:1234, 1254); not measured; a hot line at a07's 128 CPUs |
+| The idle path's steal attempt reads (CPUs in reach) x (stealable queues) list depths, once before every sleep and after every wake (`kwq_steal()`, kwq_worker.c) | lab, 128 kwq-geli providers on md(4), 4 KiB random reads: 550k IOPS and 28.2 us of CPU per request with stealing, 1.58M and 9.6 us without; 1.05 attempts and 0.18 steals per request |
+| `kwq_pick_any()` compares this queue's depth on each CPU, not the CPU's BULK backlog (kwq.c) | with many queues of about one item each, an item lands on the caller's CPU when no worker sleeps nearby, however full it is |
+| `kwq_bulk_idle` is one cpuset written by every BULK worker at every sleep and wake | code (kwq_worker.c, the worker's sleep and wake); not measured; a hot line at a07's 128 CPUs |
 | The SMT sibling is the first ring of the topology order, so the first choice of placement and stealing | lab, userland, pinned: AES-256-XTS 8.9 GB/s on one thread, 9.8 on two siblings together, 17.6 on two cores; 1 MiB memcpy 43, 26 and 69 GB/s |
 | Stealing paid only where the producer fixed the CPU | kwq_test `steal` (2000 items onto one CPU); a MAC-heavy provider fed on one CPU: 103 against 38 MB/s.  With `KWQ_CPU_ANY` it changed nothing at 16 providers (lab) and 64 (a07), and cost two thirds of the small-read rate at 128 |
 
@@ -145,7 +151,11 @@ Kernel criteria (P6g.3), medians over at least three repetitions, same boot:
 
 Three blocks per core, each `KWQ_LINE` (128 bytes) aligned and allocated
 in the core's domain (`malloc_domainset_aligned`, as kwq_cpu is).  The
-layout is fixed by CTASSERTs.
+layout is fixed by CTASSERTs.  (Built: one `malloc_aligned` array of
+all cores' blocks, in no particular domain, kwq_gossip.c; a status word
+is time 32, load 12, valid 1, spare 19; a table entry time 32, core 14,
+load 10, idle threads 2, hops 4, valid 1, spare 1; the table block has
+room for 8 entries, of which 4 are kept; kwq_place.h.)
 
 | block | writers | write rate | readers | contents |
 |---|---|---|---|---|
@@ -179,7 +189,9 @@ The BULK worker computes its thread's load:
   most one quantum (DRR serves it one quantum per round).
 - **Divided by the share**: an average of BULK's fraction of wall time
   while it had work.  The share limit makes it 0.5 when other threads
-  are runnable.
+  are runnable.  (Built: no average; `cap_permille` while the worker is
+  past its allowance, `kw_cap_over`, and the whole CPU otherwise,
+  `kwq_gossip_point()`.)
 - **No term for other threads' CPU time.**  The first draft added a
   bucket from `pc_cp_time`; in the simulator it made every CPU of a
   machine running other work look equally loaded at about one quantum,
@@ -197,7 +209,10 @@ before it sleeps, but writes it only when the quantized bucket changes:
   worker that goes to sleep with a fall pending sleeps with a timeout
   of the rest of the hold, publishes, and sleeps again if it woke too
   early; otherwise an idle core keeps advertising its last load (the
-  simulator's first run lost two idle cores to this).
+  simulator's first run lost two idle cores to this).  (Built: the
+  worker sleeps without a timeout and a direct callout on its CPU
+  publishes the fall, `kwq_gossip_pub_fire()`, re-armed if it fired
+  early.)
 - **No per-item flag**: the word does not carry "asleep".  Whether to
   wake a worker stays the doorbell's business (`kw_sleeping` under
   `kw_mtx`).  "Idle thread" in the ranking means load bucket 0, smoothed.
@@ -233,8 +248,8 @@ Who merges, never on a timer:
 | core state | who, and when |
 |---|---|
 | a worker busy | the worker, between passes, once the interval has passed |
-| workers asleep, producers active | the producer, in the enqueue path, inside `critical_enter()`, when the table is older than the interval; the try-flag keeps the two siblings from merging at once |
-| a worker waking after a sleep longer than Imax | the worker, before its first placement decision or hand-off |
+| workers asleep, producers active | the producer, in the enqueue path, inside `critical_enter()`, when the table is older than the interval; the try-flag keeps the two siblings from merging at once (built: after `critical_exit()`, `kwq_pick_gossip()`; the try-flag is what guards the table) |
+| a worker waking after a sleep longer than Imax | the worker, before its first placement decision or hand-off (not built: the first merge after a wake is the one at its pass end, or a producer's) |
 | fully asleep | nobody: its status words stay true, and awake neighbours renew the entries about it |
 
 ### 2.5 Placement for `KWQ_CPU_ANY` (knob `place=1`)
@@ -291,7 +306,8 @@ is there:
 
 The rules around it:
 
-- **At most one hand-off per pass.**
+- **At most one hand-off per pass.**  (Built: up to
+  `kern.kwq.bulk.gossip.handoff_n`, 4 by default, at a pass end.)
 - **No ping-pong**: H > L + the batch's cost, so a batch cannot come
   straight back.
 - **Drain fence**: the read side of `kwq_steal_rm`, as for a steal
@@ -301,7 +317,11 @@ The rules around it:
   D_near".
 
 Counters `handoffs_in` and `handoffs_out` per CPU, equal machine-wide;
-probe `kwq:::handoff(q, from, to, n)`.
+probe `kwq:::handoff(q, from, to, n)`.  (Built: machine-wide counters
+`kern.kwq.bulk.gossip.handoffs` and `handed`, batches and items, and
+`kwq:::steal` with `KWQ_STEAL_HANDOFF` as its fifth argument; a batch
+handed off counts in the lists' `steals_in` and `steals_out` as a
+stolen one does.)
 
 ### 2.8 The knob
 
@@ -318,7 +338,7 @@ The simulator sets the final values (scenario S18):
 
 | constant | start | meaning |
 |---|---|---|
-| Imin, Imax | 1 ms, 8 ms | merge interval; 1 ms is BULK's quantum and the share limit's period |
+| Imin, Imax | 1 ms, 8 ms | merge interval; 1 ms was BULK's quantum and the share limit's period (5 ms and 10 ms since c2f3a35, the interval unchanged) |
 | T_exp | 32 ms | entries not confirmed for this long are dropped |
 | status fall hold | 100 us | a lower bucket is published after it held this long |
 | H, L | 2 ms, 0.5 ms of backlog | hand-off and spill above H, to cores at or below L |
@@ -333,11 +353,12 @@ The simulator sets the final values (scenario S18):
 Used, all exported:
 
 - `critical_enter()` / `critical_exit()`;
-- `atomic_load_64`, `atomic_store_64`, `atomic_cmpset_int`;
+- `atomic_load_64`, `atomic_store_64`, `atomic_cmpset_int` (built:
+  `atomic_cmpset_acq_int`);
 - `sbinuptime()`;
 - `smp_topo()`;
-- `pcpu_find()` and `pc_cp_time`;
-- `malloc_domainset_aligned()`;
+- `pcpu_find()` and `pc_cp_time` (not used: 2.3 dropped the term);
+- `malloc_domainset_aligned()` (built: `malloc_aligned()`);
 - kwq's existing doorbell and wake paths.
 
 An internal that would help: the runnable count of another CPU (ULE's
@@ -516,10 +537,10 @@ checkpoint).
 | K1 | `kwq_place.{h,c}` with the kernel environment; the torus from `smp_topo()`; a sysctl dump of the torus |
 | K2 | the per-core blocks with their CTASSERTs; the load figure and the status word in the BULK worker; the per-class counter table |
 | K3 | the merge: worker between passes and at wake, producers at enqueue, the try-flag, the interval; probe `kwq:::merge` (built: the merge at a pass end and by producers; not built: the merge at a wake and the probe) |
-| K4 | placement under `place=1` with the repair of failed checks and the fallback; probe `kwq:::place(q, from, to, rank, reads)` |
+| K4 | placement under `place=1` with the repair of failed checks and the fallback; probe `kwq:::place(q, from, to, rank, reads)` (built with other arguments: the note below) |
 | K5 | spill for fixed CPUs on stealable queues |
 | K6 | hand-off in place of the idle-path steal, behind the drain fence; probe `kwq:::handoff` |
-| note | the probes of K3, K4 and K6: `kwq:::place` exists since fb14aa0 (every mode, the step and the spill); a hand-off fires `kwq:::steal` with `arg4` `KWQ_STEAL_HANDOFF` in place of `kwq:::handoff`; `kwq:::merge` was not built, the merges are counted (`gossip.merges`).  fb14aa0 also added `kwq:::steal-wake`, `kwq:::steal-miss` and `kwq:::donor` (OBSERVABILITY.md) |
+| note | the probes of K3, K4 and K6: `kwq:::place` exists since fb14aa0 (every mode; its arguments are the queue, the producer's CPU, the chosen CPU, the step as `KWQ_PICK_*` and whether it is a spill); a hand-off fires `kwq:::steal` with `arg4` `KWQ_STEAL_HANDOFF` in place of `kwq:::handoff`; `kwq:::merge` was not built, the merges are counted (`gossip.merges`).  fb14aa0 also added `kwq:::steal-wake`, `kwq:::steal-miss` and `kwq:::donor` (OBSERVABILITY.md) |
 | K7 | the knob, flippable under load; `place=1` writes no idle mask and skips the idle-path steal |
 
 P8 under `place=2` (G1), beside the steps above:
@@ -568,15 +589,17 @@ Tests:
 - geli_bench `scale` (1 to 128 providers, small and bulk) and `ssd`;
 - the responsiveness probes;
 - kwq_crypto's weight case;
-- kwq_test `handoff` and `steal`;
+- kwq_test `handoff` and `steal` (`handoff` was not built);
 - the four-providers-on-one-CPU case with `cpu=N`;
 - new kwq_test loads:
   - `island`: producers on a block of CPUs above capacity, the rest
     idle;
-  - `idleburst`: 1 s and 10 s idle, then a burst.
+  - `idleburst`: 1 s and 10 s idle, then a burst (built as
+    `place_stale`, 1 s).
 
 The kernel against the model: dtrace aggregations of `kwq:::place`,
-`kwq:::merge` and `kwq:::handoff` give M8-M10 and the movement counts.
+`kwq:::merge` and `kwq:::handoff` give M8-M10 and the movement counts
+(built: `kwq:::place`, `kwq:::steal` and the `gossip.*` counters).
 These are compared with the simulator's predictions for the same
 scenario.  A difference beyond 2 x sends the model back to 3.2, and
 G1's worst cases are rerun before any conclusion.  hwpmc's line-transfer
@@ -648,8 +671,8 @@ blocker.
 | herding on idle islands (S4) | the fast rise, randomization, checks; the "incoming" counter as the measured remedy if W4 fails |
 | the scheme is more machinery than lab needs | P4 group words are simulated beside it; G1 may choose them |
 | a07's flat topology makes the torus layout arbitrary | all a07 CPUs are equally far apart in FreeBSD's view, so only the hop count matters there; T3 tests it |
-| `pc_cp_time` is statclock-coarse | it only sets a bucket; the share average carries the fine part |
-| the merge at wake interferes with the tick regime's accounting (KWQ.md S16) | the merge runs outside the round the regime judges; checked by the existing tick counters' identities |
+| `pc_cp_time` is statclock-coarse | it only sets a bucket; the share average carries the fine part (moot: neither was built, 2.3) |
+| the merge at wake interferes with the tick regime's accounting (KWQ.md S16) | the merge runs outside the round the regime judges; checked by the existing tick counters' identities (moot: not built, 2.4) |
 | flipping the knob under load races with hand-offs in flight | the drain fence covers batches in transit; `place_switch` tests it |
 
 ## 9. Decisions (taken 2026-11-05; D9-D11 at G1, D12-D15 at G2)

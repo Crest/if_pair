@@ -1,10 +1,14 @@
 # gelisim
 
 kwq-geli on many CPUs in user space, to try changes to where a pass may
-stop before any of them reaches a kernel (2026-11-06).  It links the real
-scheduler core, `../../kwq/kwq_sched.c`, with `keepturn.patch` applied at
-build time; with the knob off the patched core gives byte-identical output
-in `../kwqsim suite`.
+stop before any of them reaches a kernel (2026-11-06).  The model is
+kwq-geli of that day.  What followed in the kernel: the time rule became
+`kern.kwq.<class>.item_min_us` (BULK 2000; 651a7e9), and kwq-geli's
+write lost its copy and its reads got a queue of their own (d25b01f),
+which are not modelled; ../../BULK.md S7.7.  It links the real scheduler
+core, `../../kwq/kwq_sched.c`, with `keepturn.patch` applied at build
+time; with the knob off the patched core gives byte-identical output in
+`../kwqsim suite`.
 
     make
     ./gelisim nprov=64 keep=2 trule_us=1000 timer=1
@@ -14,7 +18,8 @@ in `../kwqsim suite`.
 Options are `key=value`, listed in `struct opts`; `keep=1` is the full
 keep-turn, `keep=2` keeps the turn for NET cuts only, `trule_us` is the
 time rule's T, `fit=1` the fit test, `shared=1` one queue for all
-providers, `owner=1` the GELI-only owner.
+providers, `owner=1` the GELI-only owner.  "sectors 16" and "sectors 0"
+below are kwq-geli's `kern.geom.kwqeli.budget_sectors`.
 
 ## The hardware classes in run.py
 

@@ -1,7 +1,10 @@
 # BULK: stealing, scatter, a crypto client and GELI (PLAN P6)
 
-Report of the BULK class work on branch kwq-bulk, 2026-11-03, with
-a07's and lab's runs of 2026-11-04.  crest's
+Report of the BULK class work, 2026-11-03 to 2026-11-07, on branch
+kwq-bulk, which was merged into kwq on 2026-11-10.  Sections 1 to 6 are
+the first report, with a07's and lab's runs of 2026-11-04; the later
+sections carry their dates, and section 7.7 has kwq-geli as it is now.
+crest's
 request: implement the BULK class, write a dummy client that benchmarks
 crypto as a test case, copy GEOM ELI as kwq-geli and port it to kwq,
 test it with md(4), and measure the impact on the system's
@@ -18,9 +21,9 @@ place among the classes is KWQ.md S14.1.  Raw rows are in
 |---|---|---|
 | stealing: idle BULK workers take the older half of another CPU's live list of a `KWQ_F_STEALABLE` queue, nearest first in the cache topology, and run it as their own; the steal wake; a stealable pass takes one item while a helper sleeps nearby | kwq/kwq_worker.c, SCHED.md S16 | ATF steal, steal_off, stealdrain, stealdrain_discard |
 | `kwq_scatter()` with a client-owned `struct kwq_group`, `kwq_group_leave()` | kwq/kwq.c, KWQ.md S3 | ATF scatter |
-| `KWQ_CPU_ANY`: a sleeping worker's empty list near the caller first | kwq/kwq.c | (every kwq-geli case) |
+| `KWQ_CPU_ANY`: a sleeping worker's empty list near the caller first (`place` 0; since section 8 P8 is the default on one NUMA domain, `place` 2) | kwq/kwq.c, kwq/kwq_shard.c | (every kwq-geli case) |
 | kwq_crypto.ko: AES-XTS through crypto(9) as GELI issues it, on BULK queues or on GELI's thread model | kwq_crypto/ | ATF verify, onecpu_fair, weight; tests/crypto_bench.sh |
-| kwq-geli: GELI's crypto in a BULK queue per provider, class KWQELI beside stock GELI, same on-disk format | ../kwq-geli | 14 ATF cases (two through fail(9) points); tests/geli_bench.sh |
+| kwq-geli: GELI's crypto in a BULK queue per provider (two since 2026-11-07, one for reads: section 7.7), class KWQELI beside stock GELI, same on-disk format | ../kwq-geli | 21 ATF cases (two through fail(9) points; 14 at this report's first date); tests/geli_bench.sh |
 | share limit: a period's first pass clamped only while contended; time beyond the allowance carried into the next period, forgiven while nothing else is runnable | kwq/kwq_sched.c, SCHED.md S6.3 | simulator cap_long, cap_onset, cut |
 
 ## 2. Correctness
@@ -228,7 +231,7 @@ the port.
 | resume propagated the keys with the queue mutex held, as stock GELI does, and the key cache allocates with `M_WAITOK` there | the guest's dmesg, 2026-11-04 | a WITNESS warning on every resume on GENERIC-DEBUG since the port; on GENERIC a panic if the allocation slept while another thread waited for the mutex | 4a4cd77 |
 | kwq_crypto turned `result_state` "done" before its teardown | a07 | the module refuses to unload (EBUSY) until the teardown ends, and crypto_bench unloads within milliseconds of "done": on a07, after the last run (eight thread-mode queues), it left kwq and kwq_crypto loaded | c9c51af |
 | geli_bench took stock GELI workers still exiting from the previous test for the new providers' | a07 | 8192 workers (64 providers x 128 CPUs) exit for seconds; `cpuset` failed with ESRCH and ended the benchmark in its third repetition | 4644a3b |
-| kwq_crypto's weight case took 32 requests of 256 KiB for several quanta of work | lab | aesni does the 8 MiB in 1.5 ms, less than queue 0's three quanta (a07: 4.4 ms); a pass serves what was queued when it began (SCHED.md S4.2), so queue 0 ran dry every round and got its 32 requests to queue 1's 21, a ratio of 1.52, the specified behaviour; the case now measures the CPU's rate first and takes a depth holding six quanta | 61d10e2 |
+| kwq_crypto's weight case took 32 requests of 256 KiB for several quanta of work | lab | aesni does the 8 MiB in 1.5 ms, less than queue 0's three quanta (a07: 4.4 ms); a pass serves what was queued when it began (SCHED.md S4.3), so queue 0 ran dry every round and got its 32 requests to queue 1's 21, a ratio of 1.52, the specified behaviour; the case now measures the CPU's rate first and takes a depth holding six quanta | 61d10e2 |
 
 The lab hang, 2026-11-03 20:34 UTC: the uncommitted first per-sector
 dispatch was built and loaded on lab for a read A/B at 20:33:50,
@@ -354,7 +357,8 @@ Past two providers per CPU kwq-geli falls behind, and with the 1 MiB
 writes far behind: its kernel CPU per MiB grows from 1.2 to 3.0 ms
 between 16 and 128 providers where GELI's stays near 1.6, its
 throughput drops to 55 % of GELI's, and a fork+exec beside the
-writers waits 49 to 58 ms.  Not traced; section 9.
+writers waits 49 to 58 ms.  Not traced at this date; section 7.1
+traces it and section 7.7 closes it on simulated drives.
 
 The SSD model, four devices, the device the limit (MB/s and requests/s
 equal for gnop alone, GELI and kwq-geli: 2096 MB/s sequential, 376 k
@@ -491,13 +495,17 @@ budget check (about 9 % of all CPU time at 16 providers, 18 % at 128),
 47 % and 11 % spin on a lock under `kmem_malloc_domainset()`
 (`lock_delay()`), and 37 % and 73 % are the copy (`memmove_erms`).
 Stock GELI runs the same allocation and copy, in threads ULE slices.
-Fixes, none tried, all in kwq-geli: copy 16 sectors at a time inside
-the loop, before they are encrypted (the stretch shrinks to 16 sectors
-and the cipher reads the copy from cache); or drop the copy, with the
-bio's data as crypto(9)'s input and the new buffer as its output
-(`CSP_F_SEPARATE_OUTPUT`, `crypto_use_output_buf()`), as GELI's own
-comment there proposes; and for the allocation, a cache of MAXPHYS
+Fixes, none tried at this date, all in kwq-geli: copy 16 sectors at a
+time inside the loop, before they are encrypted (the stretch shrinks to
+16 sectors and the cipher reads the copy from cache); or drop the copy,
+with the bio's data as crypto(9)'s input and the new buffer as its
+output (`CSP_F_SEPARATE_OUTPUT`, `crypto_use_output_buf()`), as GELI's
+own comment there proposes; and for the allocation, a cache of MAXPHYS
 buffers in place of malloc(9)'s large path.
+
+Built on 2026-11-07, both defaults (section 7.7): the separate output
+(`kern.geom.kwqeli.sep_out`), so a write without authentication is no
+longer copied first, and zones for the buffers (`big_bufs`).
 
 ### 7.3 BULK's 5 ms quantum and 10 ms share-limit period (2026-11-05)
 
@@ -701,7 +709,8 @@ The first step ends a pass between bios only: kwq-geli's
 `kern.geom.kwqeli.budget_sectors` at 0, against 16, the knob of c8403c9
 (geli_bench's stage kwqbio).  A write then runs from its copy to its
 hand-over to md(4) in one go.  The second puts BULK below md(4):
-`kern.kwq.bulk.priority=55`, as in section 7.5.  Neither is a default yet.
+`kern.kwq.bulk.priority=55`, as in section 7.5.  Neither is a default
+yet (and neither became one: section 7.7).
 Debug guest first, then the suites on both machines at all four setups:
 the kwq suite at priority 55 39 of 39 (a07 38, `no_arm_when_idle` skipped
 as always there), kwq-geli's 15 of 15 (at 0 `resume` skips, nothing being
@@ -830,6 +839,87 @@ in section 7.3's round), 31 % at bio, 13 % at prio, 20 % at both; 8 %, 14 %,
 providers against 1.2 at 4, under stock GELI as well, so the passes are
 long for the same reason the machine is slow; what the DRR does with them
 on a07 has not been traced.
+
+### 7.7 kwq-geli's defaults: where a bio stops, reads, buffers (2026-11-07)
+
+Sections 7.2 to 7.6 left a write cut into cold pieces by the share
+limit, its first piece stretched by malloc(9)'s lock and a copy of the
+whole bio, and two steps of which neither became a default.  What was
+built instead is the default now.  The first two rows are kwq's and know
+nothing of GELI (GEOM uzip or any other client whose items can stop part
+way takes the same calls); the rest are kwq-geli's, in
+`kern.geom.kwqeli`:
+
+| change | default | what | why |
+|---|---|---|---|
+| `kwq_item_begin()`, `kwq_item_stop()`, `kern.kwq.<class>.item_min_us` (651a7e9, SCHED.md S4.9) | BULK 2000, the others 0 | a handler asks inside an item whether to stop there; a higher class stops it at any such point, the pass's budget and the share limit only once the item has run this long in the pass | section 7.6's first step without a pass overrunning by a whole bio: a bio's pieces stay warm, and NET still stops it at the next 16 sectors |
+| `KWQ_F_PROMPT` (651a7e9, SCHED.md S4.8) | - | a queue served ahead of the ring and the new list, a quantum per ring slot at most | for `read_queue` |
+| `read_queue` (d25b01f) | 2 | a provider's reads on a queue of their own (`kwelir-<provider>`); 2: created `KWQ_F_PROMPT` | a read otherwise waits for a writer's pass |
+| `big_bufs` | 1 | buffers above the swap zone's 132 KiB from UMA zones, one per power of two up to `maxphys`, without per-CPU caches | malloc(9)'s lock, about a third of lab's CPU in 1 MiB writes (section 7.2); with per-CPU caches eight writers reuse about 88 MiB, past lab's L3, and every buffer is cold |
+| `sep_out` | 1 | a write is encrypted from the bio into the buffer (`CSP_F_SEPARATE_OUTPUT`), without the copy of the whole bio; not with authentication, and not where the driver has no separate output | section 7.2's copy, 36 % of the CPU once the lock was gone |
+| `write_hold` | 2 | while reads and this many writes are below, one encrypted write per provider waits for the next write below to complete (`write_holds` counts them) | a drive that serves in order makes a read wait behind every write ahead of it; one write fewer there was all of stock GELI's lead on reads beside writes |
+
+`budget_sectors` stays at 16 and BULK's priority at `PI_SOFT`: section
+7.6's two steps were candidates in the battery's earlier rounds (stage
+kwqbio and the group p55, lab/out2 there) and were not taken.  Tried and
+rejected by measurement: a read that stops a running write
+(`prompt_cut`: lab's reads 3.6 % lower with 76 % more cuts, since the
+reads wait in the drive's queue, not for the CPU) and a pass that keeps
+its turn when it is cut (`keep_turn`), both in
+../samples/p6g11/prompt_cut.patch; and `write_hold` 1, which looked
+better on the mixed set only because it moved CPU from HDD-like to
+NVMe-like drives (HDD-like drives alone lose a third of their writes).
+The time rule was chosen in a model first: sim/geli (gelisim, b1e598e).
+
+The drives are simulated.  ../kwq-geli/tests/simdisk is geom_simdisk, a
+provider that keeps no data and models time only: a rate per direction,
+a latency, a seek, requests served in arrival order (geli_bench's
+`MD_TYPE=sim`).  md(4)'s copying thread, which sections 7 to 7.6
+measured against, is gone with it, so lab and a07 stand in for machines
+with more and faster drives than their RAM could hold.  It does not
+reorder, and the read-beside-write rows rest on that.  **No real drive
+has been tested.**
+
+The battery (../samples/p6g11, battery2.sh; out15 of each machine):
+three repetitions with the stages' order rotated, one GELI at a time,
+stock GELI with kwq.ko unloaded; scale, tput and resp, tput at 32 KiB
+sectors, and drive sets: storage (8 NVMe-like and 90 HDD-like drives),
+storage64 (the same at 64 KiB requests), on lab home (2 SATA-like), on
+a07 compute (4 NVMe-like, every CPU spinning).  Medians, MB/s, as
+score.py and final.py print them; "both" is reads beside writes:
+
+| row | lab, stock | lab, kwq-geli | a07, stock | a07, kwq-geli |
+|---|---|---|---|---|
+| scale, 16 providers, 1 MiB writes | 23551 | 46915 | 7050 | 25587 |
+| scale, 128 providers, 1 MiB writes | 21623 | 36342 | 7933 | 26620 |
+| scale, 128 providers, 4 KiB reads | 2895 | 8177 | 280 | 4054 |
+| tput, writes | 16238 | 21456 | 7642 | 44950 |
+| tput, reads | 39749 | 40191 | 41178 | 96211 |
+| storage, writes | 9819 | 12320 | 6719 | 33899 |
+| storage, reads | 32072 | 37625 | 7775 | 25978 |
+| storage, both: writes | 10842 | 14814 | 5950 | 22420 |
+| storage, both: reads | 2135 | 3741 | 2949 | 5929 |
+| home (lab), compute (a07), both: writes | 842 | 839 | 5807 | 11522 |
+| home (lab), compute (a07), both: reads | 67 | 70 | 585 | 1012 |
+
+Of the 25 scored rows per machine kwq-geli is at or above stock GELI on
+all 25 of a07 and 24 of lab; the last is home's writes beside reads,
+0.3 % behind (`python3 final.py lab/out15` in ../samples/p6g11).  Two
+more rows of lab's home set sit at the drives' ceiling for every setup
+and are not scored.  NET keeps its priority beside the load (net_ab and
+net_final there; lab/net_hold is a run with a stale CPU pin, not a
+result).  Suites on the guest's GENERIC-DEBUG: kwq 39 of 39 (36
+kwq_test, 3 kwq_crypto), kwq-geli 21 of 21.
+
+What these rows do not say: lab's storage rows reward `write_hold` 1
+(reads beside writes 46 % above the default's), for the reason above;
+with two writers per drive the hold never engages and stock GELI still
+reads more (141 against 102 MB/s) for 4 % fewer writes; a07's 1 MiB
+writes at 128 providers spread 18 % between repetitions; and on the
+stand-in for a small machine with slow crypto (guest_slow.sh: the guest
+with aesni detached) kwq-geli's writes beside reads are about 20 % below
+stock GELI's for 3.4 times the reads, a trade crest accepted.  Section 9
+has what is open.
 
 ## 8. Placement: P6g (2026-11-05)
 
@@ -981,31 +1071,49 @@ two-socket machine.
 
 ## 9. Open
 
-- kwq-geli's writes past one provider per CPU (sections 7, 7.1): on
-  lab at 128 providers 56 % of stock GELI's rate.  Traced on
-  2026-11-05 (section 7.1): the share limit's 500 us allowance per
-  1 ms period is shorter than one 1 MiB bio, so with md(4)'s threads
-  runnable the bios are encrypted in cold pieces; with the limit off
-  the writes reach 87 % of stock GELI's.  Candidates for a fix, none
-  tried: a longer `cap_period_us` for BULK (an allowance above an item,
-  at the price of a coarser bound for the threads it protects); a
-  share-limit cut that kwq-geli honours between bios only, which
-  needs `kwq_budget_left()` to tell it from a quantum cut; a limit
-  that counts only the competitors it is for, which would need an
+- kwq-geli on real drives: every result since section 7.7 is on
+  geom_simdisk, which serves in arrival order; the rows of reads
+  beside writes, and `write_hold`'s threshold, rest on that model and
+  are to be measured again on hardware (crest arranges it; nothing
+  here writes to a real drive).
+- `BIO_ORDERED`: neither stock GELI nor kwq-geli keeps a barrier
+  write in its place among the others (kwq-geli's held write neither
+  waits for one nor overtakes it, and that is all).  UFS sends one
+  for a cylinder group's new inode blocks.  From reading the code, not
+  tested; a fix would hold a barrier write until the earlier writes
+  are sent down, and the later ones until it is.
+- The FPU switch per crypto request: aesni and armv8crypto enter and
+  leave the FPU context for every sector (`fpu_kern_enter()` with
+  `FPU_KERN_NOCTX`) and do not look for a thread that keeps it
+  (`is_fpu_kern_thread()`, as ossl does); up to 31 % of the CPU in
+  lab's storage writes by the profile, less in truth.  With that base
+  change a BULK worker could keep the context for its life.  A base
+  change, so crest's call.
+- `write_hold` with two writers per drive never engages, and stock
+  GELI then reads more for 4 % fewer writes (section 7.7).
+- kwq-geli's writes past one provider per CPU (sections 7, 7.1):
+  closed on simulated drives by section 7.7's defaults.  As it stood
+  on 2026-11-05: on lab at 128 providers 56 % of stock GELI's rate;
+  the share limit's 500 us allowance per 1 ms period was shorter than
+  one 1 MiB bio, so with md(4)'s threads runnable the bios were
+  encrypted in cold pieces, and with the limit off the writes reached
+  87 % of stock GELI's.  Of the candidates named then, the longer
+  `cap_period_us` for BULK is the default since section 7.3, and the
+  share-limit cut that a client honours only where it chooses is
+  `kwq_item_stop()` with `item_min_us` (section 7.7).  Not built: a
+  limit that counts only the competitors it is for, which would need an
   exported scheduler KPI such as "is anything runnable on this CPU
-  below priority p" (`sched_runnable()` says only "something").  Section
-  7.5 has what is left at the new defaults, section 7.6 the two steps
-  tried: `budget_sectors` 0 removes the limit's share of it and is
-  not the default yet; BULK past ULE's preemption threshold (41 and
-  up) trades lab's 1 MiB reads for its writes and for a07's latency,
-  crest's decision.  Why the reads pay is not traced.  No real SSD has
-  been run.
+  below priority p" (`sched_runnable()` says only "something").  BULK
+  past ULE's preemption threshold (41 and up, section 7.6) trades lab's
+  1 MiB reads for its writes and for a07's latency and was not taken;
+  why the reads pay is not traced.
 - kwq-geli's write overruns (section 7.2): a write's first piece
-  allocates and copies 1 MiB before its first budget check, 1-4 ms
+  allocated and copied 1 MiB before its first budget check, 1-4 ms
   under load, 1.2-1.4 % of the passes on lab at the 1 ms quantum, about
-  none at 5 ms; the fixes listed there are untried.  On a07 at 128
-  providers 20 % of the passes overrun at the defaults (section 7.6), not
-  traced.
+  none at 5 ms; the copy and malloc(9) are gone from the default path
+  since section 7.7, and the overruns have not been counted again.  On
+  a07 at 128 providers 20 % of the passes overran at the defaults of
+  section 7.6, not traced.
 - Placement on a machine of two or more packages (section 8, D12):
   today's code stays there until one is measured, with P8 and the
   hybrid H4.
@@ -1023,9 +1131,9 @@ two-socket machine.
 - Stock GELI's resume holds `sc_queue_mtx` over the key cache's
   `M_WAITOK` allocations (releng/15.1 g_eli_ctl.c, `g_eli_ctl_resume()`):
   kwq-geli no longer does (4a4cd77); a report upstream is crest's call.
-- Keeping the share-limit changes and merging kwq-bulk into kwq are
-  crest's decisions (section 6: if_pair on lab is unchanged by them
-  within the spread, fork+exec beside a flow perhaps 6 % slower).
+- kwq-bulk was merged into kwq on 2026-11-10, the share-limit changes
+  with it (section 6: if_pair on lab is unchanged by them within the
+  spread, fork+exec beside a flow perhaps 6 % slower).
 - GELI and BLOCKING: the priority argument of KWQ.md S14 does not hold
   against BULK with its share limit; the reserved-worker argument for
   the swap and root-I/O path stands and needs P7.

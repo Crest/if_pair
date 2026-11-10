@@ -18,7 +18,9 @@
  *
  * A write: user thread, the crypto in a BULK pass (the whole bio copied
  * first, then the sectors), md(4)'s copy, user thread again, the next
- * request.  A read: md(4), the crypto, user thread.
+ * request.  A read: md(4), the crypto, user thread.  This is kwq-geli of
+ * 2026-11-06; since d25b01f a write is no longer copied first by default
+ * (sep_out) and reads have a queue of their own, neither modelled here.
  *
  * The cache model: T = cache_mb / (traffic x the bytes per second moved
  * now).  What a bio left behind is gone by 1 - exp(-age / T).  The rest

@@ -1343,6 +1343,27 @@ Phases
       idle path's steal attempt, (CPUs in reach) x (stealable queues)
       list depths read before every sleep and after every wake; with
       stealing off 1.58M against 550k small reads.  P6g replaces it.
+    - As built, where it differs from P6a and P6b above (2026-11-10):
+      KWQ_CPU_ANY takes the nearest sleeping worker whose list of the
+      queue is empty first, then the caller's CPU if its list is empty,
+      then the shallowest of the caller's and four probed
+      (kwq_pick_any(); place 0), and since P6g P8 is the default on one
+      NUMA domain (place 2); the counters are steal_tries, steals,
+      stolen and steal_wakes per worker and steals_in, stolen_in,
+      steals_out and stolen_out per list, no steal_fails.
+    - 2026-11-05: BULK's quantum 5 ms and share-limit period 10 ms
+      (c2f3a35, BULK.md S7.3); kwq-geli's budget_sectors (c8403c9).
+    - 2026-11-06 and 07, kwq-geli against stock GELI on simulated
+      drives (BULK.md S7.7): gelisim, the model the time rule was
+      chosen in (b1e598e); kwq_item_begin() and kwq_item_stop() with
+      kern.kwq.<class>.item_min_us, and KWQ_F_PROMPT queues (651a7e9);
+      kwq-geli's read_queue, big_bufs, sep_out and write_hold
+      (d25b01f); geom_simdisk and the p6g10 and p6g11 batteries
+      (a7989e1).  At or above stock GELI on 49 of 50 scored rows of
+      lab and a07, the last 0.3 % behind; no real drive tested.  ATF
+      on the guest's GENERIC-DEBUG: kwq 36 + 3, kwq-geli 21.
+    - 2026-11-10: kwq-bulk merged into kwq (fast-forward to a7989e1),
+      and the documents checked against the code after it.
 
 [STARTED 2026-11-05] P6g  BULK placement by load gossip on a torus of cores
     (SPEC-p6g.md; branch kwq-bulk)
