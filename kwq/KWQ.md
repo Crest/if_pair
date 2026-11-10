@@ -1920,7 +1920,7 @@ reads 22811 against stock GELI's 21740 MB/s (+5 %, below).  (2) Stock GELI's wor
 one per provider (`kern.geom.eli.threads=1`).
 
 a07 (2026-11-04: GENERIC, arm64, 128 CPUs, armv8crypto; the port with
-the per-sector dispatch, HEAD 0a37c05; 64 providers, three
+the per-sector dispatch, HEAD 4644a3b; 64 providers, three
 repetitions; BULK.md S4 has the whole table,
 samples/p6_geli_a07_2026-11-04.tsv):
 
@@ -1938,7 +1938,7 @@ samples/p6_geli_a07_2026-11-04.tsv):
 Stock GELI's `wakeup()` wakes all 128 workers of a provider; it
 switches 14 times as often as kwq-geli while reading (not profiled).
 
-lab again (2026-11-04, after crest's reboot: 9186555, the kernel code
+lab again (2026-11-04, after crest's reboot: 61d10e2, the kernel code
 of a07's run; 16 providers, five repetitions; BULK.md S4 has the whole
 table, samples/p6_geli_lab_2026-11-04.tsv):
 

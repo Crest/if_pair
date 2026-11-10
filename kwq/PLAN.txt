@@ -1268,7 +1268,7 @@ Phases
     kwq-geli round-trips data and cross-reads with stock GELI on all
     three machines; the responsiveness cost of BULK against stock GELI
     measured and S14 rewritten from the numbers.
-    Status 2026-11-03 (branch kwq-bulk, 3696ce3..):
+    Status 2026-11-03 (branch kwq-bulk, 1bf4b40..):
     - P6a/P6b done: SCHED.md S16, stealing, the steal wake, the pass cap
       and the one-item rule while a helper sleeps (without them the
       steal case moved 9 % of its items and kwq-geli's few large bios
@@ -1294,47 +1294,47 @@ Phases
       build, BULK.md S5); a07 and lab 2026-11-04, below.
     - Measured (BULK.md, KWQ.md S14.1): kwq-geli's writes within 2 % of
       stock GELI on lab, its reads 18 % below before the per-sector
-      dispatch (0ad0126, unmeasured on lab); four providers on one CPU:
+      dispatch (7b3f2af, unmeasured on lab); four providers on one CPU:
       the timer pinned there 0.3 ms late at p99 against GELI's 37 ms, a
       spin loop 52 % against 3 %; kwq_crypto: N queues on one CPU share
       it (Jain >= 0.997) where GELI's thread model gives one of them all
       of it and the user nothing.  S14's priority argument does not hold
       against BULK with its share limit; the reserved-worker one stands.
-    - Review of the branch (BULK.md S5): five faults fixed, 50fbecd..
-      2cfbba3: steal reach one-way on rings wider than steal_scan (a07
+    - Review of the branch (BULK.md S5): five faults fixed, 2f213fd..
+      524c7a4: steal reach one-way on rings wider than steal_scan (a07
       would not have stolen), the carry charging uncontended time
       (simulator case cap_onset), a key-cache double insert, a busy
       retry of a bio short part way (now ENOMEM; fail point and ATF
       case nomem), resume's unchecked session setup (fail point and ATF
       case resume_fail).  Guest 34/34 + 14/14 after them.
     - a07 (2026-11-04, crest's go-ahead; GENERIC, arm64, 128 CPUs) at
-      0a37c05: ATF 33/34 (no_arm_when_idle skips on arm64) + 14/14;
+      4644a3b: ATF 33/34 (no_arm_when_idle skips on arm64) + 14/14;
       geli_bench and crypto_bench x3 (BULK.md S2-S4, KWQ.md S14.1).
       kwq-geli reads 32 % above stock GELI at a sys+intr share of
       0.40 against 0.73; four providers on one CPU leave the
       timer there 0.8 ms late at p99 against 105 ms; kwq_crypto on the
       whole machine 1.8 times the thread model.  Stealing reaches 48
       CPUs in the steal case.  Three faults fixed on the way
-      (5f72da2..0a37c05): resume's key setup under the queue mutex
+      (4a4cd77..0a37c05): resume's key setup under the queue mutex
       (inherited from GELI, seen in the guest's dmesg), kwq_crypto's
       "done" before its teardown, geli_bench taking exiting GELI
       workers for new ones.
     - lab (2026-11-04, after crest's reset; GENERIC, amd64, 16 CPUs) at
-      9186555, the kernel code of a07's run: ATF 34/34 + 14/14 once
+      61d10e2, the kernel code of a07's run: ATF 34/34 + 14/14 once
       kwq_crypto's weight case sized its backlog by the CPU's rate (at
       a fixed depth lab's AES-NI emptied queue 0 every round: 1.52
       instead of 3; BULK.md S5); geli_bench x5, crypto_bench x3.
       kwq-geli reads 5 % above stock GELI (18 % below before the
       per-sector dispatch); four providers on one CPU leave the timer
-      there 0.54 ms late at p99 against 38 ms, up from 0.30 at 01a87c3
+      there 0.54 ms late at p99 against 38 ms, up from 0.30 at 7d306f7
       (not traced).  No leak, panic or WITNESS line in the syslog.
-      if_pair A/B for the share-limit changes (A d1e8d3a, B 9186555;
+      if_pair A/B for the share-limit changes (A d1e8d3a, B 61d10e2;
       BULK.md S6): a spin loop beside a flow gets 0.509 under both,
       the out-of-box single flow 140 against 151 Gbit/s; fork+exec
       beside the flow 6 % slower in B (three runs, maybe noise).
     - crest's follow-up (2026-11-04): geli_bench scale (1 to 128
       providers on small md(4) devices) and ssd (a gnop(8) SATA SSD
-      model), 0ef1ebc, lab (BULK.md S7): GELI wakes 12 to 16 workers
+      model), d055f23, lab (BULK.md S7): GELI wakes 12 to 16 workers
       per request; kwq-geli serves twice the 4 KiB reads at 16 providers
       and leaves the machine more, costs half the encryption's CPU in
       the SSD model, but past two providers per CPU falls behind (1 MiB
@@ -1368,8 +1368,8 @@ Phases
         policies today, gossip (P5), donor (P7) and shard (P8, the
         idle mask in 16-CPU lines plus crest's donor flag).  The
         100-seed worst cases found P8's fixed reach and a starved CPU
-        that never became a donor (f04df4f), the lone item (01ec314).
-        Gate G1 (report artifact U246kQmWvgBj6TYDJYyDYz, cbabcd3):
+        that never became a donor (92ddf90), the lone item (7aaf828).
+        Gate G1 (report artifact U246kQmWvgBj6TYDJYyDYz, bcff345):
         crest chose both P8 and gossip for the kernel, compared on
         kwq-geli, then a hybrid study (S5a); A1f, W4o, W5 steady only,
         model gaps accepted, no cascade wake (D9-D11).
@@ -1378,19 +1378,19 @@ Phases
     P6g.3 [DONE 2026-11-05] A/B on lab, then a07 (crest's
         permission, after a guest GENERIC-DEBUG check of each change).
         P8 failed K4 (a closed-loop queue on one CPU) until the chain,
-        shard.directed=2 (777b372, K13); with it P8 meets K1-K5 on
+        shard.directed=2 (d6fae5e, K13); with it P8 meets K1-K5 on
         both machines.  Fixes on the way: the steal wake's read after
-        the unlock (b40b3a6), the cost average's ticker glitches on
-        a07 (946967d); the cost gate shard.directed_us (3c5c2cd).
+        the unlock (c26bbc8), the cost average's ticker glitches on
+        a07 (d1816b9); the cost gate shard.directed_us (3e3b9c1).
         a07's ssd randread is bimodal and unresolved at 6 runs.  Report
-        artifact Jz2qDdxhD1qvUefHqXp9tY, data samples/p6g3 (61d66ab);
+        artifact Jz2qDdxhD1qvUefHqXp9tY, data samples/p6g3 (6dcb342);
         results in BULK.md S8.  Gate G2, crest's decisions D12-D15
-        (77e80dc): place=2 with directed=2 and directed_us=10 the
+        (b96e660): place=2 with directed=2 and directed_us=10 the
         default on one NUMA domain, place=0 on more until a machine of
         several packages is measured; spill_idle and helper_donor
         removed; gossip kept for H4; randread taken as level.
     P6g.3a The hybrid's design space, simulated (SPEC-p6g.md S5a): H1
-        (gossip with lazy idle lines) dropped by its numbers (533c351);
+        (gossip with lazy idle lines) dropped by its numbers (9855146);
         H4 (P8 within a package, gossip across) needs a two-socket
         machine, which none of the three here is.
     P6g.4 [DONE 2026-11-05] SCHED.md S17 (S16 the place=0 path),
@@ -1398,8 +1398,8 @@ Phases
         docs/ and README; the 2026-11-04 steal_lab and prof2_lab
         samples in ../samples.  The doc review against the code (26
         findings) is fixed in the docs and comments; it also found the
-        mailbox outside its wake's cache line, fixed in 8536cc6 with
-        two CTASSERTs.  On crest's request 8536cc6 renames the starved
+        mailbox outside its wake's cache line, fixed in fb14aa0 with
+        two CTASSERTs.  On crest's request fb14aa0 renames the starved
         tick the starvation watchdog and makes stealing visible to
         dtrace: kwq:::steal's path and what it left, steal-wake,
         steal-miss, donor and place (OBSERVABILITY.md); checked on the

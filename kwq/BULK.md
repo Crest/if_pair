@@ -28,16 +28,16 @@ place among the classes is KWQ.md S14.1.  Raw rows are in
 | machine | kwq suite | kwq-geli suite |
 |---|---|---|
 | guest, GENERIC-DEBUG (WITNESS, INVARIANTS) | 34/34 with KWQ_LIST_CHECK (31 kwq_test, 3 kwq_crypto), again after the review's fixes | 14/14 after the review's fixes; before them 12/12, and 11/11 five times in a row with KWQ_LIST_CHECK and the double-enqueue assertion, resume 3/3 |
-| lab, GENERIC, amd64, 16 CPUs | 34/34 at 9186555; at f953f11 33/34, the `weight` case failing on lab's fast AES-NI (section 5) | 14/14 at 9186555 |
-| a07, GENERIC, arm64, 128 CPUs | 33/34 at 0a37c05 (31 kwq_test, 3 kwq_crypto), `no_arm_when_idle` skipped: arm64 has no per-CPU timer line in `vmstat -i` | 14/14 at 0a37c05 |
+| lab, GENERIC, amd64, 16 CPUs | 34/34 at 61d10e2; at fbb3019 33/34, the `weight` case failing on lab's fast AES-NI (section 5) | 14/14 at 61d10e2 |
+| a07, GENERIC, arm64, 128 CPUs | 33/34 at 4644a3b (31 kwq_test, 3 kwq_crypto), `no_arm_when_idle` skipped: arm64 has no per-CPU timer line in `vmstat -i` | 14/14 at 4644a3b |
 
-The kernel code is the same at 0a37c05, f953f11 and 9186555 (one
+The kernel code is the same at 4644a3b, fbb3019 and 61d10e2 (one
 comment differs).  Before
-the review lab passed 31/31 and 11/11 (01a87c3).  lab's syslog over the
+the review lab passed 31/31 and 11/11 (7d306f7).  lab's syslog over the
 whole run, every case and benchmark stage unloading its modules, has
 no leak warning, no UMA zone freed non-empty, no panic and no WITNESS
 line (P6g.2's gossip counters later brought one, 128 bytes of `M_KWQ`
-per unload from fe1c50f, fixed in ae3e453).  a07's first run, at f9120cb, had the same results once
+per unload from 67bcf06, fixed in 8cc6246).  a07's first run, at 2952ec1, had the same results once
 three cases were run again by themselves: a07's kyua crashed in
 `yield` and in `providers` ("PID already in all_exec_data"), and the
 crashed case's cleanup, still running, unloaded geom_kwqeli under
@@ -47,7 +47,7 @@ processes and runs it once more.
 On a07's flat ring of 127 the `steal` case's 2000 items of 100 us,
 all queued to one CPU, ran 1929 elsewhere, on 48 CPUs (790 steals in
 and out, 4772 items moved in each direction, some of them twice):
-stealing reaches across the machine since 50fbecd.
+stealing reaches across the machine since 2f213fd.
 
 The cases that carry the BULK class: `steal` (2000 items of 100 us
 onto one CPU: 1506 ran elsewhere on the guest's four CPUs, the ideal
@@ -64,7 +64,7 @@ kwq_crypto on the guest (GENERIC-DEBUG, aesni0), on lab (GENERIC,
 aesni0, 16 CPUs) and on a07 (GENERIC, armv8crypto0, 128 CPUs), 64 KiB
 requests in 4 KiB operations, three repetitions, medians;
 samples/p6_crypto_guest_2026-11-03.tsv, p6_crypto_lab_2026-11-04.tsv
-(9186555) and p6_crypto_a07_2026-11-04.tsv (0a37c05):
+(61d10e2) and p6_crypto_a07_2026-11-04.tsv (4644a3b):
 
 | | guest BULK | guest thread model (PUSER) | lab BULK | lab thread model | a07 BULK | a07 thread model |
 |---|---|---|---|---|---|---|
@@ -144,7 +144,7 @@ a bio no longer holds the worker for its whole length.  The spin loop
 beside the spread load still gets less under kwq-geli on the guest than
 under stock GELI, where lab shows the opposite, at HEAD as before.
 
-On a07 (GENERIC, arm64, 128 CPUs, armv8crypto0; HEAD 0a37c05, three
+On a07 (GENERIC, arm64, 128 CPUs, armv8crypto0; HEAD 4644a3b, three
 repetitions, medians; samples/p6_geli_a07_2026-11-04.tsv), 64
 providers, against stock GELI on the same boot:
 
@@ -173,13 +173,13 @@ crypto, but something else the writers keep busy on that CPU, most
 likely md(4)'s worker threads, not measured.  Stealing changes nothing
 measurable here: `KWQ_CPU_ANY` already places the bios on idle
 workers, and the queues without stealing do as well.  The first run,
-at f9120cb, which ended in its third repetition (section 5), gives the
+at 2952ec1, which ended in its third repetition (section 5), gives the
 same picture: reads 36873 against 46189 MB/s, the spin loop pinned
 beside the writers 0.34 against 0.78, the timer on the one CPU 104 ms
 against 0.81 ms at p99.
 
-On lab (GENERIC, amd64, 16 CPUs, aesni0; 9186555, the kernel code of
-0a37c05; 16 providers, five repetitions, medians;
+On lab (GENERIC, amd64, 16 CPUs, aesni0; 61d10e2, the kernel code of
+4644a3b; 16 providers, five repetitions, medians;
 samples/p6_geli_lab_2026-11-04.tsv), against stock GELI on the same
 boot; "local" is kwq-geli with each bio queued on the CPU that issued
 it (`kern.geom.kwqeli.cpu=-2`):
@@ -197,7 +197,7 @@ it (`kern.geom.kwqeli.cpu=-2`):
 | ... a spin loop's share of that CPU (the load's half second left out) | 0.033 | 0.52 | 0.52 | 0.52 |
 | ... MB/s with the timer / with the spin loop there | 3479 / 3458 | 3495 / 1741 | 3489 / 1739 | 3500 / 1742 |
 
-Against lab's run at 01a87c3 (KWQ.md S14.1, the same tests), the reads
+Against lab's run at 7d306f7 (KWQ.md S14.1, the same tests), the reads
 went from 18 % behind stock GELI to 5 % ahead, and the spin loop
 pinned beside the writers from 0.44 to 0.49 of its CPU.  Two numbers
 of the one-CPU case got worse: the timer's p99 there rose from 301 to
@@ -205,7 +205,7 @@ of the one-CPU case got worse: the timer's p99 there rose from 301 to
 the spin loop fell from 1997 to 1741 with the spin loop's share
 unchanged.  Several changes lie between the two runs: the per-sector
 dispatch, which ends passes on the budget every 16 sectors, the share
-limit's carry change (1dc88f6) and the ENOMEM path.  Which of them
+limit's carry change (70c2d94) and the ENOMEM path.  Which of them
 made the difference is not measured.  fork+exec is slower than on
 2026-11-03 under stock GELI too (4226 then), so that is the boot, not
 the port.
@@ -214,21 +214,21 @@ the port.
 
 | fault | found by | effect | fixed in |
 |---|---|---|---|
-| the share limit clamped a period's first pass uncontended too | kwq_crypto, four queues on one CPU | shares up to 1 : 2 between equal queues, Jain 0.92 | 3696ce3 |
-| passes longer than the share limit's period went uncharged | geli_bench onecpu | a spin loop beside four kwq-geli providers on one CPU got 5-7 %, the timer 149 ms late at p99 | 79d9957 |
-| a pass of a stealable queue could take all of a few large items | kwq-geli steal case | four writers' bios never stolen | ec6516b |
-| kwq-geli took a bio's crypto requests all at once | lab profile | reads 18 % below stock GELI | 0ad0126 |
-| the first per-sector dispatch kept its resume point in `bio_pflags`, 16 bits wide | the guest, twice, then lab | resumed bios restarted at sector 0: reads counted twice (panic "bio_completed can't be greater than bio_length"), writes encrypted twice; on lab bios cut by the budget never finished and BULK workers kept every CPU | never committed; 0ad0126 resumes from `bio_inbed` |
-| a probe started under a load that held its CPU measured an idle CPU | crypto_bench | the thread model's starvation reported as a share of 1.0 | 952bb18 |
-| steal rings ordered from the next CPU id up: the reach was one-way on rings wider than `steal_scan` | review | on a07's flat ring of 127 the helpers woken for CPU v (v+1..v+16) searched v+2..v+32: no stealing there, and every pass of a stealable queue cut to one item for helpers that could not help | 50fbecd |
-| the carry charged time used while nothing else was runnable | review | an uncontended worker carried a whole period into every next one; contention's start cost the rest of that period and two more (simulator `cap_onset`: 0.81-0.87 of the steady service, now 1.15-1.20) | 1dc88f6 |
-| a failed `M_NOWAIT` key allocation drops the key-cache lock; the fallback then replaced the LRU key without looking the key number up again | review | a key in the tree twice under memory pressure on a provider larger than the key cache | 605838e |
-| a bio short of a crypto request part way was requeued at once | review | its worker retried it at `PI_SOFT` for as long as the shortage lasted; now `ENOMEM` wherever it happens, and GEOM paces the retry (ATF `nomem`) | f6e2f04 |
-| resume asserted that its sessions could be made | review | after a failure a session freed at suspend was used again on a production kernel; now the resume fails and the provider stays suspended (ATF `resume_fail`) | b52dc07 |
-| resume propagated the keys with the queue mutex held, as stock GELI does, and the key cache allocates with `M_WAITOK` there | the guest's dmesg, 2026-11-04 | a WITNESS warning on every resume on GENERIC-DEBUG since the port; on GENERIC a panic if the allocation slept while another thread waited for the mutex | 5f72da2 |
-| kwq_crypto turned `result_state` "done" before its teardown | a07 | the module refuses to unload (EBUSY) until the teardown ends, and crypto_bench unloads within milliseconds of "done": on a07, after the last run (eight thread-mode queues), it left kwq and kwq_crypto loaded | 7b8310b |
-| geli_bench took stock GELI workers still exiting from the previous test for the new providers' | a07 | 8192 workers (64 providers x 128 CPUs) exit for seconds; `cpuset` failed with ESRCH and ended the benchmark in its third repetition | 0a37c05 |
-| kwq_crypto's weight case took 32 requests of 256 KiB for several quanta of work | lab | aesni does the 8 MiB in 1.5 ms, less than queue 0's three quanta (a07: 4.4 ms); a pass serves what was queued when it began (SCHED.md S4.2), so queue 0 ran dry every round and got its 32 requests to queue 1's 21, a ratio of 1.52, the specified behaviour; the case now measures the CPU's rate first and takes a depth holding six quanta | 9186555 |
+| the share limit clamped a period's first pass uncontended too | kwq_crypto, four queues on one CPU | shares up to 1 : 2 between equal queues, Jain 0.92 | 1bf4b40 |
+| passes longer than the share limit's period went uncharged | geli_bench onecpu | a spin loop beside four kwq-geli providers on one CPU got 5-7 %, the timer 149 ms late at p99 | 418cea9 |
+| a pass of a stealable queue could take all of a few large items | kwq-geli steal case | four writers' bios never stolen | 456ab19 |
+| kwq-geli took a bio's crypto requests all at once | lab profile | reads 18 % below stock GELI | 7b3f2af |
+| the first per-sector dispatch kept its resume point in `bio_pflags`, 16 bits wide | the guest, twice, then lab | resumed bios restarted at sector 0: reads counted twice (panic "bio_completed can't be greater than bio_length"), writes encrypted twice; on lab bios cut by the budget never finished and BULK workers kept every CPU | never committed; 7b3f2af resumes from `bio_inbed` |
+| a probe started under a load that held its CPU measured an idle CPU | crypto_bench | the thread model's starvation reported as a share of 1.0 | 3b0d2ae |
+| steal rings ordered from the next CPU id up: the reach was one-way on rings wider than `steal_scan` | review | on a07's flat ring of 127 the helpers woken for CPU v (v+1..v+16) searched v+2..v+32: no stealing there, and every pass of a stealable queue cut to one item for helpers that could not help | 2f213fd |
+| the carry charged time used while nothing else was runnable | review | an uncontended worker carried a whole period into every next one; contention's start cost the rest of that period and two more (simulator `cap_onset`: 0.81-0.87 of the steady service, now 1.15-1.20) | 70c2d94 |
+| a failed `M_NOWAIT` key allocation drops the key-cache lock; the fallback then replaced the LRU key without looking the key number up again | review | a key in the tree twice under memory pressure on a provider larger than the key cache | 5fd79c8 |
+| a bio short of a crypto request part way was requeued at once | review | its worker retried it at `PI_SOFT` for as long as the shortage lasted; now `ENOMEM` wherever it happens, and GEOM paces the retry (ATF `nomem`) | 5a5a555 |
+| resume asserted that its sessions could be made | review | after a failure a session freed at suspend was used again on a production kernel; now the resume fails and the provider stays suspended (ATF `resume_fail`) | 8e68a3c |
+| resume propagated the keys with the queue mutex held, as stock GELI does, and the key cache allocates with `M_WAITOK` there | the guest's dmesg, 2026-11-04 | a WITNESS warning on every resume on GENERIC-DEBUG since the port; on GENERIC a panic if the allocation slept while another thread waited for the mutex | 4a4cd77 |
+| kwq_crypto turned `result_state` "done" before its teardown | a07 | the module refuses to unload (EBUSY) until the teardown ends, and crypto_bench unloads within milliseconds of "done": on a07, after the last run (eight thread-mode queues), it left kwq and kwq_crypto loaded | c9c51af |
+| geli_bench took stock GELI workers still exiting from the previous test for the new providers' | a07 | 8192 workers (64 providers x 128 CPUs) exit for seconds; `cpuset` failed with ESRCH and ended the benchmark in its third repetition | 4644a3b |
+| kwq_crypto's weight case took 32 requests of 256 KiB for several quanta of work | lab | aesni does the 8 MiB in 1.5 ms, less than queue 0's three quanta (a07: 4.4 ms); a pass serves what was queued when it began (SCHED.md S4.2), so queue 0 ran dry every round and got its 32 requests to queue 1's 21, a ratio of 1.52, the specified behaviour; the case now measures the CPU's rate first and takes a depth holding six quanta | 61d10e2 |
 
 The lab hang, 2026-11-03 20:34 UTC: the uncommitted first per-sector
 dispatch was built and loaded on lab for a read A/B at 20:33:50,
@@ -268,12 +268,12 @@ GEOM's stack guard.
 
 ## 6. The share-limit changes and if_pair
 
-The share limit changed three times on this branch (3696ce3, 79d9957,
-1dc88f6; section 1, SCHED.md S6.3), and the simulator's `cut` case,
+The share limit changed three times on this branch (1bf4b40, 418cea9,
+70c2d94; section 1, SCHED.md S6.3), and the simulator's `cut` case,
 a NET flood of 20 us items beside an always-runnable thread, said NET
 would change under contention: the thread now gets the specified half
 where it got a third.  An A/B of if_pair on lab, 2026-11-04: A = kwq
-d1e8d3a (kwq before this branch), B = 9186555, if_pair.c and
+d1e8d3a (kwq before this branch), B = 61d10e2, if_pair.c and
 tests/compare.sh the same in both; the default eight tests interleaved
 three times, then the single flow out of the box eight times
 (samples/p6_sl_pin_lab_2026-11-04.tsv, p6_sl_oob_lab_2026-11-04.tsv).
@@ -310,7 +310,7 @@ unpinned beside the load.  Its `ssd` test puts a gnop(8) provider
 under each of four 256 MiB devices that holds a request to the next
 clock tick (0 to 1 ms) with a set probability, a model of a SATA SSD
 in which the device sets the pace (../kwq-geli/tests/geli_bench.sh
-has the calibration).  lab, 0ef1ebc, three repetitions, medians
+has the calibration).  lab, d055f23, three repetitions, medians
 (samples/p6_scale_lab_2026-11-04.tsv, p6_ssd_lab_2026-11-04.tsv); the
 charts are in crest's dashboard "GELI Threads vs kwq Queues".
 
@@ -378,7 +378,7 @@ The model's p99 is its own tick, 1.1 ms, for all three.
 
 crest's question of 2026-11-05: how the new placement compares with
 stock GELI's n x m threads.  geli_bench interleaved stock GELI, kwq-geli
-under today's placement and under P8 at the G2 defaults (b70e3db), three
+under today's placement and under P8 at the G2 defaults (f57a679), three
 repetitions, medians (../samples/p6g3/lab7, a07g).  4 KiB reads at
 random offsets and 1 MiB sequential writes, one request in flight per
 provider; CPU per request from the machine's sys share:
@@ -501,11 +501,11 @@ buffers in place of malloc(9)'s large path.
 
 ### 7.3 BULK's 5 ms quantum and 10 ms share-limit period (2026-11-05)
 
-2e142b1 raised BULK's `quantum_us` from 1000 to 5000 and its
+c2f3a35 raised BULK's `quantum_us` from 1000 to 5000 and its
 `cap_period_us` from 1000 to 10000, an allowance of 5 ms per period at
 `cap_permille` 500, so that a pass holds a 1 MiB item with slack for
 any well-behaved client (SCHED.md S8).  One boot of each machine at
-f6ca113, stock GELI (n providers x m bound workers) against P8 at the
+bb6b1f2, stock GELI (n providers x m bound workers) against P8 at the
 new defaults and at the old values (geli_bench's `kwqshard1`), three
 repetitions interleaved, medians (../samples/p6g6/lab, a07).  "Cuts"
 are kwq-geli's requeued remainders per 1 MiB bio handed over, from the
@@ -583,7 +583,7 @@ AES-XTS -l 256`, no authentication), one CPU, three repetitions,
 medians (../samples/p6g6/blocks_*.txt, geliblocks_*.txt).
 
 The crypto alone: kwq_crypto with one crypto(9) operation per block as
-GELI issues them, each carrying its key (`rekey`, 3978704) so the
+GELI issues them, each carrying its key (`rekey`, d08fd1a) so the
 driver expands the key schedule per block as under GELI, on one BULK
 queue on CPU 1 with 16 requests in flight, the data hot in the cache.
 The key setup is 0.03 us of each on lab and 0.17 us on a07.
@@ -698,7 +698,7 @@ test could not: lab's 1 MiB reads lose 14 % at this priority.
 ### 7.6 Section 7.5's two steps, one at a time and together (2026-11-06)
 
 The first step ends a pass between bios only: kwq-geli's
-`kern.geom.kwqeli.budget_sectors` at 0, against 16, the knob of 1a6f715
+`kern.geom.kwqeli.budget_sectors` at 0, against 16, the knob of c8403c9
 (geli_bench's stage kwqbio).  A write then runs from its copy to its
 hand-over to md(4) in one go.  The second puts BULK below md(4):
 `kern.kwq.bulk.priority=55`, as in section 7.5.  Neither is a default yet.
@@ -891,7 +891,7 @@ against today's 39: every item waited one service time.  A lone item
 behind running work never makes its CPU a donor, so a thief that
 finished its batch found no donor and slept, and the next item waited
 for the next wake; S16's scan chains its thieves instead.  The chain
-(an idle thief retries the victim of its last batch, 777b372):
+(an idle thief retries the victim of its last batch, d6fae5e):
 
 | kwq_crypto, of today | lab, 1 queue | lab, 4 queues | a07, 1 queue | a07, 4 queues |
 |---|---|---|---|---|
@@ -933,7 +933,7 @@ was 7.5 to 8.5 us and their p90 under 10 (a07e/cost_*.txt), below the
 gate.  Six runs per setting cannot resolve ten per cent;
 crest took it as level with today (D15).
 
-The code as it stands, measured at its defaults (b70e3db: place=2,
+The code as it stands, measured at its defaults (f57a679: place=2,
 directed=2, directed_us=10, the glitch fix and the mailbox's line)
 against today's code and no stealing in the same round, on lab and a07
 (../samples/p6g3/lab6, a07f; the criteria tab's "P8, G2 defaults"):
@@ -965,13 +965,13 @@ to 73 per block (a07f/ssdab_final_counters.txt).
 **Found on the way.**  The steal wake built the mailbox word from the
 queue after the enqueue had dropped the list lock, a window in which a
 drain and destroy may complete; the word is now built under the lock
-(b40b3a6; the thief's side was safe, the word naming its queue by slot
+(c26bbc8; the thief's side was safe, the word naming its queue by slot
 and id under `kwq_steal_rm`).  The item cost's average took a07's
 glitched CPU-time deltas: some lists' cost reached 2^63 ns, overflowing
 the donor rule's backlog sums (a07e/cost_*.txt); it now leaves
-glitches out (946967d).
+glitches out (d1816b9).
 
-**G2** (D12-D15, 77e80dc): P8 with the chain (`directed=2`,
+**G2** (D12-D15, b96e660): P8 with the chain (`directed=2`,
 `directed_us=10`) is the default on a machine of one NUMA domain,
 today's code on more until a machine of several packages is measured
 (the simulator's two-socket model saw P8 collapse near saturation);
@@ -1017,12 +1017,12 @@ two-socket machine.
 - K5 on a07: P8's median fork+exec p99 beside the load above today's
   in four of five rounds, within the run-to-run range each time (section
   8); not traced.
-- lab's one-CPU case got worse between 01a87c3 and 9186555 (section 4:
+- lab's one-CPU case got worse between 7d306f7 and 61d10e2 (section 4:
   the timer's p99 301 to 542 us, kwq-geli's MB/s beside the spin loop
   13 % lower); which of the changes between them, not traced.
 - Stock GELI's resume holds `sc_queue_mtx` over the key cache's
   `M_WAITOK` allocations (releng/15.1 g_eli_ctl.c, `g_eli_ctl_resume()`):
-  kwq-geli no longer does (5f72da2); a report upstream is crest's call.
+  kwq-geli no longer does (4a4cd77); a report upstream is crest's call.
 - Keeping the share-limit changes and merging kwq-bulk into kwq are
   crest's decisions (section 6: if_pair on lab is unchanged by them
   within the spread, fork+exec beside a flow perhaps 6 % slower).
