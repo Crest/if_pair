@@ -134,7 +134,7 @@ weight_head() {
 weight_body() {
 	kc_setup
 	# Weights act only on queues backlogged through their pass: a pass
-	# serves the requests queued when it began (../SCHED.md S4.2), so
+	# serves the requests queued when it began (../SCHED.md S4.3), so
 	# queue 0's depth has to hold more than its three quanta of work.
 	# No fixed depth does on every CPU: 32 requests of 256 KiB are
 	# 4.4 ms of AES-XTS on a07 but 1.5 ms on lab (5.5 GB/s on one core),

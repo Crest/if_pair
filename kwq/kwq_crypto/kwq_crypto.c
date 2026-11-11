@@ -20,7 +20,8 @@
  *            SPEC-p6g.md P6g.0); `stealable' creates the queues
  *            KWQ_F_STEALABLE.
  *   scatter  as kwq, but a request is cut into chunks of `chunk' bytes
- *            fanned out with kwq_scatter(); its group's done() completes it.
+ *            fanned out with kwq_scatter(), which chooses the CPUs (`cpu'
+ *            and `cpustep' do nothing); its group's done() completes it.
  *   thread   the baseline: GELI's own model, kernel threads at `prio'
  *            (PUSER by default) taking requests from a list per queue;
  *            `threads' 0 is one per CPU bound to it (kern.geom.eli.threads
@@ -31,15 +32,16 @@
  *   sysctl kern.kwq_crypto                     # until result_state is done
  *
  * Results: throughput in MB/s (10^6 bytes), per queue and in total, over
- * the window from `warm' seconds after the start to the stop; latency
- * from submission to completion (percentiles from a log histogram with
- * four buckets per octave, so +-19 %, the maximum exact); the share each
- * queue got against its weight and Jain's index over them; the CPUs that
- * ran requests; with `decrypt' set every pass decrypts, unchecked (to time
- * decryption); with `rekey' set every operation carries its key as GELI's
- * do, which makes the driver expand the key schedule per sector; and with
- * `verify' set every other pass decrypts and the
- * request is checked against its pattern.
+ * the window from the warm-up (a second, or a fifth of `secs' if that is
+ * less) after the start to the stop; latency from submission to completion
+ * (percentiles from a histogram with four buckets per octave, a bucket's
+ * upper bound reported, so up to 25 % high, the maximum exact); the share
+ * each queue got against its weight and Jain's index over them; the CPUs
+ * that ran requests; with `decrypt' set every pass decrypts, unchecked (to
+ * time decryption); with `rekey' set every operation carries its key as
+ * GELI's do, which makes the driver expand the key schedule per sector; and
+ * with `verify' set every other pass decrypts and the request is checked
+ * against its pattern.
  */
 
 #include <sys/param.h>
@@ -175,7 +177,7 @@ SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, depth, CTLFLAG_RW, &kc_depth, 0,
 SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, secs, CTLFLAG_RW, &kc_secs, 0,
     "duration of a run, 1..3600");
 SYSCTL_INT(_kern_kwq_crypto, OID_AUTO, cpu, CTLFLAG_RW, &kc_cpu, 0,
-    "kwq modes: -1 = KWQ_CPU_ANY, else every queue on this CPU; thread mode: the CPU the threads are bound to (-1 = per threads)");
+    "kwq mode: -1 = KWQ_CPU_ANY, else the queues' CPU (see cpustep); scatter: unused; thread mode: the CPU the threads are bound to (-1 = per threads)");
 SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, cpustep, CTLFLAG_RW, &kc_cpustep, 0,
     "kwq mode with cpu set: queue i on CPU cpu + i * cpustep (0 = all on cpu; 1 and 2 put two queues on SMT siblings or on two cores)");
 SYSCTL_UINT(_kern_kwq_crypto, OID_AUTO, stealable, CTLFLAG_RW, &kc_stealable, 0,
