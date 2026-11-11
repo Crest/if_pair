@@ -1,5 +1,6 @@
 /*
- * iolat: the load of geli_bench.sh's scale and ssd tests.  DEPTH
+ * iolat: the load of geli_bench.sh's scale, ssd, deep, deepcpu, mixed
+ * and dev tests.  DEPTH
  * threads per device issue BYTES-sized pread(2)s or pwrite(2)s on the
  * raw device for SECS, each waiting for its own: a queue depth of
  * DEPTH per device.  Sequential offsets are shared by a device's
@@ -13,7 +14,7 @@
  *
  *   iolat [-w] [-r] [-b BYTES] [-q DEPTH] [-t SECS] DEVICE ...
  *
- * Built on the fly with cc -O2 -lpthread.
+ * Built on the fly with cc -O2 -lpthread -lm.
  */
 #include <sys/types.h>
 #include <sys/disk.h>

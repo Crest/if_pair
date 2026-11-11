@@ -18,15 +18,16 @@ the base system.
 |---|---|
 | `sys/` | `geom_kwqeli.ko`: the kernel half, class `KWQELI` |
 | `lib/` | `geom_kwqeli.so`: the userland half of geli(8), for `geom kwqeli ...` |
-| `tests/` | ATF suite on md(4) providers (`Kyuafile`, `kwqeli_test.sh`); `geli_bench.sh`, the benchmark against stock GELI (its header lists the tests: `tput`, `resp`, `onecpu`, `scale` for many providers, `ssd` for a gnop(8) SATA SSD model), with `iolat.c`, the load of the last two, and `geli_report.sh` for its tables |
+| `tests/` | ATF suite on md(4) providers (`Kyuafile`, `kwqeli_test.sh`); `geli_bench.sh`, the benchmark against stock GELI (its header lists the tests, among them `tput`, `resp`, `onecpu`, `scale` for many providers, `ssd` for a gnop(8) SATA SSD model and `dev` for a machine's drives), with `iolat.c`, the load of `scale`, `ssd`, `deep`, `deepcpu`, `mixed` and `dev`, `simdisk/`, geom_simdisk's drives that model time and keep no data, and `geli_report.sh` for its tables |
 
 The history is reviewable against upstream: the first commit is the
-unchanged copy, the second the rename, the third the port.
+unchanged copy (def2565), the second the rename (7f77dc2), and the port
+begins with the third (f54695d).
 
 ## Build and use
 
     make -C kwq-geli SYSDIR=/usr/src/sys          # or KERNBUILDDIR=... as for kwq
-    kldload ../kwq/kwq/kwq.ko kwq-geli/sys/geom_kwqeli.ko
+    kldload kwq/kwq/kwq.ko kwq-geli/sys/geom_kwqeli.ko
     mdconfig -a -t malloc -s 1g                    # md0
     env GEOM_LIBRARY_PATH=$(make -C kwq-geli/lib -V .OBJDIR) \
         geom kwqeli onetime -e AES-XTS -l 256 -s 4096 md0
@@ -63,26 +64,29 @@ The port (all marked `kwq-geli:` in the source):
 - **A refused bio is retried by GEOM.**  kwq refuses an item only at its
   per-CPU limit (`ENOBUFS`) or while the queue drains (`ENXIO`).  The
   first becomes `ENOMEM`, which `g_io_deliver()` answers by issuing the
-  bio again after 1 ms, as for GELI's own buffer shortage (the
-  `enobufs_retry` case).
+  bio again at once, `g_down` pausing 1 ms before its next bio, as for
+  GELI's own buffer shortage (the `enobufs_retry` case; Known limits
+  has what the "at once" costs).
 - **Nothing on the request path sleeps.**  BULK handlers run under
   `THREAD_NO_SLEEPING()`.  GELI took a crypto request per sector with
   `M_WAITOK` inside its dispatch loop, and a key with `M_WAITOK` on a
   key-cache miss.  The privacy path takes them one per sector with
-  `M_NOWAIT`: a shortage at any sector fails the bio with `ENOMEM`,
-  and GEOM issues it again after a pause, the sectors done so far
-  done again.  The pass's budget running out (checked every 16
-  sectors) leaves the bio partly dispatched instead, and the handler
-  requeues it in front of the rest to go on from the sector after the
-  last completion (`bio_inbed`).  A 1 MiB bio is then no longer one
-  uninterruptible item.  (The first version requeued a bio after a
-  shortage too, and the worker retried it at once, at `PI_SOFT`, for
-  as long as the shortage lasted.)  The integrity path takes all of
+  `M_NOWAIT`: a shortage at any sector fails the bio with `ENOMEM`, and
+  GEOM issues it again as above, the sectors done so far done again.
+  The pass's budget running out (checked every 16 sectors) leaves the
+  bio partly dispatched instead, and the handler requeues it in front of
+  the rest to go on from the sector after the last completion
+  (`bio_inbed`).  A 1 MiB bio is then no longer one uninterruptible
+  item, on this path and with a driver that completes inside its
+  dispatch; the integrity path and a session that completes
+  asynchronously run a bio whole.  (The first version requeued a bio
+  after a shortage too, and the worker retried it at once, at `PI_SOFT`,
+  for as long as the shortage lasted.)  The integrity path takes all of
   a bio's requests and keys first (`g_eli_getreqs()`), so a shortage
-  fails it whole.  `kern.geom.eli.blocking_malloc` is gone.  (Taking
-  all requests first in the privacy path too, as the first version of
-  the port did, emptied UMA's per-CPU cache, 256 zeroed requests per
-  1 MiB bio, and cost lab's reads 18 %.)
+  fails it whole.  `kern.geom.eli.blocking_malloc` is gone.  (Taking all
+  requests first in the privacy path too, as the first version of the
+  port did, emptied UMA's per-CPU cache, 256 zeroed requests per 1 MiB
+  bio, and cost lab's reads 18 %.)
 - **One crypto session per CPU**, where GELI had one per worker thread.
   A bio is run on the session of the CPU whose worker takes it.
 - **Suspend parks new bios** on the softc's queue and waits for the ones
@@ -90,19 +94,20 @@ The port (all marked `kwq-geli:` in the source):
   and sends the parked bios through.  It sets up the keys outside the
   queue mutex, which GELI holds over the key cache's `M_WAITOK`
   allocations (a WITNESS warning on every resume).
-- **Destroy drains the queue**, which runs what is left as GELI's
-  workers did, then cancels the bios parked while suspended.
+- **Destroy drains the queues**, which runs what is left as GELI's
+  workers did, sends down a write still held by `write_hold`, then
+  cancels the bios parked while suspended.
 
 New knobs, in `kern.geom.kwqeli`:
 
 | knob | default | meaning |
 |---|---|---|
-| `cpu` | -1 | CPU a bio is queued to: -1 `KWQ_CPU_ANY` (an idle BULK worker near the caller), -2 the caller's CPU, N CPU N for every provider (the several-busy-queues-on-one-CPU case) |
+| `cpu` | -1 | CPU a bio is queued to: -1 `KWQ_CPU_ANY` (an idle BULK worker near the caller), -2 the caller's CPU, N CPU N for every provider (the several-busy-queues-on-one-CPU case; an N that is no CPU is the caller's) |
 | `stealable` | 1 | queues of providers attached from now on are `KWQ_F_STEALABLE` |
 | `weight` | 1 | DRR weight 1..8 of the queues of providers attached from now on |
-| `budget_sectors` | 16 | `kwq_item_stop()` every this many sectors of a bio, which can end a pass part way through the bio; 0: between bios only, so a pass can overrun by one bio.  How long a bio runs before it may stop is kwq's `kern.kwq.bulk.item_min_us` |
+| `budget_sectors` | 16 | `kwq_item_stop()` every this many sectors of a bio, which can end a pass part way through the bio (privacy path, drivers that complete inside the dispatch); 0: between bios only, so a pass can overrun by one bio.  How long a bio runs before it may stop is kwq's `kern.kwq.bulk.item_min_us` |
 | `big_bufs` | 1 | buffers above the swap zone's size (132 KiB), up to `maxphys`, come from UMA zones without per-CPU caches, one per power of two, instead of `malloc(9)`, which above `vm.kmem_zmax` maps and unmaps a buffer for each bio |
-| `write_hold` | 2 | while reads and this many writes are below, one encrypted write per provider stays back until the next of them completes, so that a read waits behind one write fewer on a drive that serves in order; 0: never, and not with authentication. `write_holds` counts them |
+| `write_hold` | 2 | while reads and this many writes are below, one encrypted write per provider stays back until the next write below completes, so that a read waits behind one write fewer on a drive that serves in order; 0: never, and not with authentication. `write_holds` counts them |
 | `sep_out` | 1 | providers attached from now on encrypt a write's sectors from the bio straight into the buffer through a separate crypto output, instead of copying the bio there and encrypting in place; not with authentication, and only where the driver allows it |
 | `read_queue` | 2 | providers attached from now on queue their reads on a queue of their own (`kern.kwq.bulk.queue.kwelir-<provider>`), so that DRR shares the CPU between reads and writes whatever the bios' sizes; 2: `KWQ_F_PROMPT`, reads go ahead of the ring, a quantum per ring slot at most |
 
@@ -127,6 +132,10 @@ of `bio_pflags`, as in GELI.
 - **A resume whose sessions cannot be made** (the crypto driver gone
   since the suspend) fails, the provider stays suspended and its keys
   are wiped again; GELI asserted that it could not happen.
+- **Long provider names.**  A queue's name is `kweli-` or `kwelir-` and
+  the provider's name, cut to kwq's 31 characters, and kwq refuses a
+  name in use: of two providers whose names agree that far, the second
+  does not attach ("Cannot create kwq queue").
 
 ## Not changed
 

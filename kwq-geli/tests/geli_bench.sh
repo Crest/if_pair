@@ -1,5 +1,6 @@
 #!/bin/sh
-# geli_bench.sh - kwq-geli against stock GELI on md(4) providers: what the
+# geli_bench.sh - kwq-geli against stock GELI on md(4) providers, or on
+# geom_simdisk's (MD_TYPE=sim): what the
 # crypto delivers, what it costs, and what it does to everyone else on the
 # machine (../../kwq/PLAN.txt P6f).  As root:
 #
@@ -7,18 +8,22 @@
 #
 # MODDIR holds kwq.ko, geom_kwqeli.ko and geom_kwqeli.so; VICTIM is the
 # probe binary (default: built from ../../tests/victim.c into WORK),
-# IOLAT the load of scale and ssd (default: built from iolat.c).
+# IOLAT the load of scale, ssd, deep, deepcpu, mixed and dev (default:
+# built from iolat.c).
 # Stages (default: eli kwq):
 #   eli         stock GELI, its default: a worker thread per CPU per
 #               provider, bound, at PUSER
-#   kwq         kwq-geli defaults: KWQ_CPU_ANY, stealable queues
+#   kwq         kwq-geli as first ported: KWQ_CPU_ANY, stealable queues,
+#               and what came later off (place 0, item_min_us 0,
+#               read_queue, big_bufs, sep_out and write_hold 0); the
+#               module's defaults are stage kwqdef
 #   kwqlocal    kwq-geli, every bio on the caller's CPU (cpu=-2), stealable
 #   kwqnosteal  kwq-geli, KWQ_CPU_ANY, not stealable
 #   kwqgossip   kwq, KWQ_CPU_ANY, stealable, BULK placement by gossip
 #               (kern.kwq.bulk.place=1, ../../kwq/SPEC-p6g.md S2)
 #   kwqshard    the same under P8, the sharded idle mask and the donor
 #               line (kern.kwq.bulk.place=2); kwq, kwqlocal and
-#               kwqnosteal run today's placement (place=0)
+#               kwqnosteal run the placement of before P6g (place=0)
 #   kwqshard1   kwqshard with BULK's quantum_us and cap_period_us at
 #               1000, the defaults before 2026-11-05 (../../kwq/SCHED.md
 #               S8); every other kwq stage runs the module's
@@ -40,9 +45,10 @@
 #   kwqhold0, kwqhold1, kwqhold2
 #               kwqdef with kern.geom.kwqeli.write_hold at 0, 1 or 2: while
 #               reads and that many writes are below, one encrypted write
-#               stays back until the next of them completes
-#   nop         no encryption: the load on the gnop providers themselves
-#               (ssd and dev only; the other tests skip it)
+#               stays back until the next write below completes
+#   nop         no encryption: the load on the gnop providers themselves,
+#               with MD_TYPE=sim on the simdisk drives (ssd and dev only;
+#               the other tests skip it)
 #   none        no provider and no load (net and netcpu only): NET_CMD's
 #               traffic alone
 # Tests (TESTS, default "tput resp onecpu"):
@@ -55,8 +61,9 @@
 #           fork+exec latency; stage "idle" is the probes on a quiet
 #           machine, once per repetition
 #   onecpu  ONECPU_N providers whose crypto all runs on CPU PCPU, written
-#           at once for SECS: per-provider MB/s and Jain's index, with the
-#           timer and then the spin probe pinned to PCPU.  kwq-geli queues
+#           at once, twice, each time beside a probe of SECS - 2:
+#           per-provider MB/s and Jain's index, with the timer and then
+#           the spin probe pinned to PCPU.  kwq-geli queues
 #           every bio to PCPU, not stealable; stock GELI gets one worker
 #           per provider (kern.geom.eli.threads=1) with its affinity set
 #           to PCPU by cpuset(1)
@@ -144,12 +151,13 @@
 # (3), PROBE_S (3: each probe of scale and ssd), SSD_N (4), SSD_MDSIZE
 # (256), SSD_LOADS, SSD_SEQ_BS (131072), SSD_SEQ_QD (4), SSD_SEQ_PROB
 # (100), SSD_RAND_QD (32), SSD_RAND_PROB (34), DEEP_N (16), DEEP_QD (32),
-# MIXED_N (1), MIXED_QD (8), ITEM_MIN_US (2000), DEV_N (4), DEV_FAST (0),
-# DEV_DELAY_MS (1), DEV_QD (4), DEV_BS (1048576), DEV_RQD (2), DEV_RBS
-# (131072), DEV_SPIN, DEV_MDSIZE (1024), NET_CMD, OUT_TSV, SETTINGS_LOG, WORK.
-# scale's,
-# ssd's, deep's and mixed's md devices are written whole once when made
-# (swap), so that reads find their pages.
+# MIXED_N (1), MIXED_QD (8), ITEM_MIN_US (2000), READ_QUEUE (2), DEV_N
+# (4), DEV_FAST (0), DEV_DELAY_MS (1), DEV_QD (4), DEV_BS (1048576),
+# DEV_RQD (2), DEV_RBS (131072), DEV_SPIN, DEV_MDSIZE (1024), DEV_W (450),
+# DEV_R (520), DEV_LAT (100), DEV_SEEK (0), DEV_FW (3000), DEV_FR (5000),
+# DEV_FLAT (20), NET_CMD, OUT_TSV, SETTINGS_LOG, WORK.  scale's, ssd's,
+# deep's and mixed's md devices are written whole once when made (swap),
+# so that reads find their pages.
 # Rows: stage rep test metric value, tab-separated (as tests/compare.sh).
 # Every md device, provider, module and knob this script creates, loads
 # or sets is removed, unloaded or put back at exit.

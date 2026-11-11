@@ -8,7 +8,9 @@
 # Each case loads kwq.ko and geom_kwqeli.ko unless loaded (and geom_eli.ko
 # for the cross-reads), creates its md devices and removes, in cleanup,
 # every provider and md device it made and every module it loaded.  The
-# knobs a case writes (kern.geom.kwqeli.*, a queue's limit) are put back.
+# knobs a case writes (kern.geom.kwqeli.*, kern.kwq.bulk.item_min_us and
+# quantum_us, fail points) are put back; a queue's limit goes with the
+# queue.
 
 # ---------------------------------------------------------------- helpers
 

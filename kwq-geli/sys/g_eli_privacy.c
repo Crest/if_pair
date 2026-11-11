@@ -288,6 +288,26 @@ g_eli_crypto_read(struct g_eli_softc *sc, struct bio *bp, boolean_t fromworker)
 }
 
 /*
+ * kwq-geli: a crypto request or key could not be had without sleeping:
+ * the bio fails with ENOMEM and GEOM issues it again.
+ */
+static void
+g_eli_crypto_nomem(struct g_eli_softc *sc, struct bio *bp)
+{
+
+	G_ELI_LOGREQ(1, bp, "Crypto request failed (ENOMEM).");
+	/* A read's clone is gone already (g_eli_read_done()). */
+	if (bp->bio_cmd == BIO_WRITE && bp->bio_driver1 != NULL) {
+		g_destroy_bio(bp->bio_driver1);
+		bp->bio_driver1 = NULL;
+	}
+	g_eli_free_data(bp);
+	bp->bio_completed = 0;
+	g_io_deliver(bp, ENOMEM);
+	atomic_subtract_int(&sc->sc_inflight, 1);
+}
+
+/*
  * This is the main function responsible for cryptography (ie. communication
  * with crypto(9) subsystem).
  *
@@ -310,10 +330,11 @@ g_eli_crypto_read(struct g_eli_softc *sc, struct bio *bp, boolean_t fromworker)
  * is bio_inbed, the completions so far, exact because they are
  * synchronous.  A crypto request or key that cannot be had without
  * sleeping fails the bio with ENOMEM wherever it happens, and GEOM issues
- * it again after a pause, as for GELI's buffer shortage (g_io_deliver());
- * the sectors done so far are done again.  (Requeueing it instead, as the
- * first version did after the first sector, retried it at once and at
- * PI_SOFT for as long as the shortage lasted; found in review.)  Requests are taken one per sector as
+ * it again, g_down pausing 1 ms before its next bio, as for GELI's buffer
+ * shortage (g_io_deliver()); the sectors done so far are done again.
+ * (Requeueing it instead, as the first version did after the first sector,
+ * retried it at once and at PI_SOFT for as long as the shortage lasted;
+ * found in review.)  Requests are taken one per sector as
  * GELI takes them, M_NOWAIT where GELI said M_WAITOK, and each completes
  * inside its dispatch, so the next allocation reuses it cache-hot.  (The
  * first port took all of a bio's requests before the first dispatch: 256
@@ -326,22 +347,6 @@ g_eli_crypto_read(struct g_eli_softc *sc, struct bio *bp, boolean_t fromworker)
  * session takes all requests and keys first (g_eli_getreqs()) and never
  * stops part way, its completions running behind its dispatches.
  */
-static void
-g_eli_crypto_nomem(struct g_eli_softc *sc, struct bio *bp)
-{
-
-	G_ELI_LOGREQ(1, bp, "Crypto request failed (ENOMEM).");
-	/* A read's clone is gone already (g_eli_read_done()). */
-	if (bp->bio_cmd == BIO_WRITE && bp->bio_driver1 != NULL) {
-		g_destroy_bio(bp->bio_driver1);
-		bp->bio_driver1 = NULL;
-	}
-	g_eli_free_data(bp);
-	bp->bio_completed = 0;
-	g_io_deliver(bp, ENOMEM);
-	atomic_subtract_int(&sc->sc_inflight, 1);
-}
-
 bool
 g_eli_crypto_run(struct g_eli_worker *wr, struct bio *bp)
 {

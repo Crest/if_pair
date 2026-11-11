@@ -86,7 +86,8 @@ SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, overwrites, CTLFLAG_RWTUN, &g_eli_overw
     0, "Number of times on-disk keys should be overwritten when destroying them");
 /*
  * kwq-geli: the crypto runs in kwq(9)'s BULK workers, one per CPU, so
- * there are no threads to count; the queue is set up by these three.
+ * there are no threads to count; a provider's queues are set up by these
+ * three and by read_queue below.
  */
 static int g_eli_kwq_cpu = -1;
 SYSCTL_INT(_kern_geom_kwqeli, OID_AUTO, cpu, CTLFLAG_RWTUN, &g_eli_kwq_cpu, 0,
@@ -111,7 +112,7 @@ SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, budget_sectors, CTLFLAG_RWTUN,
  * kwq-geli: a write encrypts each sector from the bio straight into the
  * buffer, instead of copying the whole bio there and encrypting it in place:
  * half the passes over memory, which is what a bio larger than the cache pays
- * for.  Read at attach, as a bio cut part way must go on as it began; without
+ * for.  Read at attach, as a bio cut part way must go on as it began; with
  * authentication, and where the driver has no separate output, the copy stays.
  */
 static u_int g_eli_sep_out = 1;
@@ -121,13 +122,13 @@ SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, sep_out, CTLFLAG_RWTUN, &g_eli_sep_out,
  * kwq-geli: a drive that serves in order makes a read wait for every write
  * ahead of it, and encrypting quickly puts them all there.  While reads are
  * below and this many writes are too, one more write waits here for the next
- * of them to complete (g_eli_write_send()).  One per provider at most, and the
- * drive keeps that many writes to work on.  0: none held.
+ * write below to complete (g_eli_write_send()).  One per provider at most, and
+ * the drive keeps that many writes to work on.  0: none held.
  */
 u_int g_eli_write_hold = 2;
 SYSCTL_UINT(_kern_geom_kwqeli, OID_AUTO, write_hold, CTLFLAG_RWTUN,
     &g_eli_write_hold, 0,
-    "While reads and this many writes are below, keep one encrypted write back until the next of them completes; 0: never");
+    "While reads and this many writes are below, keep one encrypted write back until the next write below completes; 0: never");
 COUNTER_U64_DEFINE_EARLY(g_eli_write_holds);
 SYSCTL_COUNTER_U64(_kern_geom_kwqeli, OID_AUTO, write_holds, CTLFLAG_RD,
     &g_eli_write_holds, "Writes held back by write_hold");
@@ -1380,9 +1381,10 @@ g_eli_destroy(struct g_eli_softc *sc, boolean_t force)
 
 	/*
 	 * kwq-geli: GELI's workers ran their queue empty, then cancelled the
-	 * new bios held while suspended, then exited.  The drain runs what is
-	 * left on the queue (not KWQ_F_DISCARD) and waits for its passes; a
-	 * bio that comes back from below after it is refused with ENXIO.
+	 * new bios held while suspended, then exited.  The drains run what is
+	 * left on the queues (not KWQ_F_DISCARD) and wait for their passes; a
+	 * bio that comes back from below after them is refused with ENXIO.  A
+	 * write still held by write_hold goes down.
 	 */
 	mtx_lock(&sc->sc_queue_mtx);
 	sc->sc_flags |= G_ELI_FLAG_DESTROY;

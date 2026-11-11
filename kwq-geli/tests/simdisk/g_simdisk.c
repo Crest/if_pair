@@ -9,8 +9,8 @@
  * for their direction, a request that does not continue the last one pays
  * the seek, and each completes the latency after its service ends.  The
  * completion comes from a callout, the nearest thing to a drive's interrupt.
- * A rate of 0 is no limit, and with a latency of 0 too a request completes
- * inside its start.
+ * A rate of 0 is no limit, and with a latency and a seek of 0 too a request
+ * completes inside its start.
  *
  * md(4) of type null is no substitute: it takes no unmapped bios, so every
  * read pays a transient mapping, and its worker thread runs below BULK.
