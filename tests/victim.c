@@ -23,7 +23,7 @@
  *       (default 20): the wall time of each, as a shell spawning commands.
  *   victim udpecho PORT
  *       A UDP echo server; runs in the far jail for the mode below.
- *   victim udp HOST PORT SECS [SPORT [GAP_US]]
+ *   victim udp HOST PORT SECS [SPORT [GAP_US [RAWFILE]]]
  *       Request-reply over UDP from source port SPORT (0 = any), one
  *       64-byte datagram at a time, GAP_US apart (default 500): the
  *       round-trip time's median, 99th and 99.9th percentile and maximum,
@@ -34,6 +34,9 @@
  *       round trip), in us.  A fixed SPORT keeps the flow on
  *       one worker CPU across runs and drivers (the pair hashes the
  *       4-tuple), so the harness can put it on the CPU under test.
+ *       RAWFILE gets every request's round trip in us, in the order sent,
+ *       one per line and -1 for an unanswered one, written after the run
+ *       (compare.sh's sweep pools several probes' samples from them).
  *   victim ports SEED NCPU CPU SRC DST TCPPORT UDPPORT [COUNT]
  *       The pair's flow hash (if_pair.c pair_hash_mbuf(): jenkins_hash32
  *       over source, destination, protocol and the port pair, seeded per
@@ -632,7 +635,8 @@ do_udpecho(int port)
 }
 
 static int
-do_udp(const char *host, int port, int secs, int sport, long gap_us)
+do_udp(const char *host, int port, int secs, int sport, long gap_us,
+    const char *raw)
 {
 	struct sockaddr_in sin;
 	struct timespec t0, t1, end, gap = { 0, gap_us * 1000L };
@@ -640,7 +644,8 @@ do_udp(const char *host, int port, int secs, int sport, long gap_us)
 	char buf[64];
 	long *rtt, lost = 0, prev = -1;
 	double sum = 0, sumsq = 0, dsum = 0, mean, sd;
-	size_t n = 0, cap, na = 0, nd = 0;
+	size_t i, n = 0, cap, na = 0, nd = 0;
+	FILE *f;
 	int s;
 
 	cap = (size_t)secs * 1000000L / (gap_us > 0 ? gap_us : 1) + 1000;
@@ -691,7 +696,7 @@ do_udp(const char *host, int port, int secs, int sport, long gap_us)
 			lost++;
 			prev = -1;
 			if (n < cap)
-				rtt[n] = 200000;
+				rtt[n] = -1;
 		}
 		n++;
 		if (gap_us > 0)
@@ -699,6 +704,14 @@ do_udp(const char *host, int port, int secs, int sport, long gap_us)
 	}
 	if (n > cap)
 		n = cap;
+	if (raw != NULL && (f = fopen(raw, "w")) != NULL) {
+		for (i = 0; i < n; i++)
+			fprintf(f, "%ld\n", rtt[i]);
+		fclose(f);
+	}
+	for (i = 0; i < n; i++)		/* unanswered: counted at 200 ms */
+		if (rtt[i] < 0)
+			rtt[i] = 200000;
 	qsort(rtt, n, sizeof(*rtt), cmp);
 	mean = na ? sum / na : 0;
 	sd = na > 1 ? sumsq / na - mean * mean : 0;
@@ -886,9 +899,10 @@ main(int argc, char **argv)
 		    atoi(argv[7])));
 	if (argc >= 5 && strcmp(argv[1], "udp") == 0)
 		return (do_udp(argv[2], atoi(argv[3]), atoi(argv[4]),
-		    argc > 5 ? atoi(argv[5]) : 0, argc > 6 ? atol(argv[6]) : 500));
+		    argc > 5 ? atoi(argv[5]) : 0, argc > 6 ? atol(argv[6]) : 500,
+		    argc > 7 ? argv[7] : NULL));
 	fprintf(stderr, "usage: victim timer SECS [WORK_US] | spin SECS | "
-	    "exec COUNT [GAP_MS] | udpecho PORT | udp HOST PORT SECS [SPORT [GAP_US]] | "
+	    "exec COUNT [GAP_MS] | udpecho PORT | udp HOST PORT SECS [SPORT [GAP_US [RAWFILE]]] | "
 	    "ports SEED NCPU CPU SRC DST TCPPORT UDPPORT [COUNT] | seed MODULE | "
 	    "cpu SEED NCPU SRC DST PROTO SPORT DPORT | udpecho2 PORT SECS GAP_MS | "
 	    "tcpecho PORT | tcpconn HOST PORT SECS [GAP_MS] | "
