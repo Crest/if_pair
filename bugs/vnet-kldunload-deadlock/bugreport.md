@@ -236,7 +236,11 @@ reproducer and a patient 180 s freeze threshold, the pre-fix module
 deadlocks permanently (round 111, the stacks above) while the fixed
 module completes 500 rounds.  It only removes if_pair from the cycle;
 epair, vlan and every other per-vnet cloner keep the base bug, so this
-PR is still the real resolution.
+PR is still the real resolution.  WITNESS reports the walk's order
+(vnet list shared, then the detach lock) as a reversal against the
+order established elsewhere, exactly as it reports
+`vnet_deregister_sysuninit()` itself; the driver inherits that hazard
+rather than adding one.
 
 ## Workaround for users
 
